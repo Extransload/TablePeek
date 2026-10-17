@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/prodb",
+    "crates/prodb-engine",
+    "crates/prodb-server",
+    "crates/prodb-types",
+]
+
+[workspace.dependencies]
+axum = { version = "0.8", features = ["ws"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }

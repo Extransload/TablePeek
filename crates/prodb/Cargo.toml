@@ -1,0 +1,14 @@
+[package]
+name = "prodb"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "prodb"
+path = "src/main.rs"
+
+[dependencies]
+prodb-engine = { path = "../prodb-engine" }
+prodb-server = { path = "../prodb-server" }
+tokio = { workspace = true }
+uuid = { workspace = true }
