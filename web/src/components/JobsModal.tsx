@@ -1,0 +1,97 @@
+import { useEffect, useState } from "react";
+import { clearFinishedJobs, subscribeJobs, type Job } from "../jobs";
+
+interface JobsModalProps {
+  onClose(): void;
+}
+
+function formatWhen(time: number): string {
+  const date = new Date(time);
+  const pad = (value: number): string => (value < 10 ? `0${value}` : String(value));
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+export function JobsModal({ onClose }: JobsModalProps) {
+  const [jobs, setJobs] = useState<Job[]>([]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeJobs(setJobs);
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal jobs-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">작업 큐</span>
+          <span className="spacer" />
+          <button type="button" onClick={clearFinishedJobs}>
+            완료 항목 지우기
+          </button>
+        </div>
+        <div className="modal-body jobs-body">
+          {jobs.length === 0 ? (
+            <div className="panel-empty-inline">작업이 없습니다</div>
+          ) : (
+            jobs.map((job) => (
+              <div className="job-row" key={job.id}>
+                <div className="job-line">
+                  <span className="job-label">{job.label}</span>
+                  <span className="job-detail dim">{job.detail}</span>
+                  <span className="spacer" />
+                  <span
+                    className={
+                      job.status === "error"
+                        ? "job-status err"
+                        : job.status === "done"
+                          ? "job-status ok"
+                          : "job-status"
+                    }
+                  >
+                    {job.status === "running"
+                      ? "진행 중"
+                      : job.status === "done"
+                        ? "완료"
+                        : "실패"}
+                  </span>
+                  <span className="job-time dim">{formatWhen(job.startedAt)}</span>
+                </div>
+                <div className="job-bar">
+                  <div
+                    className={`job-bar-fill${job.status === "error" ? " error" : ""}`}
+                    style={{
+                      width: `${job.total > 0 ? Math.min(100, Math.round((job.done / job.total) * 100)) : job.status === "running" ? 5 : 100}%`,
+                    }}
+                  />
+                </div>
+                <div className="job-meta dim">
+                  {job.total > 0
+                    ? `${job.done.toLocaleString()} / ${job.total.toLocaleString()}`
+                    : job.status === "running"
+                      ? "진행 중…"
+                      : ""}
+                </div>
+                {job.error ? <div className="job-error">{job.error}</div> : null}
+              </div>
+            ))
+          )}
+        </div>
+        <div className="modal-foot">
+          <span className="spacer" />
+          <button type="button" onClick={onClose}>
+            닫기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

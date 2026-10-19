@@ -3,15 +3,23 @@ import { SQLite, sql } from "@codemirror/lang-sql";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
+import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import { selectNextOccurrence } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { palette } from "../palette";
+
+export interface FavoriteSnippet {
+  keyword: string;
+  name: string;
+  sql: string;
+}
 
 export interface SqlEditorHandle {
   getSql(): string;
   getDoc(): string;
   setSql(text: string): void;
   focus(): void;
+  flush(): void;
 }
 
 interface SqlEditorProps {
@@ -21,75 +29,82 @@ interface SqlEditorProps {
   readOnly?: boolean;
   onRun: () => void;
   onSqlChange(tabId: string, sql: string): void;
-  tables: string[];
-}
-
-function buildSchema(tables: string[]): Record<string, string[]> {
-  return Object.fromEntries(tables.map((table): [string, string[]] => [table, []]));
+  schema: Record<string, string[]>;
+  favorites: FavoriteSnippet[];
+  runKey?: string;
 }
 
 const editorTheme = EditorView.theme(
   {
     "&": {
       height: "100%",
-      backgroundColor: palette.bg,
-      color: palette.ink,
-      fontSize: "12px",
+      backgroundColor: "var(--bg)",
+      color: "var(--ink)",
+      fontSize: "var(--editor-font-size, 12px)",
     },
     "&.cm-focused": {
       outline: "none",
     },
     ".cm-content": {
-      caretColor: palette.accent,
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+      caretColor: "var(--accent)",
+      fontFamily: "var(--mono)",
     },
     ".cm-cursor, .cm-dropCursor": {
-      borderLeftColor: palette.accent,
+      borderLeftColor: "var(--accent)",
+    },
+    ".cm-cursor": {
+      transition: "left 45ms var(--ease-out, ease-out), top 45ms var(--ease-out, ease-out)",
     },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-      backgroundColor: palette.selFill,
+      backgroundColor: "var(--accent-soft)",
     },
     "&.cm-focused .cm-selectionBackground": {
-      backgroundColor: palette.selFillFocus,
+      backgroundColor: "var(--accent-line)",
     },
     ".cm-activeLine": {
-      backgroundColor: palette.hoverFill,
+      backgroundColor: "var(--hover-fill)",
     },
     ".cm-activeLineGutter": {
-      backgroundColor: palette.hoverFill,
-      color: palette.muted,
+      backgroundColor: "var(--hover-fill)",
+      color: "var(--muted)",
     },
     ".cm-gutters": {
-      backgroundColor: palette.bg,
-      color: palette.faint,
-      borderRight: `1px solid ${palette.line}`,
+      backgroundColor: "var(--bg)",
+      color: "var(--faint)",
+      borderRight: "1px solid var(--line)",
     },
     ".cm-scroller": {
-      scrollbarColor: `${palette.line} ${palette.bg}`,
+      scrollbarColor: "var(--line) var(--bg)",
       lineHeight: "1.5",
     },
     ".cm-tooltip": {
-      backgroundColor: palette.panel,
-      border: `1px solid ${palette.line}`,
+      backgroundColor: "var(--panel)",
+      border: "1px solid var(--line)",
     },
   },
   { dark: true },
 );
 
 const highlightStyle = HighlightStyle.define([
-  { tag: tags.keyword, color: palette.accent },
-  { tag: tags.string, color: palette.ok },
-  { tag: tags.number, color: palette.warn },
-  { tag: tags.comment, color: palette.faint, fontStyle: "italic" },
-  { tag: tags.variableName, color: palette.ink },
-  { tag: tags.typeName, color: palette.muted },
-  { tag: tags.operator, color: palette.muted },
-  { tag: [tags.bool, tags.null], color: palette.error },
-  { tag: tags.punctuation, color: palette.muted },
+  { tag: tags.keyword, color: "var(--syntax-keyword)" },
+  { tag: [tags.string, tags.special(tags.string)], color: "var(--syntax-string)" },
+  { tag: tags.number, color: "var(--syntax-number)" },
+  { tag: tags.comment, color: "var(--syntax-comment)", fontStyle: "italic" },
+  { tag: tags.variableName, color: "var(--syntax-variable)" },
+  { tag: tags.typeName, color: "var(--syntax-type)" },
+  { tag: tags.operator, color: "var(--syntax-operator)" },
+  { tag: tags.bool, color: "var(--syntax-bool)" },
+  { tag: tags.null, color: "var(--syntax-null)" },
+  { tag: tags.punctuation, color: "var(--syntax-punctuation)" },
+  { tag: tags.function(tags.variableName), color: "var(--syntax-function)" },
+  { tag: tags.labelName, color: "var(--syntax-label)" },
 ]);
 
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
-  function SqlEditor({ tabId, tabIds, initialSql, readOnly, onRun, onSqlChange, tables }, ref) {
+  function SqlEditor(
+    { tabId, tabIds, initialSql, readOnly, onRun, onSqlChange, schema, favorites, runKey },
+    ref,
+  ) {
     const hostRef = useRef<HTMLDivElement | null>(null);
     const viewRef = useRef<EditorView | null>(null);
     const statesRef = useRef(new Map<string, EditorState>());
@@ -99,39 +114,115 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const readOnlyRef = useRef(readOnly ?? false);
     const onRunRef = useRef(onRun);
     const onSqlChangeRef = useRef(onSqlChange);
+    const favoritesRef = useRef(favorites);
+    const schemaRef = useRef(schema);
+    const runKeyRef = useRef(runKey ?? "Mod-Enter");
+    const pendingRef = useRef<{ tabId: string; sql: string; timer: number } | null>(null);
     const [schemaCompartment] = useState(() => new Compartment());
 
     onRunRef.current = onRun;
     onSqlChangeRef.current = onSqlChange;
     initialSqlRef.current = initialSql;
     readOnlyRef.current = readOnly ?? false;
+    favoritesRef.current = favorites;
+    schemaRef.current = schema;
+    runKeyRef.current = runKey ?? "Mod-Enter";
+
+    function flushPending(): void {
+      const pending = pendingRef.current;
+      if (pending === null) {
+        return;
+      }
+      pendingRef.current = null;
+      window.clearTimeout(pending.timer);
+      onSqlChangeRef.current(pending.tabId, pending.sql);
+    }
+
+    function queueChange(tabId: string, sql: string): void {
+      const pending = pendingRef.current;
+      if (pending !== null && pending.tabId !== tabId) {
+        flushPending();
+      }
+      const timer = window.setTimeout(flushPending, 320);
+      if (pending !== null && pending.tabId === tabId) {
+        window.clearTimeout(pending.timer);
+        pending.sql = sql;
+        pending.timer = timer;
+        return;
+      }
+      pendingRef.current = { tabId, sql, timer };
+    }
+
+    function cancelPending(): void {
+      const pending = pendingRef.current;
+      if (pending === null) {
+        return;
+      }
+      window.clearTimeout(pending.timer);
+      pendingRef.current = null;
+    }
+
+    function favoriteCompletion(context: CompletionContext): CompletionResult | null {
+      const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*$/);
+      if (word === null || (word.from === word.to && !context.explicit)) {
+        return null;
+      }
+      const typed = word.text.toLowerCase();
+      const options = favoritesRef.current
+        .filter((favorite) => favorite.keyword.toLowerCase().startsWith(typed))
+        .map((favorite) => ({
+          label: favorite.keyword,
+          detail: favorite.name,
+          info: favorite.sql,
+          apply: favorite.sql,
+          type: "keyword",
+        }));
+      if (options.length === 0) {
+        return null;
+      }
+      return { from: word.from, options };
+    }
 
     function makeState(doc: string): EditorState {
+      const support = sql({ dialect: SQLite, schema: schemaRef.current });
       return EditorState.create({
         doc,
         extensions: [
           Prec.highest(
             keymap.of([
               {
-                key: "Mod-Enter",
+                key: runKeyRef.current,
                 run: () => {
                   onRunRef.current();
                   return true;
                 },
               },
               {
-                key: "Shift-Enter",
-                run: () => {
-                  onRunRef.current();
-                  return true;
-                },
+                key: "Mod-d",
+                run: selectNextOccurrence,
               },
             ]),
           ),
           basicSetup,
-          schemaCompartment.of(sql({ dialect: SQLite, schema: {} })),
+          schemaCompartment.of([
+            support,
+            support.language.data.of({
+              autocomplete: (context: CompletionContext) => favoriteCompletion(context),
+            }),
+          ]),
           editorTheme,
           syntaxHighlighting(highlightStyle),
+          EditorView.lineWrapping,
+          EditorView.contentAttributes.of({
+            spellcheck: "false",
+            autocorrect: "off",
+            autocapitalize: "off",
+          }),
+          EditorView.domEventHandlers({
+            blur: () => {
+              flushPending();
+            },
+          }),
           ...(readOnlyRef.current
             ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
             : []),
@@ -139,7 +230,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
             if (update.docChanged) {
               const id = currentTabRef.current;
               if (id !== null) {
-                onSqlChangeRef.current(id, update.state.doc.toString());
+                queueChange(id, update.state.doc.toString());
               }
             }
           }),
@@ -155,6 +246,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       const view = new EditorView({ parent: host, state: makeState("") });
       viewRef.current = view;
       return () => {
+        flushPending();
         viewRef.current = null;
         view.destroy();
       };
@@ -177,6 +269,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       if (!view) {
         return;
       }
+      flushPending();
       const previous = currentTabRef.current;
       if (previous !== null && previous !== tabId && aliveRef.current.has(previous)) {
         statesRef.current.set(previous, view.state);
@@ -195,12 +288,21 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     if (!view) {
       return;
     }
-    view.dispatch({
-      effects: schemaCompartment.reconfigure(
-        sql({ dialect: SQLite, schema: buildSchema(tables) }),
-      ),
-    });
-  }, [schemaCompartment, tables]);
+    const support = sql({ dialect: SQLite, schema });
+    const extension = [
+      support,
+      support.language.data.of({
+        autocomplete: (context: CompletionContext) => favoriteCompletion(context),
+      }),
+    ];
+    for (const [key, state] of statesRef.current) {
+      statesRef.current.set(
+        key,
+        state.update({ effects: schemaCompartment.reconfigure(extension) }).state,
+      );
+    }
+    view.dispatch({ effects: schemaCompartment.reconfigure(extension) });
+  }, [schemaCompartment, schema]);
 
   useImperativeHandle(
     ref,
@@ -224,12 +326,16 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
           if (!view) {
             return;
           }
+          cancelPending();
           view.dispatch({
             changes: { from: 0, to: view.state.doc.length, insert: text },
           });
         },
         focus(): void {
           viewRef.current?.focus();
+        },
+        flush(): void {
+          flushPending();
         },
       }),
       [],

@@ -1,5 +1,6 @@
 import type { RowSource } from "./rowSource";
 import { palette } from "../palette";
+import { getSettings } from "../settings";
 
 const ROW_H = 26;
 const HEADER_H = 28;
@@ -92,6 +93,8 @@ export class CanvasGrid {
   private sortColumns: SortIndicator[] = [];
   private selectionListener: SelectionHandler | null = null;
   private contextMenuHandler: CellContextMenuHandler | null = null;
+  private quickLook: ((row: number, col: number) => void) | null = null;
+  private cellQuickLook: ((row: number, col: number) => void) | null = null;
   private lastNotifiedRow: number | null = null;
   private pendingHeaderClick: { col: number; x: number; y: number; shiftKey: boolean } | null =
     null;
@@ -104,6 +107,7 @@ export class CanvasGrid {
     this.host = host;
 
     const scroller = document.createElement("div");
+    scroller.className = "grid-scroller";
     scroller.style.position = "absolute";
     scroller.style.inset = "0";
     scroller.style.overflow = "auto";
@@ -144,6 +148,7 @@ export class CanvasGrid {
     canvas.addEventListener("pointerup", this.onPointerUp);
     canvas.addEventListener("pointercancel", this.onPointerUp);
     canvas.addEventListener("contextmenu", this.onContextMenu);
+    canvas.addEventListener("auxclick", this.onAuxClick);
     canvas.addEventListener("dblclick", this.onDblClick);
     canvas.addEventListener("keydown", this.onKeyDown);
     canvas.addEventListener("focus", this.onFocus);
@@ -155,6 +160,19 @@ export class CanvasGrid {
     this.updateSizer();
     this.resizeSurface();
     this.schedulePaint();
+  }
+
+  refreshTheme(): void {
+    this.scroller.style.background = palette.bg;
+    this.schedulePaint();
+  }
+
+  setQuickLookHandler(handler: ((row: number, col: number) => void) | null): void {
+    this.quickLook = handler;
+  }
+
+  setCellQuickLookHandler(handler: ((row: number, col: number) => void) | null): void {
+    this.cellQuickLook = handler;
   }
 
   setSource(source: RowSource | null): void {
@@ -243,6 +261,7 @@ export class CanvasGrid {
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
     this.canvas.removeEventListener("pointercancel", this.onPointerUp);
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
+    this.canvas.removeEventListener("auxclick", this.onAuxClick);
     this.canvas.removeEventListener("dblclick", this.onDblClick);
     this.canvas.removeEventListener("keydown", this.onKeyDown);
     this.canvas.removeEventListener("focus", this.onFocus);
@@ -402,6 +421,40 @@ export class CanvasGrid {
     return lo;
   }
 
+  private textInk(v: unknown): string {
+    if (v === null) {
+      return palette.nullInk;
+    }
+    if (typeof v === "number" || typeof v === "bigint") {
+      return palette.accent;
+    }
+    if (typeof v === "boolean") {
+      return palette.warn;
+    }
+    return palette.ink;
+  }
+
+  private fitText(text: string, maxWidth: number): string {
+    if (maxWidth <= 0) {
+      return "";
+    }
+    if (this.ctx.measureText(text).width <= maxWidth) {
+      return text;
+    }
+    const suffix = "…";
+    let lo = 0;
+    let hi = text.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (this.ctx.measureText(text.slice(0, mid) + suffix).width <= maxWidth) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo > 0 ? text.slice(0, lo) + suffix : "";
+  }
+
   private cellText(v: unknown): string {
     if (typeof v === "string") {
       return v;
@@ -447,7 +500,7 @@ export class CanvasGrid {
 
     for (let r = first; r <= last; r++) {
       const y = HEADER_H + r * ROW_H - virtualY;
-      if ((r & 1) === 1) {
+      if (getSettings().rowAlt && (r & 1) === 1) {
         ctx.fillStyle = palette.rowAlt;
         ctx.fillRect(0, y, w, ROW_H);
       }
@@ -479,7 +532,7 @@ export class CanvasGrid {
         const isNull = v === null;
         const text = isNull ? "NULL" : this.cellText(v);
         const right = typeof v === "number";
-        ctx.fillStyle = isNull ? palette.nullInk : palette.ink;
+        ctx.fillStyle = this.textInk(v);
         ctx.textAlign = right ? "right" : "left";
         const tx = right ? x + cw - CELL_PAD : x + CELL_PAD;
         const ty = y + ROW_H / 2;
@@ -572,8 +625,15 @@ export class CanvasGrid {
         }
       }
       const sort = this.sortAt(c);
+      const reserved = sort ? 14 : 0;
+      const maxTextW = Math.max(0, cw - CELL_PAD * 2 - reserved);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + CELL_PAD, 0, maxTextW, HEADER_H);
+      ctx.clip();
       ctx.fillStyle = sort ? palette.accent : palette.ink;
-      ctx.fillText(src.columns[c], x + CELL_PAD, HEADER_H / 2);
+      ctx.fillText(this.fitText(src.columns[c], maxTextW), x + CELL_PAD, HEADER_H / 2);
+      ctx.restore();
       if (sort) {
         const ax = x + cw - CELL_PAD - 7;
         const cy = HEADER_H / 2;
@@ -1060,7 +1120,7 @@ export class CanvasGrid {
 
   private readonly onPointerDown = (e: PointerEvent): void => {
     const src = this.source;
-    if (!src) {
+    if (!src || e.button !== 0) {
       return;
     }
     this.canvas.focus();
@@ -1143,6 +1203,10 @@ export class CanvasGrid {
     this.drag = { kind: "select" };
     this.notifySelection();
     this.schedulePaint();
+    if (e.altKey && this.contextMenuHandler) {
+      const menu = this.contextMenuHandler;
+      window.setTimeout(() => menu(row, col, e.clientX, e.clientY), 0);
+    }
   };
 
   private readonly onPointerMove = (e: PointerEvent): void => {
@@ -1230,6 +1294,25 @@ export class CanvasGrid {
     }
   };
 
+  private readonly onAuxClick = (e: MouseEvent): void => {
+    if (e.button !== 1 || !this.source || !this.cellQuickLook) {
+      return;
+    }
+    const p = this.localPos(e);
+    const row = this.hitRow(p.y);
+    const col = this.hitCol(p.x);
+    if (row === null || col === null) {
+      return;
+    }
+    e.preventDefault();
+    this.selMode = "cell";
+    this.anchor = { row, col };
+    this.cursor = { row, col };
+    this.notifySelection();
+    this.schedulePaint();
+    this.cellQuickLook(row, col);
+  };
+
   private readonly onContextMenu = (e: MouseEvent): void => {
     if (!this.source || !this.contextMenuHandler) {
       return;
@@ -1298,6 +1381,16 @@ export class CanvasGrid {
     if (meta && (key === "c" || key === "C")) {
       e.preventDefault();
       this.copySelection();
+      return;
+    }
+    if (meta && key === "Enter" && this.cellQuickLook && this.cursor) {
+      e.preventDefault();
+      this.cellQuickLook(this.cursor.row, this.cursor.col);
+      return;
+    }
+    if (key === " " && this.quickLook && this.cursor) {
+      e.preventDefault();
+      this.quickLook(this.cursor.row, this.cursor.col);
       return;
     }
     if (key === "Escape") {

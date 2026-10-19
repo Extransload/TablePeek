@@ -1,5 +1,6 @@
 import type { WindowedRowSource } from "./grid/windowSource";
-import { ProdbSocket, ProdbSocketError, type QueryMeta } from "./net/socket";
+import { WrendbSocket, WrendbSocketError, type QueryMeta } from "./net/socket";
+import type { DefinitionKind } from "./sqlTools";
 
 export interface EngineMeta {
   kind: string;
@@ -21,6 +22,13 @@ export interface FsListing {
   entries: FsEntry[];
 }
 
+export interface PathStat {
+  path: string;
+  exists: boolean;
+  is_file: boolean;
+  readable: boolean;
+}
+
 export interface TableSchemaColumn {
   name: string;
   decl_type: string | null;
@@ -33,6 +41,74 @@ export interface TableSchema {
   columns: TableSchemaColumn[];
 }
 
+export interface TableDetailColumn {
+  name: string;
+  decl_type: string | null;
+  not_null: boolean;
+  pk: boolean;
+  default: string | null;
+}
+
+export interface TableDetailIndex {
+  name: string;
+  unique: boolean;
+  primary: boolean;
+  columns: string[];
+}
+
+export interface TableDetailForeignKey {
+  name: string;
+  columns: string[];
+  ref_table: string;
+  ref_columns: string[];
+}
+
+export interface TableDetail {
+  name: string;
+  schema: string | null;
+  row_count_estimate: number | null;
+  size_bytes: number | null;
+  columns: TableDetailColumn[];
+  indexes: TableDetailIndex[];
+  foreign_keys: TableDetailForeignKey[];
+  ddl: string | null;
+}
+
+export interface ServerSession {
+  id: string;
+  user: string | null;
+  database: string | null;
+  state: string | null;
+  query: string | null;
+  elapsed_ms: number | null;
+  is_current: boolean;
+}
+
+export interface ServerInfo {
+  driver: string;
+  version: string | null;
+  database: string | null;
+  encoding: string | null;
+  uptime: string | null;
+  size_bytes: number | null;
+  sessions: ServerSession[] | null;
+  can_kill: boolean;
+}
+
+export interface ObjectList {
+  views: string[];
+  functions: string[];
+  triggers: string[];
+  sequences: string[];
+  procedures: string[];
+}
+
+export interface DefinitionDetail {
+  name: string;
+  kind: string;
+  ddl: string | null;
+}
+
 export type SslMode = "disable" | "prefer" | "require";
 export type Driver = "postgres" | "mysql" | "cockroach" | "mssql";
 
@@ -43,6 +119,9 @@ export interface DbInput {
   password?: string;
   database: string;
   ssl_mode: SslMode;
+  ssl_root_cert?: string;
+  ssl_client_cert?: string;
+  ssl_client_key?: string;
 }
 
 export interface PostgresInput extends DbInput {}
@@ -68,6 +147,13 @@ export interface SshInput {
   private_key_path?: string;
 }
 
+export interface HttpTunnelInput {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
 export interface ConnectInput {
   driver: Driver;
   postgres?: PostgresInput;
@@ -75,6 +161,7 @@ export interface ConnectInput {
   cockroach?: CockroachInput;
   mssql?: MssqlInput;
   ssh?: SshInput;
+  http_tunnel?: HttpTunnelInput;
 }
 
 export interface SavedDb {
@@ -83,6 +170,9 @@ export interface SavedDb {
   user: string;
   database: string;
   ssl_mode: SslMode;
+  ssl_root_cert?: string | null;
+  ssl_client_cert?: string | null;
+  ssl_client_key?: string | null;
 }
 
 export interface SavedPostgres extends SavedDb {}
@@ -102,6 +192,12 @@ export interface SavedSsh {
   private_key_path?: string;
 }
 
+export interface SavedHttpTunnel {
+  host: string;
+  port: number;
+  username?: string;
+}
+
 export interface SavedConnection {
   id: string;
   name: string;
@@ -111,8 +207,26 @@ export interface SavedConnection {
   cockroach?: SavedCockroach;
   mssql?: SavedMssql;
   ssh?: SavedSsh;
+  http_tunnel?: SavedHttpTunnel;
   persist_password: boolean;
   has_password: boolean;
+  last_used?: number;
+}
+
+export interface ConnSummary {
+  id: string;
+  label: string;
+  saved_id?: string;
+  is_default: boolean;
+  kind: string;
+  path?: string | null;
+  demo: boolean;
+  table_count: number;
+}
+
+export interface LiveConn {
+  conn: string;
+  meta: EngineMeta;
 }
 
 export interface HistoryEntry {
@@ -124,6 +238,7 @@ export interface Favorite {
   id: string;
   name: string;
   sql: string;
+  keyword?: string | null;
 }
 
 export interface GridResult {
@@ -131,6 +246,7 @@ export interface GridResult {
   sql: string;
   meta: QueryMeta;
   source: WindowedRowSource;
+  conn: string;
 }
 
 export type Status = "idle" | "running" | "error";
@@ -145,7 +261,7 @@ export interface StoreState {
   result: GridResult | null;
   connection: Connection;
   tx: TxState;
-  generation: number;
+  connId: string | null;
   tabId: string | null;
 }
 
@@ -163,7 +279,7 @@ export type QueryOutcome =
   | { kind: "cancelled" }
   | { kind: "error"; error: string };
 
-const TOKEN_KEY = "prodb.token";
+const TOKEN_KEY = "wrendb.token";
 const UNKNOWN_ERROR = "알 수 없는 오류가 발생했습니다";
 const NETWORK_ERROR = "서버에 연결할 수 없습니다";
 const QUERY_WINDOW = 1000;
@@ -204,7 +320,7 @@ let state: StoreState = {
   result: null,
   connection: "closed",
   tx: "none",
-  generation: 0,
+  connId: null,
   tabId: null,
 };
 
@@ -218,7 +334,9 @@ function setState(patch: Partial<StoreState>): void {
 }
 
 function messageOf(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : UNKNOWN_ERROR;
+  return error instanceof Error && error.message
+    ? error.message
+    : UNKNOWN_ERROR;
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -228,7 +346,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: {
         "content-type": "application/json",
-        "x-prodb-token": tokenValue,
+        "x-wrendb-token": tokenValue,
         ...(init?.headers ?? {}),
       },
     });
@@ -244,20 +362,37 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const message =
       body !== null && typeof body === "object" && "message" in body
-        ? String((body as { message?: unknown }).message ?? `HTTP ${response.status}`)
+        ? String(
+            (body as { message?: unknown }).message ??
+              `HTTP ${response.status}`,
+          )
         : `HTTP ${response.status}`;
     throw new Error(message);
   }
   return body as T;
 }
 
-let socket: ProdbSocket | null = null;
+let socket: WrendbSocket | null = null;
+let activeRunner: (() => void) | null = null;
 
-function ensureSocket(): ProdbSocket {
+function ensureSocket(): WrendbSocket {
   if (!socket) {
-    const created = new ProdbSocket(tokenValue);
+    const created = new WrendbSocket(tokenValue);
     created.onStatus((status) => {
       setState({ connection: status });
+    });
+    created.onRowChange((change) => {
+      if (change.invalidate) {
+        const resultConn = state.result?.conn ?? null;
+        if (
+          change.conn !== null &&
+          resultConn !== null &&
+          change.conn !== resultConn
+        ) {
+          return;
+        }
+        activeRunner?.();
+      }
     });
     socket = created;
   }
@@ -279,22 +414,14 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-async function refreshMeta(): Promise<void> {
-  try {
-    const meta = await api<EngineMeta>("/api/meta");
-    setState({ meta });
-  } catch (error) {
-    setState({ status: "error", error: messageOf(error) });
-  }
-}
-
-async function init(): Promise<void> {
-  await refreshMeta();
+async function refreshMeta(conn: string): Promise<EngineMeta> {
+  return api<EngineMeta>(`/api/meta?conn=${encodeURIComponent(conn)}`);
 }
 
 const resultCache = new WeakMap<WindowedRowSource, GridResult>();
+const inflight = new Set<string>();
 
-function showSnapshot(snapshot: TabSnapshot): void {
+function showSnapshot(conn: string, snapshot: TabSnapshot): void {
   let result: GridResult | null = null;
   if (snapshot.source !== null && snapshot.meta !== null) {
     const cached = resultCache.get(snapshot.source);
@@ -306,17 +433,18 @@ function showSnapshot(snapshot: TabSnapshot): void {
         sql: snapshot.sql,
         meta: snapshot.meta,
         source: snapshot.source,
+        conn,
       };
       resultCache.set(snapshot.source, result);
     }
   }
-  const status: Status =
-    state.status === "running"
-      ? "running"
-      : snapshot.error !== null
-        ? "error"
-        : "idle";
+  const status: Status = inflight.has(conn)
+    ? "running"
+    : snapshot.error !== null
+      ? "error"
+      : "idle";
   setState({
+    connId: conn,
     tabId: snapshot.id,
     result,
     info: snapshot.info,
@@ -326,45 +454,56 @@ function showSnapshot(snapshot: TabSnapshot): void {
 }
 
 async function runQuery(
+  conn: string,
   sql: string,
   maxRows: number,
   ownerId?: string,
 ): Promise<QueryOutcome> {
-  setState({ status: "running", error: null, info: null });
+  inflight.add(conn);
+  if (state.connId === conn) {
+    setState({ status: "running", error: null, info: null });
+  }
+  const isView = (): boolean =>
+    state.connId === conn && (ownerId === undefined || state.tabId === ownerId);
   try {
-    const { meta, source, queryId } = await ensureSocket().query(sql, {
+    const { meta, source, queryId } = await ensureSocket().query(conn, sql, {
       maxRows,
       window: QUERY_WINDOW,
     });
-    const result: GridResult = { queryId, sql, meta, source };
+    const result: GridResult = { queryId, sql, meta, source, conn };
     resultCache.set(source, result);
-    if (ownerId === undefined || state.tabId === ownerId) {
+    inflight.delete(conn);
+    if (isView()) {
       setState({ status: "idle", error: null, info: null, result });
-    } else {
+    } else if (state.connId === conn) {
       setState({ status: "idle" });
     }
     return { kind: "ok", result };
   } catch (error) {
-    if (error instanceof ProdbSocketError && error.cancelled) {
-      if (ownerId === undefined || state.tabId === ownerId) {
+    inflight.delete(conn);
+    if (error instanceof WrendbSocketError && error.cancelled) {
+      if (isView()) {
         setState({ status: "idle", error: null, info: CANCELLED_INFO });
-      } else {
+      } else if (state.connId === conn) {
         setState({ status: "idle" });
       }
       return { kind: "cancelled" };
     }
     const message = messageOf(error);
-    if (ownerId === undefined || state.tabId === ownerId) {
+    if (isView()) {
       setState({ status: "error", error: message, info: null });
-    } else {
+    } else if (state.connId === conn) {
       setState({ status: "idle" });
     }
     return { kind: "error", error: message };
   }
 }
 
-function cancelQuery(): void {
-  socket?.cancel();
+function cancelQuery(conn?: string): void {
+  const target = conn === undefined ? state.connId : conn;
+  if (target !== null) {
+    socket?.cancel(target);
+  }
 }
 
 export interface EditOutcome {
@@ -380,7 +519,13 @@ async function editCell(
 ): Promise<EditOutcome | null> {
   const result = state.result;
   const meta = result ? result.meta : null;
-  if (!result || !meta || !meta.sourceTable || !meta.pk || meta.pk.length === 0) {
+  if (
+    !result ||
+    !meta ||
+    !meta.sourceTable ||
+    !meta.pk ||
+    meta.pk.length === 0
+  ) {
     setState({ info: "편집할 수 없는 결과입니다" });
     return null;
   }
@@ -402,7 +547,7 @@ async function editCell(
     pk.push({ column: meta.pk[i], value: cellValue as string | number | null });
   }
   try {
-    const edited = await ensureSocket().edit({
+    const edited = await ensureSocket().edit(result.conn, {
       session: result.queryId,
       table: meta.sourceTable,
       pk,
@@ -425,15 +570,59 @@ async function editCell(
 }
 
 async function runDetached(
+  conn: string,
   sql: string,
   maxRows: number,
 ): Promise<{ meta: QueryMeta; source: WindowedRowSource }> {
-  return ensureSocket().query(sql, { maxRows, window: QUERY_WINDOW });
+  return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW });
+}
+
+async function insertRow(
+  table: string,
+  values: { column: string; value: string | null }[],
+): Promise<number> {
+  const result = state.result;
+  if (!result) {
+    throw new Error("행을 추가할 결과가 없습니다");
+  }
+  const change = await ensureSocket().insertRow(result.conn, {
+    session: result.queryId,
+    table,
+    values,
+  });
+  return change.rowsAffected;
+}
+
+async function deleteRow(
+  table: string,
+  pk: { column: string; value: string | null }[],
+): Promise<number> {
+  const result = state.result;
+  if (!result) {
+    throw new Error("행을 삭제할 결과가 없습니다");
+  }
+  const change = await ensureSocket().deleteRow(result.conn, {
+    session: result.queryId,
+    table,
+    pk,
+  });
+  return change.rowsAffected;
+}
+
+function setActiveRunner(runner: (() => void) | null): void {
+  activeRunner = runner;
+}
+
+function activeConnOrThrow(): string {
+  if (state.connId === null) {
+    throw new Error("열린 연결이 없습니다");
+  }
+  return state.connId;
 }
 
 async function beginTx(): Promise<void> {
   try {
-    await ensureSocket().begin();
+    await ensureSocket().begin(activeConnOrThrow());
     setState({ tx: "active" });
   } catch (error) {
     setState({ status: "error", error: messageOf(error) });
@@ -442,7 +631,7 @@ async function beginTx(): Promise<void> {
 
 async function commitTx(): Promise<void> {
   try {
-    await ensureSocket().commit();
+    await ensureSocket().commit(activeConnOrThrow());
     setState({ tx: "none" });
   } catch (error) {
     setState({ status: "error", error: messageOf(error) });
@@ -451,7 +640,7 @@ async function commitTx(): Promise<void> {
 
 async function rollbackTx(): Promise<void> {
   try {
-    await ensureSocket().rollback();
+    await ensureSocket().rollback(activeConnOrThrow());
     setState({ tx: "none" });
     state.result?.source.clearWindows();
   } catch (error) {
@@ -459,57 +648,69 @@ async function rollbackTx(): Promise<void> {
   }
 }
 
-function applyMeta(meta: EngineMeta): void {
-  const previous = state.result;
-  if (previous) {
-    previous.source.dispose();
+function activate(
+  conn: string | null,
+  meta: EngineMeta | null,
+  snapshot: TabSnapshot | null,
+  tx: TxState,
+): void {
+  setState({ connId: conn, meta, tx });
+  if (snapshot) {
+    showSnapshot(conn as string, snapshot);
+  } else {
+    setState({
+      tabId: null,
+      result: null,
+      info: null,
+      error: null,
+      status: "idle",
+    });
   }
-  setState({
-    status: "idle",
-    meta,
-    result: null,
-    error: null,
-    info: null,
-    tx: "none",
-    generation: state.generation + 1,
-    tabId: null,
+}
+
+function warmSocket(): void {
+  void ensureSocket()
+    .connect()
+    .catch(() => {});
+}
+
+async function openDb(path: string | null): Promise<LiveConn> {
+  return api<LiveConn>("/api/open", {
+    method: "POST",
+    body: JSON.stringify({ path }),
   });
 }
 
-async function openDb(path: string | null): Promise<void> {
-  try {
-    const meta = await api<EngineMeta>("/api/open", {
-      method: "POST",
-      body: JSON.stringify({ path }),
-    });
-    applyMeta(meta);
-  } catch (error) {
-    setState({ status: "error", error: messageOf(error) });
-  }
-}
-
-async function connect(input: ConnectInput): Promise<EngineMeta> {
-  const meta = await api<EngineMeta>("/api/connect", {
+async function connect(input: ConnectInput): Promise<LiveConn> {
+  return api<LiveConn>("/api/connect", {
     method: "POST",
     body: JSON.stringify(input),
   });
-  applyMeta(meta);
-  return meta;
 }
 
 const connectPostgres = connect;
 
-async function connectSaved(id: string): Promise<EngineMeta> {
-  const meta = await api<EngineMeta>(
-    `/api/connections/${encodeURIComponent(id)}/connect`,
-    { method: "POST" },
-  );
-  applyMeta(meta);
-  return meta;
+async function connectSaved(id: string): Promise<LiveConn> {
+  return api<LiveConn>(`/api/connections/${encodeURIComponent(id)}/connect`, {
+    method: "POST",
+  });
+}
+
+async function listConns(): Promise<ConnSummary[]> {
+  const body = await api<{ conns: ConnSummary[] }>("/api/conns");
+  return body.conns;
+}
+
+async function closeConn(id: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/conns/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 async function listConnections(): Promise<SavedConnection[]> {
-  const body = await api<{ connections: SavedConnection[] }>("/api/connections");
+  const body = await api<{ connections: SavedConnection[] }>(
+    "/api/connections",
+  );
   return body.connections;
 }
 
@@ -520,7 +721,11 @@ async function createConnection(
 ): Promise<string> {
   const body = await api<{ id: string }>("/api/connections", {
     method: "POST",
-    body: JSON.stringify({ name, connect: input, persist_password: persistPassword }),
+    body: JSON.stringify({
+      name,
+      connect: input,
+      persist_password: persistPassword,
+    }),
   });
   return body.id;
 }
@@ -531,8 +736,93 @@ async function deleteConnection(id: string): Promise<void> {
   });
 }
 
-async function fetchSchema(): Promise<TableSchema[]> {
-  return api<TableSchema[]>("/api/schema");
+async function fetchSchema(
+  conn: string,
+  includeSystem = false,
+): Promise<TableSchema[]> {
+  const system = includeSystem ? "&system=1" : "";
+  return api<TableSchema[]>(
+    `/api/schema?conn=${encodeURIComponent(conn)}${system}`,
+  );
+}
+
+async function fetchTableDetail(
+  conn: string,
+  name: string,
+): Promise<TableDetail> {
+  return api<TableDetail>(
+    `/api/table?name=${encodeURIComponent(name)}&conn=${encodeURIComponent(conn)}`,
+  );
+}
+
+async function fetchServer(conn: string): Promise<ServerInfo> {
+  return api<ServerInfo>(`/api/server?conn=${encodeURIComponent(conn)}`);
+}
+
+async function fetchObjects(
+  conn: string,
+  includeSystem = false,
+): Promise<ObjectList> {
+  const system = includeSystem ? "&system=1" : "";
+  return api<ObjectList>(
+    `/api/objects?conn=${encodeURIComponent(conn)}${system}`,
+  );
+}
+
+async function fetchCount(conn: string, table: string): Promise<number> {
+  const body = await api<{ count: number }>(
+    `/api/count?table=${encodeURIComponent(table)}&conn=${encodeURIComponent(conn)}`,
+  );
+  return body.count;
+}
+
+async function fetchDatabases(conn: string): Promise<string[]> {
+  const body = await api<{ databases: string[] }>(
+    `/api/databases?conn=${encodeURIComponent(conn)}`,
+  );
+  return body.databases;
+}
+
+async function switchDatabase(
+  conn: string,
+  database: string,
+): Promise<LiveConn> {
+  return api<LiveConn>(`/api/switch-db?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    body: JSON.stringify({ database }),
+  });
+}
+
+export interface ExecResult {
+  ok: boolean;
+  columns: string[];
+  rows: unknown[][];
+  row_count: number;
+  elapsed_ms: number;
+}
+
+async function exec(conn: string, sql: string): Promise<ExecResult> {
+  return api<ExecResult>(`/api/exec?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    body: JSON.stringify({ sql }),
+  });
+}
+
+async function fetchDefinition(
+  conn: string,
+  kind: DefinitionKind,
+  name: string,
+): Promise<DefinitionDetail> {
+  return api<DefinitionDetail>(
+    `/api/definition?kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}&conn=${encodeURIComponent(conn)}`,
+  );
+}
+
+async function killSession(conn: string, sessionId: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/kill?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId }),
+  });
 }
 
 async function fetchHistory(limit?: number): Promise<HistoryEntry[]> {
@@ -550,10 +840,14 @@ async function fetchFavorites(): Promise<Favorite[]> {
   return body.favorites;
 }
 
-async function createFavorite(name: string, sql: string): Promise<string> {
+async function createFavorite(
+  name: string,
+  sql: string,
+  keyword?: string,
+): Promise<string> {
   const body = await api<{ id: string }>("/api/favorites", {
     method: "POST",
-    body: JSON.stringify({ name, sql }),
+    body: JSON.stringify({ name, sql, keyword: keyword ?? null }),
   });
   return body.id;
 }
@@ -569,34 +863,59 @@ async function listDir(path?: string): Promise<FsListing> {
   return api<FsListing>(`/api/fs/list${query}`);
 }
 
+async function statPath(path: string): Promise<PathStat> {
+  return api<PathStat>(`/api/fs/stat?path=${encodeURIComponent(path)}`);
+}
+
 function setError(message: string | null): void {
   setState({ error: message });
+}
+
+function setInfo(message: string | null): void {
+  setState({ info: message });
 }
 
 export const store = {
   token,
   getState,
   subscribe,
-  init,
   refreshMeta,
   showSnapshot,
+  activate,
   runQuery,
   runDetached,
   cancelQuery,
   editCell,
+  insertRow,
+  deleteRow,
+  setActiveRunner,
   beginTx,
   commitTx,
   rollbackTx,
   openDb,
   listDir,
+  statPath,
   setError,
+  setInfo,
+  warmSocket,
   connect,
   connectPostgres,
   connectSaved,
+  listConns,
+  closeConn,
   listConnections,
   createConnection,
   deleteConnection,
   fetchSchema,
+  fetchTableDetail,
+  fetchServer,
+  fetchObjects,
+  fetchCount,
+  fetchDatabases,
+  switchDatabase,
+  exec,
+  fetchDefinition,
+  killSession,
   fetchHistory,
   clearHistory,
   fetchFavorites,

@@ -18,6 +18,7 @@ export interface QueryResult {
   meta: QueryMeta;
   source: WindowedRowSource;
   queryId: string;
+  conn: string;
 }
 
 export interface EditRequest {
@@ -37,18 +38,43 @@ export interface EditResult {
   value: string | null;
 }
 
-export class ProdbSocketError extends Error {
+export interface RowChange {
+  id: string | null;
+  conn: string | null;
+  op: "insert" | "delete" | "tx";
+  rowsAffected: number;
+  invalidate: boolean;
+}
+
+export interface InsertRowRequest {
+  session: string;
+  table: string;
+  values: { column: string; value: string | null }[];
+}
+
+export interface DeleteRowRequest {
+  session: string;
+  table: string;
+  pk: { column: string; value: string | null }[];
+}
+
+type RowOpMessage =
+  | ({ type: "insert_row" } & InsertRowRequest)
+  | ({ type: "delete_row" } & DeleteRowRequest);
+
+export class WrendbSocketError extends Error {
   readonly cancelled: boolean;
 
   constructor(message: string, cancelled: boolean) {
     super(message);
-    this.name = "ProdbSocketError";
+    this.name = "WrendbSocketError";
     this.cancelled = cancelled;
   }
 }
 
 interface MetaMessage {
   type: "meta";
+  conn?: string;
   id: string;
   kind: string;
   columns: string[];
@@ -61,6 +87,7 @@ interface MetaMessage {
 
 interface WindowMessage {
   type: "window";
+  conn?: string;
   id: string;
   offset: number;
   count: number;
@@ -68,6 +95,7 @@ interface WindowMessage {
 
 interface ErrorMessage {
   type: "error";
+  conn?: string | null;
   id: string | null;
   message: string;
   cancelled: boolean;
@@ -75,6 +103,7 @@ interface ErrorMessage {
 
 interface EditedMessage {
   type: "edited";
+  conn?: string;
   row: number;
   col: number;
   column: string;
@@ -84,33 +113,60 @@ interface EditedMessage {
 
 interface TxMessage {
   type: "tx";
+  conn?: string;
   state: "began" | "committed" | "rolledback";
+  invalidate?: boolean;
 }
 
-type ServerMessage = MetaMessage | WindowMessage | ErrorMessage | EditedMessage | TxMessage;
+interface RowChangeMessage {
+  type: "row_change";
+  conn?: string;
+  id: string | null;
+  op: "insert" | "delete";
+  rows_affected: number;
+  invalidate: boolean;
+}
+
+type ServerMessage =
+  | MetaMessage
+  | WindowMessage
+  | ErrorMessage
+  | EditedMessage
+  | TxMessage
+  | RowChangeMessage;
 
 interface MetaWaiter {
   id: string;
+  conn: string;
   resolve: (message: MetaMessage) => void;
-  reject: (error: ProdbSocketError) => void;
+  reject: (error: WrendbSocketError) => void;
 }
 
 interface WindowWaiter {
   id: string;
+  conn: string;
   timer: ReturnType<typeof setTimeout>;
   resolve: (rows: unknown[][]) => void;
-  reject: (error: ProdbSocketError) => void;
+  reject: (error: WrendbSocketError) => void;
 }
 
 interface EditWaiter {
+  conn: string;
   resolve: (result: EditResult) => void;
-  reject: (error: ProdbSocketError) => void;
+  reject: (error: WrendbSocketError) => void;
 }
 
 interface TxWaiter {
+  conn: string;
   expected: TxMessage["state"];
   resolve: () => void;
-  reject: (error: ProdbSocketError) => void;
+  reject: (error: WrendbSocketError) => void;
+}
+
+interface RowWaiter {
+  conn: string;
+  resolve: (change: RowChange) => void;
+  reject: (error: WrendbSocketError) => void;
 }
 
 const CONNECT_ERROR = "서버에 연결할 수 없습니다";
@@ -166,17 +222,18 @@ function concatRows(frames: unknown[][][]): unknown[][] {
   return rows;
 }
 
-export class ProdbSocket {
+export class WrendbSocket {
   private readonly url: string;
   private ws: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
   private statusValue: SocketStatus = "closed";
   private readonly statusListeners = new Set<(status: SocketStatus) => void>();
-  private activeQueryId: string | null = null;
-  private metaWaiter: MetaWaiter | null = null;
-  private readonly windowWaiters = new Map<number, WindowWaiter>();
-  private editWaiter: EditWaiter | null = null;
-  private txWaiter: TxWaiter | null = null;
+  private readonly metaWaiters = new Map<string, MetaWaiter>();
+  private readonly windowWaiters = new Map<string, WindowWaiter>();
+  private readonly editWaiters = new Map<string, EditWaiter>();
+  private readonly txWaiters = new Map<string, TxWaiter>();
+  private readonly rowWaiters = new Map<string, RowWaiter>();
+  private readonly rowChangeListeners = new Set<(change: RowChange) => void>();
   private pendingFrames: unknown[][][] = [];
 
   constructor(token: string) {
@@ -214,7 +271,7 @@ export class ProdbSocket {
         }
         failed = true;
         this.connectPromise = null;
-        reject(new ProdbSocketError(CONNECT_ERROR, false));
+        reject(new WrendbSocketError(CONNECT_ERROR, false));
       };
       ws.onopen = () => {
         if (this.ws !== ws) {
@@ -238,7 +295,7 @@ export class ProdbSocket {
           this.ws = null;
           this.connectPromise = null;
           this.setStatus("closed");
-          this.failPending(new ProdbSocketError(CLOSED_ERROR, false));
+          this.failPending(new WrendbSocketError(CLOSED_ERROR, false));
         }
         failConnect();
       };
@@ -247,29 +304,30 @@ export class ProdbSocket {
   }
 
   async query(
+    conn: string,
     sql: string,
     options: { maxRows: number; window: number },
   ): Promise<QueryResult> {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new ProdbSocketError(CLOSED_ERROR, false);
+      throw new WrendbSocketError(CLOSED_ERROR, false);
     }
-    this.cancelPending();
+    this.cancelPending(conn);
     const queryId = crypto.randomUUID();
-    this.activeQueryId = queryId;
     const messagePromise = new Promise<MetaMessage>((resolve, reject) => {
-      this.metaWaiter = { id: queryId, resolve, reject };
+      this.metaWaiters.set(queryId, { id: queryId, conn, resolve, reject });
+      ws.send(
+        JSON.stringify({
+          type: "query",
+          conn,
+          id: queryId,
+          sql,
+          max_rows: options.maxRows,
+          window: options.window,
+        }),
+      );
     });
-    ws.send(
-      JSON.stringify({
-        type: "query",
-        id: queryId,
-        sql,
-        max_rows: options.maxRows,
-        window: options.window,
-      }),
-    );
     const message = await messagePromise;
     const meta: QueryMeta = {
       id: message.id,
@@ -285,66 +343,86 @@ export class ProdbSocket {
       columns: meta.columns,
       rowCount: meta.rowCount,
       windowSize: options.window,
-      fetchWindow: (offset, limit) => this.fetch(queryId, offset, limit),
+      fetchWindow: (offset, limit) => this.fetch(conn, queryId, offset, limit),
     });
-    return { meta, source, queryId };
+    return { meta, source, queryId, conn };
   }
 
-  async fetch(id: string, offset: number, limit: number): Promise<unknown[][]> {
+  private windowKey(conn: string, id: string, offset: number): string {
+    return `${conn}\u0000${id}\u0000${offset}`;
+  }
+
+  async fetch(conn: string, id: string, offset: number, limit: number): Promise<unknown[][]> {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new ProdbSocketError(CLOSED_ERROR, false);
+      throw new WrendbSocketError(CLOSED_ERROR, false);
     }
-    const existing = this.windowWaiters.get(offset);
+    const key = this.windowKey(conn, id, offset);
+    const existing = this.windowWaiters.get(key);
     if (existing) {
-      this.windowWaiters.delete(offset);
+      this.windowWaiters.delete(key);
       clearTimeout(existing.timer);
-      existing.reject(new ProdbSocketError(CANCELLED_ERROR, true));
+      existing.reject(new WrendbSocketError(CANCELLED_ERROR, true));
     }
     return new Promise<unknown[][]>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.windowWaiters.delete(offset);
-        reject(new ProdbSocketError(FETCH_TIMEOUT_ERROR, false));
+        this.windowWaiters.delete(key);
+        reject(new WrendbSocketError(FETCH_TIMEOUT_ERROR, false));
       }, FETCH_TIMEOUT_MS);
-      this.windowWaiters.set(offset, { id, timer, resolve, reject });
-      ws.send(JSON.stringify({ type: "fetch", id, offset, limit }));
+      this.windowWaiters.set(key, { id, conn, timer, resolve, reject });
+      ws.send(JSON.stringify({ type: "fetch", conn, id, offset, limit }));
     });
   }
 
-  cancel(): void {
+  cancel(conn: string): void {
     const ws = this.ws;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "cancel" }));
+      ws.send(JSON.stringify({ type: "cancel", conn }));
     }
   }
 
-  async edit(request: EditRequest): Promise<EditResult> {
+  async edit(conn: string, request: EditRequest): Promise<EditResult> {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new ProdbSocketError(CLOSED_ERROR, false);
+      throw new WrendbSocketError(CLOSED_ERROR, false);
     }
-    if (this.editWaiter) {
-      throw new ProdbSocketError("이전 수정 요청이 아직 완료되지 않았습니다", false);
+    if (this.editWaiters.has(conn)) {
+      throw new WrendbSocketError("이전 수정 요청이 아직 완료되지 않았습니다", false);
     }
     const result = new Promise<EditResult>((resolve, reject) => {
-      this.editWaiter = { resolve, reject };
+      this.editWaiters.set(conn, { conn, resolve, reject });
     });
-    ws.send(JSON.stringify({ type: "edit", ...request }));
+    ws.send(JSON.stringify({ type: "edit", conn, ...request }));
     return result;
   }
 
-  begin(): Promise<void> {
-    return this.runTx("begin");
+  begin(conn: string): Promise<void> {
+    return this.runTx(conn, "begin");
   }
 
-  commit(): Promise<void> {
-    return this.runTx("commit");
+  onRowChange(listener: (change: RowChange) => void): () => void {
+    this.rowChangeListeners.add(listener);
+    return () => {
+      this.rowChangeListeners.delete(listener);
+    };
   }
 
-  rollback(): Promise<void> {
-    return this.runTx("rollback");
+  insertRow(conn: string, request: InsertRowRequest): Promise<RowChange> {
+    return this.sendRowOp(conn, { type: "insert_row", ...request });
+  }
+
+  deleteRow(conn: string, request: DeleteRowRequest): Promise<RowChange> {
+    return this.sendRowOp(conn, { type: "delete_row", ...request });
+  }
+
+  commit(conn: string): Promise<void> {
+    return this.runTx(conn, "commit");
+  }
+
+  rollback(conn: string): Promise<void> {
+    return this.runTx(conn, "rollback");
   }
 
   close(): void {
@@ -356,21 +434,41 @@ export class ProdbSocket {
     ws.close();
   }
 
-  private async runTx(action: "begin" | "commit" | "rollback"): Promise<void> {
+  private async sendRowOp(conn: string, message: RowOpMessage): Promise<RowChange> {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new ProdbSocketError(CLOSED_ERROR, false);
+      throw new WrendbSocketError(CLOSED_ERROR, false);
     }
-    if (this.txWaiter) {
-      throw new ProdbSocketError("이전 트랜잭션 요청이 아직 완료되지 않았습니다", false);
+    const id = crypto.randomUUID();
+    const promise = new Promise<RowChange>((resolve, reject) => {
+      this.rowWaiters.set(id, { conn, resolve, reject });
+    });
+    ws.send(JSON.stringify({ ...message, conn, id }));
+    return promise;
+  }
+
+  private emitRowChange(change: RowChange): void {
+    for (const listener of this.rowChangeListeners) {
+      listener(change);
+    }
+  }
+
+  private async runTx(conn: string, action: "begin" | "commit" | "rollback"): Promise<void> {
+    await this.connect();
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new WrendbSocketError(CLOSED_ERROR, false);
+    }
+    if (this.txWaiters.has(conn)) {
+      throw new WrendbSocketError("이전 트랜잭션 요청이 아직 완료되지 않았습니다", false);
     }
     const expected: TxMessage["state"] =
       action === "begin" ? "began" : action === "commit" ? "committed" : "rolledback";
     const promise = new Promise<void>((resolve, reject) => {
-      this.txWaiter = { expected, resolve, reject };
+      this.txWaiters.set(conn, { conn, expected, resolve, reject });
     });
-    ws.send(JSON.stringify({ type: "tx", action }));
+    ws.send(JSON.stringify({ type: "tx", conn, action }));
     return promise;
   }
 
@@ -406,9 +504,9 @@ export class ProdbSocket {
       return;
     }
     if (message.type === "meta") {
-      const waiter = this.metaWaiter;
-      if (waiter && waiter.id === message.id) {
-        this.metaWaiter = null;
+      const waiter = this.metaWaiters.get(message.id);
+      if (waiter) {
+        this.metaWaiters.delete(message.id);
         waiter.resolve(message);
       }
       return;
@@ -416,103 +514,192 @@ export class ProdbSocket {
     if (message.type === "window") {
       const frames = this.pendingFrames;
       this.pendingFrames = [];
-      const waiter = this.windowWaiters.get(message.offset);
-      if (waiter && waiter.id === message.id) {
-        this.windowWaiters.delete(message.offset);
+      const conn = message.conn ?? "";
+      const key = this.windowKey(conn, message.id, message.offset);
+      const waiter = this.windowWaiters.get(key);
+      if (waiter) {
+        this.windowWaiters.delete(key);
         clearTimeout(waiter.timer);
         waiter.resolve(message.count > 0 ? concatRows(frames) : []);
+      } else {
+        let fallback: string | null = null;
+        for (const [existingKey, existing] of this.windowWaiters) {
+          if (existing.id === message.id && existing.conn === conn) {
+            fallback = existingKey;
+            break;
+          }
+        }
+        if (fallback !== null) {
+          const matched = this.windowWaiters.get(fallback);
+          this.windowWaiters.delete(fallback);
+          if (matched) {
+            clearTimeout(matched.timer);
+            matched.resolve(message.count > 0 ? concatRows(frames) : []);
+          }
+        }
       }
       return;
     }
     if (message.type === "error") {
-      const error = new ProdbSocketError(message.message, message.cancelled);
-      const meta = this.metaWaiter;
-      if (meta && (message.id === null || message.id === meta.id)) {
-        this.metaWaiter = null;
-        meta.reject(error);
-      }
-      const targetId = message.id ?? this.activeQueryId;
-      if (targetId !== null) {
-        for (const [offset, waiter] of this.windowWaiters) {
-          if (waiter.id === targetId) {
-            this.windowWaiters.delete(offset);
-            clearTimeout(waiter.timer);
-            waiter.reject(error);
-          }
+      const error = new WrendbSocketError(message.message, message.cancelled);
+      for (const [id, waiter] of this.metaWaiters) {
+        const matches =
+          message.id !== null
+            ? message.id === id
+            : message.conn == null || message.conn === waiter.conn;
+        if (matches) {
+          this.metaWaiters.delete(id);
+          waiter.reject(error);
         }
       }
-      if (this.editWaiter) {
-        const edit = this.editWaiter;
-        this.editWaiter = null;
-        edit.reject(error);
+      for (const [key, waiter] of this.windowWaiters) {
+        const matches =
+          message.id !== null
+            ? waiter.id === message.id
+            : message.conn == null || message.conn === waiter.conn;
+        if (matches) {
+          this.windowWaiters.delete(key);
+          clearTimeout(waiter.timer);
+          waiter.reject(error);
+        }
       }
-      if (this.txWaiter) {
-        const tx = this.txWaiter;
-        this.txWaiter = null;
-        tx.reject(error);
+      if (message.conn != null) {
+        const edit = this.editWaiters.get(message.conn);
+        if (edit) {
+          this.editWaiters.delete(message.conn);
+          edit.reject(error);
+        }
+      } else {
+        for (const [conn, edit] of this.editWaiters) {
+          this.editWaiters.delete(conn);
+          edit.reject(error);
+        }
+      }
+      for (const [id, waiter] of this.rowWaiters) {
+        const matches =
+          message.id !== null ? id === message.id : message.conn == null || message.conn === waiter.conn;
+        if (matches) {
+          this.rowWaiters.delete(id);
+          waiter.reject(error);
+        }
+      }
+      if (message.conn != null) {
+        const tx = this.txWaiters.get(message.conn);
+        if (tx) {
+          this.txWaiters.delete(message.conn);
+          tx.reject(error);
+        }
+      } else {
+        for (const [conn, tx] of this.txWaiters) {
+          this.txWaiters.delete(conn);
+          tx.reject(error);
+        }
       }
       return;
     }
     if (message.type === "edited") {
-      const waiter = this.editWaiter;
+      const waiter = message.conn != null ? this.editWaiters.get(message.conn) : undefined;
       if (waiter) {
-        this.editWaiter = null;
+        this.editWaiters.delete(message.conn as string);
         waiter.resolve({
           rowsAffected: message.rows_affected,
           row: message.row,
           col: message.col,
           value: message.value,
         });
+      } else if (message.conn == null) {
+        const first = this.editWaiters.entries().next();
+        if (!first.done) {
+          this.editWaiters.delete(first.value[0]);
+          first.value[1].resolve({
+            rowsAffected: message.rows_affected,
+            row: message.row,
+            col: message.col,
+            value: message.value,
+          });
+        }
       }
       return;
     }
     if (message.type === "tx") {
-      const waiter = this.txWaiter;
-      if (waiter) {
-        this.txWaiter = null;
-        if (waiter.expected === message.state) {
-          waiter.resolve();
+      const waiter = message.conn != null ? this.txWaiters.get(message.conn) : undefined;
+      const target = waiter ?? (message.conn == null ? this.txWaiters.entries().next().value?.[1] : undefined);
+      if (target) {
+        this.txWaiters.delete(target.conn);
+        if (target.expected === message.state) {
+          target.resolve();
         } else {
-          waiter.reject(new ProdbSocketError(`예상하지 못한 트랜잭션 상태: ${message.state}`, false));
+          target.reject(new WrendbSocketError(`예상하지 못한 트랜잭션 상태: ${message.state}`, false));
         }
       }
+      if (message.invalidate === true) {
+        this.emitRowChange({
+          id: null,
+          conn: message.conn ?? null,
+          op: "tx",
+          rowsAffected: 0,
+          invalidate: true,
+        });
+      }
+      return;
+    }
+    if (message.type === "row_change") {
+      const change: RowChange = {
+        id: message.id,
+        conn: message.conn ?? null,
+        op: message.op,
+        rowsAffected: message.rows_affected,
+        invalidate: message.invalidate === true,
+      };
+      if (message.id !== null) {
+        const waiter = this.rowWaiters.get(message.id);
+        if (waiter) {
+          this.rowWaiters.delete(message.id);
+          waiter.resolve(change);
+        }
+      }
+      this.emitRowChange(change);
     }
   }
 
-  private cancelPending(): void {
-    const error = new ProdbSocketError(CANCELLED_ERROR, true);
-    if (this.metaWaiter) {
-      const waiter = this.metaWaiter;
-      this.metaWaiter = null;
-      waiter.reject(error);
+  private cancelPending(conn: string): void {
+    const error = new WrendbSocketError(CANCELLED_ERROR, true);
+    for (const [id, waiter] of this.metaWaiters) {
+      if (waiter.conn === conn) {
+        this.metaWaiters.delete(id);
+        waiter.reject(error);
+      }
     }
-    for (const [offset, waiter] of this.windowWaiters) {
-      this.windowWaiters.delete(offset);
-      clearTimeout(waiter.timer);
-      waiter.reject(error);
+    for (const [key, waiter] of this.windowWaiters) {
+      if (waiter.conn === conn) {
+        this.windowWaiters.delete(key);
+        clearTimeout(waiter.timer);
+        waiter.reject(error);
+      }
     }
     this.pendingFrames = [];
   }
 
-  private failPending(error: ProdbSocketError): void {
-    if (this.metaWaiter) {
-      const waiter = this.metaWaiter;
-      this.metaWaiter = null;
+  private failPending(error: WrendbSocketError): void {
+    for (const [id, waiter] of this.metaWaiters) {
+      this.metaWaiters.delete(id);
       waiter.reject(error);
     }
-    for (const [offset, waiter] of this.windowWaiters) {
-      this.windowWaiters.delete(offset);
+    for (const [key, waiter] of this.windowWaiters) {
+      this.windowWaiters.delete(key);
       clearTimeout(waiter.timer);
       waiter.reject(error);
     }
-    if (this.editWaiter) {
-      const waiter = this.editWaiter;
-      this.editWaiter = null;
+    for (const [conn, waiter] of this.editWaiters) {
+      this.editWaiters.delete(conn);
       waiter.reject(error);
     }
-    if (this.txWaiter) {
-      const waiter = this.txWaiter;
-      this.txWaiter = null;
+    for (const [conn, waiter] of this.txWaiters) {
+      this.txWaiters.delete(conn);
+      waiter.reject(error);
+    }
+    for (const [key, waiter] of this.rowWaiters) {
+      this.rowWaiters.delete(key);
       waiter.reject(error);
     }
     this.pendingFrames = [];

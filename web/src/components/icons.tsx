@@ -167,3 +167,193 @@ export function CodeIcon({ size = 12, className }: IconProps) {
     </svg>
   );
 }
+
+export function StructureIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <rect x="2.2" y="3" width="11.6" height="10" rx="1.2" />
+      <path d="M2.2 6.2h11.6M2.2 9.8h11.6M6.4 6.2v6.8" />
+    </svg>
+  );
+}
+
+export function ServerIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <rect x="2.4" y="2.6" width="11.2" height="4.4" rx="1" />
+      <rect x="2.4" y="9" width="11.2" height="4.4" rx="1" />
+      <path d="M4.8 4.8h.6M4.8 11.2h.6" />
+    </svg>
+  );
+}
+
+export function ListIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="M5.6 4.2h8M5.6 8h8M5.6 11.8h8" />
+      <circle cx="2.9" cy="4.2" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="2.9" cy="8" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="2.9" cy="11.8" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function PinIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="M6 2.6h4l-.6 3.4 2.2 2.2H4.4l2.2-2.2z" />
+      <path d="M8 8.4v5" />
+    </svg>
+  );
+}
+
+export function ColumnsIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <rect x="2.2" y="3" width="11.6" height="10" rx="1.2" />
+      <path d="M6.1 3v10M9.9 3v10" />
+    </svg>
+  );
+}
+
+export function SnippetIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" />
+      <path d="M5 5.6h6M5 8h6M5 10.4h3.4" />
+    </svg>
+  );
+}
+
+
+export function LinkIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="M6.4 9.6 9.6 6.4" />
+      <path d="M7.1 4.7 8.5 3.3a2.5 2.5 0 0 1 3.5 3.5l-1.4 1.4" />
+      <path d="M8.9 11.3 7.5 12.7a2.5 2.5 0 0 1-3.5-3.5l1.4-1.4" />
+    </svg>
+  );
+}
+
+export function PencilIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      width={size}
+      height={size}
+      className={className}
+    >
+      <path d="M11.3 2.9a1.5 1.5 0 0 1 2.1 2.1L5.6 12.8l-3 .9.9-3z" />
+      <path d="M10.2 4l1.8 1.8" />
+    </svg>
+  );
+}
+
+export function UserIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      width={size}
+      height={size}
+      className={className}
+    >
+      <circle cx="8" cy="5.4" r="2.6" />
+      <path d="M2.8 13.4c.6-2.4 2.7-3.8 5.2-3.8s4.6 1.4 5.2 3.8" />
+    </svg>
+  );
+}
+
+export function HomeIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="M2.4 7.2 8 2.4l5.6 4.8" />
+      <path d="M4 6.6v6.8h8V6.6" />
+      <path d="M6.8 13.4V9.6h2.4v3.8" />
+    </svg>
+  );
+}
+
+export function SettingsIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <circle cx="8" cy="8" r="2.2" />
+      <path d="M6.7 2.4h2.6l.3 1.3.9.4 1.1-.8 1.9 1.9-.8 1.1.4.9 1.3.3v2.6l-1.3.3-.4.9.8 1.1-1.9 1.9-1.1-.8-.9.4-.3 1.3H6.7l-.3-1.3-.9-.4-1.1.8-1.9-1.9.8-1.1-.4-.9-1.3-.3V6.7l1.3-.3.4-.9-.8-1.1 1.9-1.9 1.1.8.9-.4z" />
+    </svg>
+  );
+}
+
+
+export function TrashIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="M3.1 4.6h9.8M6 2.7h4M4.3 4.6l.6 8.1h6.2l.6-8.1M6.6 6.8v3.8M9.4 6.8v3.8" />
+    </svg>
+  );
+}
+
+export function JobsIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="M2.4 4.3 8 1.9l5.6 2.4L8 6.7z" />
+      <path d="m2.4 8 5.6 2.4L13.6 8M2.4 11.7 8 14.1l5.6-2.4" />
+    </svg>
+  );
+}
+
+export function LogIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1.4" />
+      <path d="m4.7 6 2.2 2-2.2 2M8.5 10.2h2.8" />
+    </svg>
+  );
+}
+
+export function HistoryIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M8 4.8V8l2.2 1.4" />
+    </svg>
+  );
+}
+
+export function StarIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="m8 2.2 1.7 3.5 3.9.6-2.8 2.7.7 3.9L8 11.1l-3.5 1.8.7-3.9-2.8-2.7 3.9-.6z" />
+    </svg>
+  );
+}
+
+export function ShieldIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="M8 2.1 13 4v3.7c0 2.9-2 4.9-5 6.2-3-1.3-5-3.3-5-6.2V4z" />
+      <path d="m5.8 7.9 1.5 1.5 2.9-3" />
+    </svg>
+  );
+}
+
+export function ChevronDownIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={size} height={size} className={className}>
+      <path d="m4 6.2 4 4 4-4" />
+    </svg>
+  );
+}

@@ -9,16 +9,20 @@ import {
   toCsv,
   toJson,
   toSqlInserts,
+  toXml,
   type ExportFormat,
 } from "../export";
 import { store, type GridResult } from "../store";
 import { dataPageInfo, type DataTab } from "../tabs";
+import { getSettings } from "../settings";
 import type { WindowedRowSource } from "../grid/windowSource";
 
 interface ExportModalProps {
+  conn: string;
   title: string;
   result: GridResult;
   dataTab: DataTab | null;
+  kind: string;
   onClose(): void;
 }
 
@@ -28,11 +32,12 @@ function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-export function ExportModal({ title, result, dataTab, onClose }: ExportModalProps) {
+export function ExportModal({ conn, title, result, dataTab, kind, onClose }: ExportModalProps) {
   const [format, setFormat] = useState<ExportFormat>("csv");
   const [scope, setScope] = useState<Scope>("loaded");
-  const [csvHeader, setCsvHeader] = useState(true);
+  const [csvHeader, setCsvHeader] = useState(() => getSettings().csvHeader);
   const [csvBom, setCsvBom] = useState(false);
+  const [csvDelimiter, setCsvDelimiter] = useState(() => getSettings().csvDelimiter);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +61,7 @@ export function ExportModal({ title, result, dataTab, onClose }: ExportModalProp
     if (!dataTab) {
       return Math.min(Math.max(1, result.meta.rowCount), EXPORT_MAX_ROWS);
     }
-    const info = dataPageInfo(dataTab);
+    const info = dataPageInfo(dataTab, dataTab.count ?? null);
     if (info.rows !== null && !info.truncated) {
       return Math.min(Math.max(1, info.rows), EXPORT_MAX_ROWS);
     }
@@ -77,12 +82,15 @@ export function ExportModal({ title, result, dataTab, onClose }: ExportModalProp
       if (scope === "all") {
         const sql = dataTab
           ? buildDataSqlUnlimited({
+              kind,
               table: dataTab.table,
               filter: dataTab.filter,
               sorts: dataTab.sorts,
+              pk: dataTab.pkColumns ?? dataTab.meta?.pk ?? null,
+              columns: dataTab.columns ?? null,
             })
           : result.sql;
-        const detachedResult = await store.runDetached(sql, maxRowsForAll());
+        const detachedResult = await store.runDetached(conn, sql, maxRowsForAll());
         detached = detachedResult.source;
         source = detachedResult.source;
         columns = detachedResult.meta.columns;
@@ -90,10 +98,12 @@ export function ExportModal({ title, result, dataTab, onClose }: ExportModalProp
       const rows = await collectRows(source, (done, total) => setProgress({ done, total }));
       const text =
         format === "csv"
-          ? toCsv(columns, rows, { header: csvHeader, bom: csvBom })
+          ? toCsv(columns, rows, { header: csvHeader, bom: csvBom, delimiter: csvDelimiter })
           : format === "json"
             ? toJson(columns, rows)
-            : toSqlInserts(table ?? "exported", columns, rows);
+            : format === "xml"
+              ? toXml(columns, rows)
+              : toSqlInserts(table ?? "exported", columns, rows, kind);
       downloadBlob(suggestFilename(title, format), text, EXPORT_MIME[format]);
       if (detached) {
         detached.dispose();
@@ -127,6 +137,7 @@ export function ExportModal({ title, result, dataTab, onClose }: ExportModalProp
                 [
                   ["csv", "CSV"],
                   ["json", "JSON"],
+                  ["xml", "XML"],
                   ["sql", "SQL INSERT"],
                 ] as [ExportFormat, string][]
               ).map(([value, label]) => (
@@ -176,6 +187,21 @@ export function ExportModal({ title, result, dataTab, onClose }: ExportModalProp
           {format === "csv" ? (
             <section className="export-section">
               <div className="section-title">CSV 옵션</div>
+              <div className="export-options">
+                <label className="field">
+                  <span>구분자</span>
+                  <select
+                    value={csvDelimiter}
+                    disabled={busy}
+                    onChange={(event) => setCsvDelimiter(event.target.value)}
+                  >
+                    <option value=",">쉼표 (,)</option>
+                    <option value={"\t"}>탭</option>
+                    <option value=";">세미콜론 (;)</option>
+                    <option value="|">파이프 (|)</option>
+                  </select>
+                </label>
+              </div>
               <label className="check-row">
                 <input
                   type="checkbox"

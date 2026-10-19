@@ -1,3 +1,5 @@
+import { quoteIdent } from "./ddl";
+
 export type FilterOp =
   | "="
   | "≠"
@@ -52,21 +54,24 @@ export interface SortState {
 }
 
 export interface DataSqlInput {
+  kind?: string;
   table: string;
   filter?: FilterState | null;
   sorts?: SortState[] | null;
-  pageSize: number;
-  page?: number;
+  pk?: string[] | null;
+  columns?: string[] | null;
+  limit: number;
+  offset?: number;
 }
 
 const NUMBER_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
 
-export function escapeSqlIdentifier(name: string): string {
-  return `"${name.split('"').join('""')}"`;
+export function escapeSqlIdentifier(name: string, kind = "postgres"): string {
+  return quoteIdent(kind, name);
 }
 
-export function quoteIdentifier(name: string): string {
-  return name.split(".").map(escapeSqlIdentifier).join(".");
+export function quoteIdentifier(name: string, kind = "postgres"): string {
+  return name.split(".").map((part) => escapeSqlIdentifier(part, kind)).join(".");
 }
 
 export function quoteLiteral(value: string): string {
@@ -97,8 +102,8 @@ function splitList(value: string): string[] {
     .filter((part) => part !== "");
 }
 
-export function buildFragment(row: FilterRow): string | null {
-  const column = escapeSqlIdentifier(row.column);
+export function buildFragment(row: FilterRow, kind = "postgres"): string | null {
+  const column = escapeSqlIdentifier(row.column, kind);
   switch (row.op) {
     case "=":
       return `${column} = ${literalValue(row.value)}`;
@@ -142,7 +147,7 @@ export function buildFragment(row: FilterRow): string | null {
   }
 }
 
-export function buildWhere(filter?: FilterState | null): string | null {
+export function buildWhere(filter?: FilterState | null, kind = "postgres"): string | null {
   if (!filter) {
     return null;
   }
@@ -151,7 +156,7 @@ export function buildWhere(filter?: FilterState | null): string | null {
     if (!row.enabled) {
       continue;
     }
-    const fragment = buildFragment(row);
+    const fragment = buildFragment(row, kind);
     if (fragment !== null) {
       fragments.push(fragment);
     }
@@ -162,55 +167,70 @@ export function buildWhere(filter?: FilterState | null): string | null {
   return fragments.join(` ${filter.logic} `);
 }
 
-export function buildOrderBy(sorts?: SortState[] | null): string | null {
+export function buildOrderBy(sorts?: SortState[] | null, kind = "postgres"): string | null {
   if (!sorts || sorts.length === 0) {
     return null;
   }
   return sorts
-    .map((sort) => `${escapeSqlIdentifier(sort.column)} ${sort.dir === "desc" ? "DESC" : "ASC"}`)
+    .map((sort) => `${escapeSqlIdentifier(sort.column, kind)} ${sort.dir === "desc" ? "DESC" : "ASC"}`)
     .join(", ");
 }
 
-function sanitizePageSize(pageSize: number): number {
-  if (!Number.isFinite(pageSize)) {
-    return 100;
+function buildPkOrder(pk?: string[] | null, kind = "postgres"): string | null {
+  if (!pk || pk.length === 0) {
+    return null;
   }
-  return Math.max(1, Math.trunc(pageSize));
+  return pk.map((column) => escapeSqlIdentifier(column, kind)).join(", ");
 }
 
-function sanitizePage(page: number | undefined): number {
-  if (page === undefined || !Number.isFinite(page)) {
+function sanitizeLimit(limit: number): number {
+  if (!Number.isFinite(limit)) {
+    return 100;
+  }
+  return Math.max(1, Math.trunc(limit));
+}
+
+function sanitizeOffset(offset: number | undefined): number {
+  if (offset === undefined || !Number.isFinite(offset)) {
     return 0;
   }
-  return Math.max(0, Math.trunc(page));
+  return Math.max(0, Math.trunc(offset));
+}
+
+export function selectList(columns?: string[] | null, kind = "postgres"): string {
+  if (!columns || columns.length === 0) {
+    return "*";
+  }
+  return columns.map((column) => quoteIdentifier(column, kind)).join(", ");
 }
 
 export function buildDataSql(input: DataSqlInput): string {
-  const parts = [`SELECT * FROM ${quoteIdentifier(input.table)}`];
-  const where = buildWhere(input.filter);
+  const kind = input.kind ?? "postgres";
+  const parts = [`SELECT ${selectList(input.columns, kind)} FROM ${quoteIdentifier(input.table, kind)}`];
+  const where = buildWhere(input.filter, kind);
   if (where !== null) {
     parts.push(`WHERE ${where}`);
   }
-  const order = buildOrderBy(input.sorts);
+  const order = buildOrderBy(input.sorts, kind) ?? buildPkOrder(input.pk, kind);
   if (order !== null) {
     parts.push(`ORDER BY ${order}`);
   }
-  const size = sanitizePageSize(input.pageSize);
-  const page = sanitizePage(input.page);
-  parts.push(`LIMIT ${size}`);
-  if (page > 0) {
-    parts.push(`OFFSET ${page * size}`);
+  parts.push(`LIMIT ${sanitizeLimit(input.limit)}`);
+  const offset = sanitizeOffset(input.offset);
+  if (offset > 0) {
+    parts.push(`OFFSET ${offset}`);
   }
   return parts.join(" ");
 }
 
-export function buildDataSqlUnlimited(input: Omit<DataSqlInput, "pageSize" | "page">): string {
-  const parts = [`SELECT * FROM ${quoteIdentifier(input.table)}`];
-  const where = buildWhere(input.filter);
+export function buildDataSqlUnlimited(input: Omit<DataSqlInput, "limit" | "offset">): string {
+  const kind = input.kind ?? "postgres";
+  const parts = [`SELECT ${selectList(input.columns, kind)} FROM ${quoteIdentifier(input.table, kind)}`];
+  const where = buildWhere(input.filter, kind);
   if (where !== null) {
     parts.push(`WHERE ${where}`);
   }
-  const order = buildOrderBy(input.sorts);
+  const order = buildOrderBy(input.sorts, kind) ?? buildPkOrder(input.pk, kind);
   if (order !== null) {
     parts.push(`ORDER BY ${order}`);
   }

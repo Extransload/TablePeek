@@ -14,6 +14,9 @@ interface GridHostProps {
   onSelectionChange?(row: number | null): void;
   onCellContextMenu?(row: number, col: number, x: number, y: number): void;
   onCellEdited?(row: number, col: number): void;
+  onQuickLook?(row: number): void;
+  onCellQuickLook?(row: number, col: number): void;
+  themeKey?: string;
 }
 
 export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridHost(
@@ -24,6 +27,9 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     onSelectionChange,
     onCellContextMenu,
     onCellEdited,
+    onQuickLook,
+    onCellQuickLook,
+    themeKey,
   },
   ref,
 ) {
@@ -33,11 +39,15 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
   const selectionRef = useRef(onSelectionChange);
   const contextMenuRef = useRef(onCellContextMenu);
   const editedRef = useRef(onCellEdited);
+  const quickLookRef = useRef(onQuickLook);
+  const cellQuickLookRef = useRef(onCellQuickLook);
 
   headerClickRef.current = onHeaderClick;
   selectionRef.current = onSelectionChange;
   contextMenuRef.current = onCellContextMenu;
   editedRef.current = onCellEdited;
+  quickLookRef.current = onQuickLook;
+  cellQuickLookRef.current = onCellQuickLook;
 
   const hasHeaderClick = onHeaderClick !== undefined;
 
@@ -54,7 +64,18 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     grid.setCellContextMenuHandler((row, col, x, y) => {
       contextMenuRef.current?.(row, col, x, y);
     });
+    grid.setQuickLookHandler((row) => {
+      quickLookRef.current?.(row);
+    });
+    grid.setCellQuickLookHandler((row, col) => {
+      cellQuickLookRef.current?.(row, col);
+    });
+    const onTheme = (): void => {
+      grid.refreshTheme();
+    };
+    window.addEventListener("wrendb:theme", onTheme);
     return () => {
+      window.removeEventListener("wrendb:theme", onTheme);
       gridRef.current = null;
       grid.destroy();
     };
@@ -69,6 +90,10 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
         : null,
     );
   }, [hasHeaderClick]);
+
+  useEffect(() => {
+    gridRef.current?.refreshTheme();
+  }, [themeKey]);
 
   const sortsKey = JSON.stringify(sortColumns ?? null);
 

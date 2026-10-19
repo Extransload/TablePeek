@@ -1,6 +1,51 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import { t } from "../i18n";
 import type { WorkbenchTab } from "../tabs";
-import { CloseIcon, TableIcon } from "./icons";
+import {
+  CloseIcon,
+  CodeIcon,
+  FileIcon,
+  ListIcon,
+  ServerIcon,
+  StructureIcon,
+  TableIcon,
+} from "./icons";
+import { Spinner } from "./Spinner";
+
+function tabIcon(tab: WorkbenchTab): ReactElement {
+  const props = { size: 10, className: "tab-kind" };
+  switch (tab.kind) {
+    case "query":
+      return <CodeIcon {...props} />;
+    case "data":
+      return <TableIcon {...props} />;
+    case "structure":
+      return <StructureIcon {...props} />;
+    case "definition":
+      return <FileIcon {...props} />;
+    case "server":
+      return <ServerIcon {...props} />;
+    case "overview":
+      return <ListIcon {...props} />;
+  }
+}
+
+function tabKindLabel(tab: WorkbenchTab): string {
+  switch (tab.kind) {
+    case "query":
+      return t("쿼리");
+    case "data":
+      return t("데이터");
+    case "structure":
+      return t("구조");
+    case "definition":
+      return t("정의");
+    case "server":
+      return t("서버");
+    case "overview":
+      return t("개요");
+  }
+}
 
 interface TabStripProps {
   tabs: WorkbenchTab[];
@@ -21,6 +66,7 @@ export function TabStrip({
 }: TabStripProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const stripRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const cancelledRef = useRef(false);
 
@@ -36,6 +82,21 @@ export function TabStrip({
       setRenamingId(null);
     }
   }, [tabs, renamingId]);
+
+  useEffect(() => {
+    const strip = stripRef.current;
+    const active = strip?.querySelector<HTMLElement>(".tab.active");
+    if (!strip || !active) {
+      return;
+    }
+    const stripRect = strip.getBoundingClientRect();
+    const tabRect = active.getBoundingClientRect();
+    if (tabRect.left < stripRect.left) {
+      strip.scrollLeft -= stripRect.left - tabRect.left + 8;
+    } else if (tabRect.right > stripRect.right) {
+      strip.scrollLeft += tabRect.right - stripRect.right + 8;
+    }
+  }, [activeId, tabs.length]);
 
   function startRename(tab: WorkbenchTab): void {
     cancelledRef.current = false;
@@ -56,7 +117,17 @@ export function TabStrip({
   }
 
   return (
-    <div className="tab-strip" role="tablist">
+    <div
+      ref={stripRef}
+      className="tab-strip"
+      role="tablist"
+      onWheel={(event) => {
+        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+          return;
+        }
+        event.currentTarget.scrollLeft += event.deltaY;
+      }}
+    >
       {tabs.map((tab) => {
         const active = tab.id === activeId;
         const renaming = tab.id === renamingId;
@@ -65,8 +136,9 @@ export function TabStrip({
             key={tab.id}
             role="tab"
             aria-selected={active}
-            className={`tab${active ? " active" : ""}${tab.error ? " has-error" : ""}`}
-            title={tab.title}
+            className={`tab tab-${tab.kind}${active ? " active" : ""}${(tab.kind === "query" || tab.kind === "data") && tab.error ? " has-error" : ""}`}
+            data-kind={tab.kind}
+            title={`${tabKindLabel(tab)} · ${tab.title}`}
             onClick={() => onActivate(tab.id)}
             onDoubleClick={() => startRename(tab)}
             onAuxClick={(event) => {
@@ -76,8 +148,8 @@ export function TabStrip({
               }
             }}
           >
-            {tab.id === runningTabId && <span className="tab-running" aria-hidden="true" />}
-            {tab.kind === "data" ? <TableIcon size={10} className="tab-kind" /> : null}
+            {tab.id === runningTabId ? <Spinner size={10} className="tab-running" label={t("실행 중…")} /> : null}
+            {tabIcon(tab)}
             {renaming ? (
               <input
                 ref={inputRef}
@@ -104,7 +176,7 @@ export function TabStrip({
             <button
               type="button"
               className="tab-close"
-              title="탭 닫기 (⌘W)"
+              title={`${t("탭 닫기")} (⌘W)`}
               onDoubleClick={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();

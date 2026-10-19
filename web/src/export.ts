@@ -1,11 +1,14 @@
 import type { WindowedRowSource } from "./grid/windowSource";
 import { escapeSqlIdentifier, quoteIdentifier, quoteLiteral } from "./dataQuery";
 
-export type ExportFormat = "csv" | "json" | "sql";
+export { escapeSqlIdentifier, quoteIdentifier, quoteLiteral };
+
+export type ExportFormat = "csv" | "json" | "xml" | "sql";
 
 export interface CsvOptions {
   header: boolean;
   bom: boolean;
+  delimiter?: string;
 }
 
 export const EXPORT_MAX_ROWS = 200000;
@@ -13,6 +16,7 @@ export const EXPORT_MAX_ROWS = 200000;
 export const EXPORT_MIME: Record<ExportFormat, string> = {
   csv: "text/csv;charset=utf-8",
   json: "application/json;charset=utf-8",
+  xml: "application/xml;charset=utf-8",
   sql: "text/plain;charset=utf-8",
 };
 
@@ -46,19 +50,52 @@ export function csvField(value: unknown): string {
 }
 
 export function toCsv(columns: string[], rows: unknown[][], options: CsvOptions): string {
+  const delimiter = options.delimiter ?? ",";
   const lines: string[] = [];
   if (options.header) {
-    lines.push(columns.map(csvField).join(","));
+    lines.push(columns.map(csvField).join(delimiter));
   }
   for (const row of rows) {
     const fields = new Array<string>(columns.length);
     for (let c = 0; c < columns.length; c += 1) {
       fields[c] = csvField(row[c]);
     }
-    lines.push(fields.join(","));
+    lines.push(fields.join(delimiter));
   }
   const body = lines.join(CSV_EOL);
   return options.bom ? `\uFEFF${body}` : body;
+}
+
+function xmlEscape(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function xmlTagName(name: string): string {
+  const cleaned = name.replace(/[^0-9A-Za-z가-힣_.-]/g, "_");
+  return /^[0-9]/.test(cleaned) ? `_${cleaned}` : cleaned;
+}
+
+export function toXml(columns: string[], rows: unknown[][]): string {
+  const lines: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', "<rows>"];
+  for (const row of rows) {
+    lines.push("  <row>");
+    for (let c = 0; c < columns.length; c += 1) {
+      const tag = xmlTagName(columns[c]);
+      const value = row[c];
+      if (value === null || value === undefined) {
+        lines.push(`    <${tag}/>`);
+      } else {
+        lines.push(`    <${tag}>${xmlEscape(cellText(value))}</${tag}>`);
+      }
+    }
+    lines.push("  </row>");
+  }
+  lines.push("</rows>");
+  return lines.join("\n");
 }
 
 export function toJson(columns: string[], rows: unknown[][]): string {
@@ -104,11 +141,16 @@ function rowValues(row: unknown[], columnCount: number): string[] {
   return values;
 }
 
-export function toSqlInserts(table: string, columns: string[], rows: unknown[][]): string {
+export function toSqlInserts(
+  table: string,
+  columns: string[],
+  rows: unknown[][],
+  kind = "postgres",
+): string {
   if (columns.length === 0) {
     return "";
   }
-  const head = `INSERT INTO ${quoteIdentifier(table)} (${columns.map(escapeSqlIdentifier).join(", ")}) VALUES`;
+  const head = `INSERT INTO ${quoteIdentifier(table, kind)} (${columns.map((column) => escapeSqlIdentifier(column, kind)).join(", ")}) VALUES`;
   const chunks: string[] = [];
   for (let start = 0; start < rows.length; start += INSERT_CHUNK) {
     const end = Math.min(rows.length, start + INSERT_CHUNK);
@@ -126,6 +168,7 @@ export function buildUpdateSql(
   columns: string[],
   row: unknown[],
   pk: string[],
+  kind = "postgres",
 ): string | null {
   if (pk.length === 0) {
     return null;
@@ -134,7 +177,7 @@ export function buildUpdateSql(
   const sets: string[] = [];
   for (let c = 0; c < columns.length; c += 1) {
     if (!pkSet.has(columns[c])) {
-      sets.push(`${escapeSqlIdentifier(columns[c])} = ${sqlLiteral(row[c])}`);
+      sets.push(`${escapeSqlIdentifier(columns[c], kind)} = ${sqlLiteral(row[c])}`);
     }
   }
   if (sets.length === 0) {
@@ -143,9 +186,9 @@ export function buildUpdateSql(
   const wheres: string[] = [];
   for (const key of pk) {
     const index = columns.indexOf(key);
-    wheres.push(`${escapeSqlIdentifier(key)} = ${sqlLiteral(index >= 0 ? row[index] : null)}`);
+    wheres.push(`${escapeSqlIdentifier(key, kind)} = ${sqlLiteral(index >= 0 ? row[index] : null)}`);
   }
-  return `UPDATE ${quoteIdentifier(table)} SET ${sets.join(", ")} WHERE ${wheres.join(" AND ")};`;
+  return `UPDATE ${quoteIdentifier(table, kind)} SET ${sets.join(", ")} WHERE ${wheres.join(" AND ")};`;
 }
 
 function pad2(value: number): string {

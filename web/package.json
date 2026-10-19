@@ -1,5 +1,5 @@
 {
-  "name": "prodb-web",
+  "name": "wrendb-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -14,6 +14,7 @@
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-sql": "^6.8.0",
     "@codemirror/language": "^6.11.0",
+    "@codemirror/search": "^6.7.2",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.5",
     "@lezer/highlight": "^1.2.1",

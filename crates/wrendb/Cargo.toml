@@ -1,0 +1,16 @@
+[package]
+name = "wrendb"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "wrendb"
+path = "src/main.rs"
+
+[dependencies]
+wrendb-engine = { path = "../wrendb-engine" }
+wrendb-server = { path = "../wrendb-server" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+serde_json.workspace = true
+tokio = { workspace = true }
+uuid = { workspace = true }

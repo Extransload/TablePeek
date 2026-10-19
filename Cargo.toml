@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/prodb",
-    "crates/prodb-engine",
-    "crates/prodb-server",
-    "crates/prodb-types",
+    "crates/wrendb",
+    "crates/wrendb-engine",
+    "crates/wrendb-server",
+    "crates/wrendb-types",
 ]
 
 [workspace.dependencies]

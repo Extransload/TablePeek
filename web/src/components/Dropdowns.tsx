@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { getLanguage, t } from "../i18n";
 import { store, type Favorite, type HistoryEntry } from "../store";
+import { Spinner } from "./Spinner";
 
 interface PickSqlProps {
   onPickSql(sql: string): void;
@@ -18,19 +20,19 @@ function formatRelative(at: number): string {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   if (diffMs < 60_000) {
-    return "방금 전";
+    return t("방금 전");
   }
   if (diffMs < 3_600_000) {
-    return `${Math.floor(diffMs / 60_000)}분 전`;
+    return t("{count}분 전", { count: Math.floor(diffMs / 60_000) });
   }
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   if (date.getTime() >= startOfToday) {
-    return `${Math.floor(diffMs / 3_600_000)}시간 전`;
+    return t("{count}시간 전", { count: Math.floor(diffMs / 3_600_000) });
   }
   if (date.getTime() >= startOfToday - 86_400_000) {
-    return "어제";
+    return t("어제");
   }
-  return date.toLocaleDateString("ko-KR");
+  return date.toLocaleDateString(getLanguage() === "en" ? "en-US" : "ko-KR");
 }
 
 function useMenuDismiss(
@@ -82,7 +84,7 @@ export function HistoryMenu({ onPickSql }: PickSqlProps) {
       const next = await store.fetchHistory(50);
       setItems(next);
     } catch (err) {
-      setError(errorOf(err, "기록을 불러오지 못했습니다"));
+      setError(errorOf(err, t("기록을 불러오지 못했습니다")));
     } finally {
       setLoading(false);
     }
@@ -95,21 +97,21 @@ export function HistoryMenu({ onPickSql }: PickSqlProps) {
   }, [open, load]);
 
   async function clearAll(): Promise<void> {
-    if (!window.confirm("기록을 모두 지울까요?")) {
+    if (!window.confirm(t("기록을 모두 지울까요?"))) {
       return;
     }
     try {
       await store.clearHistory();
       await load();
     } catch (err) {
-      setError(errorOf(err, "기록을 지우지 못했습니다"));
+      setError(errorOf(err, t("기록을 지우지 못했습니다")));
     }
   }
 
   return (
     <div className="menu" ref={rootRef}>
       <button type="button" onClick={() => setOpen((value) => !value)}>
-        기록
+        {t("기록")}
       </button>
       {open && (
         <div className="menu-panel">
@@ -117,9 +119,11 @@ export function HistoryMenu({ onPickSql }: PickSqlProps) {
             {error ? (
               <div className="menu-error">{error}</div>
             ) : items === null ? (
-              <div className="menu-empty">불러오는 중…</div>
+              <div className="menu-empty">
+                <Spinner size={11} /> {t("불러오는 중…")}
+              </div>
             ) : items.length === 0 ? (
-              <div className="menu-empty">기록이 없습니다</div>
+              <div className="menu-empty">{t("기록이 없습니다")}</div>
             ) : (
               items.map((entry, index) => (
                 <button
@@ -140,7 +144,7 @@ export function HistoryMenu({ onPickSql }: PickSqlProps) {
           </div>
           <div className="menu-foot">
             <button type="button" disabled={loading} onClick={() => void clearAll()}>
-              기록 지우기
+              {t("기록 지우기")}
             </button>
           </div>
         </div>
@@ -154,6 +158,7 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
   const [items, setItems] = useState<Favorite[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const [keyword, setKeyword] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -171,7 +176,7 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
       const next = await store.fetchFavorites();
       setItems(next);
     } catch (err) {
-      setError(errorOf(err, "즐겨찾기를 불러오지 못했습니다"));
+      setError(errorOf(err, t("즐겨찾기를 불러오지 못했습니다")));
     } finally {
       setLoading(false);
     }
@@ -191,22 +196,24 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
     }
     const trimmed = name.trim();
     if (trimmed === "") {
-      setError("이름을 입력하세요");
+      setError(t("이름을 입력하세요"));
       return;
     }
     const sql = getSql().trim();
     if (sql === "") {
-      setError("저장할 SQL이 없습니다");
+      setError(t("저장할 SQL이 없습니다"));
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      await store.createFavorite(trimmed, sql);
+      await store.createFavorite(trimmed, sql, keyword.trim() === "" ? undefined : keyword.trim());
       setName("");
+      setKeyword("");
       await load();
+      window.dispatchEvent(new Event("wrendb:favorites-changed"));
     } catch (err) {
-      setError(errorOf(err, "즐겨찾기를 저장하지 못했습니다"));
+      setError(errorOf(err, t("즐겨찾기를 저장하지 못했습니다")));
     } finally {
       setSaving(false);
     }
@@ -216,35 +223,44 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
     try {
       await store.deleteFavorite(id);
       await load();
+      window.dispatchEvent(new Event("wrendb:favorites-changed"));
     } catch (err) {
-      setError(errorOf(err, "즐겨찾기를 삭제하지 못했습니다"));
+      setError(errorOf(err, t("즐겨찾기를 삭제하지 못했습니다")));
     }
   }
 
   return (
     <div className="menu" ref={rootRef}>
       <button type="button" onClick={() => setOpen((value) => !value)}>
-        즐겨찾기
+        {t("즐겨찾기")}
       </button>
       {open && (
         <div className="menu-panel">
           <div className="menu-head">
             <input
               className="menu-input"
-              placeholder="이름"
+              placeholder={t("이름")}
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
+            <input
+              className="menu-input keyword-input"
+              placeholder={t("키워드 (자동완성)")}
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+            />
             <button type="button" disabled={saving || currentSql === ""} onClick={() => void save()}>
-              현재 SQL 저장
+              {t("현재 SQL 저장")}
             </button>
           </div>
           {error ? <div className="menu-error">{error}</div> : null}
           <div className="menu-list">
             {loading && items === null ? (
-              <div className="menu-empty">불러오는 중…</div>
+              <div className="menu-empty">
+                <Spinner size={11} /> {t("불러오는 중…")}
+              </div>
             ) : items === null || items.length === 0 ? (
-              error ? null : <div className="menu-empty">즐겨찾기가 없습니다</div>
+              error ? null : <div className="menu-empty">{t("즐겨찾기가 없습니다")}</div>
             ) : (
               items.map((favorite) => (
                 <div className="menu-row-wrap" key={favorite.id}>
@@ -257,11 +273,16 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
                       setOpen(false);
                     }}
                   >
-                    <span className="menu-name">{favorite.name}</span>
+                    <span className="menu-name">
+                      {favorite.name}
+                      {favorite.keyword ? (
+                        <span className="menu-keyword">{`:${favorite.keyword}`}</span>
+                      ) : null}
+                    </span>
                     <span className="menu-sql dim">{favorite.sql}</span>
                   </button>
                   <button type="button" className="menu-del" onClick={() => void remove(favorite.id)}>
-                    삭제
+                    {t("삭제")}
                   </button>
                 </div>
               ))
