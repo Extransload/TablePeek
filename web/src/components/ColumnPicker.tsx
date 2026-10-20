@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { t } from "../i18n";
 import { UpIcon } from "./icons";
 
 export interface ColumnEntry {
@@ -49,25 +50,25 @@ export function ColumnPicker({
   return (
     <div className="column-picker" ref={rootRef}>
       <div className="column-picker-head">
-        <span>컬럼 표시·순서</span>
+        <span>{t("컬럼 표시·순서")}</span>
         <span className="spacer" />
         <button type="button" className="link-button" onClick={onAll}>
-          모두 표시
+          {t("모두 표시")}
         </button>
         <button type="button" className="link-button" onClick={onReset}>
-          초기화
+          {t("초기화")}
         </button>
       </div>
       <div className="column-picker-list">
         {columns.length === 0 ? (
-          <div className="column-picker-empty">컬럼 정보가 없습니다</div>
+          <div className="column-picker-empty">{t("컬럼 정보가 없습니다")}</div>
         ) : (
           columns.map((column, index) => (
             <div className={column.visible ? "column-picker-row" : "column-picker-row off"} key={column.name}>
               <button
                 type="button"
                 className="column-picker-move"
-                title="위로"
+                title={t("위로")}
                 disabled={index === 0}
                 onClick={() => onMove(column.name, -1)}
               >
@@ -76,7 +77,7 @@ export function ColumnPicker({
               <button
                 type="button"
                 className="column-picker-move down"
-                title="아래로"
+                title={t("아래로")}
                 disabled={index === columns.length - 1}
                 onClick={() => onMove(column.name, 1)}
               >

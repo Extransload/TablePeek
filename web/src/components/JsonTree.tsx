@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { t } from "../i18n";
 import { ChevronIcon, CopyIcon } from "./icons";
 
 interface JsonTreeProps {
@@ -98,7 +99,7 @@ export function JsonTree({ value }: JsonTreeProps) {
             <button
               type="button"
               className={`json-chevron${open ? " open" : ""}`}
-              aria-label={open ? "접기" : "펼치기"}
+              aria-label={open ? t("접기") : t("펼치기")}
               onClick={() => toggle(path)}
             >
               <ChevronIcon size={9} />
@@ -132,10 +133,10 @@ export function JsonTree({ value }: JsonTreeProps) {
           <button
             type="button"
             className="json-copy"
-            title="JSON 경로 복사"
+            title={t("JSON 경로 복사")}
             onClick={() => void copyPath(path)}
           >
-            {copied === path ? <span className="json-copied">복사됨</span> : <CopyIcon size={10} />}
+            {copied === path ? <span className="json-copied">{t("복사됨")}</span> : <CopyIcon size={10} />}
           </button>
         </div>
         {open
@@ -155,15 +156,17 @@ export function JsonTree({ value }: JsonTreeProps) {
         </span>
         <span className="spacer" />
         <button type="button" className="quicklook-text-button" onClick={expandAll}>
-          모두 펼치기
+          {t("모두 펼치기")}
         </button>
         <button type="button" className="quicklook-text-button" onClick={collapseAll}>
-          모두 접기
+          {t("모두 접기")}
         </button>
       </div>
       {limited ? (
         <div className="json-tree-note">
-          큰 문서라 앞쪽 {MAX_EXPAND_PATHS.toLocaleString()}개 컨테이너만 펼쳤습니다
+          {t("큰 문서라 앞쪽 {count}개 컨테이너만 펼쳤습니다", {
+            count: MAX_EXPAND_PATHS.toLocaleString(),
+          })}
         </div>
       ) : null}
       <div className="json-tree-scroll">

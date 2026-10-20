@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { decodeWith, ENCODINGS, hexDump, textBytes } from "../encoding";
+import { t } from "../i18n";
 import { store, type GridResult } from "../store";
 import { CloseIcon } from "./icons";
 import { JsonTree } from "./JsonTree";
@@ -107,7 +108,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
   const jsonValid = jsonValue !== null;
 
   async function save(): Promise<void> {
-    if (!editable || saving || loading) {
+    if (!editable || saving || loading || !dirty) {
       return;
     }
     setSaving(true);
@@ -115,9 +116,9 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
     setSaving(false);
     if (outcome !== null) {
       setDirty(false);
-      setMessage("저장했습니다");
+      setMessage(t("저장했습니다"));
     } else {
-      setMessage(store.getState().error ?? store.getState().info ?? "저장하지 못했습니다");
+      setMessage(store.getState().error ?? store.getState().info ?? t("저장하지 못했습니다"));
     }
   }
 
@@ -131,9 +132,9 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
     if (outcome !== null) {
       setDraft("");
       setDirty(false);
-      setMessage("NULL로 저장했습니다");
+      setMessage(t("NULL로 저장했습니다"));
     } else {
-      setMessage(store.getState().error ?? store.getState().info ?? "저장하지 못했습니다");
+      setMessage(store.getState().error ?? store.getState().info ?? t("저장하지 못했습니다"));
     }
   }
 
@@ -141,18 +142,18 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
     try {
       setDraft(JSON.stringify(JSON.parse(draft), null, 2));
       setDirty(true);
-      setMessage("JSON을 정리했습니다");
+      setMessage(t("JSON을 정리했습니다"));
     } catch {
-      setMessage("유효한 JSON이 아닙니다");
+      setMessage(t("유효한 JSON이 아닙니다"));
     }
   }
 
-  async function copy(text: string, label = "복사했습니다"): Promise<void> {
+  async function copy(text: string, label = t("복사했습니다")): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
       setMessage(label);
     } catch {
-      setMessage("클립보드에 복사하지 못했습니다");
+      setMessage(t("클립보드에 복사하지 못했습니다"));
     }
   }
 
@@ -167,7 +168,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
             <span className="quicklook-row">row {row + 1}</span>
           </span>
         </div>
-        <button type="button" className="icon-button" onClick={onClose} title="닫기 (Esc)">
+        <button type="button" className="icon-button" onClick={onClose} title={t("닫기 (Esc)")}>
           <CloseIcon size={11} />
         </button>
       </header>
@@ -182,7 +183,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
               setMessage(null);
             }}
           >
-            값
+            {t("값")}
           </button>
           <button
             type="button"
@@ -202,7 +203,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
               setMessage(null);
             }}
           >
-            인코딩 / HEX
+            {t("인코딩 / HEX")}
           </button>
         </div>
         <span className="spacer" />
@@ -214,21 +215,21 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
       {tab === "value" ? (
         <div className="quicklook-body">
           <div className="quicklook-meta">
-            <span>{loading ? "불러오는 중…" : value === null ? "NULL" : typeof value}</span>
-            <span>{draft.length.toLocaleString()}자</span>
+            <span>{loading ? t("불러오는 중…") : value === null ? "NULL" : typeof value}</span>
+            <span>{t("{count}자", { count: draft.length.toLocaleString() })}</span>
             {jsonValid ? (
               <button type="button" className="quicklook-text-button" onClick={() => setTab("json")}>
-                트리 보기
+                {t("트리 보기")}
               </button>
             ) : null}
             <span className="spacer" />
             {jsonValid ? (
               <button type="button" className="quicklook-text-button" onClick={prettify}>
-                JSON 정리
+                {t("JSON 정리")}
               </button>
             ) : null}
             <button type="button" className="quicklook-text-button" onClick={() => void copy(draft)}>
-              복사
+              {t("복사")}
             </button>
           </div>
           <textarea
@@ -247,20 +248,20 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
       ) : tab === "json" ? (
         <div className="quicklook-body quicklook-json-body">
           <div className="quicklook-meta">
-            <span>구조화된 JSON</span>
-            {jsonValid ? <span className="dim">경로를 복사하려면 각 행의 복사 버튼을 사용하세요</span> : null}
+            <span>{t("구조화된 JSON")}</span>
+            {jsonValid ? <span className="dim">{t("경로를 복사하려면 각 행의 복사 버튼을 사용하세요")}</span> : null}
             <span className="spacer" />
             {jsonValid ? (
               <>
                 <button type="button" className="quicklook-text-button" onClick={prettify}>
-                  정리
+                  {t("정리")}
                 </button>
                 <button
                   type="button"
                   className="quicklook-text-button"
-                  onClick={() => void copy(JSON.stringify(jsonValue, null, 2), "JSON 전체를 복사했습니다")}
+                  onClick={() => void copy(JSON.stringify(jsonValue, null, 2), t("JSON 전체를 복사했습니다"))}
                 >
-                  전체 복사
+                  {t("전체 복사")}
                 </button>
               </>
             ) : null}
@@ -269,9 +270,9 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
             <JsonTree value={jsonValue} />
           ) : (
             <div className="quicklook-empty">
-              <span>유효한 JSON 객체 또는 배열이 아닙니다.</span>
+              <span>{t("유효한 JSON 객체 또는 배열이 아닙니다.")}</span>
               <button type="button" className="quicklook-text-button" onClick={() => setTab("value")}>
-                값 탭에서 수정
+                {t("값 탭에서 수정")}
               </button>
             </div>
           )}
@@ -280,7 +281,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
         <div className="quicklook-body encoding-body">
           <div className="quicklook-meta">
             <label className="quicklook-encoding">
-              <span>보기 인코딩</span>
+              <span>{t("보기 인코딩")}</span>
               <select value={encoding} onChange={(event) => setEncoding(event.target.value)}>
                 {ENCODINGS.map((option) => (
                   <option key={option.id} value={option.id}>
@@ -292,15 +293,15 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
             <span>{bytes.length.toLocaleString()} bytes</span>
             <span className="spacer" />
             <button type="button" className="quicklook-text-button" onClick={() => void copy(decoded)}>
-              텍스트 복사
+              {t("텍스트 복사")}
             </button>
             <button type="button" className="quicklook-text-button" onClick={() => void copy(dump)}>
-              HEX 복사
+              {t("HEX 복사")}
             </button>
           </div>
           <div className="quicklook-encoding-grid">
             <div>
-              <div className="quicklook-section-title">텍스트</div>
+              <div className="quicklook-section-title">{t("텍스트")}</div>
               <pre className="quicklook-pre">{decoded || " "}</pre>
             </div>
             <div>
@@ -309,8 +310,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
             </div>
           </div>
           <p className="quicklook-note">
-            현재 표시 값의 UTF-8 바이트를 선택한 인코딩으로 다시 읽은 결과입니다. 원본 DB
-            바이트가 아닐 수 있습니다.
+            {t("현재 표시 값의 UTF-8 바이트를 선택한 인코딩으로 다시 읽은 결과입니다. 원본 DB 바이트가 아닐 수 있습니다.")}
           </p>
         </div>
       )}
@@ -319,8 +319,8 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
         <span className={message === null ? "quicklook-hint" : "quicklook-message"}>
           {message ??
             (editable
-              ? "⌘Enter 저장 · Esc 닫기 · 가운데 클릭으로 열기"
-              : "읽기 전용 · Esc 닫기 · 가운데 클릭으로 열기")}
+              ? t("⌘Enter 저장 · Esc 닫기 · 가운데 클릭으로 열기")
+              : t("읽기 전용 · Esc 닫기 · 가운데 클릭으로 열기"))}
         </span>
         {tab !== "encoding" ? (
           <>
@@ -340,22 +340,22 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
               {saving ? (
                 <>
                   <Spinner size={10} />
-                  저장 중
+                  {t("저장 중")}
                 </>
               ) : (
-                "저장"
+                t("저장")
               )}
             </button>
           </>
         ) : null}
-        {loading ? <Spinner size={12} label="셀 불러오는 중" /> : null}
-        <button type="button" className="icon-button" onClick={onClose} title="닫기">
+        {loading ? <Spinner size={12} label={t("셀 불러오는 중")} /> : null}
+        <button type="button" className="icon-button" onClick={onClose} title={t("닫기")}>
           <CloseIcon size={11} />
         </button>
       </footer>
       {loading ? (
         <div className="quicklook-loading">
-          <Spinner size={18} label="셀 불러오는 중" />
+          <Spinner size={18} label={t("셀 불러오는 중")} />
         </div>
       ) : null}
     </aside>

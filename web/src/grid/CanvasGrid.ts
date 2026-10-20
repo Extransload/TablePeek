@@ -1391,11 +1391,13 @@ export class CanvasGrid {
     }
     if (meta && key === "Enter" && this.cellQuickLook && this.cursor) {
       e.preventDefault();
+      e.stopPropagation();
       this.cellQuickLook(this.cursor.row, this.cursor.col);
       return;
     }
     if (key === " " && this.quickLook && this.cursor) {
       e.preventDefault();
+      e.stopPropagation();
       this.quickLook(this.cursor.row, this.cursor.col);
       return;
     }

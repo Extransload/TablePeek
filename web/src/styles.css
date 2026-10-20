@@ -6594,8 +6594,10 @@ textarea:focus-visible {
 .settings-shell {
   display: grid;
   grid-template-columns: 168px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 440px;
-  max-height: min(650px, 68vh);
+  height: min(720px, 72vh);
+  max-height: min(720px, 72vh);
   overflow: hidden;
 }
 
