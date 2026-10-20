@@ -35,7 +35,7 @@ function formatRelative(at: number): string {
   return date.toLocaleDateString(getLanguage() === "en" ? "en-US" : "ko-KR");
 }
 
-function useMenuDismiss(
+export function useMenuDismiss(
   open: boolean,
   rootRef: RefObject<HTMLDivElement | null>,
   onDismiss: () => void,

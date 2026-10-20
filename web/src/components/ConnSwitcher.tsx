@@ -2,36 +2,27 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { environmentLabel, getConnMeta, subscribeConnMeta } from "../connMeta";
 import { t } from "../i18n";
 import type { ConnSummary, Connection } from "../store";
-import { DatabaseIcon, HomeIcon, PlusIcon } from "./icons";
+import { DriverIcon, driverName } from "./DriverIcon";
+import { CloseIcon, PlusIcon } from "./icons";
 
 interface ConnSwitcherProps {
   conns: ConnSummary[];
   activeId: string | null;
   connection: Connection;
+  activeDetail: string | null;
   onSwitch(id: string): void;
-  onHome(): void;
   onNewConnection(): void;
-}
-
-const DRIVER_BADGE: Record<string, string> = {
-  postgres: "PG",
-  cockroach: "CRDB",
-  mysql: "MySQL",
-  mssql: "MSSQL",
-  sqlite: "SQLite",
-};
-
-function badgeOf(kind: string): string {
-  return DRIVER_BADGE[kind] ?? kind.toUpperCase();
+  onClose(id: string): void;
 }
 
 export function ConnSwitcher({
   conns,
   activeId,
   connection,
+  activeDetail,
   onSwitch,
-  onHome,
   onNewConnection,
+  onClose,
 }: ConnSwitcherProps) {
   const [, setMetaVersion] = useState(0);
 
@@ -39,14 +30,6 @@ export function ConnSwitcher({
 
   return (
     <div className="conn-bar">
-      <button
-        type="button"
-        className="app-home-button"
-        onClick={onHome}
-        title={t("연결 홈")}
-      >
-        <HomeIcon size={13} />
-      </button>
       <div className="conn-bar-track" role="tablist" aria-label={t("열린 연결")}>
         {conns.length === 0 ? (
           <span className="conn-bar-empty">{t("열린 연결이 없습니다")}</span>
@@ -59,15 +42,14 @@ export function ConnSwitcher({
               "--conn-color": meta?.color || "var(--accent)",
             } as CSSProperties;
             return (
+              <span className="conn-tab-wrap" role="presentation" key={conn.id} style={style}>
               <button
                 type="button"
                 role="tab"
                 aria-selected={active}
-                className={`conn-tab${active ? " active" : ""}`}
-                key={conn.id}
-                style={style}
+                className={`conn-tab${active ? " active" : ""}${conn.is_default ? "" : " closable"}`}
                 onClick={() => onSwitch(conn.id)}
-                title={`${conn.label} — ${
+                title={`${conn.label} · ${driverName(conn.kind)} — ${
                   state === "open"
                     ? t("연결됨")
                     : state === "connecting"
@@ -75,11 +57,11 @@ export function ConnSwitcher({
                       : state === "closed"
                         ? t("끊김")
                         : t("연결 열기")
-                }`}
+                }${active && activeDetail ? `\n${activeDetail}` : ""}${conn.path ? `\n${conn.path}` : ""}`}
               >
+                <span className={`conn-state-dot conn-state-light ${state}`} aria-hidden="true" />
                 <span className="conn-tab-icon">
-                  <DatabaseIcon size={12} />
-                  <span className={`conn-state-dot ${state}`} aria-hidden="true" />
+                  <DriverIcon kind={conn.kind} />
                 </span>
                 <span className="conn-tab-label">{conn.label}</span>
                 {meta?.environment ? (
@@ -87,8 +69,19 @@ export function ConnSwitcher({
                     {environmentLabel(meta.environment)}
                   </span>
                 ) : null}
-                <span className={`driver-badge ${conn.kind}`}>{badgeOf(conn.kind)}</span>
               </button>
+              {conn.is_default ? null : (
+                <button
+                  type="button"
+                  className="conn-tab-close"
+                  onClick={() => onClose(conn.id)}
+                  title={t("연결 끊기")}
+                  aria-label={t("연결 끊기")}
+                >
+                  <CloseIcon size={9} />
+                </button>
+              )}
+              </span>
             );
           })
         )}

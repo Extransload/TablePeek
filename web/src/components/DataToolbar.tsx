@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { dataPageInfo, type DataTab } from "../tabs";
 import { t } from "../i18n";
-import { ColumnsIcon, DownloadIcon, FilterIcon, PanelIcon, PlusIcon, RefreshIcon } from "./icons";
+import { ColumnsIcon, FilterIcon, PlusIcon, RefreshIcon } from "./icons";
 
 interface NumBoxProps {
   value: number;
@@ -81,10 +81,6 @@ interface DataTabToolbarProps {
   onLimit(limit: number): void;
   onOffset(offset: number): void;
   onCount(): void;
-  detailOpen: boolean;
-  canDetail: boolean;
-  onDetail(): void;
-  onExport(): void;
   onFirst(): void;
   onPrev(): void;
   onNext(): void;
@@ -105,10 +101,6 @@ export function DataTabToolbar({
   onLimit,
   onOffset,
   onCount,
-  detailOpen,
-  canDetail,
-  onDetail,
-  onExport,
   onFirst,
   onPrev,
   onNext,
@@ -138,7 +130,7 @@ export function DataTabToolbar({
         className="icon-text-button"
         disabled={running || !canInsert}
         onClick={onInsertRow}
-        title={t("행 추가 (기본값)")}
+        title={t("새 행 추가 (변경사항 적용 시 저장)")}
       >
         <PlusIcon size={11} />
         {t("행 추가")}
@@ -227,25 +219,6 @@ export function DataTabToolbar({
             ? t("총 {count}행", { count: info.rows.toLocaleString() })
             : t("{count}+행", { count: info.rows.toLocaleString() })}
       </span>
-      <span className="toolbar-sep" />
-      <button
-        type="button"
-        className={`icon-button${detailOpen ? " active" : ""}`}
-        disabled={!canDetail}
-        onClick={onDetail}
-        title={t("행 상세 패널")}
-      >
-        <PanelIcon size={11} />
-      </button>
-      <button
-        type="button"
-        className="icon-button"
-        disabled={!canDetail}
-        onClick={onExport}
-        title={t("결과 내보내기")}
-      >
-        <DownloadIcon size={11} />
-      </button>
     </>
   );
 }

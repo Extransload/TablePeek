@@ -2,14 +2,22 @@ import { useEffect, useState, type ReactElement } from "react";
 import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, VALUE_KINDS, palette, themeFromJson } from "../palette";
 import {
-  DEFAULT_KEYMAP,
-  KEY_ACTION_LABELS,
   getPasscodeHash,
   setPasscodeHash,
   sha256Hex,
   type AppSettings,
-  type KeyAction,
 } from "../settings";
+import {
+  DEFAULT_KEYMAP,
+  KEY_ACTIONS,
+  KEY_ACTION_LABELS,
+  bindingFromEvent,
+  formatBinding,
+  isEditingBinding,
+  isReservedBinding,
+  type KeyAction,
+  type Keymap,
+} from "../shortcuts";
 import { SYNTAX_PRESETS, type SyntaxPresetId } from "../syntax";
 import {
   CodeIcon,
@@ -49,14 +57,6 @@ const SETTINGS_CATEGORIES: {
   { id: "security", label: "보안", icon: ShieldIcon },
 ];
 
-const KEY_ACTIONS: KeyAction[] = [
-  "run",
-  "newTab",
-  "closeTab",
-  "palette",
-  "dbSwitch",
-];
-
 const FONT_CHOICES = [
   {
     label: "시스템 고정폭",
@@ -67,30 +67,6 @@ const FONT_CHOICES = [
   { label: "Courier New", value: '"Courier New", Courier, monospace' },
 ];
 
-function bindingFromEvent(event: KeyboardEvent): string | null {
-  if (["Meta", "Control", "Shift", "Alt"].includes(event.key)) {
-    return null;
-  }
-  const parts: string[] = [];
-  if (event.metaKey || event.ctrlKey) {
-    parts.push("Mod");
-  }
-  if (event.shiftKey) {
-    parts.push("Shift");
-  }
-  if (event.altKey) {
-    parts.push("Alt");
-  }
-  let key = event.key;
-  if (key === " ") {
-    key = "Space";
-  } else if (key.length === 1) {
-    key = key.toLowerCase();
-  }
-  parts.push(key);
-  return parts.join("+");
-}
-
 export function SettingsModal({
   settings,
   onChange,
@@ -98,6 +74,7 @@ export function SettingsModal({
   onClose,
 }: SettingsModalProps) {
   const [capturing, setCapturing] = useState<KeyAction | null>(null);
+  const [captureHint, setCaptureHint] = useState<string | null>(null);
   const [passcode, setPasscode] = useState("");
   const [passcodeConfirm, setPasscodeConfirm] = useState("");
   const [passcodeMessage, setPasscodeMessage] = useState<string | null>(null);
@@ -130,18 +107,51 @@ export function SettingsModal({
       event.stopPropagation();
       if (event.key === "Escape") {
         setCapturing(null);
+        setCaptureHint(null);
         return;
       }
       const binding = bindingFromEvent(event);
       if (binding === null) {
+        if (!["Meta", "Control", "Shift", "Alt"].includes(event.key)) {
+          setCaptureHint(t("⌘/Ctrl 또는 ⌥/Alt와 함께 누르세요"));
+        }
         return;
       }
-      onChange({ keymap: { ...settings.keymap, [action]: binding } });
+      if (isEditingBinding(binding)) {
+        setCaptureHint(t("복사·붙여넣기·실행 취소 같은 편집 키는 쓸 수 없습니다"));
+        return;
+      }
+      if (!settings.keymap[action].includes(binding)) {
+        setBindings(action, [...settings.keymap[action], binding]);
+      }
       setCapturing(null);
+      setCaptureHint(null);
+    }
+    // Clicking anywhere else stops waiting for a key; the add button toggles itself.
+    function onPointerDown(event: PointerEvent): void {
+      if (!(event.target instanceof Element && event.target.closest(".shortcut-add"))) {
+        setCapturing(null);
+        setCaptureHint(null);
+      }
     }
     window.addEventListener("keydown", onCapture, true);
-    return () => window.removeEventListener("keydown", onCapture, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onCapture, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
   }, [capturing, settings.keymap, onChange]);
+
+  // A combination belongs to one action: giving it to `action` takes it away
+  // from any other.
+  function setBindings(action: KeyAction, bindings: string[]): void {
+    const next = {} as Keymap;
+    for (const key of KEY_ACTIONS) {
+      next[key] =
+        key === action ? bindings : settings.keymap[key].filter((entry) => !bindings.includes(entry));
+    }
+    onChange({ keymap: next });
+  }
 
   async function importTheme(): Promise<void> {
     if (themeBusy) {
@@ -541,40 +551,96 @@ export function SettingsModal({
               <div className="settings-category" hidden={category !== "shortcuts"}>
                 <section className="settings-section">
                   <h4>{t("단축키")}</h4>
-                  {KEY_ACTIONS.map((action) => (
-                    <div className="settings-row" key={action}>
-                      <span className="settings-label">
-                        {t(KEY_ACTION_LABELS[action])}
-                      </span>
-                      <button
-                        type="button"
-                        className={capturing === action ? "active" : ""}
-                        onClick={() => setCapturing(action)}
-                      >
-                        {capturing === action
-                          ? t("키 입력 대기…")
-                          : settings.keymap[action]}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onChange({
-                            keymap: {
-                              ...settings.keymap,
-                              [action]: DEFAULT_KEYMAP[action],
-                            },
-                          })
-                        }
-                        className="settings-reset"
-                        title={t("기본값")}
-                      >
-                        {t("기본")}
-                      </button>
-                    </div>
-                  ))}
+                  <div className="shortcut-notice">
+                    <strong>{t("TablePeek 단축키는 브라우저 기본 동작보다 먼저 실행됩니다.")}</strong>
+                    <span>
+                      {t("예: {save}는 페이지 저장 대신 변경사항을 적용하고, {palette}는 인쇄 대신 명령 팔레트를 엽니다.", {
+                        save: formatBinding("Mod+s"),
+                        palette: formatBinding("Mod+p"),
+                      })}
+                    </span>
+                    <span>
+                      {t("단, {keys}처럼 브라우저가 예약한 조합은 웹페이지가 가로챌 수 없어 브라우저 동작(탭 닫기·새 탭 등)이 먼저 실행됩니다. 이런 동작에는 대체 단축키가 함께 지정돼 있습니다.", {
+                        keys: ["Mod+w", "Mod+t", "Mod+n"].map(formatBinding).join(" · "),
+                      })}
+                    </span>
+                  </div>
+                  <div className="shortcut-list">
+                    {KEY_ACTIONS.map((action) => (
+                      <div className="shortcut-row" key={action}>
+                        <span className="shortcut-label">{t(KEY_ACTION_LABELS[action])}</span>
+                        <div className="shortcut-bindings">
+                          {settings.keymap[action].map((binding) => {
+                            const reserved = isReservedBinding(binding);
+                            return (
+                              <span
+                                key={binding}
+                                className={`shortcut-chip${reserved ? " reserved" : ""}`}
+                                title={
+                                  reserved
+                                    ? t("브라우저가 예약한 조합이라 브라우저 탭에서는 브라우저 동작이 먼저 실행됩니다")
+                                    : undefined
+                                }
+                              >
+                                <kbd>{formatBinding(binding)}</kbd>
+                                {reserved ? <span className="shortcut-warn" aria-hidden="true">!</span> : null}
+                                <button
+                                  type="button"
+                                  className="shortcut-remove"
+                                  onClick={() =>
+                                    setBindings(
+                                      action,
+                                      settings.keymap[action].filter((entry) => entry !== binding),
+                                    )
+                                  }
+                                  title={t("이 단축키 지우기")}
+                                  aria-label={t("이 단축키 지우기")}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            );
+                          })}
+                          <button
+                            type="button"
+                            className={`shortcut-add${capturing === action ? " active" : ""}`}
+                            onClick={() => {
+                              setCaptureHint(null);
+                              setCapturing(capturing === action ? null : action);
+                            }}
+                          >
+                            {capturing === action ? (captureHint ?? t("키 입력 대기…")) : t("+ 추가")}
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setBindings(action, [...DEFAULT_KEYMAP[action]])}
+                          disabled={settings.keymap[action].join("\n") === DEFAULT_KEYMAP[action].join("\n")}
+                          className="settings-reset"
+                          title={t("기본값으로")}
+                        >
+                          {t("기본")}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                   <p className="helper">
-                    {t("버튼을 누른 뒤 원하는 키 조합을 누르세요. Esc로 취소합니다.")}
+                    {t("‘+ 추가’를 누른 뒤 원하는 키 조합을 누르세요. Esc로 취소합니다. 다른 동작에 쓰이던 조합은 이쪽으로 옮겨집니다.")}
                   </p>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = {} as Keymap;
+                        for (const action of KEY_ACTIONS) {
+                          next[action] = [...DEFAULT_KEYMAP[action]];
+                        }
+                        onChange({ keymap: next });
+                      }}
+                    >
+                      {t("모든 단축키를 기본값으로")}
+                    </button>
+                  </div>
                 </section>
               </div>
 

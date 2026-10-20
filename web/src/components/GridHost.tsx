@@ -5,6 +5,8 @@ import { store, type GridResult } from "../store";
 export interface GridHostHandle {
   beginEdit(row: number, col: number): void;
   focus(): void;
+  keepViewOnNextResult(): void;
+  selectCell(row: number, col: number): void;
 }
 
 interface GridHostProps {
@@ -13,7 +15,7 @@ interface GridHostProps {
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
   onSelectionChange?(row: number | null): void;
   onCellContextMenu?(row: number, col: number, x: number, y: number): void;
-  onCellEdited?(row: number, col: number): void;
+  onDeleteRows?(rows: number[]): void;
   onQuickLook?(row: number): void;
   onCellQuickLook?(row: number, col: number): void;
   themeKey?: string;
@@ -26,7 +28,7 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     onHeaderClick,
     onSelectionChange,
     onCellContextMenu,
-    onCellEdited,
+    onDeleteRows,
     onQuickLook,
     onCellQuickLook,
     themeKey,
@@ -38,14 +40,14 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
   const headerClickRef = useRef(onHeaderClick);
   const selectionRef = useRef(onSelectionChange);
   const contextMenuRef = useRef(onCellContextMenu);
-  const editedRef = useRef(onCellEdited);
+  const deleteRowsRef = useRef(onDeleteRows);
   const quickLookRef = useRef(onQuickLook);
   const cellQuickLookRef = useRef(onCellQuickLook);
 
   headerClickRef.current = onHeaderClick;
   selectionRef.current = onSelectionChange;
   contextMenuRef.current = onCellContextMenu;
-  editedRef.current = onCellEdited;
+  deleteRowsRef.current = onDeleteRows;
   quickLookRef.current = onQuickLook;
   cellQuickLookRef.current = onCellQuickLook;
 
@@ -110,27 +112,32 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     const meta = result ? result.meta : null;
     const columns = meta ? meta.columns : [];
     const pk = meta ? meta.pk : null;
-    const canEdit =
-      meta !== null &&
-      meta.sourceTable !== null &&
-      pk !== null &&
-      pk.length > 0 &&
-      pk.every((name) => columns.includes(name));
-    if (canEdit) {
+    const keyed = pk !== null && pk.length > 0 && pk.every((name) => columns.includes(name));
+    if (result !== null && meta !== null && meta.sourceTable !== null) {
+      const source = result.source;
+      // Rows staged for insert are editable even when the table has no primary key;
+      // nothing is editable while a run or an apply could replace this result.
       grid.setEditable({
-        onCommit: (row, col, value) => {
-          void store.editCell(row, col, value).then((outcome) => {
-            if (outcome !== null) {
-              editedRef.current?.(outcome.row, outcome.col);
-            }
-          });
+        canEdit: (row) => {
+          const current = store.getState();
+          const busy =
+            store.isApplying() || (current.status === "running" && current.connId === result.conn);
+          return !busy && !source.isDeleted(row) && (keyed || source.isInserted(row));
         },
+        onCommit: (row, col, value) => {
+          void store.editCell(row, col, value);
+        },
+      });
+      grid.setDeleteRowsHandler((rows) => {
+        deleteRowsRef.current?.(rows);
       });
     } else {
       grid.setEditable(null);
+      grid.setDeleteRowsHandler(null);
     }
     return () => {
       grid.setEditable(null);
+      grid.setDeleteRowsHandler(null);
     };
   }, [result]);
 
@@ -142,6 +149,12 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
       },
       focus(): void {
         gridRef.current?.focus();
+      },
+      keepViewOnNextResult(): void {
+        gridRef.current?.keepViewOnNextSource();
+      },
+      selectCell(row: number, col: number): void {
+        gridRef.current?.selectCell(row, col);
       },
     }),
     [],

@@ -11,10 +11,13 @@ interface ContextMenuProps {
   x: number;
   y: number;
   items: ContextMenuItem[];
+  // The button that opened the menu: pressing it again is left to its own
+  // click handler, so it closes the menu instead of reopening it.
+  anchor?: Element | null;
   onClose(): void;
 }
 
-export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
+export function ContextMenu({ x, y, items, anchor, onClose }: ContextMenuProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useLayoutEffect(() => {
@@ -32,7 +35,8 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   useEffect(() => {
     function onPointerDown(event: PointerEvent): void {
       const root = rootRef.current;
-      if (root && !root.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (root && !root.contains(target) && !anchor?.contains(target)) {
         onClose();
       }
     }
@@ -51,7 +55,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       window.removeEventListener("blur", onClose);
       window.removeEventListener("resize", onClose);
     };
-  }, [onClose]);
+  }, [anchor, onClose]);
 
   return (
     <div

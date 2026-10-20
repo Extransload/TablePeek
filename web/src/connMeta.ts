@@ -126,7 +126,7 @@ export function setConnMeta(id: string, meta: ConnMeta): void {
   const next: ConnMeta = {
     group: meta.group.trim(),
     color: meta.color.trim(),
-    tags: meta.tags.map((tag) => tag.trim()).filter((tag) => tag !== ""),
+    tags: [...new Set(meta.tags.map((tag) => tag.trim()).filter((tag) => tag !== ""))],
     environment: normalizeEnvironment(meta.environment),
   };
   if (

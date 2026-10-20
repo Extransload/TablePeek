@@ -28,11 +28,44 @@ TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or conn
 
 ## Quick start
 
-Requirements:
+TablePeek is built from source for now, so you need two toolchains: **Rust** (`cargo`, for the server) and **Node.js 20+** (`npm`, for the web bundle). SQLite is bundled and TLS uses rustls, so there is no OpenSSL or database client library to install. macOS and Windows are the primary targets; Linux uses the same stack.
 
-- Rust stable
-- Node.js 20+ for the web build
-- macOS or Windows (the primary targets); Linux uses the same stack from source
+### 1. Install the toolchains
+
+**macOS**
+
+```sh
+xcode-select --install                                          # C compiler and linker (skip if already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  # Rust: cargo, rustc
+brew install node                                               # Node.js 20+ (or the installer from nodejs.org)
+```
+
+**Windows**
+
+1. Download and run `rustup-init.exe` from [rustup.rs](https://rustup.rs). When it offers to install the Visual Studio C++ Build Tools, accept: Rust uses that linker on Windows.
+2. Install Node.js 20+ (LTS) from [nodejs.org](https://nodejs.org).
+
+**Linux (Debian/Ubuntu)**
+
+```sh
+sudo apt install build-essential pkg-config libdbus-1-dev       # compiler; D-Bus headers for the password keyring
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Install Node.js 20+ from [nodejs.org](https://nodejs.org) or a version manager such as nvm; distribution packages are often older.
+
+Then **open a new terminal** and check both tools:
+
+```sh
+cargo --version
+node --version    # v20 or later
+```
+
+> `cargo: command not found` right after installing Rust means the terminal predates the installer's PATH change. Open a new terminal, or on macOS/Linux run `source "$HOME/.cargo/env"`.
+
+### 2. Build and run
+
+macOS / Linux:
 
 ```sh
 git clone https://github.com/Extransload/TablePeek.git
@@ -41,12 +74,24 @@ make install
 make run
 ```
 
+Windows has no `make`, so run the same steps in PowerShell:
+
+```powershell
+git clone https://github.com/Extransload/TablePeek.git
+cd TablePeek
+cd web; npm install; npm run build; cd ..
+cargo run -p tablepeek -- serve --port 7870 --demo-rows 10000
+```
+
+The first build compiles every Rust dependency and takes a few minutes; later starts take seconds.
+
 `make run` builds the web bundle and Rust binary, starts a 10,000-row demo database, and opens the browser. The console prints a tokenized loopback URL; keep that URL private.
 
 Open an existing SQLite file:
 
 ```sh
 make run DB=/absolute/path/to/app.sqlite
+# Windows: cargo run -p tablepeek -- serve --db C:\path\to\app.sqlite
 ```
 
 Useful options:

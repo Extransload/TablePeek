@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, Request, StatusCode};
@@ -121,9 +121,65 @@ pub struct ConnSlot {
     pub sessions: Arc<tokio::sync::Mutex<SessionStore>>,
     pub tunnel: Arc<tokio::sync::Mutex<Option<tunnel::Tunnel>>>,
     pub inflight: Arc<AtomicUsize>,
+    // Last known meta summary, so listing connections needs no database round
+    // trip (and never waits behind a long query holding the engine lock).
+    summary: std::sync::Mutex<Option<SlotSummary>>,
+}
+
+#[derive(Clone)]
+struct SlotSummary {
+    kind: String,
+    path: Option<String>,
+    demo: bool,
+    table_count: usize,
+    // Engine epoch the meta was read at; a statement or DB switch since then
+    // may have changed it.
+    epoch: u64,
 }
 
 impl ConnSlot {
+    /// Stores a summary of `meta`, read when the engine was at `epoch`.
+    fn remember(&self, epoch: u64, meta: &EngineMeta) {
+        let mut summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A slow meta call that started before a newer one (or before a DB
+        // switch) must not replace what that one stored.
+        if summary.as_ref().is_some_and(|known| known.epoch > epoch) {
+            return;
+        }
+        *summary = Some(SlotSummary {
+            kind: meta.kind.clone(),
+            path: meta.path.clone(),
+            demo: meta.demo,
+            table_count: meta.tables.len(),
+            epoch,
+        });
+    }
+
+    /// The stored summary if nothing has run since it was read, or, while a
+    /// statement is running, the last one known rather than waiting behind it.
+    fn summary(&self) -> Option<SlotSummary> {
+        let summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        let current = summary.epoch == self.engine.epoch();
+        (current || self.inflight.load(Ordering::SeqCst) > 0).then_some(summary)
+    }
+
+    /// Reads meta and remembers it, unless the engine moved on meanwhile.
+    async fn refresh_summary(&self, include_system: bool) -> Result<EngineMeta, EngineError> {
+        let epoch = self.engine.epoch();
+        let meta = self.engine.meta(include_system).await?;
+        if !include_system {
+            self.remember(epoch, &meta);
+        }
+        Ok(meta)
+    }
+
     pub fn new(
         id: String,
         label: String,
@@ -140,6 +196,7 @@ impl ConnSlot {
             sessions: Arc::new(tokio::sync::Mutex::new(SessionStore::new(SESSION_CAP))),
             tunnel: Arc::new(tokio::sync::Mutex::new(None)),
             inflight: Arc::new(AtomicUsize::new(0)),
+            summary: std::sync::Mutex::new(None),
         }
     }
 
@@ -271,7 +328,11 @@ pub fn app(state: AppState) -> Router {
             "/api/connections",
             get(connections_list).post(connections_create),
         )
-        .route("/api/connections/{id}", delete(connections_delete))
+        .route("/api/connections/test", post(connections_test))
+        .route(
+            "/api/connections/{id}",
+            delete(connections_delete).put(connections_update),
+        )
         .route("/api/connections/{id}/connect", post(connection_connect))
         .route("/api/history", get(history_list).delete(history_clear))
         .route("/api/favorites", get(favorites_list).post(favorites_create))
@@ -416,11 +477,11 @@ async fn meta(
         return Err(unauthorized());
     }
     let slot = slot_for(&state, params.conn.as_deref()).await?;
-    slot.engine
-        .meta(params.include_system())
+    let meta = slot
+        .refresh_summary(params.include_system())
         .await
-        .map(Json)
-        .map_err(engine_error)
+        .map_err(engine_error)?;
+    Ok(Json(meta))
 }
 
 async fn schema_route(
@@ -644,6 +705,7 @@ async fn switch_db_route(
         _ => unreachable!(),
     }
     .map_err(engine_error)?;
+    slot.remember(slot.engine.epoch(), &meta);
     Ok(Json(json!({ "conn": &slot.id, "meta": meta })))
 }
 
@@ -671,7 +733,7 @@ async fn open(
                 Some(path) => path.to_string(),
             };
             let slot = register_slot(&state, label, None, None, engine).await;
-            let meta = slot.engine.meta(false).await.map_err(engine_error)?;
+            let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
             Ok(Json(json!({ "conn": slot.id, "meta": meta })))
         }
         Err(err) => Err(engine_error(err)),
@@ -758,8 +820,23 @@ fn connect_failed(message: impl Into<String>) -> ConnectError {
     ConnectError::new(StatusCode::BAD_REQUEST, "connect_failed", message)
 }
 
-fn stored_password_missing() -> ConnectError {
-    connect_failed("저장된 비밀번호가 없습니다 — 비밀번호를 입력해 연결하세요")
+// The code tells the client which secret to ask for.
+fn stored_password_missing(kind: &str) -> ConnectError {
+    let (code, message) = match kind {
+        "ssh" => (
+            "ssh_password_required",
+            "저장된 SSH 비밀번호가 없습니다 — SSH 비밀번호를 입력해 연결하세요",
+        ),
+        "http" => (
+            "http_password_required",
+            "저장된 프록시 비밀번호가 없습니다 — 프록시 비밀번호를 입력해 연결하세요",
+        ),
+        _ => (
+            "password_required",
+            "저장된 비밀번호가 없습니다 — 비밀번호를 입력해 연결하세요",
+        ),
+    };
+    ConnectError::new(StatusCode::BAD_REQUEST, code, message)
 }
 
 struct SlotOrigin {
@@ -791,7 +868,7 @@ async fn connect_with(
     req: ConnectRequest,
     origin: SlotOrigin,
 ) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
-    match req.driver.as_str() {
+    let outcome = match req.driver.as_str() {
         "postgres" => connect_postgres(state, req, origin).await,
         "cockroach" => connect_cockroach(state, req, origin).await,
         "mysql" => connect_mysql(state, req, origin).await,
@@ -801,7 +878,11 @@ async fn connect_with(
             "unsupported_driver",
             "지원하지 않는 드라이버입니다",
         )),
+    };
+    if let Ok((slot, meta)) = &outcome {
+        slot.remember(slot.engine.epoch(), meta);
     }
+    outcome
 }
 
 async fn connect_postgres(
@@ -1024,110 +1105,144 @@ async fn connections_list(
     Ok(Json(json!({ "connections": connections })))
 }
 
-async fn connections_create(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<NewConnectionRequest>,
-) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
-    if !authorized(&state, &headers, None) {
-        return Err(unauthorized());
-    }
-    let name = req.name.trim().to_string();
-    if name.is_empty() {
-        return Err(bad_request("invalid_request", "이름이 필요합니다"));
-    }
-    match req.connect.driver.as_str() {
-        "postgres" => {
-            if req.connect.postgres.is_none() {
-                return Err(bad_request(
-                    "invalid_request",
-                    "PostgreSQL 접속 정보가 없습니다",
-                ));
-            }
-        }
-        "cockroach" => {
-            if req.connect.cockroach.is_none() {
-                return Err(bad_request(
-                    "invalid_request",
-                    "CockroachDB 접속 정보가 없습니다",
-                ));
-            }
-        }
-        "mysql" => {
-            if req.connect.mysql.is_none() {
-                return Err(bad_request("invalid_request", "MySQL 접속 정보가 없습니다"));
-            }
-        }
-        "mssql" => {
-            if req.connect.mssql.is_none() {
-                return Err(bad_request(
-                    "invalid_request",
-                    "SQL Server 접속 정보가 없습니다",
-                ));
-            }
-        }
+fn validate_connect_request(connect: &ConnectRequest) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let missing = match connect.driver.as_str() {
+        "postgres" => connect.postgres.is_none().then_some("PostgreSQL 접속 정보가 없습니다"),
+        "cockroach" => connect
+            .cockroach
+            .is_none()
+            .then_some("CockroachDB 접속 정보가 없습니다"),
+        "mysql" => connect.mysql.is_none().then_some("MySQL 접속 정보가 없습니다"),
+        "mssql" => connect.mssql.is_none().then_some("SQL Server 접속 정보가 없습니다"),
         _ => {
             return Err(bad_request(
                 "unsupported_driver",
                 "지원하지 않는 드라이버입니다",
             ))
         }
-    }
-
-    let id = uuid::Uuid::new_v4().simple().to_string();
-    let password_account = store::connection_account(&id, &req.connect.driver);
-    let ssh_account = store::connection_account(&id, "ssh");
-    let http_account = store::connection_account(&id, "http");
-    let password = match req.connect.driver.as_str() {
-        "mysql" => req
-            .connect
-            .mysql
-            .as_ref()
-            .and_then(|config| config.password.clone()),
-        "cockroach" => req
-            .connect
-            .cockroach
-            .as_ref()
-            .and_then(|config| config.password.clone()),
-        "mssql" => req
-            .connect
-            .mssql
-            .as_ref()
-            .and_then(|config| config.password.clone()),
-        _ => req
-            .connect
-            .postgres
-            .as_ref()
-            .and_then(|config| config.password.clone()),
     };
-    if req.persist_password {
-        if let Some(password) = password.as_deref().filter(|password| !password.is_empty()) {
-            store::set_password(&password_account, password).map_err(keyring_error)?;
+    if let Some(message) = missing {
+        return Err(bad_request("invalid_request", message));
+    }
+    let host = match connect.driver.as_str() {
+        "mysql" => connect.mysql.as_ref().map(|c| c.host.as_str()),
+        "cockroach" => connect.cockroach.as_ref().map(|c| c.host.as_str()),
+        "mssql" => connect.mssql.as_ref().map(|c| c.host.as_str()),
+        _ => connect.postgres.as_ref().map(|c| c.host.as_str()),
+    }
+    .unwrap_or("");
+    // A pasted URL in the host field would otherwise be stored verbatim, password included.
+    if host.contains("://")
+        || host
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '@' | '?'))
+    {
+        return Err(bad_request(
+            "invalid_request",
+            "호스트에는 주소만 입력하세요 (URL·계정 정보 제외)",
+        ));
+    }
+    Ok(())
+}
+
+fn request_db_password(connect: &ConnectRequest) -> Option<&str> {
+    match connect.driver.as_str() {
+        "mysql" => connect.mysql.as_ref().and_then(|c| c.password.as_deref()),
+        "cockroach" => connect.cockroach.as_ref().and_then(|c| c.password.as_deref()),
+        "mssql" => connect.mssql.as_ref().and_then(|c| c.password.as_deref()),
+        _ => connect.postgres.as_ref().and_then(|c| c.password.as_deref()),
+    }
+    .filter(|password| !password.is_empty())
+}
+
+fn set_request_db_password(connect: &mut ConnectRequest, password: String) {
+    match connect.driver.as_str() {
+        "mysql" => {
+            if let Some(config) = connect.mysql.as_mut() {
+                config.password = Some(password);
+            }
         }
-        if let Some(password) = req
+        "cockroach" => {
+            if let Some(config) = connect.cockroach.as_mut() {
+                config.password = Some(password);
+            }
+        }
+        "mssql" => {
+            if let Some(config) = connect.mssql.as_mut() {
+                config.password = Some(password);
+            }
+        }
+        _ => {
+            if let Some(config) = connect.postgres.as_mut() {
+                config.password = Some(password);
+            }
+        }
+    }
+}
+
+fn delete_connection_passwords(id: &str) {
+    for kind in ["postgres", "cockroach", "mysql", "mssql", "ssh", "http"] {
+        store::delete_password(&store::connection_account(id, kind));
+    }
+}
+
+// Shared by create and update. On update an empty password keeps the stored
+// one (moved to the new driver's account if the driver changed).
+async fn save_connection(
+    state: &AppState,
+    id: &str,
+    req: NewConnectionRequest,
+    previous: Option<&store::SavedConnection>,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err(bad_request("invalid_request", "이름이 필요합니다"));
+    }
+    validate_connect_request(&req.connect)?;
+
+    let password_account = store::connection_account(id, &req.connect.driver);
+    let ssh_account = store::connection_account(id, "ssh");
+    let http_account = store::connection_account(id, "http");
+    let fresh = previous.is_none();
+    // Every keychain write remembers what it replaced so a later failure can undo it.
+    let mut written: Vec<(String, Option<String>)> = Vec::new();
+    if req.persist_password {
+        let carried = previous
+            .filter(|old| old.persist_password && old.driver != req.connect.driver)
+            .and_then(|old| store::get_password(&store::connection_account(id, &old.driver)));
+        let db_password = request_db_password(&req.connect)
+            .map(str::to_string)
+            .or(carried);
+        let ssh_password = req
             .connect
             .ssh
             .as_ref()
-            .and_then(|ssh| ssh.password.as_deref())
-            .filter(|password| !password.is_empty())
-        {
-            if let Err(message) = store::set_password(&ssh_account, password) {
-                store::delete_password(&password_account);
-                return Err(keyring_error(message));
-            }
-        }
-        if let Some(password) = req
+            .and_then(|ssh| ssh.password.clone())
+            .filter(|password| !password.is_empty());
+        let http_password = req
             .connect
             .http_tunnel
             .as_ref()
-            .and_then(|tunnel| tunnel.password.as_deref())
-            .filter(|password| !password.is_empty())
-        {
-            if let Err(message) = store::set_password(&http_account, password) {
-                store::delete_password(&password_account);
-                store::delete_password(&ssh_account);
+            .and_then(|tunnel| tunnel.password.clone())
+            .filter(|password| !password.is_empty());
+        for (account, secret) in [
+            (&password_account, db_password),
+            (&ssh_account, ssh_password),
+            (&http_account, http_password),
+        ] {
+            let Some(secret) = secret else {
+                continue;
+            };
+            let replaced = if fresh {
+                None
+            } else {
+                store::get_password(account)
+            };
+            if let Err(message) = store::set_password(account, &secret) {
+                restore_secrets(&written);
                 return Err(keyring_error(message));
             }
+            written.push((account.clone(), replaced));
         }
     }
 
@@ -1148,7 +1263,7 @@ async fn connections_create(
         config.password = None;
     }
     let connection = store::SavedConnection {
-        id: id.clone(),
+        id: id.to_string(),
         name,
         driver: req.connect.driver.clone(),
         postgres,
@@ -1162,19 +1277,163 @@ async fn connections_create(
             .as_ref()
             .map(store::SavedHttpTunnel::from_config),
         persist_password: req.persist_password,
-        last_used: 0,
+        last_used: previous.map(|old| old.last_used).unwrap_or(0),
     };
     let outcome = {
         let mut store = state.store.lock().await;
-        store.add_connection(connection)
+        if fresh {
+            store.add_connection(connection).map(|_| true)
+        } else {
+            store.update_connection(connection)
+        }
     };
-    if let Err(message) = outcome {
-        store::delete_password(&password_account);
-        store::delete_password(&ssh_account);
-        store::delete_password(&http_account);
-        return Err(store_error(message));
+    match outcome {
+        Ok(true) => {}
+        Ok(false) => {
+            restore_secrets(&written);
+            return Err(not_found("연결을 찾을 수 없습니다"));
+        }
+        Err(message) => {
+            restore_secrets(&written);
+            return Err(store_error(message));
+        }
     }
+
+    // Drop secrets the saved profile no longer refers to. The old driver's
+    // account goes only once its password has been moved to the new account.
+    let had_secrets = previous.is_some_and(|old| old.persist_password);
+    if !req.persist_password {
+        if had_secrets {
+            delete_connection_passwords(id);
+        }
+    } else if had_secrets {
+        let moved = written.iter().any(|(account, _)| account == &password_account);
+        if let Some(old) = previous.filter(|old| old.driver != req.connect.driver) {
+            if moved {
+                store::delete_password(&store::connection_account(id, &old.driver));
+            }
+        }
+        if req.connect.ssh.is_none() {
+            store::delete_password(&ssh_account);
+        }
+        if req.connect.http_tunnel.is_none() {
+            store::delete_password(&http_account);
+        }
+    }
+    Ok(())
+}
+
+fn restore_secrets(written: &[(String, Option<String>)]) {
+    for (account, replaced) in written.iter().rev() {
+        match replaced {
+            Some(secret) => {
+                let _ = store::set_password(account, secret);
+            }
+            None => store::delete_password(account),
+        }
+    }
+}
+
+async fn connections_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<NewConnectionRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    save_connection(&state, &id, req, None).await?;
     Ok(Json(json!({ "id": id })))
+}
+
+async fn connections_update(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(req): Json<NewConnectionRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let previous = {
+        let store = state.store.lock().await;
+        store.find_connection(&id).cloned()
+    };
+    let Some(previous) = previous else {
+        return Err(not_found("연결을 찾을 수 없습니다"));
+    };
+    save_connection(&state, &id, req, Some(&previous)).await?;
+    Ok(Json(json!({ "id": id })))
+}
+
+#[derive(Deserialize)]
+struct TestConnectionRequest {
+    connect: ConnectRequest,
+    #[serde(default)]
+    saved_id: Option<String>,
+}
+
+// Opens the connection exactly like /api/connect, reports how it went, and
+// closes it again. With saved_id, blank passwords fall back to the keychain.
+async fn connections_test(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<TestConnectionRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    validate_connect_request(&req.connect)?;
+    let mut connect = req.connect;
+    if let Some(id) = req.saved_id.as_deref() {
+        let saved = {
+            let store = state.store.lock().await;
+            store.find_connection(id).cloned()
+        };
+        if let Some(saved) = saved.filter(|saved| saved.persist_password) {
+            if request_db_password(&connect).is_none() {
+                if let Some(password) =
+                    store::get_password(&store::connection_account(id, &saved.driver))
+                {
+                    set_request_db_password(&mut connect, password);
+                }
+            }
+            if let Some(ssh) = connect.ssh.as_mut() {
+                if ssh.password.as_deref().map_or(true, str::is_empty) {
+                    ssh.password = store::get_password(&store::connection_account(id, "ssh"));
+                }
+            }
+            if let Some(tunnel) = connect.http_tunnel.as_mut() {
+                if tunnel.password.as_deref().map_or(true, str::is_empty) {
+                    tunnel.password = store::get_password(&store::connection_account(id, "http"));
+                }
+            }
+        }
+    }
+    // Spawned so the probe slot is always removed, even if the client goes away mid-test.
+    let task_state = state.clone();
+    let probe = tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let origin = SlotOrigin {
+            label: Some("connection test".into()),
+            saved_id: None,
+        };
+        let (slot, meta) = connect_with(&task_state, connect, origin).await?;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        task_state.registry.lock().await.remove(&slot.id);
+        Ok::<_, ConnectError>(json!({
+            "ok": true,
+            "elapsed_ms": elapsed_ms,
+            "kind": meta.kind,
+            "tables": meta.tables.len(),
+        }))
+    });
+    match probe.await {
+        Ok(Ok(body)) => Ok(Json(body)),
+        Ok(Err(err)) => Err(err.into_response()),
+        Err(err) => Err(connect_failed(err.to_string()).into_response()),
+    }
 }
 
 async fn connections_delete(
@@ -1192,12 +1451,7 @@ async fn connections_delete(
     if !removed {
         return Err(not_found("연결을 찾을 수 없습니다"));
     }
-    store::delete_password(&store::connection_account(&id, "postgres"));
-    store::delete_password(&store::connection_account(&id, "cockroach"));
-    store::delete_password(&store::connection_account(&id, "mysql"));
-    store::delete_password(&store::connection_account(&id, "mssql"));
-    store::delete_password(&store::connection_account(&id, "ssh"));
-    store::delete_password(&store::connection_account(&id, "http"));
+    delete_connection_passwords(&id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1225,16 +1479,22 @@ async fn conns_list(
     let slots = state.registry.lock().await.list();
     let mut conns = Vec::with_capacity(slots.len());
     for slot in slots {
-        let meta = slot.engine.meta(false).await.map_err(engine_error)?;
+        let (kind, path, demo, table_count) = match slot.summary() {
+            Some(summary) => (summary.kind, summary.path, summary.demo, summary.table_count),
+            None => {
+                let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
+                (meta.kind, meta.path, meta.demo, meta.tables.len())
+            }
+        };
         conns.push(ConnSummary {
             id: slot.id.clone(),
             label: slot.label.clone(),
             saved_id: slot.saved_id.clone(),
             is_default: slot.id == state.default_conn.as_ref(),
-            kind: meta.kind,
-            path: meta.path,
-            demo: meta.demo,
-            table_count: meta.tables.len(),
+            kind,
+            path,
+            demo,
+            table_count,
         });
     }
     Ok(Json(json!({ "conns": conns })))
@@ -1261,14 +1521,36 @@ async fn conns_delete(
     Ok(Json(json!({ "ok": true })))
 }
 
+#[derive(Default, Deserialize)]
+struct ConnectSecrets {
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    ssh_password: Option<String>,
+    #[serde(default)]
+    http_password: Option<String>,
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.is_empty())
+}
+
+// Passwords typed for this one connect win over the keychain; nothing is stored.
 async fn connection_connect(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
+    let secrets: ConnectSecrets = if body.is_empty() {
+        ConnectSecrets::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|err| bad_request("invalid_request", format!("요청 형식 오류: {err}")))?
+    };
     let saved = {
         let store = state.store.lock().await;
         store.find_connection(&id).cloned()
@@ -1287,42 +1569,26 @@ async fn connection_connect(
         ));
     }
 
-    let mut postgres = saved.postgres.clone();
-    let mut cockroach = saved.cockroach.clone();
-    let mut mysql = saved.mysql.clone();
-    let mut mssql = saved.mssql.clone();
-    let mut supplied_password = false;
-    if saved.persist_password {
-        if let Some(password) = store::get_password(&store::connection_account(&id, &saved.driver))
-        {
-            match saved.driver.as_str() {
-                "mysql" => {
-                    if let Some(config) = mysql.as_mut() {
-                        config.password = Some(password);
-                        supplied_password = true;
-                    }
-                }
-                "cockroach" => {
-                    if let Some(config) = cockroach.as_mut() {
-                        config.password = Some(password);
-                        supplied_password = true;
-                    }
-                }
-                "mssql" => {
-                    if let Some(config) = mssql.as_mut() {
-                        config.password = Some(password);
-                        supplied_password = true;
-                    }
-                }
-                _ => {
-                    if let Some(config) = postgres.as_mut() {
-                        config.password = Some(password);
-                        supplied_password = true;
-                    }
-                }
-            }
+    let mut request = ConnectRequest {
+        driver: saved.driver.clone(),
+        postgres: saved.postgres.clone(),
+        cockroach: saved.cockroach.clone(),
+        mysql: saved.mysql.clone(),
+        mssql: saved.mssql.clone(),
+        ssh: None,
+        http_tunnel: None,
+    };
+    let db_password = non_empty(secrets.password).or_else(|| {
+        if saved.persist_password {
+            store::get_password(&store::connection_account(&id, &saved.driver))
+        } else {
+            None
         }
+    });
+    if let Some(password) = db_password {
+        set_request_db_password(&mut request, password);
     }
+    let supplied_password = request_db_password(&request).is_some();
 
     let mut ssh = saved.ssh.as_ref().map(store::SavedSsh::to_config);
     if let Some(ssh_config) = ssh.as_mut() {
@@ -1332,14 +1598,16 @@ async fn connection_connect(
             .map(|path| !path.trim().is_empty())
             .unwrap_or(false);
         if !has_key {
-            let password = if saved.persist_password {
-                store::get_password(&store::connection_account(&id, "ssh"))
-            } else {
-                None
-            };
+            let password = non_empty(secrets.ssh_password).or_else(|| {
+                if saved.persist_password {
+                    store::get_password(&store::connection_account(&id, "ssh"))
+                } else {
+                    None
+                }
+            });
             match password {
                 Some(password) => ssh_config.password = Some(password),
-                None => return Err(stored_password_missing().into_response()),
+                None => return Err(stored_password_missing("ssh").into_response()),
             }
         }
     }
@@ -1349,22 +1617,22 @@ async fn connection_connect(
         .as_ref()
         .map(store::SavedHttpTunnel::to_config);
     if let Some(tunnel_config) = http_tunnel.as_mut() {
-        if saved.persist_password {
-            if let Some(password) = store::get_password(&store::connection_account(&id, "http")) {
-                tunnel_config.password = Some(password);
+        let password = non_empty(secrets.http_password).or_else(|| {
+            if saved.persist_password {
+                store::get_password(&store::connection_account(&id, "http"))
+            } else {
+                None
             }
+        });
+        if password.is_some() {
+            tunnel_config.password = password;
+        } else if tunnel_config.username.is_some() {
+            return Err(stored_password_missing("http").into_response());
         }
     }
 
-    let request = ConnectRequest {
-        driver: saved.driver.clone(),
-        postgres,
-        cockroach,
-        mysql,
-        mssql,
-        ssh,
-        http_tunnel,
-    };
+    request.ssh = ssh;
+    request.http_tunnel = http_tunnel;
     let origin = SlotOrigin {
         label: Some(saved.name.clone()),
         saved_id: Some(id.clone()),
@@ -1375,12 +1643,15 @@ async fn connection_connect(
             Ok(Json(json!({ "conn": slot.id, "meta": meta })))
         }
         Err(err) => {
+            // Tunnel failures (SSH/HTTP) are reported as they are, not as a DB password prompt.
+            let tunnel_error = err.message.starts_with("SSH") || err.message.starts_with("HTTP");
             let needs_password = !supplied_password
+                && !tunnel_error
                 && (err.message.contains("password")
                     || err.message.contains("비밀번호")
                     || err.message.contains("invalid configuration"));
             Err(if needs_password {
-                stored_password_missing()
+                stored_password_missing("db")
             } else {
                 err
             }
@@ -1507,6 +1778,8 @@ fn unix_now() -> u64 {
 #[derive(Deserialize)]
 struct FsParams {
     path: Option<String>,
+    #[serde(default)]
+    hidden: bool,
 }
 
 async fn fs_list(
@@ -1517,7 +1790,7 @@ async fn fs_list(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    list_dir(params.path.as_deref()).map(Json).map_err(|err| {
+    list_dir(params.path.as_deref(), params.hidden).map(Json).map_err(|err| {
         (
             StatusCode::BAD_REQUEST,
             Json(ApiError {
@@ -1573,7 +1846,7 @@ fn default_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn list_dir(path: Option<&str>) -> Result<FsListing, std::io::Error> {
+fn list_dir(path: Option<&str>, hidden: bool) -> Result<FsListing, std::io::Error> {
     let requested = match path {
         Some(p) if !p.trim().is_empty() => PathBuf::from(p.trim()),
         _ => default_dir(),
@@ -1584,7 +1857,7 @@ fn list_dir(path: Option<&str>) -> Result<FsListing, std::io::Error> {
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        if !hidden && name.starts_with('.') {
             continue;
         }
         let file_type = entry.file_type()?;
@@ -2102,14 +2375,11 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
         }
     };
 
+    // Staged edits can outlive their result session (eviction, or a structural
+    // change clearing sessions); the PK-targeted UPDATE does not need it, so a
+    // missing session only skips the cached-cell patch below.
     let session_arc = slot.sessions.lock().await.get(&msg.session);
-    let Some(session_arc) = session_arc else {
-        sender
-            .json(error_json(None, Some(conn), "세션이 만료되었습니다", false))
-            .await;
-        return;
-    };
-    {
+    if let Some(session_arc) = &session_arc {
         let guard = session_arc.lock().await;
         if guard.data.source_table.as_deref() != Some(msg.table.as_str()) {
             drop(guard);
@@ -2453,10 +2723,14 @@ mod tests {
         std::fs::write(base.join("note.txt"), b"hi").unwrap();
         std::fs::write(base.join(".hidden"), b"x").unwrap();
 
-        let listing = list_dir(Some(base.to_str().unwrap())).unwrap();
+        let listing = list_dir(Some(base.to_str().unwrap()), false).unwrap();
         let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["adir", "zdir", "note.txt"]);
         assert_eq!(listing.entries[2].size, Some(2));
+
+        let with_hidden = list_dir(Some(base.to_str().unwrap()), true).unwrap();
+        let names: Vec<&str> = with_hidden.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["adir", "zdir", ".hidden", "note.txt"]);
         assert!(listing.parent.is_some());
 
         std::fs::remove_dir_all(&base).unwrap();
@@ -2487,6 +2761,36 @@ mod tests {
         assert_eq!(missing["readable"], false);
 
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn slot_summary_is_dropped_after_a_statement() {
+        let slot = ConnSlot::new(
+            "c1".into(),
+            "demo".into(),
+            None,
+            None,
+            Engine::open_demo(10).unwrap(),
+        );
+        assert!(slot.summary().is_none());
+
+        let before = slot.engine.epoch();
+        let meta = slot.refresh_summary(false).await.unwrap();
+        let tables = meta.tables.len();
+        assert_eq!(slot.summary().unwrap().table_count, tables);
+
+        slot.engine
+            .query("CREATE TABLE summary_extra (x INTEGER)", 10)
+            .await
+            .unwrap();
+        assert!(slot.summary().is_none(), "a statement may have changed the schema");
+
+        slot.refresh_summary(false).await.unwrap();
+        assert_eq!(slot.summary().unwrap().table_count, tables + 1);
+
+        // Meta read before the CREATE must not replace the newer summary.
+        slot.remember(before, &meta);
+        assert_eq!(slot.summary().unwrap().table_count, tables + 1);
     }
 
     #[tokio::test]
@@ -2768,6 +3072,7 @@ mod tests {
             State(state.clone()),
             AxumPath("no-such-id".into()),
             headers.clone(),
+            Bytes::new(),
         )
         .await
         .unwrap_err();
@@ -2789,6 +3094,216 @@ mod tests {
             .unwrap_err();
         assert_eq!(again.0, StatusCode::NOT_FOUND);
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn connections_update_replaces_profile_without_keyring() {
+        let dir = temp_dir("connections-update");
+        let state = test_state(&dir);
+        let headers = test_headers();
+
+        let created = connections_create(
+            State(state.clone()),
+            headers.clone(),
+            Json(NewConnectionRequest {
+                name: "원래 이름".into(),
+                connect: test_connect_request("postgres"),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap();
+        let id = created.0["id"].as_str().unwrap().to_string();
+        state
+            .store
+            .lock()
+            .await
+            .touch_connection(&id, 1234)
+            .unwrap();
+
+        let mut edited = test_mysql_connect_request();
+        if let Some(config) = edited.mysql.as_mut() {
+            config.host = "db.example.internal".into();
+        }
+        let updated = connections_update(
+            State(state.clone()),
+            AxumPath(id.clone()),
+            headers.clone(),
+            Json(NewConnectionRequest {
+                name: "  바뀐 이름 ".into(),
+                connect: edited,
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.0["id"], json!(id));
+
+        let listed = connections_list(State(state.clone()), headers.clone())
+            .await
+            .unwrap();
+        let connections = listed.0["connections"].as_array().unwrap();
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0]["id"], json!(id));
+        assert_eq!(connections[0]["name"], json!("바뀐 이름"));
+        assert_eq!(connections[0]["driver"], json!("mysql"));
+        assert_eq!(connections[0]["mysql"]["host"], json!("db.example.internal"));
+        assert!(connections[0].get("postgres").is_none());
+        assert!(connections[0]["mysql"].get("password").is_none());
+        assert_eq!(connections[0]["last_used"], json!(1234));
+
+        let missing = connections_update(
+            State(state.clone()),
+            AxumPath("no-such-id".into()),
+            headers.clone(),
+            Json(NewConnectionRequest {
+                name: "x".into(),
+                connect: test_connect_request("postgres"),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing.0, StatusCode::NOT_FOUND);
+
+        let blank = connections_update(
+            State(state.clone()),
+            AxumPath(id.clone()),
+            headers.clone(),
+            Json(NewConnectionRequest {
+                name: "   ".into(),
+                connect: test_connect_request("postgres"),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(blank.0, StatusCode::BAD_REQUEST);
+
+        let bad_body = connection_connect(
+            State(state.clone()),
+            AxumPath(id),
+            headers,
+            Bytes::from_static(b"{not json"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(bad_body.0, StatusCode::BAD_REQUEST);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn connection_update_and_test_routes_check_token_and_input() {
+        let dir = temp_dir("connections-guards");
+        let state = test_state(&dir);
+        let request = || NewConnectionRequest {
+            name: "x".into(),
+            connect: test_connect_request("postgres"),
+            persist_password: false,
+        };
+
+        let err = connections_update(
+            State(state.clone()),
+            AxumPath("any".into()),
+            HeaderMap::new(),
+            Json(request()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+
+        let err = connections_test(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(TestConnectionRequest {
+                connect: test_connect_request("postgres"),
+                saved_id: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+
+        let err = connections_test(
+            State(state.clone()),
+            test_headers(),
+            Json(TestConnectionRequest {
+                connect: test_connect_request("oracle"),
+                saved_id: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1.code, "unsupported_driver");
+
+        let mut pasted = test_connect_request("postgres");
+        if let Some(config) = pasted.postgres.as_mut() {
+            config.host = "postgres://u:secret@db.example/app".into();
+        }
+        let err = connections_create(
+            State(state.clone()),
+            test_headers(),
+            Json(NewConnectionRequest {
+                name: "pasted".into(),
+                connect: pasted,
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let listed = connections_list(State(state.clone()), test_headers())
+            .await
+            .unwrap();
+        assert!(!listed.0.to_string().contains("secret"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn connection_update_keeps_list_position() {
+        let dir = temp_dir("connections-order");
+        let state = test_state(&dir);
+        let headers = test_headers();
+        let mut ids = Vec::new();
+        for name in ["first", "second"] {
+            let created = connections_create(
+                State(state.clone()),
+                headers.clone(),
+                Json(NewConnectionRequest {
+                    name: name.into(),
+                    connect: test_connect_request("postgres"),
+                    persist_password: false,
+                }),
+            )
+            .await
+            .unwrap();
+            ids.push(created.0["id"].as_str().unwrap().to_string());
+        }
+        let updated = connections_update(
+            State(state.clone()),
+            AxumPath(ids[0].clone()),
+            headers.clone(),
+            Json(NewConnectionRequest {
+                name: "first, renamed".into(),
+                connect: test_connect_request("postgres"),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.0["id"], json!(ids[0]));
+        let listed = connections_list(State(state.clone()), headers).await.unwrap();
+        let names: Vec<&str> = listed.0["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["first, renamed", "second"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2830,6 +3345,7 @@ mod tests {
             State(state.clone()),
             AxumPath("no-such-id".into()),
             headers.clone(),
+            Bytes::new(),
         )
         .await
         .unwrap_err();
@@ -2969,11 +3485,11 @@ mod tests {
         .unwrap();
         let id = created.0["id"].as_str().unwrap().to_string();
 
-        let err = connection_connect(State(state.clone()), AxumPath(id), headers)
+        let err = connection_connect(State(state.clone()), AxumPath(id), headers, Bytes::new())
             .await
             .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
-        assert_eq!(err.1.code, "connect_failed");
+        assert_eq!(err.1.code, "password_required");
         assert_eq!(
             err.1.message,
             "저장된 비밀번호가 없습니다 — 비밀번호를 입력해 연결하세요"

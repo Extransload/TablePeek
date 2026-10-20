@@ -9,6 +9,7 @@ import {
   type ThemeId,
 } from "./palette";
 import { setLanguage, type Language } from "./i18n";
+import { normalizeKeymap, type Keymap } from "./shortcuts";
 import {
   syntaxColors,
   syntaxPresetById,
@@ -17,7 +18,6 @@ import {
 } from "./syntax";
 
 export type ThemeMode = ThemeId;
-export type KeyAction = "run" | "newTab" | "closeTab" | "palette" | "dbSwitch";
 export type CsvEncoding = "utf-8" | "euc-kr" | "utf-16le";
 
 export interface AppSettings {
@@ -35,16 +35,8 @@ export interface AppSettings {
   csvDelimiter: string;
   csvHeader: boolean;
   csvEncoding: CsvEncoding;
-  keymap: Record<KeyAction, string>;
+  keymap: Keymap;
 }
-
-export const DEFAULT_KEYMAP: Record<KeyAction, string> = {
-  run: "Mod+Enter",
-  newTab: "Mod+t",
-  closeTab: "Mod+w",
-  palette: "Mod+p",
-  dbSwitch: "Mod+k",
-};
 
 export const DEFAULT_SETTINGS: AppSettings = {
   language: "ko",
@@ -61,15 +53,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   csvDelimiter: ",",
   csvHeader: true,
   csvEncoding: "utf-8",
-  keymap: { ...DEFAULT_KEYMAP },
-};
-
-export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
-  run: "쿼리 실행",
-  newTab: "새 탭",
-  closeTab: "탭 닫기",
-  palette: "팔레트",
-  dbSwitch: "DB 전환",
+  keymap: normalizeKeymap(null),
 };
 
 const STORAGE_KEY = "tablepeek.settings";
@@ -84,7 +68,7 @@ function readSettings(): AppSettings {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw === null) {
-      return { ...DEFAULT_SETTINGS, keymap: { ...DEFAULT_KEYMAP } };
+      return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
     }
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
     return {
@@ -93,10 +77,10 @@ function readSettings(): AppSettings {
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
-      keymap: { ...DEFAULT_KEYMAP, ...(parsed.keymap ?? {}) },
+      keymap: normalizeKeymap(parsed.keymap),
     };
   } catch {
-    return { ...DEFAULT_SETTINGS, keymap: { ...DEFAULT_KEYMAP } };
+    return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
   }
 }
 
@@ -205,25 +189,6 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
 export function subscribeSettings(listener: Listener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
-}
-
-export function matchesBinding(event: KeyboardEvent, binding: string): boolean {
-  const parts = binding.split("+").map((part) => part.trim());
-  const key = parts.pop() ?? "";
-  const wantsMod = parts.some((part) => part === "Mod");
-  const wantsShift = parts.some((part) => part === "Shift");
-  const wantsAlt = parts.some((part) => part === "Alt");
-  const mod = event.metaKey || event.ctrlKey;
-  if (wantsMod !== mod || wantsShift !== event.shiftKey || wantsAlt !== event.altKey) {
-    return false;
-  }
-  const normalize = (value: string): string => {
-    if (value === " ") {
-      return "space";
-    }
-    return value.toLowerCase();
-  };
-  return normalize(event.key) === normalize(key);
 }
 
 export async function sha256Hex(text: string): Promise<string> {

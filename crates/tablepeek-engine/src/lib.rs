@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once, RwLock};
 use std::time::Instant;
 
@@ -491,9 +492,20 @@ enum ActiveTarget {
 
 /// 엔진: SQLite/PostgreSQL 백엔드. 쿼리는 컬럼형(Arrow) 결과로 반환되며,
 /// 긴 쿼리는 취소를 지원한다.
+struct EpochBump<'a>(&'a AtomicU64);
+
+impl Drop for EpochBump<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 pub struct Engine {
     backend: RwLock<Backend>,
     active: Mutex<Option<ActiveTarget>>,
+    // Bumped by every statement and backend swap: anything derived from the
+    // schema (table counts, …) is only known current while this hasn't moved.
+    epoch: AtomicU64,
 }
 
 impl Engine {
@@ -509,7 +521,23 @@ impl Engine {
         Self {
             backend: RwLock::new(Backend::Sqlite { inner }),
             active: Mutex::new(None),
+            epoch: AtomicU64::new(0),
         }
+    }
+
+    /// Changes whenever a statement runs or the backend is replaced.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    fn replace_backend(&self, backend: Backend) -> Result<(), EngineError> {
+        let mut guard = self
+            .backend
+            .write()
+            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
+        *guard = backend;
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     fn backend_snapshot(&self) -> Result<Backend, EngineError> {
@@ -522,11 +550,7 @@ impl Engine {
     pub async fn swap_to_file(&self, path: &Path) -> Result<EngineMeta, EngineError> {
         let inner = open_file_inner(path)?;
         let meta = meta_sync(&inner, false)?;
-        let mut guard = self
-            .backend
-            .write()
-            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
-        *guard = Backend::Sqlite { inner };
+        self.replace_backend(Backend::Sqlite { inner })?;
         Ok(meta)
     }
 
@@ -535,11 +559,7 @@ impl Engine {
             .await
             .map_err(|e| EngineError::Internal(e.to_string()))??;
         let meta = meta_sync(&inner, false)?;
-        let mut guard = self
-            .backend
-            .write()
-            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
-        *guard = Backend::Sqlite { inner };
+        self.replace_backend(Backend::Sqlite { inner })?;
         Ok(meta)
     }
 
@@ -549,11 +569,7 @@ impl Engine {
     ) -> Result<EngineMeta, EngineError> {
         let inner = postgres::connect(config, "postgres").await?;
         let meta = postgres::meta(&inner, false).await?;
-        let mut guard = self
-            .backend
-            .write()
-            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
-        *guard = Backend::Postgres { inner };
+        self.replace_backend(Backend::Postgres { inner })?;
         Ok(meta)
     }
 
@@ -563,33 +579,21 @@ impl Engine {
     ) -> Result<EngineMeta, EngineError> {
         let inner = postgres::connect(config, "cockroach").await?;
         let meta = postgres::meta(&inner, false).await?;
-        let mut guard = self
-            .backend
-            .write()
-            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
-        *guard = Backend::Postgres { inner };
+        self.replace_backend(Backend::Postgres { inner })?;
         Ok(meta)
     }
 
     pub async fn swap_to_mysql(&self, config: &MySqlConfig) -> Result<EngineMeta, EngineError> {
         let inner = mysql::connect(config).await?;
         let meta = mysql::meta(&inner, false).await?;
-        let mut guard = self
-            .backend
-            .write()
-            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
-        *guard = Backend::MySql { inner };
+        self.replace_backend(Backend::MySql { inner })?;
         Ok(meta)
     }
 
     pub async fn swap_to_mssql(&self, config: &MssqlConfig) -> Result<EngineMeta, EngineError> {
         let inner = mssql::connect(config).await?;
         let meta = mssql::meta(&inner, false).await?;
-        let mut guard = self
-            .backend
-            .write()
-            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
-        *guard = Backend::Mssql { inner };
+        self.replace_backend(Backend::Mssql { inner })?;
         Ok(meta)
     }
 
@@ -643,6 +647,10 @@ impl Engine {
     }
 
     pub async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
+        // Before and after: meta read while the statement runs is stale once
+        // it finishes, even if the query future is dropped midway.
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        let _finished = EpochBump(&self.epoch);
         match self.backend_snapshot()? {
             Backend::Sqlite { inner } => {
                 if let Ok(mut active) = self.active.lock() {

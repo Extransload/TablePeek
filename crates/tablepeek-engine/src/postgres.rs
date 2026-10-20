@@ -231,30 +231,38 @@ pub(crate) async fn schema(
     include_system: bool,
 ) -> Result<Vec<TableSchema>, EngineError> {
     let client = inner.client.lock().await;
+    // One query for every table and its columns (rows arrive grouped by table)
+    // instead of a separate column query per table.
     let rows = client
-        .query(&table_list_sql(inner.kind, include_system), &[])
+        .query(&schema_sql(inner.kind, include_system), &[])
         .await?;
-    let mut out = Vec::with_capacity(rows.len());
+    let mut out: Vec<TableSchema> = Vec::new();
+    let mut current: Option<(String, String)> = None;
     for row in rows {
         let schema_name: String = row.get(0);
         let table_name: String = row.get(1);
-        let qualified = qualified(&schema_name, &table_name);
-        let columns = client
-            .query(COLUMN_SQL, &[&qualified])
-            .await?
-            .iter()
-            .map(|col| ColumnSchema {
-                name: col.get(0),
-                decl_type: Some(col.get(1)),
-                not_null: col.get(2),
-                pk: col.get(3),
-                default: col.get(4),
-            })
-            .collect();
-        out.push(TableSchema {
-            name: display_name(&schema_name, &table_name),
-            columns,
-        });
+        let same_table = current
+            .as_ref()
+            .is_some_and(|(schema, table)| *schema == schema_name && *table == table_name);
+        if !same_table {
+            out.push(TableSchema {
+                name: display_name(&schema_name, &table_name),
+                columns: Vec::new(),
+            });
+            current = Some((schema_name, table_name));
+        }
+        let Some(column_name) = row.get::<_, Option<String>>(2) else {
+            continue;
+        };
+        if let Some(table) = out.last_mut() {
+            table.columns.push(ColumnSchema {
+                name: column_name,
+                decl_type: row.get(3),
+                not_null: row.get::<_, Option<bool>>(4).unwrap_or(false),
+                pk: row.get(5),
+                default: row.get(6),
+            });
+        }
     }
     Ok(out)
 }
@@ -1017,6 +1025,34 @@ pub(crate) async fn tx(inner: &PostgresInner, statement: &str) -> Result<(), Eng
     drop(client);
     inner.in_tx.store(statement == "BEGIN", Ordering::SeqCst);
     Ok(())
+}
+
+fn schema_sql(kind: &str, include_system: bool) -> String {
+    let tables = table_list_sql(kind, include_system);
+    let filters = tables
+        .split_once("WHERE ")
+        .and_then(|(_, rest)| rest.split_once("\n     ORDER BY"))
+        .map(|(filters, _)| filters.to_string())
+        .unwrap_or_else(|| "true".to_string());
+    format!(
+        "SELECT n.nspname, c.relname, a.attname,
+            format_type(a.atttypid, a.atttypmod),
+            a.attnotnull,
+            EXISTS (
+                SELECT 1 FROM pg_index i
+                WHERE i.indrelid = a.attrelid
+                  AND i.indisprimary
+                  AND a.attnum = ANY(i.indkey)
+            ) AS is_pk,
+            pg_get_expr(d.adbin, d.adrelid)
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     LEFT JOIN pg_attribute a
+       ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+     LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+     WHERE {filters}
+     ORDER BY n.nspname, c.relname, a.attnum"
+    )
 }
 
 fn table_list_sql(kind: &str, include_system: bool) -> String {

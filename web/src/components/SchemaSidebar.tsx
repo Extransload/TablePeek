@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import {
-  environmentLabel,
-  type ConnectionEnvironment,
-} from "../connMeta";
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
+import type { ConnectionEnvironment } from "../connMeta";
 import { t } from "../i18n";
-import {
-  store,
-  type Connection,
-  type ObjectList,
-  type TableSchema,
-} from "../store";
+import { loadObjects, loadSchema, peekObjects, peekSchema } from "../schemaCache";
+import { store, type ObjectList, type TableSchema } from "../store";
 import type { DefinitionKind } from "../sqlTools";
 import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -17,7 +18,6 @@ import { Spinner } from "./Spinner";
 import {
   ChevronIcon,
   CodeIcon,
-  DatabaseIcon,
   FileIcon,
   KeyIcon,
   ListIcon,
@@ -45,8 +45,6 @@ export type TableAction =
 
 interface SchemaSidebarProps {
   conn: string;
-  label: string;
-  connection: Connection;
   environment: ConnectionEnvironment;
   kind: string;
   refreshKey: string;
@@ -74,13 +72,15 @@ const EMPTY_OBJECTS: ObjectList = {
   procedures: [],
 };
 
-const DRIVER_LABELS: Record<string, string> = {
-  postgres: "PG",
-  cockroach: "CRDB",
-  mysql: "MySQL",
-  mssql: "MSSQL",
-  sqlite: "SQLite",
-};
+// Large schemas render in chunks: the rest of the list is a spacer that pulls
+// in the next chunk as it nears the viewport.
+const TABLE_CHUNK = 200;
+const TABLE_ROW_HEIGHT = 28;
+const COLUMN_ROW_HEIGHT = 23;
+// Padding and bottom margin around an expanded table's column list.
+const COLUMN_LIST_EXTRA = 11;
+// A search expands every match to show its columns, unless that is too many.
+const AUTO_EXPAND_LIMIT = 30;
 
 const OBJECT_SECTIONS: { kind: DefinitionKind; label: string }[] = [
   { kind: "view", label: "뷰" },
@@ -136,8 +136,6 @@ function fuzzyScore(name: string, query: string): number {
 
 export function SchemaSidebar({
   conn,
-  label,
-  connection,
   environment,
   kind,
   refreshKey,
@@ -156,14 +154,20 @@ export function SchemaSidebar({
   onOpenSql,
   onOpenUsers,
 }: SchemaSidebarProps) {
-  const [tables, setTables] = useState<TableSchema[] | null>(null);
-  const [objects, setObjects] = useState<ObjectList | null>(null);
+  // Seeded from the cache so switching back to a connection paints at once.
+  const [tables, setTables] = useState<TableSchema[] | null>(() =>
+    peekSchema(conn, loadSystemMode()),
+  );
+  const [objects, setObjects] = useState<ObjectList | null>(() =>
+    peekObjects(conn, loadSystemMode()),
+  );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [sections, setSections] = useState<Record<string, boolean>>(loadSections);
   const [system, setSystem] = useState(loadSystemMode);
   const [nonce, setNonce] = useState(0);
+  const forceRef = useRef(false);
   const [filter, setFilter] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number; table: string } | null>(null);
   const [objectMenu, setObjectMenu] = useState<{
@@ -179,26 +183,34 @@ export function SchemaSidebar({
   } | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
-    setLoading(true);
+    const force = forceRef.current;
+    forceRef.current = false;
+    const cached = peekSchema(conn, system);
+    if (cached !== null) {
+      setTables(cached);
+      setObjects(peekObjects(conn, system));
+    }
+    // A cached list stays on screen while it revalidates; the spinner is for
+    // first loads and explicit refreshes.
+    setLoading(cached === null || force);
     setError(null);
     try {
-      const next = await store.fetchSchema(conn, system);
-      setTables(next);
+      setTables(await loadSchema(conn, system, refreshKey, force));
     } catch (err) {
       setError(errorOf(err, "스키마를 불러오지 못했습니다"));
     } finally {
       setLoading(false);
     }
     try {
-      setObjects(await store.fetchObjects(conn, system));
+      setObjects(await loadObjects(conn, system, refreshKey, force));
     } catch {
-      setObjects(EMPTY_OBJECTS);
+      setObjects((prev) => prev ?? EMPTY_OBJECTS);
     }
-  }, [conn, system]);
+  }, [conn, system, refreshKey]);
 
   useEffect(() => {
     void load();
-  }, [load, refreshKey, nonce]);
+  }, [load, nonce]);
 
   function toggle(name: string): void {
     setExpanded((prev) => ({ ...prev, [name]: !(prev[name] ?? false) }));
@@ -228,7 +240,8 @@ export function SchemaSidebar({
     });
   }
 
-  const query = filter.trim().toLowerCase();
+  // Typing stays responsive; the filtered list catches up at lower priority.
+  const query = useDeferredValue(filter.trim().toLowerCase());
 
   const orderedTables = useMemo(() => {
     if (tables === null) {
@@ -290,6 +303,53 @@ export function SchemaSidebar({
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   const tablesOpen = sections.tables ?? true;
   const tableCount = orderedTables === null ? 0 : orderedTables.length;
+  const autoExpand = query !== "" && tableCount <= AUTO_EXPAND_LIMIT;
+
+  // The chunk count restarts for a new search or schema, but not when a
+  // background refresh replaces the same list.
+  const chunkKey = [conn, refreshKey, system ? "1" : "0", query].join("\u0000");
+  const [chunks, setChunks] = useState({ key: chunkKey, limit: TABLE_CHUNK });
+  if (chunks.key !== chunkKey) {
+    setChunks({ key: chunkKey, limit: TABLE_CHUNK });
+  }
+  const renderLimit = chunks.key === chunkKey ? chunks.limit : TABLE_CHUNK;
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // New search results (or another database) start from the top.
+  useEffect(() => {
+    if (listRef.current !== null) {
+      listRef.current.scrollTop = 0;
+    }
+  }, [chunkKey]);
+  // State, not a ref: a spacer mounted again (after an error, say) needs observing.
+  const [spacer, setSpacer] = useState<HTMLDivElement | null>(null);
+  const hasMore = tablesOpen && tableCount > renderLimit;
+  let spacerHeight = 0;
+  if (hasMore && orderedTables !== null) {
+    for (let index = renderLimit; index < orderedTables.length; index += 1) {
+      const table = orderedTables[index];
+      spacerHeight += TABLE_ROW_HEIGHT;
+      if (expanded[table.name]) {
+        spacerHeight += COLUMN_LIST_EXTRA + table.columns.length * COLUMN_ROW_HEIGHT;
+      }
+    }
+  }
+  useEffect(() => {
+    if (spacer === null) {
+      return;
+    }
+    // A fresh observer reports the current state right away, so a jump to the
+    // bottom keeps loading chunks until the spacer is out of view.
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setChunks({ key: chunkKey, limit: renderLimit + TABLE_CHUNK });
+        }
+      },
+      { root: listRef.current, rootMargin: "600px 0px" },
+    );
+    observer.observe(spacer);
+    return () => observer.disconnect();
+  }, [spacer, renderLimit, chunkKey]);
 
   function menuItems(table: string): ContextMenuItem[] {
     return [
@@ -331,7 +391,7 @@ export function SchemaSidebar({
   }
 
   function renderTableRow(table: TableSchema): ReactElement {
-    const isOpen = query !== "" || (expanded[table.name] ?? false);
+    const isOpen = autoExpand || (expanded[table.name] ?? false);
     const isPinned = pinnedSet.has(table.name);
     return (
       <div className="schema-table" key={`table:${table.name}`}>
@@ -450,35 +510,6 @@ export function SchemaSidebar({
       className="schema-sidebar"
       data-environment={environment === "" ? undefined : environment}
     >
-      <div className="sidebar-db">
-        <span className="sidebar-db-icon">
-          <DatabaseIcon size={13} />
-        </span>
-        <div className="sidebar-db-copy">
-          <span className="sidebar-db-name" title={label}>
-            {label}
-          </span>
-          <span className="sidebar-db-meta">
-            {DRIVER_LABELS[kind] ?? kind.toUpperCase()}
-            {environment !== "" ? (
-              <span className={`env-badge env-${environment}`}>
-                {environmentLabel(environment)}
-              </span>
-            ) : null}
-          </span>
-        </div>
-        <span
-          className={`conn-state-dot ${connection === "open" ? "open" : connection === "connecting" ? "connecting" : "closed"}`}
-          title={
-            connection === "open"
-              ? t("연결됨")
-              : connection === "connecting"
-                ? t("연결 중")
-                : t("끊김")
-          }
-          aria-hidden="true"
-        />
-      </div>
       <div className="sidebar-head">
         <span className="sidebar-title">{t("스키마")}</span>
         {tables ? <span className="schema-count">{tables.length}</span> : null}
@@ -518,7 +549,10 @@ export function SchemaSidebar({
           className="icon-button"
           title={t("스키마 새로고침")}
           disabled={loading}
-          onClick={() => setNonce((value) => value + 1)}
+          onClick={() => {
+            forceRef.current = true;
+            setNonce((value) => value + 1);
+          }}
         >
           {loading ? <Spinner size={11} /> : <RefreshIcon size={12} />}
         </button>
@@ -532,7 +566,7 @@ export function SchemaSidebar({
           onChange={(event) => setFilter(event.target.value)}
         />
       </div>
-      <div className="schema-list">
+      <div className="schema-list" ref={listRef}>
         {error ? (
           <div className="schema-error">{error}</div>
         ) : orderedTables === null ? (
@@ -555,7 +589,17 @@ export function SchemaSidebar({
                   {query === "" ? t("테이블이 없습니다") : t("검색 결과가 없습니다")}
                 </div>
               ) : (
-                orderedTables.map((table) => renderTableRow(table))
+                <>
+                  {orderedTables.slice(0, renderLimit).map((table) => renderTableRow(table))}
+                  {hasMore ? (
+                    <div
+                      ref={setSpacer}
+                      className="schema-more"
+                      style={{ height: spacerHeight }}
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                </>
               ))}
             {objectFiltered !== null &&
               OBJECT_SECTIONS.map(({ kind, label }) => {

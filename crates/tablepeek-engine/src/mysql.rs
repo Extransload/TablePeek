@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -126,7 +127,12 @@ pub(crate) async fn connect(config: &MySqlConfig) -> Result<Arc<MySqlInner>, Eng
             (conn, fallback)
         }
         Err(err) => {
-            return Err(EngineError::MySql(format!("MySQL TLS 연결 실패: {err}")));
+            let label = if config.ssl_mode != SslMode::Disable && tls_fallback_allowed(&err) {
+                "MySQL TLS 연결 실패"
+            } else {
+                "MySQL 연결 실패"
+            };
+            return Err(EngineError::MySql(format!("{label}: {err}")));
         }
     };
     let connection_id = conn
@@ -160,23 +166,23 @@ const TABLE_LIST_SYS_SQL: &str =
      WHERE TABLE_SCHEMA IN (DATABASE(), 'information_schema', 'mysql', 'performance_schema', 'sys') \
      ORDER BY TABLE_SCHEMA, TABLE_NAME";
 
-const COLUMN_SQL_SYS: &str = "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, \
-     EXISTS (SELECT 1 FROM information_schema.KEY_COLUMN_USAGE k \
-             WHERE k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME \
-               AND k.COLUMN_NAME = c.COLUMN_NAME AND k.CONSTRAINT_NAME = 'PRIMARY') AS is_pk, \
-     c.COLUMN_DEFAULT \
+const SCHEMA_COLUMNS_SQL: &str = "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME, \
+     c.COLUMN_TYPE, c.IS_NULLABLE, (k.COLUMN_NAME IS NOT NULL) AS is_pk, c.COLUMN_DEFAULT \
      FROM information_schema.COLUMNS c \
-     WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ? \
-     ORDER BY c.ORDINAL_POSITION";
+     LEFT JOIN information_schema.KEY_COLUMN_USAGE k \
+       ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME \
+      AND k.COLUMN_NAME = c.COLUMN_NAME AND k.CONSTRAINT_NAME = 'PRIMARY' \
+     WHERE c.TABLE_SCHEMA = DATABASE() \
+     ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION";
 
-const COLUMN_SQL: &str = "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, \
-     EXISTS (SELECT 1 FROM information_schema.KEY_COLUMN_USAGE k \
-             WHERE k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME \
-               AND k.COLUMN_NAME = c.COLUMN_NAME AND k.CONSTRAINT_NAME = 'PRIMARY') AS is_pk, \
-     c.COLUMN_DEFAULT \
+const SCHEMA_COLUMNS_SYS_SQL: &str = "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME, \
+     c.COLUMN_TYPE, c.IS_NULLABLE, (k.COLUMN_NAME IS NOT NULL) AS is_pk, c.COLUMN_DEFAULT \
      FROM information_schema.COLUMNS c \
-     WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME = ? \
-     ORDER BY c.ORDINAL_POSITION";
+     LEFT JOIN information_schema.KEY_COLUMN_USAGE k \
+       ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME \
+      AND k.COLUMN_NAME = c.COLUMN_NAME AND k.CONSTRAINT_NAME = 'PRIMARY' \
+     WHERE c.TABLE_SCHEMA IN (DATABASE(), 'information_schema', 'mysql', 'performance_schema', 'sys') \
+     ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION";
 
 const COLUMN_SQL_SCHEMA: &str = "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, \
      EXISTS (SELECT 1 FROM information_schema.KEY_COLUMN_USAGE k \
@@ -235,11 +241,14 @@ pub(crate) async fn schema(
 ) -> Result<Vec<TableSchema>, EngineError> {
     let mut conn = inner.conn.lock().await;
     let mut entries: Vec<(Option<String>, String)> = Vec::new();
-    if include_system {
-        let current: Option<String> = conn
-            .query_first("SELECT DATABASE()")
+    let current: Option<String> = if include_system {
+        conn.query_first("SELECT DATABASE()")
             .await
-            .map_err(mysql_err)?;
+            .map_err(mysql_err)?
+    } else {
+        None
+    };
+    if include_system {
         let rows: Vec<(String, String)> =
             conn.query(TABLE_LIST_SYS_SQL).await.map_err(mysql_err)?;
         for (schema, table) in rows {
@@ -255,34 +264,49 @@ pub(crate) async fn schema(
             entries.push((None, table));
         }
     }
-    let mut out = Vec::with_capacity(entries.len());
-    for (schema_part, table) in entries {
-        let rows: Vec<Row> = match &schema_part {
-            Some(schema) => conn
-                .exec(COLUMN_SQL_SYS, (schema.clone(), table.clone()))
-                .await
-                .map_err(mysql_err)?,
-            None => conn
-                .exec(COLUMN_SQL, vec![MyValue::from(table.clone())])
-                .await
-                .map_err(mysql_err)?,
+    // All columns in one round trip instead of one query per table: over a
+    // tunnel the per-table queries made the schema load scale with latency.
+    let rows: Vec<Row> = conn
+        .query(if include_system {
+            SCHEMA_COLUMNS_SYS_SQL
+        } else {
+            SCHEMA_COLUMNS_SQL
+        })
+        .await
+        .map_err(mysql_err)?;
+    let mut columns_by_table: HashMap<(Option<String>, String), Vec<ColumnSchema>> =
+        HashMap::new();
+    for row in rows {
+        let schema: Option<String> = row.get::<String, _>(0);
+        let schema_part = match schema {
+            Some(schema) if include_system && current.as_deref() != Some(schema.as_str()) => {
+                Some(schema)
+            }
+            _ => None,
         };
-        let columns = rows
-            .iter()
-            .map(|row| ColumnSchema {
-                name: row.get::<String, _>(0).unwrap_or_default(),
-                decl_type: row.get::<String, _>(1),
+        let table = row.get::<String, _>(1).unwrap_or_default();
+        columns_by_table
+            .entry((schema_part, table))
+            .or_default()
+            .push(ColumnSchema {
+                name: row.get::<String, _>(2).unwrap_or_default(),
+                decl_type: row.get::<String, _>(3),
                 not_null: row
-                    .get::<String, _>(2)
+                    .get::<String, _>(4)
                     .map(|value| value == "NO")
                     .unwrap_or(false),
                 pk: row
-                    .get::<i64, _>(3)
+                    .get::<i64, _>(5)
                     .map(|value| value != 0)
                     .unwrap_or(false),
-                default: row.get::<Option<String>, _>(4).flatten(),
-            })
-            .collect();
+                default: row.get::<Option<String>, _>(6).flatten(),
+            });
+    }
+    let mut out = Vec::with_capacity(entries.len());
+    for (schema_part, table) in entries {
+        let columns = columns_by_table
+            .remove(&(schema_part.clone(), table.clone()))
+            .unwrap_or_default();
         let name = match schema_part {
             Some(schema) => format!("{schema}.{table}"),
             None => table,

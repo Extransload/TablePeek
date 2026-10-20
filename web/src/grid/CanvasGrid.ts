@@ -1,4 +1,4 @@
-import type { RowSource } from "./rowSource";
+import type { RowSource, RowState } from "./rowSource";
 import { palette } from "../palette";
 import { getSettings } from "../settings";
 import { classifyValue } from "./valueKind";
@@ -13,6 +13,9 @@ const COL_MAX = 800;
 const RESIZE_GRIP = 4;
 const MAX_SCROLL_PX = 33_000_000;
 const COPY_MAX_ROWS = 100_000;
+const MIN_CHAR_W = 3;
+const STATE_ALPHA = 0.16;
+const EDIT_ALPHA = 0.24;
 const FONT = '12px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 const FONT_HEADER = '600 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
@@ -43,18 +46,21 @@ export interface SortIndicator {
 type HeaderClickHandler = (columnIndex: number, event: { shiftKey: boolean }) => void;
 type SelectionHandler = (row: number | null) => void;
 type CellContextMenuHandler = (row: number, col: number, x: number, y: number) => void;
+type DeleteRowsHandler = (rows: number[]) => void;
 
 const CLICK_SLOP = 2;
 
 export interface GridEditHandlers {
   onCommit(row: number, col: number, value: string | null): void;
   onCancel?(): void;
+  canEdit?(row: number, col: number): boolean;
 }
 
 interface EditState {
   input: HTMLInputElement;
   row: number;
   col: number;
+  initial: string;
   scrollLeft: number;
   scrollTop: number;
 }
@@ -94,6 +100,7 @@ export class CanvasGrid {
   private sortColumns: SortIndicator[] = [];
   private selectionListener: SelectionHandler | null = null;
   private contextMenuHandler: CellContextMenuHandler | null = null;
+  private deleteRowsHandler: DeleteRowsHandler | null = null;
   private quickLook: ((row: number, col: number) => void) | null = null;
   private cellQuickLook: ((row: number, col: number) => void) | null = null;
   private lastNotifiedRow: number | null = null;
@@ -103,6 +110,8 @@ export class CanvasGrid {
   private rafId = 0;
   private viewW = 0;
   private viewH = 0;
+  private knownRowCount = 0;
+  private keepViewOnce = false;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -116,20 +125,22 @@ export class CanvasGrid {
     scroller.style.outline = "none";
 
     const sizer = document.createElement("div");
+    sizer.style.position = "relative";
 
+    // The canvas sticks to the scrollport, so the compositor keeps it (and the
+    // painted header) in place while scrolling instead of a scroll-event transform.
     const canvas = document.createElement("canvas");
     canvas.tabIndex = 0;
-    canvas.style.position = "absolute";
+    canvas.style.position = "sticky";
     canvas.style.top = "0";
     canvas.style.left = "0";
     canvas.style.zIndex = "1";
     canvas.style.display = "block";
-    canvas.style.willChange = "transform";
     canvas.style.outline = "none";
     canvas.style.cursor = "default";
 
+    sizer.appendChild(canvas);
     scroller.appendChild(sizer);
-    scroller.appendChild(canvas);
     host.appendChild(scroller);
 
     const ctx = canvas.getContext("2d");
@@ -155,9 +166,8 @@ export class CanvasGrid {
     canvas.addEventListener("focus", this.onFocus);
     canvas.addEventListener("blur", this.onBlur);
     canvas.addEventListener("wheel", this.onWheel, { passive: false });
-    this.ro.observe(host);
+    this.ro.observe(scroller);
 
-    this.applyTransform();
     this.updateSizer();
     this.resizeSurface();
     this.schedulePaint();
@@ -184,12 +194,22 @@ export class CanvasGrid {
       this.disposeUpdates();
       this.disposeUpdates = null;
     }
+    const previous = this.source;
+    const keepView =
+      this.keepViewOnce &&
+      previous !== null &&
+      source !== null &&
+      previous.columns.length === source.columns.length &&
+      previous.columns.every((name, index) => name === source.columns[index]);
+    this.keepViewOnce = false;
     this.source = source;
     if (source && source.onUpdate) {
-      this.disposeUpdates = source.onUpdate(() => this.schedulePaint());
+      this.disposeUpdates = source.onUpdate(this.onSourceUpdate);
     }
-    this.scroller.scrollLeft = 0;
-    this.scroller.scrollTop = 0;
+    if (!keepView) {
+      this.scroller.scrollLeft = 0;
+      this.scroller.scrollTop = 0;
+    }
     this.hoverRow = null;
     this.hoverColEdge = null;
     this.canvas.style.cursor = "default";
@@ -202,17 +222,23 @@ export class CanvasGrid {
 
     const colCount = source ? source.columns.length : 0;
     const rowCount = source ? source.rowCount : 0;
-    const widths = new Array<number>(colCount);
-    for (let c = 0; c < colCount; c++) {
-      widths[c] = COL_DEFAULT;
+    if (!keepView) {
+      const widths = new Array<number>(colCount);
+      for (let c = 0; c < colCount; c++) {
+        widths[c] = COL_DEFAULT;
+      }
+      this.widths = widths;
     }
-    this.widths = widths;
-    this.gutterW = Math.max(GUTTER_MIN, String(Math.max(1, rowCount)).length * 8 + 24);
+    this.knownRowCount = rowCount;
+    this.gutterW = this.gutterFor(rowCount);
     this.rebuildOffsets();
-    this.applyTransform();
     this.updateSizer();
     this.resizeSurface();
     this.schedulePaint();
+  }
+
+  keepViewOnNextSource(): void {
+    this.keepViewOnce = true;
   }
 
   setEditable(handlers: GridEditHandlers | null): void {
@@ -239,8 +265,32 @@ export class CanvasGrid {
     this.contextMenuHandler = handler;
   }
 
+  setDeleteRowsHandler(handler: DeleteRowsHandler | null): void {
+    this.deleteRowsHandler = handler;
+  }
+
   beginEdit(row: number, col: number): void {
+    if (this.editor) {
+      this.commitEdit();
+    }
+    if (this.source && row >= 0 && row < this.source.rowCount && col >= 0 && col < this.widths.length) {
+      this.ensureVisibleFor(row, col);
+    }
     this.startEdit(row, col);
+  }
+
+  selectCell(row: number, col: number): void {
+    const src = this.source;
+    if (!src || row < 0 || row >= src.rowCount || col < 0 || col >= this.widths.length) {
+      return;
+    }
+    this.selMode = "cell";
+    this.anchor = { row, col };
+    this.cursor = { row, col };
+    this.ensureVisibleFor(row, col);
+    this.notifySelection();
+    this.canvas.focus();
+    this.schedulePaint();
   }
 
   focus(): void {
@@ -274,6 +324,10 @@ export class CanvasGrid {
     }
     this.source = null;
     this.host.innerHTML = "";
+  }
+
+  private gutterFor(rowCount: number): number {
+    return Math.max(GUTTER_MIN, String(Math.max(1, rowCount)).length * 8 + 24);
   }
 
   private totalW(): number {
@@ -314,15 +368,19 @@ export class CanvasGrid {
   }
 
   private updateSizer(): void {
-    const w = Math.min(this.totalW(), MAX_SCROLL_PX);
-    const h = Math.min(this.totalH(), MAX_SCROLL_PX);
+    const w = Math.max(Math.min(this.totalW(), MAX_SCROLL_PX), this.viewW);
+    const h = Math.max(Math.min(this.totalH(), MAX_SCROLL_PX), this.viewH);
     this.sizer.style.width = `${Math.max(0, w)}px`;
     this.sizer.style.height = `${Math.max(0, h)}px`;
   }
 
   private resizeSurface(): void {
-    const cw = this.scroller.clientWidth;
-    const ch = this.scroller.clientHeight;
+    // clientWidth/Height are rounded; flooring the real box keeps the canvas (and the
+    // sizer, which is at least the canvas size) from overflowing by a fraction of a pixel.
+    const rect = this.scroller.getBoundingClientRect();
+    const scroller = this.scroller;
+    const cw = Math.floor(rect.width) - (scroller.offsetWidth - scroller.clientWidth);
+    const ch = Math.floor(rect.height) - (scroller.offsetHeight - scroller.clientHeight);
     this.viewW = cw > 0 ? cw : 0;
     this.viewH = ch > 0 ? ch : 0;
     if (this.viewW === 0 || this.viewH === 0) {
@@ -340,10 +398,6 @@ export class CanvasGrid {
     this.canvas.style.width = `${this.viewW}px`;
     this.canvas.style.height = `${this.viewH}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-
-  private applyTransform(): void {
-    this.canvas.style.transform = `translate(${this.scroller.scrollLeft}px, ${this.scroller.scrollTop}px)`;
   }
 
   private schedulePaint(): void {
@@ -499,60 +553,93 @@ export class CanvasGrid {
     const sel = this.selectionRange();
     const selFill = this.focused ? palette.selFillFocus : palette.selFill;
     const startCol = this.firstVisibleCol(virtualX);
-    const colorsEnabled = getSettings().typeColors;
-
-    ctx.textBaseline = "middle";
-    ctx.font = FONT;
+    let endCol = startCol;
+    while (endCol < colCount && gutterW + this.offsets[endCol] - virtualX < w) {
+      endCol++;
+    }
+    const settings = getSettings();
+    const colorsEnabled = settings.typeColors;
+    const rowAlt = settings.rowAlt;
+    const rowStateOf = src.rowState ? (r: number) => src.rowState!(r) : null;
+    const cellStateOf = src.cellState ? (r: number, c: number) => src.cellState!(r, c) : null;
+    const rowStates: RowState[] = [];
 
     for (let r = first; r <= last; r++) {
       const y = HEADER_H + r * ROW_H - virtualY;
-      if (getSettings().rowAlt && (r & 1) === 1) {
+      const state = rowStateOf ? rowStateOf(r) : null;
+      rowStates.push(state);
+      if (rowAlt && (r & 1) === 1) {
         ctx.fillStyle = palette.rowAlt;
         ctx.fillRect(0, y, w, ROW_H);
+      }
+      if (state === "inserted" || state === "deleted") {
+        ctx.globalAlpha = STATE_ALPHA;
+        ctx.fillStyle = state === "inserted" ? palette.ok : palette.error;
+        ctx.fillRect(gutterW, y, contentW, ROW_H);
+        ctx.globalAlpha = 1;
       }
       if (r === this.hoverRow) {
         ctx.fillStyle = palette.hoverFill;
         ctx.fillRect(0, y, w, ROW_H);
       }
-      for (let c = startCol; c < colCount; c++) {
+      for (let c = startCol; c < endCol; c++) {
         const x = gutterW + this.offsets[c] - virtualX;
-        if (x >= w) {
-          break;
-        }
         const cw = this.widths[c];
-        if (x + cw <= gutterW) {
+        const fx = Math.max(x, gutterW);
+        const fw = Math.min(x + cw, w) - fx;
+        if (fw <= 0) {
           continue;
+        }
+        if (state === "edited" && cellStateOf && cellStateOf(r, c) === "edited") {
+          ctx.globalAlpha = EDIT_ALPHA;
+          ctx.fillStyle = palette.warn;
+          ctx.fillRect(fx, y, fw, ROW_H);
+          ctx.globalAlpha = 1;
         }
         if (sel && r >= sel.r0 && r <= sel.r1 && c >= sel.c0 && c <= sel.c1) {
           ctx.fillStyle = selFill;
-          const fx = Math.max(x, gutterW);
-          const fw = Math.min(x + cw, w) - fx;
-          if (fw > 0) {
-            ctx.fillRect(fx, y, fw, ROW_H);
-          }
+          ctx.fillRect(fx, y, fw, ROW_H);
         }
+      }
+    }
+
+    // Text is clipped once per column; slicing bounds the cost of very long values.
+    ctx.textBaseline = "middle";
+    ctx.font = FONT;
+    for (let c = startCol; c < endCol; c++) {
+      const x = gutterW + this.offsets[c] - virtualX;
+      const cw = this.widths[c];
+      if (x + cw <= gutterW) {
+        continue;
+      }
+      const maxChars = Math.ceil(cw / MIN_CHAR_W) + 1;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, HEADER_H, cw, contentH);
+      ctx.clip();
+      for (let r = first; r <= last; r++) {
         const v = src.cell(r, c);
         if (v === undefined) {
           continue;
         }
-        const isNull = v === null;
-        const text = isNull ? "NULL" : this.cellText(v);
-        const right = typeof v === "number";
-        ctx.fillStyle = this.textInk(v, colorsEnabled);
-        ctx.textAlign = right ? "right" : "left";
-        const tx = right ? x + cw - CELL_PAD : x + CELL_PAD;
-        const ty = y + ROW_H / 2;
-        if (ctx.measureText(text).width > cw - CELL_PAD * 2) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(x, y, cw, ROW_H);
-          ctx.clip();
-          ctx.fillText(text, tx, ty);
-          ctx.restore();
-        } else {
-          ctx.fillText(text, tx, ty);
+        const y = HEADER_H + r * ROW_H - virtualY + ROW_H / 2;
+        const state = rowStates[r - first];
+        if (cellStateOf && state === "inserted" && cellStateOf(r, c) === "default") {
+          ctx.fillStyle = palette.faint;
+          ctx.textAlign = "left";
+          ctx.fillText("DEFAULT", x + CELL_PAD, y);
+          continue;
         }
+        let text = v === null ? "NULL" : this.cellText(v);
+        const right = typeof v === "number";
+        if (text.length > maxChars) {
+          text = right ? text.slice(-maxChars) : text.slice(0, maxChars);
+        }
+        ctx.fillStyle = state === "deleted" ? palette.faint : this.textInk(v, colorsEnabled);
+        ctx.textAlign = right ? "right" : "left";
+        ctx.fillText(text, right ? x + cw - CELL_PAD : x + CELL_PAD, y);
       }
+      ctx.restore();
     }
 
     ctx.save();
@@ -567,11 +654,8 @@ export class CanvasGrid {
       ctx.moveTo(gutterW, y);
       ctx.lineTo(w, y);
     }
-    for (let c = startCol; c < colCount; c++) {
+    for (let c = startCol; c < endCol; c++) {
       const bx = gutterW + this.offsets[c] + this.widths[c] - virtualX;
-      if (bx > w) {
-        break;
-      }
       if (bx < gutterW) {
         continue;
       }
@@ -580,6 +664,19 @@ export class CanvasGrid {
       ctx.lineTo(lx, h);
     }
     ctx.stroke();
+    const rowEnd = Math.min(w, gutterW + this.offsets[colCount] - virtualX);
+    ctx.strokeStyle = palette.error;
+    ctx.beginPath();
+    for (let r = first; r <= last; r++) {
+      if (rowStates[r - first] === "deleted") {
+        const y = Math.round(HEADER_H + r * ROW_H - virtualY + ROW_H / 2) + 0.5;
+        ctx.moveTo(gutterW, y);
+        ctx.lineTo(rowEnd, y);
+      }
+    }
+    ctx.globalAlpha = 0.55;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.restore();
 
     ctx.fillStyle = palette.head;
@@ -594,8 +691,18 @@ export class CanvasGrid {
         ctx.fillStyle = selFill;
         ctx.fillRect(0, y, gutterW, ROW_H);
       }
-      ctx.fillStyle = r === this.hoverRow || inSel ? palette.accent : palette.faint;
-      ctx.fillText(String(r + 1), numX, y + ROW_H / 2);
+      const state = rowStates[r - first];
+      ctx.fillStyle =
+        state === "inserted"
+          ? palette.ok
+          : state === "deleted"
+            ? palette.error
+            : state === "edited"
+              ? palette.warn
+              : r === this.hoverRow || inSel
+                ? palette.accent
+                : palette.faint;
+      ctx.fillText(state === "inserted" ? "+" : String(r + 1), numX, y + ROW_H / 2);
     }
     ctx.strokeStyle = palette.line;
     ctx.lineWidth = 1;
@@ -924,11 +1031,15 @@ export class CanvasGrid {
     if (row < 0 || row >= src.rowCount || col < 0 || col >= this.widths.length) {
       return;
     }
+    if (this.editable.canEdit && !this.editable.canEdit(row, col)) {
+      return;
+    }
     const raw = src.cell(row, col);
     const input = document.createElement("input");
     input.type = "text";
     input.className = "cell-editor";
     input.value = raw === null || raw === undefined ? "" : this.cellText(raw);
+    const initial = input.value;
     input.style.textAlign = typeof raw === "number" ? "right" : "left";
     input.style.left = `${this.gutterW + this.offsets[col] - this.virtualScrollX()}px`;
     input.style.top = `${HEADER_H + row * ROW_H - this.virtualScrollY()}px`;
@@ -938,6 +1049,7 @@ export class CanvasGrid {
       input,
       row,
       col,
+      initial,
       scrollLeft: this.scroller.scrollLeft,
       scrollTop: this.scroller.scrollTop,
     };
@@ -975,7 +1087,7 @@ export class CanvasGrid {
     const row = ed.row;
     const col = ed.col;
     this.endEdit();
-    if (this.editable) {
+    if (this.editable && value !== ed.initial) {
       this.editable.onCommit(row, col, value === "" ? null : value);
     }
     this.canvas.focus();
@@ -1088,6 +1200,23 @@ export class CanvasGrid {
       this.cancelEdit();
     }
     this.resizeSurface();
+    this.updateSizer();
+    this.schedulePaint();
+  };
+
+  private readonly onSourceUpdate = (): void => {
+    const rowCount = this.source ? this.source.rowCount : 0;
+    if (rowCount !== this.knownRowCount) {
+      this.knownRowCount = rowCount;
+      this.gutterW = this.gutterFor(rowCount);
+      this.updateSizer();
+      if (this.cursor && this.cursor.row >= rowCount) {
+        this.selMode = "cell";
+        this.anchor = null;
+        this.cursor = null;
+        this.notifySelection();
+      }
+    }
     this.schedulePaint();
   };
 
@@ -1099,7 +1228,6 @@ export class CanvasGrid {
     ) {
       this.cancelEdit();
     }
-    this.applyTransform();
     this.schedulePaint();
   };
 
@@ -1413,6 +1541,18 @@ export class CanvasGrid {
     if ((key === "Enter" || key === "F2") && this.editable && this.cursor) {
       e.preventDefault();
       this.startEdit(this.cursor.row, this.cursor.col);
+      return;
+    }
+    if ((key === "Delete" || key === "Backspace") && this.deleteRowsHandler && this.selMode !== "col") {
+      const sel = this.selectionRange();
+      if (sel) {
+        e.preventDefault();
+        const rows: number[] = [];
+        for (let r = sel.r0; r <= sel.r1; r++) {
+          rows.push(r);
+        }
+        this.deleteRowsHandler(rows);
+      }
       return;
     }
     if (src.rowCount === 0 || this.widths.length === 0) {

@@ -64,7 +64,9 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
   const loading = value === undefined;
   const column = result.meta.columns[col] ?? `#${col + 1}`;
   const editable =
-    result.meta.sourceTable !== null && result.meta.pk !== null && result.meta.pk.length > 0;
+    result.meta.sourceTable !== null &&
+    !result.source.isDeleted(row) &&
+    (result.source.isInserted(row) || (result.meta.pk !== null && result.meta.pk.length > 0));
 
   useEffect(() => {
     const initial = valueText(result.source.cell(row, col));
@@ -116,7 +118,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
     setSaving(false);
     if (outcome !== null) {
       setDirty(false);
-      setMessage(t("저장했습니다"));
+      setMessage(t("변경 대기 중 — ⌘S로 적용"));
     } else {
       setMessage(store.getState().error ?? store.getState().info ?? t("저장하지 못했습니다"));
     }
@@ -132,7 +134,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
     if (outcome !== null) {
       setDraft("");
       setDirty(false);
-      setMessage(t("NULL로 저장했습니다"));
+      setMessage(t("NULL로 변경 대기 중 — ⌘S로 적용"));
     } else {
       setMessage(store.getState().error ?? store.getState().info ?? t("저장하지 못했습니다"));
     }
@@ -319,7 +321,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
         <span className={message === null ? "quicklook-hint" : "quicklook-message"}>
           {message ??
             (editable
-              ? t("⌘Enter 저장 · Esc 닫기 · 가운데 클릭으로 열기")
+              ? t("⌘Enter 변경 대기 · ⌘S 적용 · Esc 닫기")
               : t("읽기 전용 · Esc 닫기 · 가운데 클릭으로 열기"))}
         </span>
         {tab !== "encoding" ? (
@@ -343,7 +345,7 @@ export function CellQuickLook({ result, row, col, table, onClose }: CellQuickLoo
                   {t("저장 중")}
                 </>
               ) : (
-                t("저장")
+                t("변경 대기")
               )}
             </button>
           </>

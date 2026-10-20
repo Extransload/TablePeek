@@ -140,20 +140,29 @@ impl StoreFile {
         &self.data
     }
 
-    pub fn add_connection(&mut self, mut connection: SavedConnection) -> Result<(), String> {
-        if let Some(existing) = self
+    pub fn add_connection(&mut self, connection: SavedConnection) -> Result<(), String> {
+        if !self.update_connection(connection.clone())? {
+            self.data.connections.push(connection);
+            self.persist()?;
+        }
+        Ok(())
+    }
+
+    /// Replaces a saved profile in place (keeping its list position). Returns false,
+    /// writing nothing, when the id no longer exists.
+    pub fn update_connection(&mut self, mut connection: SavedConnection) -> Result<bool, String> {
+        let Some(existing) = self
             .data
             .connections
-            .iter()
+            .iter_mut()
             .find(|existing| existing.id == connection.id)
-        {
-            connection.last_used = connection.last_used.max(existing.last_used);
-        }
-        self.data
-            .connections
-            .retain(|existing| existing.id != connection.id);
-        self.data.connections.push(connection);
-        self.persist()
+        else {
+            return Ok(false);
+        };
+        connection.last_used = connection.last_used.max(existing.last_used);
+        *existing = connection;
+        self.persist()?;
+        Ok(true)
     }
 
     pub fn touch_connection(&mut self, id: &str, at: u64) -> Result<bool, String> {

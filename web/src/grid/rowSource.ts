@@ -1,8 +1,13 @@
+export type RowState = "inserted" | "deleted" | "edited" | null;
+export type CellState = "edited" | "default" | null;
+
 export interface RowSource {
   readonly columns: string[];
   readonly rowCount: number;
   cell(row: number, col: number): unknown;
   onUpdate?(listener: () => void): () => void;
+  rowState?(row: number): RowState;
+  cellState?(row: number, col: number): CellState;
 }
 
 export class JsonRowSource implements RowSource {

@@ -15,15 +15,99 @@ export function definitionTabTitle(kind: DefinitionKind, name: string): string {
   return `${t(DEFINITION_KIND_LABELS[kind])} ${t("정의")}: ${name}`;
 }
 
-export function unsafeStatement(sql: string): "UPDATE" | "DELETE" | null {
-  const match = /^\s*(update|delete)/i.exec(sql);
-  if (!match) {
+// 0: off · 1: stop before destructive statements · 2: stop before anything that writes.
+export type SafeMode = 0 | 1 | 2;
+
+export interface ReviewItem {
+  sql: string;
+  keyword: string;
+  severity: "danger" | "write";
+  // i18n key explaining what the statement does.
+  reason: string;
+}
+
+const READ_KEYWORDS = new Set(["select", "explain", "show", "describe", "desc", "values", "table"]);
+const SESSION_KEYWORDS = new Set([
+  "begin",
+  "start",
+  "commit",
+  "rollback",
+  "savepoint",
+  "release",
+  "set",
+  "use",
+]);
+const DML = /\b(insert|update|delete|merge|replace)\b/i;
+
+// Comments and quoted text can't trigger or hide keywords.
+function scanText(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(--|#)[^\n]*/g, " ")
+    .replace(/'(?:[^'\\]|\\.|'')*'/g, "''")
+    .replace(/"(?:[^"]|"")*"/g, '""')
+    .replace(/`[^`]*`/g, "``")
+    .trim()
+    .replace(/^\(+\s*/, "");
+}
+
+export function classifyStatement(sql: string): ReviewItem | null {
+  const scan = scanText(sql);
+  const keyword = (/^([a-z]+)/i.exec(scan)?.[1] ?? "").toLowerCase();
+  if (keyword === "" || SESSION_KEYWORDS.has(keyword)) {
     return null;
   }
-  if (/\bwhere\b/i.test(sql)) {
+  const item = (severity: ReviewItem["severity"], reason: string): ReviewItem => ({
+    sql,
+    keyword: keyword.toUpperCase(),
+    severity,
+    reason,
+  });
+  if (keyword === "pragma") {
+    return scan.includes("=") ? item("write", "설정을 변경합니다") : null;
+  }
+  if (keyword === "with" || keyword === "explain") {
+    // WITH ... DELETE, and EXPLAIN ANALYZE, actually run the data change.
+    const runs = keyword === "with" || /^explain\s+(\(.*?\)\s*)?analy[sz]e\b/i.test(scan);
+    return runs && DML.test(scan) ? item("write", "데이터를 변경합니다") : null;
+  }
+  if (READ_KEYWORDS.has(keyword)) {
     return null;
   }
-  return match[1].toUpperCase() as "UPDATE" | "DELETE";
+  const hasWhere = /\bwhere\b/i.test(scan);
+  switch (keyword) {
+    case "update":
+      return hasWhere
+        ? item("write", "조건에 맞는 행을 수정합니다")
+        : item("danger", "WHERE 절이 없어 테이블의 모든 행을 수정합니다");
+    case "delete":
+      return hasWhere
+        ? item("write", "조건에 맞는 행을 삭제합니다")
+        : item("danger", "WHERE 절이 없어 테이블의 모든 행을 삭제합니다");
+    case "drop":
+      return item("danger", "객체를 영구히 삭제합니다");
+    case "truncate":
+      return item("danger", "테이블의 모든 행을 삭제합니다");
+    case "alter":
+      return item("danger", "테이블이나 객체의 구조를 변경합니다");
+    case "insert":
+      return item("write", "행을 추가합니다");
+    case "create":
+      return item("write", "새 객체를 만듭니다");
+    default:
+      return item("write", "데이터나 스키마를 변경합니다");
+  }
+}
+
+export function reviewStatements(statements: string[], mode: SafeMode): ReviewItem[] {
+  if (mode === 0) {
+    return [];
+  }
+  return statements
+    .map(classifyStatement)
+    .filter(
+      (item): item is ReviewItem => item !== null && (mode === 2 || item.severity === "danger"),
+    );
 }
 
 export function explainPrefixFor(engineKind: string): string | null {

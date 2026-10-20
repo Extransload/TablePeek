@@ -1,4 +1,5 @@
-import type { WindowedRowSource } from "./grid/windowSource";
+import type { PkPair, WindowedRowSource } from "./grid/windowSource";
+import { cellToString } from "./rowOps";
 import { TablePeekSocket, TablePeekSocketError, type QueryMeta } from "./net/socket";
 import type { DefinitionKind } from "./sqlTools";
 
@@ -339,6 +340,34 @@ function messageOf(error: unknown): string {
     : UNKNOWN_ERROR;
 }
 
+export class ApiRequestError extends Error {
+  readonly code: string;
+
+  constructor(message: string, code: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export type MissingSecret = "db" | "ssh" | "http";
+
+// Which stored secret the server needs typed in, if that is why a connect failed.
+export function missingSecretOf(error: unknown): MissingSecret | null {
+  if (!(error instanceof ApiRequestError)) {
+    return null;
+  }
+  switch (error.code) {
+    case "password_required":
+      return "db";
+    case "ssh_password_required":
+      return "ssh";
+    case "http_password_required":
+      return "http";
+    default:
+      return null;
+  }
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -367,7 +396,11 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
               `HTTP ${response.status}`,
           )
         : `HTTP ${response.status}`;
-    throw new Error(message);
+    const code =
+      body !== null && typeof body === "object" && "code" in body
+        ? String((body as { code?: unknown }).code ?? "")
+        : "";
+    throw new ApiRequestError(message, code);
   }
   return body as T;
 }
@@ -512,61 +545,79 @@ export interface EditOutcome {
   value: string | null;
 }
 
+function rowKey(result: GridResult, row: number, fetch = true): PkPair[] | null {
+  const meta = result.meta;
+  if (!meta.pk || meta.pk.length === 0) {
+    return null;
+  }
+  const pairs: PkPair[] = [];
+  for (const name of meta.pk) {
+    const index = meta.columns.indexOf(name);
+    if (index < 0) {
+      return null;
+    }
+    const value = result.source.baseCell(row, index, fetch);
+    if (value === undefined) {
+      return null;
+    }
+    pairs.push({ column: name, value: value as string | number | null });
+  }
+  return pairs;
+}
+
+let applying = false;
+
+function isApplying(): boolean {
+  return applying;
+}
+
+// Staging is refused while the result can still be replaced (a run is in flight)
+// or while a batch is being written, so no change is silently dropped.
+function stagingBlocked(result: GridResult): boolean {
+  if (applying) {
+    setState({ info: "변경사항을 적용하는 중입니다" });
+    return true;
+  }
+  if (state.status === "running" && state.connId === result.conn) {
+    setState({ info: "쿼리 실행 중에는 편집할 수 없습니다" });
+    return true;
+  }
+  return false;
+}
+
+// Cell edits, inserts and deletes are staged on the result's row source and only
+// reach the database through applyPending().
 async function editCell(
   row: number,
   col: number,
   value: string | null,
 ): Promise<EditOutcome | null> {
   const result = state.result;
-  const meta = result ? result.meta : null;
-  if (
-    !result ||
-    !meta ||
-    !meta.sourceTable ||
-    !meta.pk ||
-    meta.pk.length === 0
-  ) {
+  if (!result || !result.meta.sourceTable) {
     setState({ info: "편집할 수 없는 결과입니다" });
     return null;
   }
-  const pkIndexes: number[] = [];
-  for (const name of meta.pk) {
-    pkIndexes.push(meta.columns.indexOf(name));
-  }
-  if (pkIndexes.some((index) => index < 0)) {
-    setState({ info: "편집할 수 없는 결과입니다" });
+  if (stagingBlocked(result)) {
     return null;
   }
-  const pk: { column: string; value: string | number | null }[] = [];
-  for (let i = 0; i < meta.pk.length; i += 1) {
-    const cellValue = result.source.cell(row, pkIndexes[i]);
-    if (cellValue === undefined) {
-      setState({ info: "아직 로드되지 않은 행입니다" });
-      return null;
-    }
-    pk.push({ column: meta.pk[i], value: cellValue as string | number | null });
-  }
-  try {
-    const edited = await ensureSocket().edit(result.conn, {
-      session: result.queryId,
-      table: meta.sourceTable,
-      pk,
-      column: meta.columns[col],
-      value,
-      row,
-      col,
-    });
-    result.source.setCell(row, col, edited.value);
-    if (state.result === result) {
-      setState({ error: null, info: null });
-    }
-    return { row: edited.row, col: edited.col, value: edited.value };
-  } catch (error) {
-    if (state.result === result) {
-      setState({ status: "error", error: messageOf(error) });
-    }
+  const source = result.source;
+  if (source.isDeleted(row)) {
+    setState({ info: "삭제 예정인 행은 편집할 수 없습니다" });
     return null;
   }
+  if (source.isInserted(row)) {
+    return source.stageEdit(row, col, value, null) ? { row, col, value } : null;
+  }
+  if (!result.meta.pk || result.meta.pk.length === 0) {
+    setState({ info: "기본 키가 없어 편집할 수 없습니다" });
+    return null;
+  }
+  const key = rowKey(result, row);
+  if (key === null) {
+    setState({ info: "아직 로드되지 않은 행입니다" });
+    return null;
+  }
+  return source.stageEdit(row, col, value, key) ? { row, col, value } : null;
 }
 
 async function runDetached(
@@ -577,36 +628,122 @@ async function runDetached(
   return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW });
 }
 
-async function insertRow(
-  table: string,
-  values: { column: string; value: string | null }[],
-): Promise<number> {
+function stageInsert(values?: Map<number, string | null>): number | null {
   const result = state.result;
-  if (!result) {
-    throw new Error("행을 추가할 결과가 없습니다");
+  if (!result || !result.meta.sourceTable || stagingBlocked(result)) {
+    return null;
   }
-  const change = await ensureSocket().insertRow(result.conn, {
-    session: result.queryId,
-    table,
-    values,
-  });
-  return change.rowsAffected;
+  return result.source.stageInsert(values);
 }
 
-async function deleteRow(
-  table: string,
-  pk: { column: string; value: string | null }[],
-): Promise<number> {
+function stageDelete(rows: number[]): { changed: number; skipped: number } | null {
   const result = state.result;
-  if (!result) {
-    throw new Error("행을 삭제할 결과가 없습니다");
+  if (!result || !result.meta.sourceTable || stagingBlocked(result)) {
+    return null;
   }
-  const change = await ensureSocket().deleteRow(result.conn, {
-    session: result.queryId,
-    table,
-    pk,
-  });
-  return change.rowsAffected;
+  return result.source.stageDelete(rows, (row) => rowKey(result, row, false));
+}
+
+export interface ApplyOutcome {
+  structural: boolean;
+}
+
+function requireRow(rowsAffected: number): void {
+  if (rowsAffected === 0) {
+    throw new Error(
+      "대상 행을 찾지 못했습니다. 다른 곳에서 변경·삭제되었을 수 있습니다. 새로고침 후 다시 시도하세요.",
+    );
+  }
+}
+
+async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
+  const source = result.source;
+  const meta = result.meta;
+  const table = meta.sourceTable;
+  if (applying || table === null || !source.hasPending()) {
+    return applying ? null : { structural: false };
+  }
+  const ops = source.pendingOps();
+  const pkNames = new Set(meta.pk ?? []);
+  const conn = result.conn;
+  const sock = ensureSocket();
+  const ownTx = !(state.connId === conn && state.tx === "active");
+  const applied: { row: number; col: number; value: string | null }[] = [];
+  let phase: "begin" | "write" | "commit" = "begin";
+  applying = true;
+  try {
+    if (ownTx) {
+      await sock.begin(conn);
+    }
+    phase = "write";
+    for (const edit of ops.edits) {
+      let key = edit.key;
+      // Key columns go last so the other edits still find the row by its original key.
+      const cells = [...edit.cells].sort(
+        (a, b) =>
+          Number(pkNames.has(meta.columns[a.col])) - Number(pkNames.has(meta.columns[b.col])),
+      );
+      for (const cell of cells) {
+        const column = meta.columns[cell.col];
+        const outcome = await sock.edit(conn, {
+          session: result.queryId,
+          table,
+          pk: key,
+          column,
+          value: cell.value,
+          row: edit.row,
+          col: cell.col,
+        });
+        requireRow(outcome.rowsAffected);
+        applied.push({ row: edit.row, col: cell.col, value: cell.value });
+        if (pkNames.has(column)) {
+          key = key.map((pair) => (pair.column === column ? { column, value: cell.value } : pair));
+        }
+      }
+    }
+    // Deletes before inserts, so a deleted key can be re-used by a new row.
+    for (const entry of ops.deletes) {
+      const change = await sock.deleteRow(conn, {
+        session: result.queryId,
+        table,
+        pk: entry.key.map((pair) => ({ column: pair.column, value: cellToString(pair.value) })),
+      });
+      requireRow(change.rowsAffected);
+    }
+    for (const values of ops.inserts) {
+      await sock.insertRow(conn, {
+        session: result.queryId,
+        table,
+        values: values.map((entry) => ({ column: meta.columns[entry.col], value: entry.value })),
+      });
+    }
+    if (ownTx) {
+      phase = "commit";
+      await sock.commit(conn);
+    }
+  } catch (error) {
+    let message = messageOf(error);
+    if (ownTx && phase !== "begin") {
+      try {
+        await sock.rollback(conn);
+      } catch {
+        // The server may still hold the transaction open; surface the TX controls.
+        setState({ tx: "active" });
+        message = `${message} — 롤백하지 못했습니다. 트랜잭션을 확인하세요.`;
+      }
+    } else if (!ownTx && phase === "write") {
+      message = `${message} — 일부 변경이 진행 중인 트랜잭션에 반영되었을 수 있습니다. 롤백 후 다시 적용하세요.`;
+    }
+    setState({ error: message });
+    return null;
+  } finally {
+    applying = false;
+  }
+  for (const entry of applied) {
+    source.setCell(entry.row, entry.col, entry.value);
+  }
+  source.discardPending();
+  return { structural: ops.inserts.length > 0 || ops.deletes.length > 0 };
 }
 
 function setActiveRunner(runner: (() => void) | null): void {
@@ -690,9 +827,17 @@ async function connect(input: ConnectInput): Promise<LiveConn> {
 
 const connectPostgres = connect;
 
-async function connectSaved(id: string): Promise<LiveConn> {
+export interface ConnectSecrets {
+  password?: string;
+  ssh_password?: string;
+  http_password?: string;
+}
+
+// Secrets passed here are used for this connect only and never stored.
+async function connectSaved(id: string, secrets?: ConnectSecrets): Promise<LiveConn> {
   return api<LiveConn>(`/api/connections/${encodeURIComponent(id)}/connect`, {
     method: "POST",
+    ...(secrets !== undefined ? { body: JSON.stringify(secrets) } : {}),
   });
 }
 
@@ -728,6 +873,39 @@ async function createConnection(
     }),
   });
   return body.id;
+}
+
+async function updateConnection(
+  id: string,
+  name: string,
+  input: ConnectInput,
+  persistPassword: boolean,
+): Promise<void> {
+  await api<{ id: string }>(`/api/connections/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name,
+      connect: input,
+      persist_password: persistPassword,
+    }),
+  });
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  elapsed_ms: number;
+  kind: string;
+  tables: number;
+}
+
+async function testConnection(
+  input: ConnectInput,
+  savedId?: string,
+): Promise<ConnectionTestResult> {
+  return api<ConnectionTestResult>("/api/connections/test", {
+    method: "POST",
+    body: JSON.stringify({ connect: input, saved_id: savedId }),
+  });
 }
 
 async function deleteConnection(id: string): Promise<void> {
@@ -858,9 +1036,16 @@ async function deleteFavorite(id: string): Promise<void> {
   });
 }
 
-async function listDir(path?: string): Promise<FsListing> {
-  const query = path === undefined ? "" : `?path=${encodeURIComponent(path)}`;
-  return api<FsListing>(`/api/fs/list${query}`);
+async function listDir(path?: string, hidden = false): Promise<FsListing> {
+  const params = new URLSearchParams();
+  if (path !== undefined) {
+    params.set("path", path);
+  }
+  if (hidden) {
+    params.set("hidden", "true");
+  }
+  const query = params.toString();
+  return api<FsListing>(`/api/fs/list${query === "" ? "" : `?${query}`}`);
 }
 
 async function statPath(path: string): Promise<PathStat> {
@@ -886,8 +1071,10 @@ export const store = {
   runDetached,
   cancelQuery,
   editCell,
-  insertRow,
-  deleteRow,
+  stageInsert,
+  stageDelete,
+  applyPending,
+  isApplying,
   setActiveRunner,
   beginTx,
   commitTx,
@@ -905,6 +1092,8 @@ export const store = {
   closeConn,
   listConnections,
   createConnection,
+  updateConnection,
+  testConnection,
   deleteConnection,
   fetchSchema,
   fetchTableDetail,

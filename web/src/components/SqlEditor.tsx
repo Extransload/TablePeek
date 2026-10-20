@@ -31,7 +31,8 @@ interface SqlEditorProps {
   onSqlChange(tabId: string, sql: string): void;
   schema: Record<string, string[]>;
   favorites: FavoriteSnippet[];
-  runKey?: string;
+  // CodeMirror key for onRun; null leaves running to the app's shortcuts.
+  runKey?: string | null;
 }
 
 const editorTheme = EditorView.theme(
@@ -116,7 +117,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const onSqlChangeRef = useRef(onSqlChange);
     const favoritesRef = useRef(favorites);
     const schemaRef = useRef(schema);
-    const runKeyRef = useRef(runKey ?? "Mod-Enter");
+    const runKeyRef = useRef(runKey === undefined ? "Mod-Enter" : runKey);
     const pendingRef = useRef<{ tabId: string; sql: string; timer: number } | null>(null);
     const [schemaCompartment] = useState(() => new Compartment());
 
@@ -126,7 +127,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     readOnlyRef.current = readOnly ?? false;
     favoritesRef.current = favorites;
     schemaRef.current = schema;
-    runKeyRef.current = runKey ?? "Mod-Enter";
+    runKeyRef.current = runKey === undefined ? "Mod-Enter" : runKey;
 
     function flushPending(): void {
       const pending = pendingRef.current;
@@ -190,13 +191,17 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         extensions: [
           Prec.highest(
             keymap.of([
-              {
-                key: runKeyRef.current,
-                run: () => {
-                  onRunRef.current();
-                  return true;
-                },
-              },
+              ...(runKeyRef.current === null
+                ? []
+                : [
+                    {
+                      key: runKeyRef.current,
+                      run: () => {
+                        onRunRef.current();
+                        return true;
+                      },
+                    },
+                  ]),
               {
                 key: "Mod-d",
                 run: selectNextOccurrence,

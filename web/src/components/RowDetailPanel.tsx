@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { useEffect, useState } from "react";
 import { buildUpdateSql, toSqlInserts } from "../export";
 import { store, type GridResult, type TableDetail } from "../store";
@@ -84,7 +85,8 @@ export function RowDetailPanel({
 
   const meta = result ? result.meta : null;
   const columns = meta ? meta.columns : [];
-  const valid = result !== null && meta !== null && row !== null && row >= 0 && row < meta.rowCount;
+  const valid =
+    result !== null && meta !== null && row !== null && row >= 0 && row < result.source.rowCount;
 
   const values: unknown[] = valid
     ? columns.map((_, index) => result.source.cell(row, index))
@@ -225,9 +227,11 @@ export function RowDetailPanel({
     const editable =
       loaded &&
       result !== null &&
+      row !== null &&
       result.meta.sourceTable !== null &&
-      result.meta.pk !== null &&
-      result.meta.pk.length > 0;
+      !result.source.isDeleted(row) &&
+      (result.source.isInserted(row) ||
+        (result.meta.pk !== null && result.meta.pk.length > 0));
     const dirty = jsonText !== null && jsonText !== JSON.stringify(object, null, 2);
     const save = async (): Promise<void> => {
       if (!editable || result === null || row === null) {
@@ -265,7 +269,7 @@ export function RowDetailPanel({
           }
         }
         setJsonText(null);
-        store.setInfo(`행을 저장했습니다 (${changes.length}개 컬럼)`);
+        store.setInfo(t("변경 대기 중 ({count}개 컬럼) — ⌘S로 적용", { count: changes.length }));
       } finally {
         setJsonBusy(false);
       }
@@ -283,9 +287,9 @@ export function RowDetailPanel({
                 className="icon-text-button"
                 disabled={jsonBusy}
                 onClick={() => void save()}
-                title="변경 사항 저장"
+                title={t("변경 대기열에 추가 (⌘S로 적용)")}
               >
-                {jsonBusy ? "저장 중…" : "저장"}
+                {jsonBusy ? t("저장 중") : t("변경 대기")}
               </button>
             ) : null}
             <button

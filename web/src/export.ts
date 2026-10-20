@@ -228,22 +228,23 @@ export async function collectRows(
   onProgress?: (done: number, total: number) => void,
 ): Promise<unknown[][]> {
   const columnCount = source.columns.length;
-  const total = source.rowCount;
+  // Exports reflect what the database returned, not unapplied staged edits.
+  const total = source.baseRowCount;
   if (columnCount === 0 || total === 0) {
     onProgress?.(0, total);
     return [];
   }
   const rows = new Array<unknown[]>(total);
   for (let r = 0; r < total; r += 1) {
-    let first = source.cell(r, 0);
+    let first = source.baseCell(r, 0);
     if (first === undefined) {
       await source.ensureRow(r);
-      first = source.cell(r, 0);
+      first = source.baseCell(r, 0);
     }
     const row = new Array<unknown>(columnCount);
     row[0] = first === undefined ? null : first;
     for (let c = 1; c < columnCount; c += 1) {
-      const value = source.cell(r, c);
+      const value = source.baseCell(r, c);
       row[c] = value === undefined ? null : value;
     }
     rows[r] = row;

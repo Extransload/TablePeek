@@ -563,13 +563,16 @@ export class TablePeekSocket {
           waiter.reject(error);
         }
       }
-      if (message.conn != null) {
+      // Edit and tx failures arrive without an id; an id-bearing error belongs to
+      // a query, window fetch or row op and must not fail an in-flight edit/COMMIT.
+      const idless = message.id == null;
+      if (idless && message.conn != null) {
         const edit = this.editWaiters.get(message.conn);
         if (edit) {
           this.editWaiters.delete(message.conn);
           edit.reject(error);
         }
-      } else {
+      } else if (idless) {
         for (const [conn, edit] of this.editWaiters) {
           this.editWaiters.delete(conn);
           edit.reject(error);
@@ -583,13 +586,13 @@ export class TablePeekSocket {
           waiter.reject(error);
         }
       }
-      if (message.conn != null) {
+      if (idless && message.conn != null) {
         const tx = this.txWaiters.get(message.conn);
         if (tx) {
           this.txWaiters.delete(message.conn);
           tx.reject(error);
         }
-      } else {
+      } else if (idless) {
         for (const [conn, tx] of this.txWaiters) {
           this.txWaiters.delete(conn);
           tx.reject(error);
