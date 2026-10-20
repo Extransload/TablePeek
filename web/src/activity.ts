@@ -8,7 +8,7 @@ export interface ActivityEntry {
   detail?: string;
 }
 
-const STORAGE_KEY = "wrendb.activity";
+const STORAGE_KEY = "tablepeek.activity";
 const CAP = 500;
 
 type Listener = (entries: ActivityEntry[]) => void;

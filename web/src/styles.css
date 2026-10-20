@@ -3439,6 +3439,15 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
   color: var(--ink);
 }
 
+.type-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .settings-inline {
   display: flex;
   align-items: center;
@@ -3712,7 +3721,7 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
   gap: 10px;
 }
 
-/* ── M11 후속: TablePlus식 하단 데이터 바 ─────────────────── */
+/* ── M11 후속: 하단 데이터 바 ──────────────────────────────── */
 
 .result-pane > .data-toolbar {
   order: 10;
@@ -3854,7 +3863,7 @@ textarea:focus-visible {
   border-right: 0;
   border-radius: var(--r-sm);
   transform-origin: center bottom;
-  animation: wrendb-tab-in var(--motion-base) var(--ease-out) both;
+  animation: tablepeek-tab-in var(--motion-base) var(--ease-out) both;
   transition: background-color 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
 }
 
@@ -4651,26 +4660,26 @@ input[type="color"]::-webkit-color-swatch {
 }
 
 .modal-backdrop {
-  animation: wrendb-fade-in var(--motion-base) ease both;
+  animation: tablepeek-fade-in var(--motion-base) ease both;
 }
 
 .modal,
 .palette {
-  animation: wrendb-pop-in var(--motion-base) var(--ease-out) both;
+  animation: tablepeek-pop-in var(--motion-base) var(--ease-out) both;
 }
 
 .menu-panel,
 .conn-menu,
 .cm-tooltip {
-  animation: wrendb-pop-in var(--motion-fast) var(--ease-out) both;
+  animation: tablepeek-pop-in var(--motion-fast) var(--ease-out) both;
   transform-origin: top left;
 }
 
 .row-detail {
-  animation: wrendb-detail-in var(--motion-base) var(--ease-out) both;
+  animation: tablepeek-detail-in var(--motion-base) var(--ease-out) both;
 }
 
-@keyframes wrendb-fade-in {
+@keyframes tablepeek-fade-in {
   from {
     opacity: 0;
   }
@@ -4679,7 +4688,7 @@ input[type="color"]::-webkit-color-swatch {
   }
 }
 
-@keyframes wrendb-pop-in {
+@keyframes tablepeek-pop-in {
   from {
     opacity: 0;
     transform: translateY(4px) scale(0.985);
@@ -4690,7 +4699,7 @@ input[type="color"]::-webkit-color-swatch {
   }
 }
 
-@keyframes wrendb-detail-in {
+@keyframes tablepeek-detail-in {
   from {
     opacity: 0;
     transform: translateX(8px);
@@ -4947,7 +4956,7 @@ input[type="color"]::-webkit-color-swatch {
   border-top-color: currentColor;
   border-radius: 50%;
   background: transparent;
-  animation: wrendb-spin 0.72s linear infinite;
+  animation: tablepeek-spin 0.72s linear infinite;
   vertical-align: -1px;
 }
 
@@ -4956,13 +4965,13 @@ input[type="color"]::-webkit-color-swatch {
   margin-right: 4px;
 }
 
-@keyframes wrendb-spin {
+@keyframes tablepeek-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
-@keyframes wrendb-tab-in {
+@keyframes tablepeek-tab-in {
   from {
     opacity: 0;
     transform: translateY(4px) scale(0.97);
@@ -4973,7 +4982,7 @@ input[type="color"]::-webkit-color-swatch {
   }
 }
 
-@keyframes wrendb-drawer-in {
+@keyframes tablepeek-drawer-in {
   from {
     opacity: 0;
     transform: translateX(18px);
@@ -5185,7 +5194,7 @@ input[type="color"]::-webkit-color-swatch {
   color: var(--muted);
   font-size: 11px;
   backdrop-filter: blur(8px);
-  animation: wrendb-fade-in var(--motion-fast) ease both;
+  animation: tablepeek-fade-in var(--motion-fast) ease both;
 }
 
 .result-loading .spinner {
@@ -5205,7 +5214,7 @@ input[type="color"]::-webkit-color-swatch {
   background: var(--panel);
   border-left: 1px solid var(--line);
   box-shadow: -12px 0 32px rgba(0, 0, 0, 0.22);
-  animation: wrendb-drawer-in var(--motion-base) var(--ease-out) both;
+  animation: tablepeek-drawer-in var(--motion-base) var(--ease-out) both;
 }
 
 .quicklook-head {

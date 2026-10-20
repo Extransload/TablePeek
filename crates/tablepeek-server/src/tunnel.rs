@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use wrendb_types::{HttpTunnelConfig, SshConfig};
+use tablepeek_types::{HttpTunnelConfig, SshConfig};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const CHUNK: usize = 32 * 1024;
@@ -321,10 +321,10 @@ async fn forward(channel: Channel<Msg>, stream: TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wrendb_types::{PostgresConfig, SslMode};
+    use tablepeek_types::{PostgresConfig, SslMode};
 
     fn docker_enabled() -> bool {
-        std::env::var("WRENDB_TEST_DOCKER").is_ok()
+        std::env::var("TABLEPEEK_TEST_DOCKER").is_ok()
     }
 
     fn pg_container_ip() -> String {
@@ -333,13 +333,13 @@ mod tests {
                 "inspect",
                 "-f",
                 "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-                "wrendb-pg",
+                "tablepeek-pg",
             ])
             .output()
             .expect("docker inspect를 실행할 수 없습니다");
-        assert!(output.status.success(), "docker inspect wrendb-pg 실패");
+        assert!(output.status.success(), "docker inspect tablepeek-pg 실패");
         let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        assert!(!ip.is_empty(), "wrendb-pg 컨테이너 IP를 확인할 수 없습니다");
+        assert!(!ip.is_empty(), "tablepeek-pg 컨테이너 IP를 확인할 수 없습니다");
         ip
     }
 
@@ -349,7 +349,7 @@ mod tests {
             port: 2222,
             user: "linuxserver.io".into(),
             password: None,
-            private_key_path: Some("/tmp/wrendb-ssh/id_ed25519".into()),
+            private_key_path: Some("/tmp/tablepeek-ssh/id_ed25519".into()),
         }
     }
 
@@ -357,9 +357,9 @@ mod tests {
         PostgresConfig {
             host: host.into(),
             port,
-            user: "wrendb".into(),
-            password: Some("wrendb_test_pw".into()),
-            database: "wrendb_test".into(),
+            user: "tablepeek".into(),
+            password: Some("tablepeek_test_pw".into()),
+            database: "tablepeek_test".into(),
             ssl_mode: SslMode::Disable,
             ssl_root_cert: None,
             ssl_client_cert: None,
@@ -389,7 +389,7 @@ mod tests {
             .await
             .expect("SSH 터널을 열 수 없습니다");
         let config = test_pg_config("127.0.0.1", tunnel.local_port);
-        let engine = wrendb_engine::Engine::open_demo(1).unwrap();
+        let engine = tablepeek_engine::Engine::open_demo(1).unwrap();
         let meta = engine
             .swap_to_postgres(&config)
             .await
@@ -409,7 +409,7 @@ mod tests {
             return;
         }
         let config = test_pg_config("127.0.0.1", 5433);
-        let engine = wrendb_engine::Engine::open_demo(1).unwrap();
+        let engine = tablepeek_engine::Engine::open_demo(1).unwrap();
         let meta = engine
             .swap_to_postgres(&config)
             .await

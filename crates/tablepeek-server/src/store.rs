@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use wrendb_types::{HttpTunnelConfig, MssqlConfig, MySqlConfig, PostgresConfig, SshConfig};
+use tablepeek_types::{HttpTunnelConfig, MssqlConfig, MySqlConfig, PostgresConfig, SshConfig};
 
 pub const HISTORY_CAP: usize = 100;
-const KEYRING_SERVICE: &str = "wrendb";
-const LEGACY_KEYRING_SERVICE: &str = "prodb";
+const KEYRING_SERVICE: &str = "tablepeek";
+const LEGACY_KEYRING_SERVICES: [&str; 2] = ["wrendb", "prodb"];
 const STORE_FILE: &str = "store.json";
-const STORE_DIR: &str = ".wrendb";
-const LEGACY_STORE_DIR: &str = ".prodb";
+const STORE_DIR: &str = ".tablepeek";
+const LEGACY_STORE_DIRS: [&str; 2] = [".wrendb", ".prodb"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedHttpTunnel {
@@ -253,19 +253,21 @@ impl StoreFile {
 }
 
 fn migrate_legacy_dir(base: &Path, dir: &Path) {
-    let legacy = base.join(LEGACY_STORE_DIR);
-    if !legacy.exists() {
-        return;
-    }
-    if !dir.exists() {
-        if std::fs::rename(&legacy, dir).is_ok() {
-            return;
+    for legacy_name in LEGACY_STORE_DIRS {
+        let legacy = base.join(legacy_name);
+        if !legacy.exists() {
+            continue;
         }
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let target = dir.join(STORE_FILE);
-    if !target.exists() {
-        let _ = std::fs::copy(legacy.join(STORE_FILE), target);
+        if !dir.exists() {
+            if std::fs::rename(&legacy, dir).is_ok() {
+                continue;
+            }
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let target = dir.join(STORE_FILE);
+        if !target.exists() {
+            let _ = std::fs::copy(legacy.join(STORE_FILE), target);
+        }
     }
 }
 
@@ -357,9 +359,13 @@ pub fn get_password(account: &str) -> Option<String> {
     if let Some(password) = security_get(KEYRING_SERVICE, account) {
         return Some(password);
     }
-    let password = security_get(LEGACY_KEYRING_SERVICE, account)?;
-    let _ = set_password(account, &password);
-    Some(password)
+    for service in LEGACY_KEYRING_SERVICES {
+        if let Some(password) = security_get(service, account) {
+            let _ = set_password(account, &password);
+            return Some(password);
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -385,7 +391,7 @@ pub fn set_password(account: &str, password: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 pub fn delete_password(account: &str) {
-    for service in [KEYRING_SERVICE, LEGACY_KEYRING_SERVICE] {
+    for service in std::iter::once(KEYRING_SERVICE).chain(LEGACY_KEYRING_SERVICES) {
         let _ = std::process::Command::new("/usr/bin/security")
             .args(["delete-generic-password", "-s", service, "-a", account])
             .stdin(std::process::Stdio::null())
@@ -403,11 +409,16 @@ pub fn get_password(account: &str) -> Option<String> {
     {
         return Some(password);
     }
-    let password = keyring_entry_for(LEGACY_KEYRING_SERVICE, account)
-        .ok()
-        .and_then(|entry| entry.get_password().ok())?;
-    let _ = set_password(account, &password);
-    Some(password)
+    for service in LEGACY_KEYRING_SERVICES {
+        if let Some(password) = keyring_entry_for(service, account)
+            .ok()
+            .and_then(|entry| entry.get_password().ok())
+        {
+            let _ = set_password(account, &password);
+            return Some(password);
+        }
+    }
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -419,7 +430,7 @@ pub fn set_password(account: &str, password: &str) -> Result<(), String> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn delete_password(account: &str) {
-    for service in [KEYRING_SERVICE, LEGACY_KEYRING_SERVICE] {
+    for service in std::iter::once(KEYRING_SERVICE).chain(LEGACY_KEYRING_SERVICES) {
         if let Ok(entry) = keyring_entry_for(service, account) {
             let _ = entry.delete_credential();
         }
@@ -429,11 +440,11 @@ pub fn delete_password(account: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wrendb_types::SslMode;
+    use tablepeek_types::SslMode;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "wrendb-store-test-{}-{}-{name}",
+            "tablepeek-store-test-{}-{}-{name}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -450,7 +461,7 @@ mod tests {
             port: 22,
             user: "ops".into(),
             password: Some("ssh-secret".into()),
-            private_key_path: Some("/tmp/wrendb-test-key".into()),
+            private_key_path: Some("/tmp/tablepeek-test-key".into()),
         };
         SavedConnection {
             id: id.into(),
@@ -558,9 +569,9 @@ mod tests {
     fn macos_keyring_roundtrip() {
         let account = format!("test:{}", uuid::Uuid::new_v4().simple());
         let result = (|| {
-            set_password(&account, "wrendb-keyring-roundtrip")?;
+            set_password(&account, "tablepeek-keyring-roundtrip")?;
             let found = get_password(&account);
-            if found.as_deref() != Some("wrendb-keyring-roundtrip") {
+            if found.as_deref() != Some("tablepeek-keyring-roundtrip") {
                 return Err(format!("키체인 왕복 실패: {found:?}"));
             }
             Ok(())
@@ -571,20 +582,22 @@ mod tests {
 
     #[test]
     fn migrates_legacy_store_directory() {
-        let base = temp_dir("legacy-dir");
-        let legacy = base.join(LEGACY_STORE_DIR);
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join(STORE_FILE), br#"{"connections":[]}"#).unwrap();
-        let dir = base.join(STORE_DIR);
+        for legacy_name in LEGACY_STORE_DIRS {
+            let base = temp_dir("legacy-dir");
+            let legacy = base.join(legacy_name);
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(legacy.join(STORE_FILE), br#"{"connections":[]}"#).unwrap();
+            let dir = base.join(STORE_DIR);
 
-        migrate_legacy_dir(&base, &dir);
+            migrate_legacy_dir(&base, &dir);
 
-        assert!(!legacy.exists());
-        assert_eq!(
-            std::fs::read_to_string(dir.join(STORE_FILE)).unwrap(),
-            r#"{"connections":[]}"#
-        );
-        std::fs::remove_dir_all(base).unwrap();
+            assert!(!legacy.exists());
+            assert_eq!(
+                std::fs::read_to_string(dir.join(STORE_FILE)).unwrap(),
+                r#"{"connections":[]}"#
+            );
+            std::fs::remove_dir_all(base).unwrap();
+        }
     }
 
     #[test]
@@ -640,7 +653,7 @@ mod tests {
             "store.json에 password 필드가 남았습니다"
         );
         assert!(
-            raw.contains("/tmp/wrendb-test-key"),
+            raw.contains("/tmp/tablepeek-test-key"),
             "private_key_path가 저장되지 않았습니다"
         );
 
@@ -660,7 +673,7 @@ mod tests {
         assert!(connection.mysql.is_none());
         assert_eq!(
             connection.ssh.as_ref().unwrap().private_key_path.as_deref(),
-            Some("/tmp/wrendb-test-key")
+            Some("/tmp/tablepeek-test-key")
         );
         assert!(connection.persist_password);
 

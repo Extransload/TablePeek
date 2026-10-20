@@ -96,7 +96,7 @@ function errorOf(error: unknown, fallback: string): string {
 
 function loadSections(): Record<string, boolean> {
   try {
-    const raw = window.localStorage.getItem("wrendb.sidebar-sections");
+    const raw = window.localStorage.getItem("tablepeek.sidebar-sections");
     return raw === null ? {} : (JSON.parse(raw) as Record<string, boolean>);
   } catch {
     return {};
@@ -105,7 +105,7 @@ function loadSections(): Record<string, boolean> {
 
 function loadSystemMode(): boolean {
   try {
-    return window.localStorage.getItem("wrendb.system-tables") === "1";
+    return window.localStorage.getItem("tablepeek.system-tables") === "1";
   } catch {
     return false;
   }
@@ -208,7 +208,7 @@ export function SchemaSidebar({
     setSections((prev) => {
       const next = { ...prev, [key]: !(prev[key] ?? fallback) };
       try {
-        window.localStorage.setItem("wrendb.sidebar-sections", JSON.stringify(next));
+        window.localStorage.setItem("tablepeek.sidebar-sections", JSON.stringify(next));
       } catch {
         /* 저장 실패는 무시 */
       }
@@ -220,7 +220,7 @@ export function SchemaSidebar({
     setSystem((value) => {
       const next = !value;
       try {
-        window.localStorage.setItem("wrendb.system-tables", next ? "1" : "0");
+        window.localStorage.setItem("tablepeek.system-tables", next ? "1" : "0");
       } catch {
         /* 저장 실패는 무시 */
       }

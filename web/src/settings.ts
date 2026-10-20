@@ -1,6 +1,7 @@
 import {
   applyPalette,
   contrastInk,
+  defaultTypeInks,
   mixHex,
   themeById,
   type Palette,
@@ -26,6 +27,7 @@ export interface AppSettings {
   fontFamily: string;
   fontSize: number;
   rowAlt: boolean;
+  typeColors: boolean;
   hideScroller: boolean;
   uppercaseKeywords: boolean;
   syntaxPreset: SyntaxPresetId;
@@ -51,9 +53,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
   fontSize: 12,
   rowAlt: true,
+  typeColors: true,
   hideScroller: false,
   uppercaseKeywords: true,
-  syntaxPreset: "wrendb",
+  syntaxPreset: "tablepeek",
   activityDays: 7,
   csvDelimiter: ",",
   csvHeader: true,
@@ -69,8 +72,8 @@ export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
   dbSwitch: "DB 전환",
 };
 
-const STORAGE_KEY = "wrendb.settings";
-const PASSCODE_KEY = "wrendb.passcode-hash";
+const STORAGE_KEY = "tablepeek.settings";
+const PASSCODE_KEY = "tablepeek.passcode-hash";
 const ACCENT_SOFT = "rgba(64, 130, 238, 0.18)";
 
 type Listener = (settings: AppSettings) => void;
@@ -111,6 +114,10 @@ function hexToRgba(hex: string, alpha: number): string {
 
 function themePalette(theme: Theme, accent: string, rowAlt: boolean): Palette {
   const palette = { ...theme.palette };
+  palette.typeInks = {
+    ...defaultTypeInks(theme.mode),
+    ...(theme.palette.typeInks ?? {}),
+  };
   palette.accent = accent;
   palette.accentHover = mixHex(accent, theme.mode === "light" ? "#000000" : "#ffffff", 0.14);
   palette.onAccent = contrastInk(accent);
@@ -156,7 +163,7 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--mono", settings.fontFamily);
   root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
   const syntax = { ...syntaxColors(settings.syntaxPreset, theme.mode) };
-  if (settings.syntaxPreset === "wrendb") {
+  if (settings.syntaxPreset === "tablepeek") {
     Object.assign(syntax, {
       keyword: palette.accent,
       string: palette.ok,
@@ -176,7 +183,7 @@ export function applySettings(settings: AppSettings): void {
     root.style.setProperty(variable, syntax[key as keyof typeof syntax]);
   }
   root.classList.toggle("hide-scroller", settings.hideScroller);
-  window.dispatchEvent(new CustomEvent("wrendb:theme"));
+  window.dispatchEvent(new CustomEvent("tablepeek:theme"));
 }
 
 export function getSettings(): AppSettings {

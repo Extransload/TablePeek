@@ -9,7 +9,7 @@ export interface QueryLogEntry {
   error?: string;
 }
 
-const STORAGE_KEY = "wrendb.query-log";
+const STORAGE_KEY = "tablepeek.query-log";
 const CAP = 300;
 
 type Listener = (entries: QueryLogEntry[]) => void;

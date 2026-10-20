@@ -1,6 +1,6 @@
 export type Language = "ko" | "en";
 
-const STORAGE_KEY = "wrendb.language";
+const STORAGE_KEY = "tablepeek.language";
 
 const EN: Record<string, string> = {
   "연결": "Connections",
@@ -184,6 +184,8 @@ const EN: Record<string, string> = {
   "구문 강조": "Syntax highlighting",
   "자동 괄호는 기본으로 켜져 있습니다.": "Automatic bracket closing is enabled by default.",
   "줄무늬 행 배경": "Alternating row background",
+  "타입별 색상": "Color by type",
+  "문자열·숫자·불리언·JSON·배열·날짜 값을 타입별 색으로 구분합니다.": "Color values by type: string, number, boolean, JSON, array, and date.",
   "스크롤바 자동 숨김": "Auto-hide scrollbars",
   "가져오기 · 내보내기 기본값": "Import and export defaults",
   "CSV 구분자": "CSV delimiter",
@@ -203,7 +205,7 @@ const EN: Record<string, string> = {
   "해제": "Remove",
   "지금 잠금": "Lock now",
   "닫기": "Close",
-  "Base16, VS Code 색상 테마 JSON 또는 WrenDB 테마 JSON을 Git 원본 URL에서 가져옵니다.": "Import Base16, VS Code, or WrenDB theme JSON from a Git source URL.",
+  "Base16, VS Code 색상 테마 JSON 또는 TablePeek 테마 JSON을 Git 원본 URL에서 가져옵니다.": "Import Base16, VS Code, or TablePeek theme JSON from a Git source URL.",
   "올바른 URL을 입력하세요": "Enter a valid URL",
   "http(s) URL만 가져올 수 있습니다": "Only http(s) URLs can be imported",
   "가져오지 못했습니다": "Import failed",
@@ -275,13 +277,13 @@ const EN: Record<string, string> = {
   "; (세미콜론)": "; (semicolon)",
   "| (파이프)": "| (pipe)",
   "현재 테마의 강조 색과 상태 색을 따릅니다.": "Uses the current theme accent and status colors.",
-  "선명한 보라·청록 계열의 클래식 편집기 색상입니다.": "Classic editor colors in vivid purple and teal.",
+  "선명한 보라·청록 계열의 Material Palenight 색상입니다.": "Material Palenight colors in vivid purple and teal.",
   "낮은 대비와 안정적인 색조의 Solarized 팔레트입니다.": "A low-contrast, balanced Solarized palette.",
   "핑크·노랑·초록의 고대비 Monokai 스타일입니다.": "A high-contrast Monokai style in pink, yellow, and green.",
   "GitHub의 밝고 명확한 구문 강조 색상입니다.": "Bright, clear syntax colors inspired by GitHub.",
   "차가운 블루·그린 계열의 Nord 팔레트입니다.": "A cool blue and green Nord palette.",
-  "WrenDB 다크": "WrenDB Dark",
-  "WrenDB 라이트": "WrenDB Light",
+  "TablePeek 다크": "TablePeek Dark",
+  "TablePeek 라이트": "TablePeek Light",
   "{name} 테마를 가져왔습니다": "Imported the {name} theme",
   "명령": "Commands",
   "커맨드 팔레트": "Command palette",

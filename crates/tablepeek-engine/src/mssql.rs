@@ -9,7 +9,7 @@ use tiberius::{
 };
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
-use wrendb_types::{
+use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MssqlConfig,
     ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema,
 };
@@ -85,7 +85,7 @@ fn build_config(config: &MssqlConfig) -> Config {
         config.user.as_str(),
         config.password.clone().unwrap_or_default(),
     ));
-    tiberius.application_name("wrendb");
+    tiberius.application_name("tablepeek");
     if config.encrypt {
         tiberius.encryption(EncryptionLevel::Required);
         tiberius.trust_cert();

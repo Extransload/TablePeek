@@ -12,7 +12,7 @@ use arrow::record_batch::RecordBatch;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
-use wrendb_types::{
+use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MssqlConfig,
     MySqlConfig, ObjectDefinition, PkValue, PostgresConfig, QueryResult, ServerInfo, TableDetail,
     TableSchema,
@@ -1588,11 +1588,11 @@ fn value_ref_to_json(v: ValueRef<'_>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wrendb_types::PkValue;
+    use tablepeek_types::PkValue;
 
     fn temp_db(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "wrendb-test-{}-{}-{name}.db",
+            "tablepeek-test-{}-{}-{name}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1750,16 +1750,16 @@ mod tests {
         assert!(err.to_string().contains("행 범위"));
     }
 
-    fn pg_tls_config() -> Option<wrendb_types::PostgresConfig> {
-        std::env::var("WRENDB_TEST_PG_TLS").ok()?;
-        let ssl_root_cert = std::env::var("WRENDB_TEST_PG_TLS_CA").ok()?;
-        Some(wrendb_types::PostgresConfig {
+    fn pg_tls_config() -> Option<tablepeek_types::PostgresConfig> {
+        std::env::var("TABLEPEEK_TEST_PG_TLS").ok()?;
+        let ssl_root_cert = std::env::var("TABLEPEEK_TEST_PG_TLS_CA").ok()?;
+        Some(tablepeek_types::PostgresConfig {
             host: "127.0.0.1".into(),
             port: 5434,
-            user: "wrendb".into(),
-            password: Some("wrendb_test_pw".into()),
-            database: "wrendb_test".into(),
-            ssl_mode: wrendb_types::SslMode::Require,
+            user: "tablepeek".into(),
+            password: Some("tablepeek_test_pw".into()),
+            database: "tablepeek_test".into(),
+            ssl_mode: tablepeek_types::SslMode::Require,
             ssl_root_cert: Some(ssl_root_cert),
             ssl_client_cert: None,
             ssl_client_key: None,
@@ -1784,15 +1784,15 @@ mod tests {
         assert_eq!(data.cell_string(0, 0).as_deref(), Some("true"));
     }
 
-    fn pg_config() -> Option<wrendb_types::PostgresConfig> {
-        std::env::var("WRENDB_TEST_PG").ok()?;
-        Some(wrendb_types::PostgresConfig {
+    fn pg_config() -> Option<tablepeek_types::PostgresConfig> {
+        std::env::var("TABLEPEEK_TEST_PG").ok()?;
+        Some(tablepeek_types::PostgresConfig {
             host: "127.0.0.1".into(),
             port: 5433,
-            user: "wrendb".into(),
-            password: Some("wrendb_test_pw".into()),
-            database: "wrendb_test".into(),
-            ssl_mode: wrendb_types::SslMode::Disable,
+            user: "tablepeek".into(),
+            password: Some("tablepeek_test_pw".into()),
+            database: "tablepeek_test".into(),
+            ssl_mode: tablepeek_types::SslMode::Disable,
             ssl_root_cert: None,
             ssl_client_cert: None,
             ssl_client_key: None,
@@ -1807,7 +1807,7 @@ mod tests {
         let engine = Engine::open_demo(1).unwrap();
         let meta = engine.swap_to_postgres(&config).await.unwrap();
         assert_eq!(meta.kind, "postgres");
-        assert!(meta.path.as_deref().unwrap().contains("wrendb_test"));
+        assert!(meta.path.as_deref().unwrap().contains("tablepeek_test"));
         assert!(meta.tables.contains(&"users".to_string()));
 
         let data = engine
@@ -1884,7 +1884,7 @@ mod tests {
         let engine = Engine::open_demo(1).unwrap();
         engine.swap_to_postgres(&config).await.unwrap();
 
-        let table = format!("wrendb_rowtest_{}", std::process::id());
+        let table = format!("tablepeek_rowtest_{}", std::process::id());
         engine
             .execute(
                 &format!(
@@ -1897,7 +1897,7 @@ mod tests {
 
         let values = vec![
             ("id".to_string(), Some("41".to_string())),
-            ("name".to_string(), Some("wrendb_왕복".to_string())),
+            ("name".to_string(), Some("tablepeek_왕복".to_string())),
         ];
         assert_eq!(engine.insert_row(&table, &values).await.unwrap(), 1);
         let inserted = engine
@@ -1952,15 +1952,15 @@ mod tests {
         assert!(err.is_interrupted(), "err = {err}");
     }
 
-    fn cockroach_config() -> Option<wrendb_types::PostgresConfig> {
-        std::env::var("WRENDB_TEST_COCKROACH").ok()?;
-        Some(wrendb_types::PostgresConfig {
+    fn cockroach_config() -> Option<tablepeek_types::PostgresConfig> {
+        std::env::var("TABLEPEEK_TEST_COCKROACH").ok()?;
+        Some(tablepeek_types::PostgresConfig {
             host: "127.0.0.1".into(),
             port: 26258,
             user: "root".into(),
             password: None,
             database: "defaultdb".into(),
-            ssl_mode: wrendb_types::SslMode::Disable,
+            ssl_mode: tablepeek_types::SslMode::Disable,
             ssl_root_cert: None,
             ssl_client_cert: None,
             ssl_client_key: None,
@@ -2101,7 +2101,7 @@ mod tests {
         let engine = Engine::open_demo(1).unwrap();
         engine.swap_to_cockroach(&config).await.unwrap();
 
-        let table = format!("wrendb_rowtest_{}", std::process::id());
+        let table = format!("tablepeek_rowtest_{}", std::process::id());
         let _ = engine
             .execute(&format!("DROP TABLE IF EXISTS {table}"), 1)
             .await;
@@ -2117,7 +2117,7 @@ mod tests {
 
         let values = vec![
             ("id".to_string(), Some("41".to_string())),
-            ("name".to_string(), Some("wrendb_왕복".to_string())),
+            ("name".to_string(), Some("tablepeek_왕복".to_string())),
         ];
         assert_eq!(engine.insert_row(&table, &values).await.unwrap(), 1);
         let pk = vec![PkValue {
@@ -2161,16 +2161,16 @@ mod tests {
         assert!(err.is_interrupted(), "err = {err}");
     }
 
-    fn mysql_tls_config() -> Option<wrendb_types::MySqlConfig> {
-        std::env::var("WRENDB_TEST_MYSQL_TLS").ok()?;
-        let ssl_root_cert = std::env::var("WRENDB_TEST_MYSQL_TLS_CA").ok()?;
-        Some(wrendb_types::MySqlConfig {
+    fn mysql_tls_config() -> Option<tablepeek_types::MySqlConfig> {
+        std::env::var("TABLEPEEK_TEST_MYSQL_TLS").ok()?;
+        let ssl_root_cert = std::env::var("TABLEPEEK_TEST_MYSQL_TLS_CA").ok()?;
+        Some(tablepeek_types::MySqlConfig {
             host: "127.0.0.1".into(),
             port: 3308,
             user: "root".into(),
             password: Some("root_pw".into()),
-            database: "wrendb_test".into(),
-            ssl_mode: wrendb_types::SslMode::Require,
+            database: "tablepeek_test".into(),
+            ssl_mode: tablepeek_types::SslMode::Require,
             ssl_root_cert: Some(ssl_root_cert),
             ssl_client_cert: None,
             ssl_client_key: None,
@@ -2194,15 +2194,15 @@ mod tests {
             .is_some_and(|cipher| !cipher.trim().is_empty()));
     }
 
-    fn mysql_config() -> Option<wrendb_types::MySqlConfig> {
-        std::env::var("WRENDB_TEST_MYSQL").ok()?;
-        Some(wrendb_types::MySqlConfig {
+    fn mysql_config() -> Option<tablepeek_types::MySqlConfig> {
+        std::env::var("TABLEPEEK_TEST_MYSQL").ok()?;
+        Some(tablepeek_types::MySqlConfig {
             host: "127.0.0.1".into(),
             port: 3307,
             user: "root".into(),
             password: Some("root_pw".into()),
-            database: "wrendb_test".into(),
-            ssl_mode: wrendb_types::SslMode::Disable,
+            database: "tablepeek_test".into(),
+            ssl_mode: tablepeek_types::SslMode::Disable,
             ssl_root_cert: None,
             ssl_client_cert: None,
             ssl_client_key: None,
@@ -2217,7 +2217,7 @@ mod tests {
         let engine = Engine::open_demo(1).unwrap();
         let meta = engine.swap_to_mysql(&config).await.unwrap();
         assert_eq!(meta.kind, "mysql");
-        assert!(meta.path.as_deref().unwrap().contains("wrendb_test"));
+        assert!(meta.path.as_deref().unwrap().contains("tablepeek_test"));
         assert!(meta.tables.contains(&"users".to_string()));
         assert!(meta.tables.contains(&"orders".to_string()));
 
@@ -2339,7 +2339,7 @@ mod tests {
         let engine = Engine::open_demo(1).unwrap();
         engine.swap_to_mysql(&config).await.unwrap();
 
-        let table = format!("wrendb_rowtest_{}", std::process::id());
+        let table = format!("tablepeek_rowtest_{}", std::process::id());
         engine
             .execute(
                 &format!(
@@ -2352,7 +2352,7 @@ mod tests {
 
         let values = vec![
             ("id".to_string(), Some("41".to_string())),
-            ("name".to_string(), Some("wrendb_왕복".to_string())),
+            ("name".to_string(), Some("tablepeek_왕복".to_string())),
         ];
         assert_eq!(engine.insert_row(&table, &values).await.unwrap(), 1);
         let pk = vec![PkValue {
@@ -2404,14 +2404,14 @@ mod tests {
         assert!(err.is_interrupted(), "err = {err}");
     }
 
-    fn mssql_config() -> Option<wrendb_types::MssqlConfig> {
-        std::env::var("WRENDB_TEST_MSSQL").ok()?;
-        Some(wrendb_types::MssqlConfig {
+    fn mssql_config() -> Option<tablepeek_types::MssqlConfig> {
+        std::env::var("TABLEPEEK_TEST_MSSQL").ok()?;
+        Some(tablepeek_types::MssqlConfig {
             host: "127.0.0.1".into(),
             port: 14330,
             user: "sa".into(),
             password: Some("MsSql_test_pw1".into()),
-            database: "wrendb_test".into(),
+            database: "tablepeek_test".into(),
             encrypt: false,
         })
     }
@@ -2424,7 +2424,7 @@ mod tests {
         let engine = Engine::open_demo(1).unwrap();
         let meta = engine.swap_to_mssql(&config).await.unwrap();
         assert_eq!(meta.kind, "mssql");
-        assert!(meta.path.as_deref().unwrap().contains("wrendb_test"));
+        assert!(meta.path.as_deref().unwrap().contains("tablepeek_test"));
         assert!(meta.tables.contains(&"users".to_string()));
         assert!(meta.tables.contains(&"orders".to_string()));
 
@@ -2569,7 +2569,7 @@ mod tests {
         let engine = Engine::open_demo(1).unwrap();
         engine.swap_to_mssql(&config).await.unwrap();
 
-        let table = format!("wrendb_rowtest_{}", std::process::id());
+        let table = format!("tablepeek_rowtest_{}", std::process::id());
         engine
             .execute(
                 &format!(
@@ -2582,7 +2582,7 @@ mod tests {
 
         let values = vec![
             ("id".to_string(), Some("41".to_string())),
-            ("name".to_string(), Some("wrendb_왕복".to_string())),
+            ("name".to_string(), Some("tablepeek_왕복".to_string())),
         ];
         assert_eq!(engine.insert_row(&table, &values).await.unwrap(), 1);
         let pk = vec![PkValue {

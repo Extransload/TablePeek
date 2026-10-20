@@ -1,3 +1,35 @@
+export type ValueKind =
+  | "string"
+  | "integer"
+  | "float"
+  | "bigint"
+  | "boolean"
+  | "json"
+  | "list"
+  | "date";
+
+export interface TypeInks {
+  string: string;
+  integer: string;
+  float: string;
+  bigint: string;
+  boolean: string;
+  json: string;
+  list: string;
+  date: string;
+}
+
+export const VALUE_KINDS: ValueKind[] = [
+  "string",
+  "integer",
+  "float",
+  "bigint",
+  "boolean",
+  "json",
+  "list",
+  "date",
+];
+
 export interface Palette {
   bg: string;
   panel: string;
@@ -18,6 +50,7 @@ export interface Palette {
   selFillFocus: string;
   selLine: string;
   nullInk: string;
+  typeInks: TypeInks;
   btn: string;
   btnHover: string;
 }
@@ -93,7 +126,7 @@ function parseHex(hex: string): [number, number, number] | null {
   ];
 }
 
-const wrendbDark: Palette = makePalette(
+const tablepeekDark: Palette = makePalette(
   {
     bg: "#1c1c1f",
     panel: "#242428",
@@ -111,6 +144,16 @@ const wrendbDark: Palette = makePalette(
     selFillFocus: "rgba(79, 140, 255, 0.32)",
     selLine: "#4f8cff",
     nullInk: "#73737e",
+    typeInks: {
+      string: "#9bd7a0",
+      integer: "#6cb6ff",
+      float: "#7fd6d0",
+      bigint: "#e8c98a",
+      boolean: "#f29b8f",
+      json: "#c6a3ff",
+      list: "#f5b98a",
+      date: "#a3a3ad",
+    },
     btn: "#33333a",
     btnHover: "#3e3e46",
   },
@@ -118,7 +161,7 @@ const wrendbDark: Palette = makePalette(
   "dark",
 );
 
-const wrendbLight: Palette = makePalette(
+const tablepeekLight: Palette = makePalette(
   {
     bg: "#f4f4f1",
     panel: "#ffffff",
@@ -136,6 +179,16 @@ const wrendbLight: Palette = makePalette(
     selFillFocus: "rgba(59, 130, 246, 0.22)",
     selLine: "#3b82f6",
     nullInk: "#92969d",
+    typeInks: {
+      string: "#1f7a3d",
+      integer: "#1d4ed8",
+      float: "#0f766e",
+      bigint: "#8a5a00",
+      boolean: "#b3392f",
+      json: "#7e22ce",
+      list: "#c2410c",
+      date: "#5f6369",
+    },
     btn: "#e8e8e4",
     btnHover: "#deded9",
   },
@@ -161,6 +214,16 @@ const latte: Palette = makePalette(
     selFillFocus: "rgba(136, 57, 239, 0.2)",
     selLine: "#8839ef",
     nullInk: "#9ca0b0",
+    typeInks: {
+      string: "#2f7d22",
+      integer: "#1a5fe0",
+      float: "#0d7a72",
+      bigint: "#8a5a00",
+      boolean: "#d20f39",
+      json: "#8839ef",
+      list: "#c2410c",
+      date: "#5c5f77",
+    },
     btn: "#dce0e8",
     btnHover: "#ccd0da",
   },
@@ -186,6 +249,16 @@ const frappe: Palette = makePalette(
     selFillFocus: "rgba(202, 158, 230, 0.28)",
     selLine: "#ca9ee6",
     nullInk: "#838ba7",
+    typeInks: {
+      string: "#a6d189",
+      integer: "#8caaee",
+      float: "#81c8be",
+      bigint: "#e5c890",
+      boolean: "#e78284",
+      json: "#ca9ee6",
+      list: "#ef9f76",
+      date: "#a5adce",
+    },
     btn: "#414559",
     btnHover: "#51576d",
   },
@@ -211,6 +284,16 @@ const macchiato: Palette = makePalette(
     selFillFocus: "rgba(198, 160, 246, 0.28)",
     selLine: "#c6a0f6",
     nullInk: "#8087a2",
+    typeInks: {
+      string: "#a6da95",
+      integer: "#8aadf4",
+      float: "#8bd5ca",
+      bigint: "#eed49f",
+      boolean: "#ed8796",
+      json: "#c6a0f6",
+      list: "#f5a97f",
+      date: "#a5adcb",
+    },
     btn: "#363a4f",
     btnHover: "#494d64",
   },
@@ -236,6 +319,16 @@ const mocha: Palette = makePalette(
     selFillFocus: "rgba(203, 166, 247, 0.3)",
     selLine: "#cba6f7",
     nullInk: "#7f849c",
+    typeInks: {
+      string: "#a6e3a1",
+      integer: "#89b4fa",
+      float: "#94e2d5",
+      bigint: "#f9e2af",
+      boolean: "#f38ba8",
+      json: "#cba6f7",
+      list: "#fab387",
+      date: "#a6adc8",
+    },
     btn: "#313244",
     btnHover: "#45475a",
   },
@@ -261,6 +354,16 @@ const nord: Palette = makePalette(
     selFillFocus: "rgba(136, 192, 208, 0.3)",
     selLine: "#88c0d0",
     nullInk: "#8b95a7",
+    typeInks: {
+      string: "#a3be8c",
+      integer: "#81a1c1",
+      float: "#8fbcbb",
+      bigint: "#ebcb8b",
+      boolean: "#e08a96",
+      json: "#c3a6bf",
+      list: "#e09a86",
+      date: "#9aa5b8",
+    },
     btn: "#3b4252",
     btnHover: "#4c566a",
   },
@@ -286,6 +389,16 @@ const dracula: Palette = makePalette(
     selFillFocus: "rgba(189, 147, 249, 0.32)",
     selLine: "#bd93f9",
     nullInk: "#7f8296",
+    typeInks: {
+      string: "#50fa7b",
+      integer: "#8be9fd",
+      float: "#a4e8ff",
+      bigint: "#f1fa8c",
+      boolean: "#ff5555",
+      json: "#bd93f9",
+      list: "#ffb86c",
+      date: "#9296b4",
+    },
     btn: "#343746",
     btnHover: "#44475a",
   },
@@ -311,6 +424,16 @@ const tokyo: Palette = makePalette(
     selFillFocus: "rgba(122, 162, 247, 0.32)",
     selLine: "#7aa2f7",
     nullInk: "#6d789e",
+    typeInks: {
+      string: "#9ece6a",
+      integer: "#7aa2f7",
+      float: "#7dcfff",
+      bigint: "#e0af68",
+      boolean: "#f7768e",
+      json: "#bb9af7",
+      list: "#ff9e64",
+      date: "#8b96c0",
+    },
     btn: "#292e42",
     btnHover: "#343b58",
   },
@@ -321,17 +444,17 @@ const tokyo: Palette = makePalette(
 export const THEMES: Theme[] = [
   {
     id: "dark",
-    label: "WrenDB 다크",
+    label: "TablePeek 다크",
     mode: "dark",
     accent: "#4f8cff",
-    palette: wrendbDark,
+    palette: tablepeekDark,
   },
   {
     id: "light",
-    label: "WrenDB 라이트",
+    label: "TablePeek 라이트",
     mode: "light",
     accent: "#3b82f6",
-    palette: wrendbLight,
+    palette: tablepeekLight,
   },
   {
     id: "catppuccin-latte",
@@ -378,10 +501,14 @@ export const THEMES: Theme[] = [
   },
 ];
 
-export const DARK_PALETTE: Palette = wrendbDark;
-export const LIGHT_PALETTE: Palette = wrendbLight;
+export const DARK_PALETTE: Palette = tablepeekDark;
+export const LIGHT_PALETTE: Palette = tablepeekLight;
 
-export const palette: Palette = { ...wrendbDark };
+export function defaultTypeInks(mode: "dark" | "light"): TypeInks {
+  return { ...(mode === "light" ? tablepeekLight : tablepeekDark).typeInks };
+}
+
+export const palette: Palette = { ...tablepeekDark };
 
 export function themeById(id: string): Theme {
   return THEMES.find((theme) => theme.id === id) ?? THEMES[0];
@@ -391,7 +518,7 @@ export function applyPalette(next: Palette): void {
   Object.assign(palette, next);
 }
 
-const CUSTOM_THEME_KEY = "wrendb.custom-themes";
+const CUSTOM_THEME_KEY = "tablepeek.custom-themes";
 
 function isHex(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value.trim());
@@ -505,7 +632,7 @@ export function themeFromJson(input: unknown): Theme {
     source.type === "light"
       ? "light"
       : "dark";
-  const base = mode === "light" ? wrendbLight : wrendbDark;
+  const base = mode === "light" ? tablepeekLight : tablepeekDark;
   const explicit =
     typeof source.palette === "object" && source.palette !== null
       ? (source.palette as Record<string, unknown>)
@@ -577,6 +704,49 @@ export function themeFromJson(input: unknown): Theme {
       override(key, colorOf(explicit, key));
     }
   }
+  const typeInks: TypeInks = { ...base.typeInks };
+  const setInk = (kind: ValueKind, value: string | undefined): void => {
+    if (value !== undefined) {
+      typeInks[kind] = value;
+    }
+  };
+  if (hasBase16) {
+    setInk("string", colorOf(explicit, "base0B"));
+    setInk("integer", colorOf(explicit, "base0D"));
+    setInk("float", colorOf(explicit, "base0C"));
+    setInk("bigint", colorOf(explicit, "base0A"));
+    setInk("boolean", colorOf(explicit, "base08"));
+    setInk("json", colorOf(explicit, "base0E"));
+    setInk("list", colorOf(explicit, "base09"));
+    setInk("date", colorOf(explicit, "base04") ?? colorOf(explicit, "base03"));
+  } else {
+    const pick = (keys: string[]): string | undefined =>
+      keys.map((name) => colorOf(vscode, name)).find(Boolean);
+    setInk("string", pick(["terminal.ansiGreen", "terminal.ansiBrightGreen"]));
+    setInk("integer", pick(["terminal.ansiBlue", "terminal.ansiBrightBlue"]));
+    setInk("float", pick(["terminal.ansiCyan", "terminal.ansiBrightCyan"]));
+    setInk("bigint", pick(["terminal.ansiYellow", "terminal.ansiBrightYellow"]));
+    setInk("boolean", pick(["terminal.ansiRed", "terminal.ansiBrightRed"]));
+    setInk("json", pick(["terminal.ansiMagenta", "terminal.ansiBrightMagenta"]));
+    setInk("list", pick(["terminal.ansiBrightRed", "terminal.ansiRed"]));
+    setInk(
+      "date",
+      pick(["descriptionForeground", "disabledForeground"]) ??
+        colorOf(explicit, "muted"),
+    );
+  }
+  const themeTypes =
+    typeof source.typeInks === "object" && source.typeInks !== null
+      ? (source.typeInks as Record<string, unknown>)
+      : typeof explicit.typeInks === "object" && explicit.typeInks !== null
+        ? (explicit.typeInks as Record<string, unknown>)
+        : undefined;
+  if (themeTypes !== undefined) {
+    for (const kind of VALUE_KINDS) {
+      setInk(kind, colorOf(themeTypes, kind));
+    }
+  }
+  next.typeInks = typeInks;
   const accent =
     colorOf(explicit, "accent") ??
     (isHex(source.accent) ? source.accent.trim() : undefined) ??

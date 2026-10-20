@@ -73,7 +73,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     setInfo(null);
     try {
       const parts: string[] = [
-        `-- WrenDB SQL 덤프`,
+        `-- TablePeek SQL 덤프`,
         `-- 엔진: ${meta.kind}`,
         `-- 생성: ${new Date().toISOString()}`,
         "",

@@ -1,5 +1,5 @@
 [package]
-name = "wrendb-engine"
+name = "tablepeek-engine"
 version = "0.0.1"
 edition = "2021"
 
@@ -8,7 +8,7 @@ arrow = { version = "60.0.0", features = ["ipc"] }
 chrono = "0.4.45"
 futures-util = "=0.3.32"
 mysql_async = { version = "0.37.1", features = ["default-rustls-ring"] }
-wrendb-types = { path = "../wrendb-types" }
+tablepeek-types = { path = "../tablepeek-types" }
 rusqlite = { workspace = true }
 rust_decimal = { version = "1.43.0", features = ["db-postgres"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

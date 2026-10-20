@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/wrendb",
-    "crates/wrendb-engine",
-    "crates/wrendb-server",
-    "crates/wrendb-types",
+    "crates/tablepeek",
+    "crates/tablepeek-engine",
+    "crates/tablepeek-server",
+    "crates/tablepeek-types",
 ]
 
 [workspace.dependencies]

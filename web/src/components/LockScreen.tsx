@@ -36,7 +36,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
           void submit();
         }}
       >
-        <div className="lock-brand">wrendb</div>
+        <div className="lock-brand">tablepeek</div>
         <p className="lock-hint">잠금 상태입니다. 암호를 입력하세요.</p>
         <input
           type="password"

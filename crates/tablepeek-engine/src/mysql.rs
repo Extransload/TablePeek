@@ -10,7 +10,7 @@ use mysql_async::{
     Value as MyValue,
 };
 use serde_json::Value;
-use wrendb_types::{
+use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MySqlConfig,
     ObjectDefinition, PkValue, ServerInfo, ServerSession, SslMode, TableDetail, TableSchema,
 };

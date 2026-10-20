@@ -221,7 +221,7 @@ function fkDropSql(kind: string, table: string, name: string): string {
 }
 
 function rebuildSqlite(table: string, draft: StructureDraft): string[] {
-  const tmp = `${table.split(".").pop() ?? table}_wrendb_tmp`;
+  const tmp = `${table.split(".").pop() ?? table}_tablepeek_tmp`;
   const columns = draft.columns.map((column) => columnDef("sqlite", column));
   const pk = pkList(draft.columns);
   if (pk.length > 0) {

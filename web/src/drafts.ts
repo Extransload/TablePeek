@@ -6,7 +6,7 @@ export interface QueryDraft {
 
 type DraftMap = Record<string, Record<string, QueryDraft>>;
 
-const KEY = "wrendb.drafts";
+const KEY = "tablepeek.drafts";
 const timers = new Map<string, number>();
 
 function read(): DraftMap {

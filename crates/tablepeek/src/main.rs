@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 
-use wrendb_engine::Engine;
-use wrendb_server::{serve, store::StoreFile, AppState, ConnSlot, Registry};
+use tablepeek_engine::Engine;
+use tablepeek_server::{serve, store::StoreFile, AppState, ConnSlot, Registry};
 
 mod mcp;
 
@@ -23,7 +23,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "사용법:\n  wrendb serve [--db <SQLite 파일>] [--port <포트>] [--demo-rows <행 수>] [--no-open]\n  wrendb mcp [--url <URL>] [--token <토큰>] [--conn <연결 ID>]"
+        "사용법:\n  tablepeek serve [--db <SQLite 파일>] [--port <포트>] [--demo-rows <행 수>] [--no-open]\n  tablepeek mcp [--url <URL>] [--token <토큰>] [--conn <연결 ID>]"
     );
     std::process::exit(2);
 }
@@ -77,17 +77,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.mcp {
         let url = args
             .url
-            .or_else(|| std::env::var("WRENDB_URL").ok())
+            .or_else(|| std::env::var("TABLEPEEK_URL").ok())
             .unwrap_or_else(|| "http://127.0.0.1:7870".to_string());
         let token = args
             .token
-            .or_else(|| std::env::var("WRENDB_TOKEN").ok())
+            .or_else(|| std::env::var("TABLEPEEK_TOKEN").ok())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| {
-                eprintln!("MCP 토큰이 필요합니다: --token 또는 WRENDB_TOKEN");
+                eprintln!("MCP 토큰이 필요합니다: --token 또는 TABLEPEEK_TOKEN");
                 std::process::exit(2);
             });
-        let conn = args.conn.or_else(|| std::env::var("WRENDB_CONN").ok());
+        let conn = args.conn.or_else(|| std::env::var("TABLEPEEK_CONN").ok());
         return mcp::run(mcp::McpConfig { url, token, conn });
     }
 
@@ -148,7 +148,7 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let url = format!("http://127.0.0.1:{}/?token={}", addr.port(), token);
 
-    println!("wrendb dev server: {url}");
+    println!("tablepeek dev server: {url}");
     println!("종료: Ctrl+C");
 
     if !args.no_open {

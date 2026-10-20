@@ -1,6 +1,7 @@
 import type { RowSource } from "./rowSource";
 import { palette } from "../palette";
 import { getSettings } from "../settings";
+import { classifyValue } from "./valueKind";
 
 const ROW_H = 26;
 const HEADER_H = 28;
@@ -421,17 +422,21 @@ export class CanvasGrid {
     return lo;
   }
 
-  private textInk(v: unknown): string {
+  private textInk(v: unknown, colorsEnabled: boolean): string {
     if (v === null) {
       return palette.nullInk;
     }
-    if (typeof v === "number" || typeof v === "bigint") {
-      return palette.accent;
+    if (!colorsEnabled) {
+      if (typeof v === "number" || typeof v === "bigint") {
+        return palette.accent;
+      }
+      if (typeof v === "boolean") {
+        return palette.warn;
+      }
+      return palette.ink;
     }
-    if (typeof v === "boolean") {
-      return palette.warn;
-    }
-    return palette.ink;
+    const kind = classifyValue(v);
+    return kind === null ? palette.ink : palette.typeInks[kind];
   }
 
   private fitText(text: string, maxWidth: number): string {
@@ -494,6 +499,7 @@ export class CanvasGrid {
     const sel = this.selectionRange();
     const selFill = this.focused ? palette.selFillFocus : palette.selFill;
     const startCol = this.firstVisibleCol(virtualX);
+    const colorsEnabled = getSettings().typeColors;
 
     ctx.textBaseline = "middle";
     ctx.font = FONT;
@@ -532,7 +538,7 @@ export class CanvasGrid {
         const isNull = v === null;
         const text = isNull ? "NULL" : this.cellText(v);
         const right = typeof v === "number";
-        ctx.fillStyle = this.textInk(v);
+        ctx.fillStyle = this.textInk(v, colorsEnabled);
         ctx.textAlign = right ? "right" : "left";
         const tx = right ? x + cw - CELL_PAD : x + CELL_PAD;
         const ty = y + ROW_H / 2;

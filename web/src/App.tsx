@@ -141,8 +141,8 @@ import {
 
 const EMPTY_TABLES: string[] = [];
 const MAX_ROWS_LIMIT = 500000;
-const WORKSPACES_KEY = "wrendb.workspaces";
-const PINNED_KEY = "wrendb.pinned-tables";
+const WORKSPACES_KEY = "tablepeek.workspaces";
+const PINNED_KEY = "tablepeek.pinned-tables";
 const PERSIST_DROP_KEYS = new Set(["source", "data", "detail"]);
 const TABLE_VIEWS: TableView[] = ["data", "structure", "ddl"];
 
@@ -257,7 +257,7 @@ function persistReplacer(key: string, value: unknown): unknown {
 
 function loadParamValues(): Record<string, string> {
   try {
-    const raw = window.localStorage.getItem("wrendb.param-values");
+    const raw = window.localStorage.getItem("tablepeek.param-values");
     if (raw === null) {
       return {};
     }
@@ -341,11 +341,11 @@ export default function App() {
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [alertMode, setAlertMode] = useState<0 | 1 | 2>(() => {
-    const raw = window.localStorage.getItem("wrendb.alert-mode");
+    const raw = window.localStorage.getItem("tablepeek.alert-mode");
     if (raw === "0" || raw === "1" || raw === "2") {
       return Number(raw) as 0 | 1 | 2;
     }
-    return window.localStorage.getItem("wrendb.safe-mode") === "0" ? 0 : 1;
+    return window.localStorage.getItem("tablepeek.safe-mode") === "0" ? 0 : 1;
   });
   const [snippetMenu, setSnippetMenu] = useState<{ x: number; y: number } | null>(null);
   const [metaNonce, setMetaNonce] = useState(0);
@@ -387,7 +387,7 @@ export default function App() {
   const [schemaMap, setSchemaMap] = useState<Record<string, string[]>>({});
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [splitSide, setSplitSide] = useState<"bottom" | "right">(() =>
-    window.localStorage.getItem("wrendb.split-side") === "right" ? "right" : "bottom",
+    window.localStorage.getItem("tablepeek.split-side") === "right" ? "right" : "bottom",
   );
   const activeConnSummary = conns.find((conn) => conn.id === activeConnId) ?? null;
   const activeConnMeta = getConnMeta(activeConnSummary?.saved_id);
@@ -422,10 +422,10 @@ export default function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   useEffect(() => {
-    window.localStorage.setItem("wrendb.alert-mode", String(alertMode));
+    window.localStorage.setItem("tablepeek.alert-mode", String(alertMode));
   }, [alertMode]);
   useEffect(() => {
-    window.localStorage.setItem("wrendb.split-side", splitSide);
+    window.localStorage.setItem("tablepeek.split-side", splitSide);
   }, [splitSide]);
   useEffect(() => {
     let alive = true;
@@ -440,10 +440,10 @@ export default function App() {
         .catch(() => {});
     }
     load();
-    window.addEventListener("wrendb:favorites-changed", load);
+    window.addEventListener("tablepeek:favorites-changed", load);
     return () => {
       alive = false;
-      window.removeEventListener("wrendb:favorites-changed", load);
+      window.removeEventListener("tablepeek:favorites-changed", load);
     };
   }, []);
   const editorRef = useRef<SqlEditorHandle | null>(null);
@@ -916,7 +916,7 @@ export default function App() {
     try {
       const stored = loadParamValues();
       window.localStorage.setItem(
-        "wrendb.param-values",
+        "tablepeek.param-values",
         JSON.stringify({ ...stored, ...values }),
       );
     } catch {}
@@ -2719,7 +2719,7 @@ export default function App() {
     return (
       <div className="app">
         <header className="appbar">
-          <span className="brand">wrendb</span>
+          <span className="brand">tablepeek</span>
           <span className="spacer" />
         </header>
         <div className="home">
@@ -2738,7 +2738,7 @@ export default function App() {
     <>
     <div className="app">
       <header className="appbar">
-        <span className="brand">wrendb</span>
+        <span className="brand">tablepeek</span>
         <ConnSwitcher
           conns={conns}
           activeId={activeConnId}

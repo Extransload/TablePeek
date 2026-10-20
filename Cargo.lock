@@ -4022,6 +4022,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "tablepeek"
+version = "0.0.1"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "tablepeek-engine",
+ "tablepeek-server",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "tablepeek-engine"
+version = "0.0.1"
+dependencies = [
+ "arrow",
+ "chrono",
+ "futures-util",
+ "mysql_async",
+ "rusqlite",
+ "rust_decimal",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "serde_json",
+ "tablepeek-types",
+ "thiserror",
+ "tiberius",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "tablepeek-server"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "keyring",
+ "russh",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tablepeek-engine",
+ "tablepeek-types",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "tablepeek-types"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4957,68 +5019,6 @@ dependencies = [
  "group",
  "hybrid-array",
  "primefield",
-]
-
-[[package]]
-name = "wrendb"
-version = "0.0.1"
-dependencies = [
- "reqwest",
- "serde_json",
- "tokio",
- "uuid",
- "wrendb-engine",
- "wrendb-server",
-]
-
-[[package]]
-name = "wrendb-engine"
-version = "0.0.1"
-dependencies = [
- "arrow",
- "chrono",
- "futures-util",
- "mysql_async",
- "rusqlite",
- "rust_decimal",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "serde_json",
- "thiserror",
- "tiberius",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "tokio-util",
- "uuid",
- "wrendb-types",
-]
-
-[[package]]
-name = "wrendb-server"
-version = "0.0.1"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "futures-util",
- "keyring",
- "russh",
- "rust-embed",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
- "wrendb-engine",
- "wrendb-types",
-]
-
-[[package]]
-name = "wrendb-types"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

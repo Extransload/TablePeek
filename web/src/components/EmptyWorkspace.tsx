@@ -10,7 +10,7 @@ export function EmptyWorkspace({ onNewQuery, onHome }: EmptyWorkspaceProps) {
   return (
     <div className="empty-workspace">
       <div className="empty-workspace-mark" aria-hidden="true">
-        wrendb
+        tablepeek
       </div>
       <div className="empty-workspace-title">{t("탭이 없습니다")}</div>
       <div className="empty-workspace-hint">

@@ -30,7 +30,7 @@ export const ENVIRONMENT_OPTIONS: {
   { value: "production", label: "운영" },
 ];
 
-const STORAGE_KEY = "wrendb.conn-meta";
+const STORAGE_KEY = "tablepeek.conn-meta";
 const listeners = new Set<() => void>();
 
 export function environmentLabel(environment: ConnectionEnvironment): string {

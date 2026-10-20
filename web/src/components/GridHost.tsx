@@ -73,9 +73,9 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     const onTheme = (): void => {
       grid.refreshTheme();
     };
-    window.addEventListener("wrendb:theme", onTheme);
+    window.addEventListener("tablepeek:theme", onTheme);
     return () => {
-      window.removeEventListener("wrendb:theme", onTheme);
+      window.removeEventListener("tablepeek:theme", onTheme);
       gridRef.current = null;
       grid.destroy();
     };

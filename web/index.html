@@ -3,30 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WrenDB</title>
+    <title>TablePeek</title>
     <script>
       try {
-        const prefix = "prodb.";
-        const legacy = [];
-        for (let index = 0; index < localStorage.length; index += 1) {
-          const key = localStorage.key(index);
-          if (key && key.startsWith(prefix)) {
-            legacy.push([key, localStorage.getItem(key)]);
+        const targetPrefix = "tablepeek.";
+        const legacyPrefixes = ["wrendb.", "prodb."];
+        for (const prefix of legacyPrefixes) {
+          const legacy = [];
+          for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index);
+            if (key && key.startsWith(prefix)) {
+              legacy.push([key, localStorage.getItem(key)]);
+            }
+          }
+          for (const [key, value] of legacy) {
+            const next = `${targetPrefix}${key.slice(prefix.length)}`;
+            if (localStorage.getItem(next) === null && value !== null) {
+              localStorage.setItem(next, value);
+            }
+            localStorage.removeItem(key);
           }
         }
-        for (const [key, value] of legacy) {
-          const next = `wrendb.${key.slice(prefix.length)}`;
-          if (localStorage.getItem(next) === null && value !== null) {
-            localStorage.setItem(next, value);
-          }
-          localStorage.removeItem(key);
-        }
-        const raw = localStorage.getItem("wrendb.settings");
+        const raw = localStorage.getItem("tablepeek.settings");
         if (raw !== null) {
           const settings = JSON.parse(raw);
-          if (settings && settings.syntaxPreset === "prodb") {
-            settings.syntaxPreset = "wrendb";
-            localStorage.setItem("wrendb.settings", JSON.stringify(settings));
+          if (
+            settings &&
+            (settings.syntaxPreset === "wrendb" || settings.syntaxPreset === "prodb")
+          ) {
+            settings.syntaxPreset = "tablepeek";
+            localStorage.setItem("tablepeek.settings", JSON.stringify(settings));
           }
         }
       } catch {}

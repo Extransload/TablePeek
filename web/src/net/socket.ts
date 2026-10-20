@@ -62,12 +62,12 @@ type RowOpMessage =
   | ({ type: "insert_row" } & InsertRowRequest)
   | ({ type: "delete_row" } & DeleteRowRequest);
 
-export class WrendbSocketError extends Error {
+export class TablePeekSocketError extends Error {
   readonly cancelled: boolean;
 
   constructor(message: string, cancelled: boolean) {
     super(message);
-    this.name = "WrendbSocketError";
+    this.name = "TablePeekSocketError";
     this.cancelled = cancelled;
   }
 }
@@ -139,7 +139,7 @@ interface MetaWaiter {
   id: string;
   conn: string;
   resolve: (message: MetaMessage) => void;
-  reject: (error: WrendbSocketError) => void;
+  reject: (error: TablePeekSocketError) => void;
 }
 
 interface WindowWaiter {
@@ -147,26 +147,26 @@ interface WindowWaiter {
   conn: string;
   timer: ReturnType<typeof setTimeout>;
   resolve: (rows: unknown[][]) => void;
-  reject: (error: WrendbSocketError) => void;
+  reject: (error: TablePeekSocketError) => void;
 }
 
 interface EditWaiter {
   conn: string;
   resolve: (result: EditResult) => void;
-  reject: (error: WrendbSocketError) => void;
+  reject: (error: TablePeekSocketError) => void;
 }
 
 interface TxWaiter {
   conn: string;
   expected: TxMessage["state"];
   resolve: () => void;
-  reject: (error: WrendbSocketError) => void;
+  reject: (error: TablePeekSocketError) => void;
 }
 
 interface RowWaiter {
   conn: string;
   resolve: (change: RowChange) => void;
-  reject: (error: WrendbSocketError) => void;
+  reject: (error: TablePeekSocketError) => void;
 }
 
 const CONNECT_ERROR = "서버에 연결할 수 없습니다";
@@ -222,7 +222,7 @@ function concatRows(frames: unknown[][][]): unknown[][] {
   return rows;
 }
 
-export class WrendbSocket {
+export class TablePeekSocket {
   private readonly url: string;
   private ws: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
@@ -271,7 +271,7 @@ export class WrendbSocket {
         }
         failed = true;
         this.connectPromise = null;
-        reject(new WrendbSocketError(CONNECT_ERROR, false));
+        reject(new TablePeekSocketError(CONNECT_ERROR, false));
       };
       ws.onopen = () => {
         if (this.ws !== ws) {
@@ -295,7 +295,7 @@ export class WrendbSocket {
           this.ws = null;
           this.connectPromise = null;
           this.setStatus("closed");
-          this.failPending(new WrendbSocketError(CLOSED_ERROR, false));
+          this.failPending(new TablePeekSocketError(CLOSED_ERROR, false));
         }
         failConnect();
       };
@@ -311,7 +311,7 @@ export class WrendbSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new WrendbSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(CLOSED_ERROR, false);
     }
     this.cancelPending(conn);
     const queryId = crypto.randomUUID();
@@ -356,19 +356,19 @@ export class WrendbSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new WrendbSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(CLOSED_ERROR, false);
     }
     const key = this.windowKey(conn, id, offset);
     const existing = this.windowWaiters.get(key);
     if (existing) {
       this.windowWaiters.delete(key);
       clearTimeout(existing.timer);
-      existing.reject(new WrendbSocketError(CANCELLED_ERROR, true));
+      existing.reject(new TablePeekSocketError(CANCELLED_ERROR, true));
     }
     return new Promise<unknown[][]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.windowWaiters.delete(key);
-        reject(new WrendbSocketError(FETCH_TIMEOUT_ERROR, false));
+        reject(new TablePeekSocketError(FETCH_TIMEOUT_ERROR, false));
       }, FETCH_TIMEOUT_MS);
       this.windowWaiters.set(key, { id, conn, timer, resolve, reject });
       ws.send(JSON.stringify({ type: "fetch", conn, id, offset, limit }));
@@ -386,10 +386,10 @@ export class WrendbSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new WrendbSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(CLOSED_ERROR, false);
     }
     if (this.editWaiters.has(conn)) {
-      throw new WrendbSocketError("이전 수정 요청이 아직 완료되지 않았습니다", false);
+      throw new TablePeekSocketError("이전 수정 요청이 아직 완료되지 않았습니다", false);
     }
     const result = new Promise<EditResult>((resolve, reject) => {
       this.editWaiters.set(conn, { conn, resolve, reject });
@@ -438,7 +438,7 @@ export class WrendbSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new WrendbSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(CLOSED_ERROR, false);
     }
     const id = crypto.randomUUID();
     const promise = new Promise<RowChange>((resolve, reject) => {
@@ -458,10 +458,10 @@ export class WrendbSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new WrendbSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(CLOSED_ERROR, false);
     }
     if (this.txWaiters.has(conn)) {
-      throw new WrendbSocketError("이전 트랜잭션 요청이 아직 완료되지 않았습니다", false);
+      throw new TablePeekSocketError("이전 트랜잭션 요청이 아직 완료되지 않았습니다", false);
     }
     const expected: TxMessage["state"] =
       action === "begin" ? "began" : action === "commit" ? "committed" : "rolledback";
@@ -541,7 +541,7 @@ export class WrendbSocket {
       return;
     }
     if (message.type === "error") {
-      const error = new WrendbSocketError(message.message, message.cancelled);
+      const error = new TablePeekSocketError(message.message, message.cancelled);
       for (const [id, waiter] of this.metaWaiters) {
         const matches =
           message.id !== null
@@ -629,7 +629,7 @@ export class WrendbSocket {
         if (target.expected === message.state) {
           target.resolve();
         } else {
-          target.reject(new WrendbSocketError(`예상하지 못한 트랜잭션 상태: ${message.state}`, false));
+          target.reject(new TablePeekSocketError(`예상하지 못한 트랜잭션 상태: ${message.state}`, false));
         }
       }
       if (message.invalidate === true) {
@@ -663,7 +663,7 @@ export class WrendbSocket {
   }
 
   private cancelPending(conn: string): void {
-    const error = new WrendbSocketError(CANCELLED_ERROR, true);
+    const error = new TablePeekSocketError(CANCELLED_ERROR, true);
     for (const [id, waiter] of this.metaWaiters) {
       if (waiter.conn === conn) {
         this.metaWaiters.delete(id);
@@ -680,7 +680,7 @@ export class WrendbSocket {
     this.pendingFrames = [];
   }
 
-  private failPending(error: WrendbSocketError): void {
+  private failPending(error: TablePeekSocketError): void {
     for (const [id, waiter] of this.metaWaiters) {
       this.metaWaiters.delete(id);
       waiter.reject(error);

@@ -16,8 +16,8 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use wrendb_engine::{Engine, EngineError, QueryData};
-use wrendb_types::{
+use tablepeek_engine::{Engine, EngineError, QueryData};
+use tablepeek_types::{
     ApiError, ConnectRequest, DbObjects, EditTarget, EngineMeta, FsEntry, FsListing,
     ObjectDefinition, PkValue, QueryResult, ServerInfo, TableDetail, TableSchema,
 };
@@ -305,7 +305,7 @@ fn authorized(state: &AppState, headers: &HeaderMap, query_token: Option<&str>) 
         }
     }
     headers
-        .get("x-wrendb-token")
+        .get("x-tablepeek-token")
         .and_then(|v| v.to_str().ok())
         .map(|v| v == &*state.token)
         .unwrap_or(false)
@@ -2441,7 +2441,7 @@ mod tests {
     #[test]
     fn list_dir_sorts_and_skips_hidden() {
         let base = std::env::temp_dir().join(format!(
-            "wrendb-fs-test-{}-{}",
+            "tablepeek-fs-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2465,7 +2465,7 @@ mod tests {
     #[test]
     fn path_stat_reports_file_and_missing_path() {
         let base = std::env::temp_dir().join(format!(
-            "wrendb-stat-test-{}-{}",
+            "tablepeek-stat-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2519,7 +2519,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "wrendb-server-test-{}-{}-{name}",
+            "tablepeek-server-test-{}-{}-{name}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2551,20 +2551,20 @@ mod tests {
 
     fn test_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert("x-wrendb-token", "test-token".parse().unwrap());
+        headers.insert("x-tablepeek-token", "test-token".parse().unwrap());
         headers
     }
 
     fn test_connect_request(driver: &str) -> ConnectRequest {
         ConnectRequest {
             driver: driver.into(),
-            postgres: Some(wrendb_types::PostgresConfig {
+            postgres: Some(tablepeek_types::PostgresConfig {
                 host: "127.0.0.1".into(),
                 port: 5433,
-                user: "wrendb".into(),
-                password: Some("wrendb_test_pw".into()),
-                database: "wrendb_test".into(),
-                ssl_mode: wrendb_types::SslMode::Disable,
+                user: "tablepeek".into(),
+                password: Some("tablepeek_test_pw".into()),
+                database: "tablepeek_test".into(),
+                ssl_mode: tablepeek_types::SslMode::Disable,
                 ssl_root_cert: None,
                 ssl_client_cert: None,
                 ssl_client_key: None,
@@ -2582,13 +2582,13 @@ mod tests {
             driver: "mysql".into(),
             postgres: None,
             cockroach: None,
-            mysql: Some(wrendb_types::MySqlConfig {
+            mysql: Some(tablepeek_types::MySqlConfig {
                 host: "127.0.0.1".into(),
                 port: 3307,
                 user: "root".into(),
                 password: Some("root_pw".into()),
-                database: "wrendb_test".into(),
-                ssl_mode: wrendb_types::SslMode::Disable,
+                database: "tablepeek_test".into(),
+                ssl_mode: tablepeek_types::SslMode::Disable,
                 ssl_root_cert: None,
                 ssl_client_cert: None,
                 ssl_client_key: None,
@@ -2603,13 +2603,13 @@ mod tests {
         ConnectRequest {
             driver: "cockroach".into(),
             postgres: None,
-            cockroach: Some(wrendb_types::PostgresConfig {
+            cockroach: Some(tablepeek_types::PostgresConfig {
                 host: "127.0.0.1".into(),
                 port: 26258,
                 user: "root".into(),
                 password: None,
                 database: "defaultdb".into(),
-                ssl_mode: wrendb_types::SslMode::Disable,
+                ssl_mode: tablepeek_types::SslMode::Disable,
                 ssl_root_cert: None,
                 ssl_client_cert: None,
                 ssl_client_key: None,
@@ -2627,12 +2627,12 @@ mod tests {
             postgres: None,
             cockroach: None,
             mysql: None,
-            mssql: Some(wrendb_types::MssqlConfig {
+            mssql: Some(tablepeek_types::MssqlConfig {
                 host: "127.0.0.1".into(),
                 port: 14330,
                 user: "sa".into(),
                 password: Some("MsSql_test_pw1".into()),
-                database: "wrendb_test".into(),
+                database: "tablepeek_test".into(),
                 encrypt: false,
             }),
             ssh: None,
@@ -2762,7 +2762,7 @@ mod tests {
         assert_eq!(connections[0]["persist_password"], json!(false));
         assert_eq!(connections[0]["has_password"], json!(false));
         assert!(connections[0]["postgres"].get("password").is_none());
-        assert!(!listed.0.to_string().contains("wrendb_test_pw"));
+        assert!(!listed.0.to_string().contains("tablepeek_test_pw"));
 
         let missing = connection_connect(
             State(state.clone()),
@@ -2821,7 +2821,7 @@ mod tests {
         assert_eq!(connections[0]["driver"], json!("mysql"));
         assert_eq!(connections[0]["mysql"]["host"], json!("127.0.0.1"));
         assert_eq!(connections[0]["mysql"]["port"], json!(3307));
-        assert_eq!(connections[0]["mysql"]["database"], json!("wrendb_test"));
+        assert_eq!(connections[0]["mysql"]["database"], json!("tablepeek_test"));
         assert!(connections[0]["mysql"].get("password").is_none());
         assert!(connections[0].get("postgres").is_none());
         assert!(!listed.0.to_string().contains("root_pw"));
@@ -2925,7 +2925,7 @@ mod tests {
         assert_eq!(connections[0]["driver"], json!("mssql"));
         assert_eq!(connections[0]["mssql"]["host"], json!("127.0.0.1"));
         assert_eq!(connections[0]["mssql"]["port"], json!(14330));
-        assert_eq!(connections[0]["mssql"]["database"], json!("wrendb_test"));
+        assert_eq!(connections[0]["mssql"]["database"], json!("tablepeek_test"));
         assert_eq!(connections[0]["mssql"]["encrypt"], json!(false));
         assert!(connections[0]["mssql"].get("password").is_none());
         assert!(connections[0].get("postgres").is_none());
@@ -2947,7 +2947,7 @@ mod tests {
 
     #[tokio::test]
     async fn stored_connection_connect_reports_missing_password() {
-        if std::env::var("WRENDB_TEST_DOCKER").is_err() {
+        if std::env::var("TABLEPEEK_TEST_DOCKER").is_err() {
             return;
         }
         let dir = temp_dir("connections-stored-password");

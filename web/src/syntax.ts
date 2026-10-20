@@ -1,6 +1,6 @@
 export type SyntaxPresetId =
-  | "wrendb"
-  | "tableplus"
+  | "tablepeek"
+  | "palenight"
   | "solarized"
   | "monokai"
   | "github"
@@ -31,8 +31,8 @@ export interface SyntaxPreset {
 
 export const SYNTAX_PRESETS: SyntaxPreset[] = [
   {
-    id: "wrendb",
-    label: "WrenDB",
+    id: "tablepeek",
+    label: "TablePeek",
     description: "현재 테마의 강조 색과 상태 색을 따릅니다.",
     dark: {
       keyword: "#7aa2ff",
@@ -64,9 +64,9 @@ export const SYNTAX_PRESETS: SyntaxPreset[] = [
     },
   },
   {
-    id: "tableplus",
-    label: "TablePlus",
-    description: "선명한 보라·청록 계열의 클래식 편집기 색상입니다.",
+    id: "palenight",
+    label: "Palenight",
+    description: "선명한 보라·청록 계열의 Material Palenight 색상입니다.",
     dark: {
       keyword: "#c792ea",
       string: "#c3e88d",

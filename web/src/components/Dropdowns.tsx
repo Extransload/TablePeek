@@ -211,7 +211,7 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
       setName("");
       setKeyword("");
       await load();
-      window.dispatchEvent(new Event("wrendb:favorites-changed"));
+      window.dispatchEvent(new Event("tablepeek:favorites-changed"));
     } catch (err) {
       setError(errorOf(err, t("즐겨찾기를 저장하지 못했습니다")));
     } finally {
@@ -223,7 +223,7 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
     try {
       await store.deleteFavorite(id);
       await load();
-      window.dispatchEvent(new Event("wrendb:favorites-changed"));
+      window.dispatchEvent(new Event("tablepeek:favorites-changed"));
     } catch (err) {
       setError(errorOf(err, t("즐겨찾기를 삭제하지 못했습니다")));
     }

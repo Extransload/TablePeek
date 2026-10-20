@@ -12,16 +12,16 @@
 | 접속 전 점검 | `/api/fs/stat` + ConnectModal "점검" 버튼. 존재/파일/읽기 가능 여부 확인, UI 성공·실패 메시지 CDP 검증 |
 | 연결 상태 표시 | 상단 ConnSwitcher에 연결됨/연결 중/끊김 표시 |
 | EXPLAIN 시각화 | PG/MySQL JSON, SQLite QUERY PLAN 파서 + 트리·비용·행·원본 JSON UI. 3개 엔진 CDP 검증 |
-| 테마 Git 가져오기 | Base16, VS Code color theme, WrenDB palette JSON. localStorage 저장·재시작 복원 CDP 검증 |
+| 테마 Git 가져오기 | Base16, VS Code color theme, TablePeek palette JSON. localStorage 저장·재시작 복원 CDP 검증 |
 | DB 생성/삭제 GUI | MySQL 생성·삭제 CDP 검증, 목록 동기화 확인 |
 | Laravel 스키마 복사 | `Schema::create` 출력 CDP 검증 |
 | MySQL 테이블 옵션 | collation·ROW_FORMAT·COMMENT preview/DDL 일치 CDP 검증 |
 | PostgreSQL 오류 상세 | message/detail/hint를 사용자 메시지에 포함, API 검증 |
 | MariaDB/Percona/Yugabyte/Redshift 표시 | 버전 문자열 기반 호환 모드 카드 |
 | keyring 왕복 | macOS `security` 비대화형 경로로 저장·조회·삭제 왕복 검증. 전용 ignored 테스트 통과 |
-| TablePlus 숨은 동작 | 셀 가운데 클릭·⌘Enter Quick Look, 사이드바 가운데/⌘클릭 새 탭, ⌥클릭 Quick Edit 메뉴. CDP 확인 |
+| Quick Look·Quick Edit 동작 | 셀 가운데 클릭·⌘Enter Quick Look, 사이드바 가운데/⌘클릭 새 탭, ⌥클릭 Quick Edit 메뉴. CDP 확인 |
 | 디자인 시스템 | 입력·체크박스·포커스·모달 공통 토큰, 모션, `prefers-reduced-motion` 적용. 흰 체크박스 테두리 제거 |
-| MCP 서버 | `wrendb mcp` stdio 서버, 연결·스키마·읽기 전용 쿼리 도구. 실제 JSON-RPC 왕복 확인 |
+| MCP 서버 | `tablepeek mcp` stdio 서버, 연결·스키마·읽기 전용 쿼리 도구. 실제 JSON-RPC 왕복 확인 |
 
 ## 2. 보류 결정
 
@@ -57,10 +57,10 @@ Redshift/Percona/Yugabyte/MariaDB는 현행 호환 드라이버로 접속을 시
 ## 4. 남은 검증 게이트
 
 - `cd web && npm run build`
-- `touch crates/wrendb-server/src/lib.rs && cargo build -p wrendb`
-- `cargo test -p wrendb-server`
-- `WRENDB_TEST_PG=1 WRENDB_TEST_MYSQL=1 WRENDB_TEST_COCKROACH=1 WRENDB_TEST_MSSQL=1 WRENDB_TEST_DOCKER=1 cargo test -p wrendb-engine -- --test-threads=1`
+- `touch crates/tablepeek-server/src/lib.rs && cargo build -p tablepeek`
+- `cargo test -p tablepeek-server`
+- `TABLEPEEK_TEST_PG=1 TABLEPEEK_TEST_MYSQL=1 TABLEPEEK_TEST_COCKROACH=1 TABLEPEEK_TEST_MSSQL=1 TABLEPEEK_TEST_DOCKER=1 cargo test -p tablepeek-engine -- --test-threads=1`
 - 200000행 데모 서버 + `node web/scripts/ws-smoke.mjs <URL>`
 - `cdp-m15.mjs` 및 연결 상태·Explain·테마·점검 CDP 시나리오
-- `wrendb mcp` JSON-RPC initialize/tools/list/query/거부 왕복
+- `tablepeek mcp` JSON-RPC initialize/tools/list/query/거부 왕복
 - `cargo fmt --all -- --check`

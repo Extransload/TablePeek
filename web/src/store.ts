@@ -1,5 +1,5 @@
 import type { WindowedRowSource } from "./grid/windowSource";
-import { WrendbSocket, WrendbSocketError, type QueryMeta } from "./net/socket";
+import { TablePeekSocket, TablePeekSocketError, type QueryMeta } from "./net/socket";
 import type { DefinitionKind } from "./sqlTools";
 
 export interface EngineMeta {
@@ -279,7 +279,7 @@ export type QueryOutcome =
   | { kind: "cancelled" }
   | { kind: "error"; error: string };
 
-const TOKEN_KEY = "wrendb.token";
+const TOKEN_KEY = "tablepeek.token";
 const UNKNOWN_ERROR = "알 수 없는 오류가 발생했습니다";
 const NETWORK_ERROR = "서버에 연결할 수 없습니다";
 const QUERY_WINDOW = 1000;
@@ -346,7 +346,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: {
         "content-type": "application/json",
-        "x-wrendb-token": tokenValue,
+        "x-tablepeek-token": tokenValue,
         ...(init?.headers ?? {}),
       },
     });
@@ -372,12 +372,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-let socket: WrendbSocket | null = null;
+let socket: TablePeekSocket | null = null;
 let activeRunner: (() => void) | null = null;
 
-function ensureSocket(): WrendbSocket {
+function ensureSocket(): TablePeekSocket {
   if (!socket) {
-    const created = new WrendbSocket(tokenValue);
+    const created = new TablePeekSocket(tokenValue);
     created.onStatus((status) => {
       setState({ connection: status });
     });
@@ -481,7 +481,7 @@ async function runQuery(
     return { kind: "ok", result };
   } catch (error) {
     inflight.delete(conn);
-    if (error instanceof WrendbSocketError && error.cancelled) {
+    if (error instanceof TablePeekSocketError && error.cancelled) {
       if (isView()) {
         setState({ status: "idle", error: null, info: CANCELLED_INFO });
       } else if (state.connId === conn) {

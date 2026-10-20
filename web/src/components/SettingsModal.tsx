@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { languageLabel, t, type Language } from "../i18n";
-import { THEMES, themeFromJson } from "../palette";
+import { THEMES, VALUE_KINDS, palette, themeFromJson } from "../palette";
 import {
   DEFAULT_KEYMAP,
   KEY_ACTION_LABELS,
@@ -227,7 +227,7 @@ export function SettingsModal({
       >
         <div className="modal-head">
           <span className="modal-title">{t("설정")}</span>
-          <span className="modal-path">wrendb</span>
+          <span className="modal-path">tablepeek</span>
         </div>
         <div className="settings-shell">
           <nav className="settings-nav" aria-label={t("설정")}>
@@ -353,7 +353,7 @@ export function SettingsModal({
                       <p className="helper theme-import-message">{themeMessage}</p>
                     ) : null}
                     <p className="helper">
-                      {t("Base16, VS Code 색상 테마 JSON 또는 WrenDB 테마 JSON을 Git 원본 URL에서 가져옵니다.")}
+                      {t("Base16, VS Code 색상 테마 JSON 또는 TablePeek 테마 JSON을 Git 원본 URL에서 가져옵니다.")}
                     </p>
                     <div className="settings-row">
                       <span className="settings-label">{t("강조 색")}</span>
@@ -412,6 +412,29 @@ export function SettingsModal({
                     <label className="settings-check">
                       <input
                         type="checkbox"
+                        checked={settings.typeColors}
+                        onChange={(event) =>
+                          onChange({ typeColors: event.target.checked })
+                        }
+                      />
+                      {t("타입별 색상")}
+                    </label>
+                    <p className="helper">
+                      {t("문자열·숫자·불리언·JSON·배열·날짜 값을 타입별 색으로 구분합니다.")}
+                    </p>
+                    {settings.typeColors ? (
+                      <div className="type-preview" aria-hidden="true">
+                        {VALUE_KINDS.map((kind) => (
+                          <span key={kind} style={{ color: palette.typeInks[kind] }}>
+                            {kind}
+                          </span>
+                        ))}
+                        <span style={{ color: palette.nullInk }}>null</span>
+                      </div>
+                    ) : null}
+                    <label className="settings-check">
+                      <input
+                        type="checkbox"
                         checked={settings.hideScroller}
                         onChange={(event) =>
                           onChange({ hideScroller: event.target.checked })
@@ -457,7 +480,7 @@ export function SettingsModal({
                     <span className="syntax-preview-keyword">SELECT</span>
                     <span className="syntax-preview-variable"> name</span>
                     <span className="syntax-preview-operator">,</span>
-                    <span className="syntax-preview-string"> 'wrendb'</span>
+                    <span className="syntax-preview-string"> 'tablepeek'</span>
                     <span className="syntax-preview-keyword"> FROM</span>
                     <span className="syntax-preview-type"> users</span>
                     <span className="syntax-preview-comment"> -- preview</span>

@@ -11,7 +11,7 @@ use tokio_postgres::config::SslMode as PgSslMode;
 use tokio_postgres::types::{FromSqlOwned, ToSql, Type};
 use tokio_postgres::{Client, NoTls, Row};
 use tokio_postgres_rustls::MakeRustlsConnect;
-use wrendb_types::{
+use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, ObjectDefinition,
     PkValue, PostgresConfig, ServerInfo, ServerSession, SslMode, TableDetail, TableSchema,
 };
@@ -150,7 +150,7 @@ pub(crate) async fn connect(
         .port(config.port)
         .user(&config.user)
         .dbname(&config.database)
-        .application_name("wrendb");
+        .application_name("tablepeek");
     if let Some(password) = &config.password {
         pg.password(password);
     }

@@ -1,7 +1,7 @@
-# WrenDB
+# TablePeek
 
 성능 우선 크로스플랫폼 DB 클라이언트 — 로컬 Rust 엔진 + 브라우저 UI.
-설계 배경과 로드맵은 `docs/ARCHITECTURE.md`, TablePlus 대비 기능 격차와 웨이브 계획은 `docs/TABLEPLUS-PARITY.md`, 남은 범위 결정은 `docs/REMAINING-SCOPE.md` 참고.
+설계 배경과 로드맵은 `docs/ARCHITECTURE.md`, 남은 범위 결정은 `docs/REMAINING-SCOPE.md` 참고.
 
 ## 요구사항
 
@@ -9,22 +9,31 @@
 - Node.js 20+ (웹 UI 빌드용)
 - macOS / Windows (Linux도 동일 구조로 동작 예정)
 
-## 빌드
+## 빌드와 실행
 
 ```sh
-cd web && npm install && npm run build   # 웹 UI 번들 생성 (web/dist)
-cargo build                              # 번들을 바이너리에 임베드
+make install   # 최초 1회, 웹 의존성 설치
+make build     # 웹 번들 + Rust 바이너리 빌드
+make run       # 데모 DB(10,000행)로 실행하고 브라우저 열기
+make help      # 전체 명령 목록
 ```
 
-## 실행
+실행 옵션:
 
 ```sh
-cargo run -p wrendb -- serve                        # 인메모리 데모 DB(10,000행)로 시작
-cargo run -p wrendb -- serve --demo-rows 500000     # 데모 행 수 지정 (최대 2,000,000)
-cargo run -p wrendb -- serve --db path/to.sqlite    # 실제 SQLite 파일 열기
+make run PORT=7871                 # 포트 지정 (기본 7870)
+make run DEMO_ROWS=500000          # 데모 행 수 지정 (최대 2,000,000)
+make run DB=path/to.sqlite         # 실제 SQLite 파일 열기
+make run NO_OPEN=1                 # 브라우저 자동 열기 비활성화
 ```
 
-브라우저가 자동으로 열립니다. 옵션: `--port <n>`, `--no-open`.
+수동 빌드가 필요할 때:
+
+```sh
+cd web && npm install && npm run build
+cargo build -p tablepeek
+cargo run -p tablepeek -- serve --port 7870
+```
 
 ## DB 연결
 
@@ -40,42 +49,41 @@ UI 상단 "연결" 버튼에서 드라이버를 선택하고 접속 정보를 �
 
 - TLS: SSL 모드가 `disable`이 아니면 CA 인증서 경로와 선택적으로 클라이언트 인증서·키를 지정할 수 있습니다. 연결 전 "점검" 버튼이 입력값과 로컬 인증서/SSH 키 파일을 확인합니다.
 - SSH 터널: 체크 후 SSH 호스트/포트/사용자/키 경로(또는 비밀번호) 입력. 이때 DB 호스트/포트는 **SSH 서버 관점** 주소입니다 (예: 원격지에서 127.0.0.1:5432).
-- 저장: "저장" 체크 시 `~/.wrendb/store.json`에 비밀번호를 제외한 정보가 저장되고, "비밀번호도 함께 저장"을 체크하면 비밀번호는 OS 키체인에만 보관됩니다. macOS에서는 `/usr/bin/security`를 통해 접근하므로, 기존 항목의 첫 접근 시 **항상 허용**을 한 번 선택하면 이후 앱을 다시 빌드해도 허용 창이 반복되지 않습니다.
+- 저장: "저장" 체크 시 `~/.tablepeek/store.json`에 비밀번호를 제외한 정보가 저장되고, "비밀번호도 함께 저장"을 체크하면 비밀번호는 OS 키체인에만 보관됩니다. macOS에서는 `/usr/bin/security`를 통해 접근하므로, 기존 항목의 첫 접근 시 **항상 허용**을 한 번 선택하면 이후 앱을 다시 빌드해도 허용 창이 반복되지 않습니다.
 
 ## UI 기능 요약
 
 - 탭: 쿼리 / 데이터 / 구조 / 서버 정보 / 정의(DDL) 탭. ⌘T 새 탭, ⌘W 닫기, ⌘P 커맨드 팔레트.
 - 상단 연결 바: 홈·열린 연결 탭·추가 버튼을 한 줄에 배치. 연결별 색상, 드라이버·환경 배지, 연결 상태 점으로 다중 연결을 즉시 전환.
 - 스키마 사이드바: 연결명·드라이버·환경·상태를 보여주는 DB 헤더, 테이블 검색·컬럼 펼치기, 구조 보기, 테이블·뷰별 오브젝트 섹션(뷰/함수/트리거/시퀀스), 서버 정보 진입. 테이블 가운데/⌘클릭은 새 탭.
-- 데이터 탭: 필터(AND/OR)·정렬(헤더 클릭, Shift 다중)·페이지네이션, 행 추가(기본값)·복제·삭제, 셀 편집(PK 기반)·트랜잭션, 참조 행 점프(FK), 행 상세, CSV/JSON/SQL 내보내기.
+- 데이터 탭: 필터(AND/OR)·정렬(헤더 클릭, Shift 다중)·페이지네이션, 행 추가(기본값)·복제·삭제, 셀 편집(PK 기반)·트랜잭션, 참조 행 점프(FK), 행 상세, CSV/JSON/SQL 내보내기. 문자열·숫자·불리언·JSON·배열·날짜 값을 타입별 색상으로 구분.
 - Quick Look: 셀 가운데 클릭 또는 ⌘Enter로 우측 drawer에서 값·JSON 트리·인코딩/HEX 확인 및 PK 기반 편집, ⌥클릭은 셀 메뉴. 스페이스바는 관계 탭이 있는 행 상세.
 - 환경·로딩: LOCAL/DEV/STAGE/PROD 환경 배지, 탭/결과 로딩 스피너와 열림 애니메이션, SQL syntax preset 6종.
 - 쿼리 도구: 실행 계획 시각화(EXPLAIN/EXPLAIN ANALYZE 트리·비용·예상/실제 행), SQL 스니펫, 안전 모드(WHERE 없는 UPDATE/DELETE 확인), 기록·즐겨찾기.
 - 스키마: 테이블 클릭=데이터, 우클릭 메뉴에서 Laravel 스키마 복사, DB 생성/삭제, MySQL collation·ROW_FORMAT·COMMENT.
 - 서버 정보 탭: 엔진 버전·크기·가동 시간·세션 목록, 세션 종료(지원 엔진), MariaDB/Percona/Yugabyte/Redshift 호환 모드 표시.
 - 연결 홈: 저장 연결 카드에서 새 창 열기·편집·삭제, 열린 연결과 최근 연결을 한 화면에 표시.
-- 설정: 좌측 카테고리 탐색(일반·모양·에디터·데이터·단축키·보안). 내장 테마 9종 + Git 원본 URL에서 Base16/VS Code/WrenDB 테마 JSON 가져오기, 글꼴·강조색·대체 행·스크롤바·CSV·키맵·활동 보관 설정.
-- MCP: `wrendb mcp` stdio 서버로 연결·스키마·읽기 전용 쿼리 노출. 설정은 `docs/MCP.md`.
+- 설정: 좌측 카테고리 탐색(일반·모양·에디터·데이터·단축키·보안). 내장 테마 9종 + Git 원본 URL에서 Base16/VS Code/TablePeek 테마 JSON 가져오기, 글꼴·강조색·대체 행·타입별 색상·스크롤바·CSV·키맵·활동 보관 설정.
+- MCP: `tablepeek mcp` stdio 서버로 연결·스키마·읽기 전용 쿼리 노출. 설정은 `docs/MCP.md`.
 
 ## 테스트
 
 ```sh
-cargo test                     # Rust 단위 테스트 (기본: 게이트 없이 실행되는 범위)
-cd web && npm run build        # 웹 타입체크(strict) + 프로덕션 번들
+make test                       # Rust 테스트 + 웹 타입체크
+make check                      # 포맷·Rust·TypeScript 검사
+make test-docker                # Docker 연동 테스트
 cd web && node scripts/ws-smoke.mjs "http://127.0.0.1:7699/?token=..."   # WS e2e 스모크(17종)
 ```
 
-Docker 연동 테스트 (선택, 컨테이너 필요):
+Docker 연동 테스트용 컨테이너:
 
 ```sh
-docker run -d --name wrendb-pg -e POSTGRES_USER=wrendb -e POSTGRES_PASSWORD=wrendb_test_pw \
-  -e POSTGRES_DB=wrendb_test -p 5433:5432 postgres:16-alpine
-docker run -d --name wrendb-mysql -e MYSQL_ROOT_PASSWORD=root_pw -e MYSQL_DATABASE=wrendb_test -p 3307:3306 mysql:8
-docker run -d --name wrendb-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=MsSql_test_pw1 -p 14330:1433 mcr.microsoft.com/mssql/server:2022-latest
-docker run -d --name wrendb-crdb -p 26258:26257 cockroachdb/cockroach:latest start-single-node --insecure
-# wrendb-ssh: SSH 터널 테스트용 컨테이너 (2222 포트)
-
-WRENDB_TEST_PG=1 WRENDB_TEST_MYSQL=1 WRENDB_TEST_COCKROACH=1 WRENDB_TEST_MSSQL=1 WRENDB_TEST_DOCKER=1 cargo test
+docker run -d --name tablepeek-pg -e POSTGRES_USER=tablepeek -e POSTGRES_PASSWORD=tablepeek_test_pw \
+  -e POSTGRES_DB=tablepeek_test -p 5433:5432 postgres:16-alpine
+docker run -d --name tablepeek-mysql -e MYSQL_ROOT_PASSWORD=root_pw -e MYSQL_DATABASE=tablepeek_test -p 3307:3306 mysql:8
+docker run -d --name tablepeek-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=MsSql_test_pw1 -p 14330:1433 mcr.microsoft.com/mssql/server:2022-latest
+docker run -d --name tablepeek-crdb -p 26258:26257 cockroachdb/cockroach:latest start-single-node --insecure
+# tablepeek-ssh: SSH 터널 테스트용 컨테이너 (2222 포트)
 ```
 
 ## 현재 상태: M18 (배포 전)

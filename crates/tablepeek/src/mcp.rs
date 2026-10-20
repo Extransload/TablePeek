@@ -100,8 +100,8 @@ impl Mcp {
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
-            "serverInfo": { "name": "wrendb-mcp", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": "WrenDB의 활성 연결을 조회하고 읽기 전용 SQL을 실행합니다. 쓰기는 WrenDB UI에서 수행하세요."
+            "serverInfo": { "name": "tablepeek-mcp", "version": env!("CARGO_PKG_VERSION") },
+            "instructions": "TablePeek의 활성 연결을 조회하고 읽기 전용 SQL을 실행합니다. 쓰기는 TablePeek UI에서 수행하세요."
         })
     }
 
@@ -115,19 +115,19 @@ impl Mcp {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let result = match name {
-            "wrendb_list_connections" => self.get("/api/conns"),
-            "wrendb_list_tables" => {
+            "tablepeek_list_connections" => self.get("/api/conns"),
+            "tablepeek_list_tables" => {
                 let system = args
                     .get("include_system")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 self.get_with_query("/api/schema", &[("system", if system { "1" } else { "0" })])
             }
-            "wrendb_describe_table" => {
+            "tablepeek_describe_table" => {
                 let table = required_string(&args, "table")?;
                 self.get_with_query("/api/table", &[("name", table)])
             }
-            "wrendb_query" => {
+            "tablepeek_query" => {
                 let sql = required_string(&args, "sql")?;
                 if !is_read_only(sql) {
                     return Ok(tool_error(
@@ -161,7 +161,7 @@ impl Mcp {
         let mut request = self
             .client
             .get(format!("{}{}", self.base, path))
-            .header("x-wrendb-token", &self.token)
+            .header("x-tablepeek-token", &self.token)
             .query(query);
         if let Some(conn) = self.conn.as_deref() {
             request = request.query(&[("conn", conn)]);
@@ -173,7 +173,7 @@ impl Mcp {
         let mut request = self
             .client
             .post(format!("{}/api/query", self.base))
-            .header("x-wrendb-token", &self.token)
+            .header("x-tablepeek-token", &self.token)
             .json(&json!({ "sql": sql, "max_rows": max_rows }));
         if let Some(conn) = conn {
             request = request.query(&[("conn", conn)]);
@@ -183,7 +183,7 @@ impl Mcp {
 }
 
 fn parse_response(response: reqwest::Result<Response>) -> Result<Value, String> {
-    let response = response.map_err(|error| format!("WrenDB 서버 요청 실패: {error}"))?;
+    let response = response.map_err(|error| format!("TablePeek 서버 요청 실패: {error}"))?;
     let status = response.status();
     let text = response
         .text()
@@ -244,12 +244,12 @@ fn contains_word(text: &str, word: &str) -> bool {
 fn tools() -> Value {
     json!([
         {
-            "name": "wrendb_list_connections",
-            "description": "WrenDB에 열려 있는 활성 연결 목록을 반환합니다.",
+            "name": "tablepeek_list_connections",
+            "description": "TablePeek에 열려 있는 활성 연결 목록을 반환합니다.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         },
         {
-            "name": "wrendb_list_tables",
+            "name": "tablepeek_list_tables",
             "description": "선택한 연결의 테이블과 컬럼 목록을 반환합니다.",
             "inputSchema": {
                 "type": "object",
@@ -260,7 +260,7 @@ fn tools() -> Value {
             }
         },
         {
-            "name": "wrendb_describe_table",
+            "name": "tablepeek_describe_table",
             "description": "테이블의 컬럼, 인덱스, 외래 키, DDL을 반환합니다.",
             "inputSchema": {
                 "type": "object",
@@ -270,7 +270,7 @@ fn tools() -> Value {
             }
         },
         {
-            "name": "wrendb_query",
+            "name": "tablepeek_query",
             "description": "읽기 전용 SQL을 실행합니다. 쓰기 문은 거부됩니다.",
             "inputSchema": {
                 "type": "object",

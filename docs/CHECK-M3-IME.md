@@ -11,13 +11,13 @@
 1. 저장소 루트에서 데모 서버를 실행한다.
 
    ```sh
-   ./target/debug/wrendb serve --port 7699 --no-open --demo-rows 200000
+   ./target/debug/tablepeek serve --port 7699 --no-open --demo-rows 200000
    ```
 
    백그라운드로 띄우려면 다음과 같이 실행한다.
 
    ```sh
-   nohup ./target/debug/wrendb serve --port 7699 --no-open --demo-rows 200000 > /tmp/wrendb-m3.log 2>&1 &
+   nohup ./target/debug/tablepeek serve --port 7699 --no-open --demo-rows 200000 > /tmp/tablepeek-m3.log 2>&1 &
    ```
 
 2. 브라우저에서 접속한다. (토큰은 서버 실행 시 콘솔에 출력되는 값을 사용한다.)

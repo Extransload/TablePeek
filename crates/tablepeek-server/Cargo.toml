@@ -1,5 +1,5 @@
 [package]
-name = "wrendb-server"
+name = "tablepeek-server"
 version = "0.0.1"
 edition = "2021"
 
@@ -8,8 +8,8 @@ axum = { workspace = true }
 base64 = "0.22"
 futures-util = "=0.3.32"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
-wrendb-engine = { path = "../wrendb-engine" }
-wrendb-types = { path = "../wrendb-types" }
+tablepeek-engine = { path = "../tablepeek-engine" }
+tablepeek-types = { path = "../tablepeek-types" }
 russh = "0.64"
 rust-embed = { workspace = true }
 serde = { workspace = true }
