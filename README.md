@@ -1,102 +1,227 @@
 # TablePeek
 
-성능 우선 크로스플랫폼 DB 클라이언트 — 로컬 Rust 엔진 + 브라우저 UI.
-설계 배경과 로드맵은 `docs/ARCHITECTURE.md`, 남은 범위 결정은 `docs/REMAINING-SCOPE.md` 참고.
+**A fast, local-first database client that runs in your browser.**
 
-## 요구사항
+TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or connect to PostgreSQL, MySQL/MariaDB, CockroachDB, and SQL Server. Query, inspect, edit, and explore data without a cloud relay or a heavyweight desktop shell.
 
-- Rust (stable)
-- Node.js 20+ (웹 UI 빌드용)
-- macOS / Windows (Linux도 동일 구조로 동작 예정)
+![TablePeek data grid showing the orders table with type-colored values](docs/images/grid.png)
 
-## 빌드와 실행
+## At a glance
+
+| | |
+|---|---|
+| **Databases** | SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, SQL Server |
+| **Runtime** | Local Rust engine + browser UI |
+| **Transport** | HTTP + WebSocket, Arrow IPC streaming |
+| **Editing** | Primary-key cell edits, row insert/delete, transactions |
+| **Security** | Loopback-only, per-run token, OS keychain, TLS/mTLS, SSH tunnels |
+| **Themes** | 9 built-in themes + Base16/VS Code theme import |
+
+## Why TablePeek
+
+- **Local by design.** The engine binds to `127.0.0.1` and stops there. There is no hosted backend and no cloud relay; direct connections and SSH tunnels run from your machine to the database.
+- **Built for real result sets.** Results stream as Arrow IPC and render on a canvas grid that only paints visible cells. Queries are cancellable, and large tables are fetched in windows instead of loaded all at once.
+- **Five engines, one workflow.** Use the same grid, editor, schema browser, and Quick Look across SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, and SQL Server.
+- **Edits with guardrails.** Cell updates target a single row through its primary key. Row inserts and deletes are explicit, and transaction state is tracked per session.
+- **Inspect, don't guess.** Open any cell in Quick Look for a full value editor, a structured JSON tree, and encoding/HEX views.
+- **AI access without write access.** The built-in MCP server exposes schema discovery and read-only queries over stdio.
+
+## Quick start
+
+Requirements:
+
+- Rust stable
+- Node.js 20+ for the web build
+- macOS or Windows (the primary targets); Linux uses the same stack from source
 
 ```sh
-make install   # 최초 1회, 웹 의존성 설치
-make build     # 웹 번들 + Rust 바이너리 빌드
-make run       # 데모 DB(10,000행)로 실행하고 브라우저 열기
-make help      # 전체 명령 목록
+git clone https://github.com/Extransload/TablePeek.git
+cd TablePeek
+make install
+make run
 ```
 
-실행 옵션:
+`make run` builds the web bundle and Rust binary, starts a 10,000-row demo database, and opens the browser. The console prints a tokenized loopback URL; keep that URL private.
+
+Open an existing SQLite file:
 
 ```sh
-make run PORT=7871                 # 포트 지정 (기본 7870)
-make run DEMO_ROWS=500000          # 데모 행 수 지정 (최대 2,000,000)
-make run DB=path/to.sqlite         # 실제 SQLite 파일 열기
-make run NO_OPEN=1                 # 브라우저 자동 열기 비활성화
+make run DB=/absolute/path/to/app.sqlite
 ```
 
-수동 빌드가 필요할 때:
+Useful options:
 
 ```sh
-cd web && npm install && npm run build
-cargo build -p tablepeek
-cargo run -p tablepeek -- serve --port 7870
+make run PORT=7871                 # default port is 7870
+make run DEMO_ROWS=500000          # demo rows, up to 2,000,000
+make run NO_OPEN=1                 # do not open a browser automatically
+make help                          # full command list
 ```
 
-## DB 연결
+## Database connections
 
-UI 상단 "연결" 버튼에서 드라이버를 선택하고 접속 정보를 입력합니다.
+Create connections from the in-app connection screen. Profiles are saved in `~/.tablepeek/store.json` without passwords. If you opt in to saving a password, it is stored in the operating system keychain.
 
-| 드라이버 | 대상 | 비고 |
+| Driver | Connect to | Notes |
 |---|---|---|
-| SQLite | 파일 / 데모(인메모리) | "파일 열기"·"데모" 버튼 또는 `--db` 옵션 |
-| PostgreSQL | PostgreSQL 서버 | `ssl_mode=disable/prefer/require` · CA·클라이언트 인증서(mTLS) 지원 |
-| MySQL | MySQL / MariaDB | TLS(`prefer`/`require`) · CA·클라이언트 인증서(mTLS) 지원 |
-| CockroachDB | CockroachDB | PG 프로토콜 경로 재사용 |
-| SQL Server | MSSQL (TDS) | `encrypt` 옵션으로 TLS 여부 선택 |
+| **SQLite** | Local file or in-memory demo | File picker, `--db`, or the built-in demo |
+| **PostgreSQL** | PostgreSQL servers | `ssl_mode=disable/prefer/require`, CA certificates, mTLS client certificates |
+| **MySQL** | MySQL and MariaDB | TLS `prefer`/`require`, CA certificates, mTLS client certificates |
+| **CockroachDB** | CockroachDB clusters | PostgreSQL wire protocol; internal tables are excluded from schema browsing |
+| **SQL Server** | Microsoft SQL Server | TDS driver with an `encrypt` option |
 
-- TLS: SSL 모드가 `disable`이 아니면 CA 인증서 경로와 선택적으로 클라이언트 인증서·키를 지정할 수 있습니다. 연결 전 "점검" 버튼이 입력값과 로컬 인증서/SSH 키 파일을 확인합니다.
-- SSH 터널: 체크 후 SSH 호스트/포트/사용자/키 경로(또는 비밀번호) 입력. 이때 DB 호스트/포트는 **SSH 서버 관점** 주소입니다 (예: 원격지에서 127.0.0.1:5432).
-- 저장: "저장" 체크 시 `~/.tablepeek/store.json`에 비밀번호를 제외한 정보가 저장되고, "비밀번호도 함께 저장"을 체크하면 비밀번호는 OS 키체인에만 보관됩니다. macOS에서는 `/usr/bin/security`를 통해 접근하므로, 기존 항목의 첫 접근 시 **항상 허용**을 한 번 선택하면 이후 앱을 다시 빌드해도 허용 창이 반복되지 않습니다.
+Connection features:
 
-## UI 기능 요약
+- **SSH tunnels.** Enable a tunnel and provide the SSH host, port, user, and key or password. Database host and port are resolved from the SSH server's point of view, for example `127.0.0.1:5432`.
+- **Preflight checks.** The connection dialog verifies local certificate and SSH key paths before connecting.
+- **Connection state.** Color-coded connection tabs, environment badges (`LOCAL`, `DEV`, `STAGE`, `PROD`), and live status indicators keep multiple environments easy to distinguish.
 
-- 탭: 쿼리 / 데이터 / 구조 / 서버 정보 / 정의(DDL) 탭. ⌘T 새 탭, ⌘W 닫기, ⌘P 커맨드 팔레트.
-- 상단 연결 바: 홈·열린 연결 탭·추가 버튼을 한 줄에 배치. 연결별 색상, 드라이버·환경 배지, 연결 상태 점으로 다중 연결을 즉시 전환.
-- 스키마 사이드바: 연결명·드라이버·환경·상태를 보여주는 DB 헤더, 테이블 검색·컬럼 펼치기, 구조 보기, 테이블·뷰별 오브젝트 섹션(뷰/함수/트리거/시퀀스), 서버 정보 진입. 테이블 가운데/⌘클릭은 새 탭.
-- 데이터 탭: 필터(AND/OR)·정렬(헤더 클릭, Shift 다중)·페이지네이션, 행 추가(기본값)·복제·삭제, 셀 편집(PK 기반)·트랜잭션, 참조 행 점프(FK), 행 상세, CSV/JSON/SQL 내보내기. 문자열·숫자·불리언·JSON·배열·날짜 값을 타입별 색상으로 구분.
-- Quick Look: 셀 가운데 클릭 또는 ⌘Enter로 우측 drawer에서 값·JSON 트리·인코딩/HEX 확인 및 PK 기반 편집, ⌥클릭은 셀 메뉴. 스페이스바는 관계 탭이 있는 행 상세.
-- 환경·로딩: LOCAL/DEV/STAGE/PROD 환경 배지, 탭/결과 로딩 스피너와 열림 애니메이션, SQL syntax preset 6종.
-- 쿼리 도구: 실행 계획 시각화(EXPLAIN/EXPLAIN ANALYZE 트리·비용·예상/실제 행), SQL 스니펫, 안전 모드(WHERE 없는 UPDATE/DELETE 확인), 기록·즐겨찾기.
-- 스키마: 테이블 클릭=데이터, 우클릭 메뉴에서 Laravel 스키마 복사, DB 생성/삭제, MySQL collation·ROW_FORMAT·COMMENT.
-- 서버 정보 탭: 엔진 버전·크기·가동 시간·세션 목록, 세션 종료(지원 엔진), MariaDB/Percona/Yugabyte/Redshift 호환 모드 표시.
-- 연결 홈: 저장 연결 카드에서 새 창 열기·편집·삭제, 열린 연결과 최근 연결을 한 화면에 표시.
-- 설정: 좌측 카테고리 탐색(일반·모양·에디터·데이터·단축키·보안). 내장 테마 9종 + Git 원본 URL에서 Base16/VS Code/TablePeek 테마 JSON 가져오기, 글꼴·강조색·대체 행·타입별 색상·스크롤바·CSV·키맵·활동 보관 설정.
-- MCP: `tablepeek mcp` stdio 서버로 연결·스키마·읽기 전용 쿼리 노출. 설정은 `docs/MCP.md`.
+## A closer look
 
-## 테스트
+### The data grid
 
-```sh
-make test                       # Rust 테스트 + 웹 타입체크
-make check                      # 포맷·Rust·TypeScript 검사
-make test-docker                # Docker 연동 테스트
-cd web && node scripts/ws-smoke.mjs "http://127.0.0.1:7699/?token=..."   # WS e2e 스모크(17종)
+Filter with `AND`/`OR`, sort by one or more columns, paginate, and jump across foreign keys. Insert, duplicate, and delete rows; edit cells through primary-key-targeted updates; and group changes in explicit transactions.
+
+Type colors distinguish strings, integers, floats, bigints, booleans, JSON, lists, dates, and `NULL`. Colors are derived from the active theme, and custom `typeInks` overrides are supported.
+
+Export the current result as CSV, JSON, XML, or SQL `INSERT` statements. Import CSV or JSON into a table, hide or reorder columns, and copy values without leaving the keyboard.
+
+### Quick Look
+
+Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provides:
+
+- A full-width value editor with primary-key saves and `NULL` support
+- A collapsible JSON tree with path copying
+- An encoding/HEX inspector
+- Copy actions for values, JSON paths, decoded text, and raw hex
+
+![TablePeek Quick Look showing a structured JSON value](docs/images/quick-look.png)
+
+`Alt`-click opens the cell menu. `Space` opens row details with relationship tabs, including foreign-key navigation.
+
+### Query workbench
+
+- CodeMirror 6 editor with SQL completion and IME-safe input
+- Query tabs, snippets, execution history, and favorites
+- Command palette (`Mod+P`), new tab (`Mod+T`), close tab (`Mod+W`)
+- Safe mode that asks for confirmation before `UPDATE`/`DELETE` without a `WHERE` clause
+- Visual `EXPLAIN` / `EXPLAIN ANALYZE` plans with cost, estimated/actual rows, and raw JSON
+- Query cancellation and live timing
+
+### Schema and server tools
+
+Browse tables, views, functions, triggers, and sequences from the sidebar. Open Structure and DDL tabs, create tables, create or drop databases, and inspect generated SQL before applying it. MySQL tables expose collation, `ROW_FORMAT`, and comment options. Laravel `Schema::create` output can be copied directly from the table menu.
+
+The server info tab shows engine version, database size, uptime, and sessions, with session termination where the engine supports it.
+
+### Settings and themes
+
+Nine built-in themes are included: TablePeek Dark, TablePeek Light, Catppuccin Latte, Catppuccin Frappé, Catppuccin Macchiato, Catppuccin Mocha, Nord, Dracula, and Tokyo Night. You can also import Base16, VS Code, or TablePeek theme JSON from a Git URL.
+
+![TablePeek appearance settings with themes and type-color preview](docs/images/settings.png)
+
+Settings cover accent color, font and size, alternating row backgrounds, type colors, auto-hiding scrollbars, CSV delimiter and encoding, SQL syntax presets, keyboard shortcuts, and activity-log retention. The interface is available in English and Korean.
+
+## MCP for AI clients
+
+`tablepeek mcp` starts a stdio MCP server that connects to a running TablePeek instance. It exposes read-only schema and query tools without opening another port.
+
+```json
+{
+  "mcpServers": {
+    "tablepeek": {
+      "command": "/absolute/path/to/tablepeek",
+      "args": ["mcp"],
+      "env": {
+        "TABLEPEEK_URL": "http://127.0.0.1:7870",
+        "TABLEPEEK_TOKEN": "<TABLEPEEK_TOKEN>",
+        "TABLEPEEK_CONN": "<CONNECTION_ID>"
+      }
+    }
+  }
+}
 ```
 
-Docker 연동 테스트용 컨테이너:
+`TABLEPEEK_CONN` is optional; omit it to use the default connection.
 
-```sh
-docker run -d --name tablepeek-pg -e POSTGRES_USER=tablepeek -e POSTGRES_PASSWORD=tablepeek_test_pw \
-  -e POSTGRES_DB=tablepeek_test -p 5433:5432 postgres:16-alpine
-docker run -d --name tablepeek-mysql -e MYSQL_ROOT_PASSWORD=root_pw -e MYSQL_DATABASE=tablepeek_test -p 3307:3306 mysql:8
-docker run -d --name tablepeek-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=MsSql_test_pw1 -p 14330:1433 mcr.microsoft.com/mssql/server:2022-latest
-docker run -d --name tablepeek-crdb -p 26258:26257 cockroachdb/cockroach:latest start-single-node --insecure
-# tablepeek-ssh: SSH 터널 테스트용 컨테이너 (2222 포트)
+| Tool | Purpose |
+|---|---|
+| `tablepeek_list_connections` | List active connections |
+| `tablepeek_list_tables` | List tables and columns |
+| `tablepeek_describe_table` | Columns, indexes, foreign keys, and DDL |
+| `tablepeek_query` | Run read-only `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `EXPLAIN` |
+
+`tablepeek_query` rejects multi-statement input and write statements. That guard is an accident-prevention filter, not a privilege boundary. Use a read-only database role if you need hard enforcement. Tokens and connection IDs change when the server restarts, so update the MCP configuration after a restart.
+
+See [docs/MCP.md](docs/MCP.md) for setup details and security notes.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Machine["Your machine"]
+    UI["Browser UI<br/>React · CodeMirror 6 · Canvas grid"]
+    SERVER["tablepeek-server<br/>axum · static assets · auth"]
+    ENGINE["tablepeek-engine<br/>connections · queries · Arrow IPC"]
+    KEYCHAIN["OS keychain"]
+
+    UI <-->|"HTTP + WebSocket<br/>Arrow IPC"| SERVER
+    SERVER <--> ENGINE
+    SERVER -.->|"passwords only when opted in"| KEYCHAIN
+  end
+
+  ENGINE --> SQLITE[("SQLite file")]
+  ENGINE --> PG[("PostgreSQL")]
+  ENGINE --> MYSQL[("MySQL / MariaDB")]
+  ENGINE --> CRDB[("CockroachDB")]
+  ENGINE --> MSSQL[("SQL Server")]
 ```
 
-## 현재 상태: M18 (배포 전)
+The server owns the loopback listener, authentication, WebSocket streaming, SSH tunnels, connection profiles, and embedded web assets. The engine owns drivers, sessions, query execution, cancellation, Arrow serialization, and row operations.
 
-- M2: WebSocket + Arrow IPC 스트리밍, 윈도우 페치(1,000행), 쿼리 취소, Host 헤더 검증
-- M3: PK 기반 셀 편집(DOM 오버레이, 한글 IME 가드), 트랜잭션(begin/commit/rollback), 세션 스냅샷·저널 일관성, `docs/CHECK-M3-IME.md` 수동 체크리스트
-- M4: PostgreSQL 드라이버(tokio-postgres), SSH 터널(russh), 스키마 사이드바, 히스토리/즐겨찾기, 키체인 저장
-- M6: MySQL/MariaDB 드라이버(mysql_async), 연결 모달 드라이버 선택
-- M6c: CockroachDB(PG 경로)·SQL Server(tiberius) 드라이버, 5개 드라이버 취소·트랜잭션 지원
-- M7: UI 셸 전면 개편(탭·툴바·다크 테마) + 데이터 탭(필터·정렬·페이지·행 상세·내보내기)
-- M9: 행 추가/삭제·구조/서버 정보/정의 탭·오브젝트 브라우저·세션 킬·커맨드 팔레트·안전 모드·실행 계획·FK 점프·스니펫
-- M10~M15: 연결 홈·멀티커넥션, 테이블 뷰 재편, 구조 편집·DB 생성/삭제, 가져오기/내보내기·백업, 에디터 고도화·Explain 시각화, Activity/Metrics, TLS·Git 테마·접속 점검
-- M16~M17: Quick Look·숨은 마우스 동작, 입력/체크박스 디자인 시스템·모션, MySQL TLS 폴백 축소, macOS 키체인 왕복, MCP 서버
-- M18: 로딩 스피너·탭 애니메이션, syntax preset, JSON 트리 Quick Look drawer, 환경 배지, 행 관계 탭·FK 점프
-- M18.1: Canvas 그리드 셀 텍스트 대비·컬럼 헤더 말줄임, 상단 다중 연결 바, DB 컨텍스트 사이드바, 카테고리 설정 모달·기어 아이콘, 저장 연결 삭제
-- 다음 단계: 배포(M5) — brew/winget/scoop, 코드 서명·공증, 업데이트 알림
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and protocol notes.
+
+## Security model
+
+- **Loopback only.** The HTTP/WebSocket listener binds to `127.0.0.1`; there is no remote listener.
+- **Per-run access token.** Each server start generates a token. The browser receives it in the launch URL and sends it with API requests as `x-tablepeek-token`.
+- **Host header validation.** Requests with unexpected `Host` headers are rejected to mitigate DNS rebinding.
+- **Credentials stay local.** `store.json` contains connection metadata and key paths, not passwords. Passwords are stored only in the OS keychain when explicitly requested.
+- **Encrypted connections.** PostgreSQL and CockroachDB support `disable`/`prefer`/`require` SSL modes plus CA and client certificates. MySQL supports TLS with CA and client certificates. SQL Server exposes an encryption toggle.
+- **SSH without a relay.** Remote databases are reached through a local SSH tunnel, not a hosted proxy.
+- **MCP is read-only by policy.** The query filter blocks writes, but a token holder can still read any database the active connection can see. Enforce stricter limits with database roles.
+
+## Build and test
+
+```sh
+make build        # web bundle + Rust binary
+make test         # Rust tests + TypeScript checks
+make check        # formatting, Rust checks, TypeScript checks
+make test-docker  # integration tests against Docker-backed databases
+```
+
+The Docker suite expects the test containers described in the repository. Individual tools are available too:
+
+```sh
+cd web && npm run typecheck
+cd web && npm run build
+cargo check --workspace
+cargo test
+```
+
+## Project layout
+
+| Path | Contents |
+|---|---|
+| `crates/tablepeek` | CLI entry point and `serve` / `mcp` subcommands |
+| `crates/tablepeek-server` | axum server, auth, static assets, WebSocket, SSH tunnels |
+| `crates/tablepeek-engine` | Drivers, sessions, query execution, Arrow IPC, row operations |
+| `crates/tablepeek-types` | Shared request, result, and connection types |
+| `web` | React UI, CodeMirror editor, canvas grid, themes, i18n |
+| `docs` | Architecture, MCP, remaining scope, and manual checklists |
+
+## Status
+
+TablePeek is pre-release. The feature set is implemented and exercised across the five drivers, but signed installers and package-manager distribution are still ahead. Source builds are the supported path today.
+
+See [docs/REMAINING-SCOPE.md](docs/REMAINING-SCOPE.md) for the current scope boundaries and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and protocol details.
