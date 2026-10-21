@@ -78,7 +78,6 @@ interface ConnectForm {
   port: string;
   user: string;
   password: string;
-  persistPassword: boolean;
   database: string;
   sslMode: SslMode;
   sslRootCert: string;
@@ -166,7 +165,6 @@ const EMPTY_FORM: ConnectForm = {
   port: DEFAULT_PORT.postgres,
   user: "",
   password: "",
-  persistPassword: false,
   database: "",
   sslMode: "prefer",
   sslRootCert: "",
@@ -207,7 +205,6 @@ function formFromSaved(saved: SavedConnection): ConnectForm {
     host: db?.host ?? "",
     port: db ? String(db.port) : DEFAULT_PORT[driver],
     user: db?.user ?? "",
-    persistPassword: saved.persist_password,
     database: db?.database ?? "",
     sslMode: tls?.ssl_mode ?? "disable",
     sslRootCert: tls?.ssl_root_cert ?? "",
@@ -365,10 +362,8 @@ function buildInput(form: ConnectForm): ConnectInput {
 }
 
 // "save" only needs a well-formed profile; "connect" also needs what the server will ask for.
-function problemsOf(form: ConnectForm, purpose: "save" | "connect", storedSecrets: boolean): Problem[] {
+function problemsOf(form: ConnectForm, purpose: "save" | "connect"): Problem[] {
   const problems: Problem[] = [];
-  // Stored secrets only count while the profile keeps storing them.
-  const hasStored = storedSecrets && form.persistPassword;
   const host = form.host.trim();
   if (host === "") {
     problems.push({ field: "host", message: t("호스트를 입력하세요") });
@@ -410,8 +405,7 @@ function problemsOf(form: ConnectForm, purpose: "save" | "connect", storedSecret
     if (
       purpose === "connect" &&
       form.sshAuth === "password" &&
-      form.sshPassword === "" &&
-      !hasStored
+      form.sshPassword === ""
     ) {
       problems.push({ field: "sshPassword", message: t("SSH 비밀번호를 입력하세요") });
     }
@@ -426,7 +420,7 @@ function problemsOf(form: ConnectForm, purpose: "save" | "connect", storedSecret
     if (form.httpPassword !== "" && form.httpUser === "") {
       problems.push({ field: "httpUser", message: t("프록시 사용자를 입력하세요") });
     }
-    if (purpose === "connect" && form.httpUser !== "" && form.httpPassword === "" && !hasStored) {
+    if (purpose === "connect" && form.httpUser !== "" && form.httpPassword === "") {
       problems.push({ field: "httpPassword", message: t("프록시 비밀번호를 입력하세요") });
     }
   }
@@ -508,7 +502,6 @@ export function ConnectModal({
     return { ...base, ...(urlPatch ?? {}), group: initialGroup ?? "" };
   });
   const [savedId, setSavedId] = useState<string | null>(editing?.id ?? null);
-  const [storedSecrets, setStoredSecrets] = useState(editing?.persist_password ?? false);
   const [problems, setProblems] = useState<Problem[]>(() =>
     missingSecret !== null && notice !== null
       ? [{ field: SECRET_FIELD[missingSecret], message: notice }]
@@ -572,7 +565,6 @@ export function ConnectModal({
   }, []);
 
   const invalid = new Set(problems.map((problem) => problem.field));
-  const isEdit = savedId !== null;
   const color = form.color || "var(--accent)";
 
   function update(patch: Partial<ConnectForm>): void {
@@ -600,7 +592,7 @@ export function ConnectModal({
   }
 
   function check(purpose: "save" | "connect"): boolean {
-    const found = problemsOf(form, purpose, storedSecrets);
+    const found = problemsOf(form, purpose);
     setProblems(found);
     if (found.length > 0) {
       setStatus({ kind: "error", text: found[0].message });
@@ -654,7 +646,7 @@ export function ConnectModal({
     let id = savedId;
     if (id !== null) {
       try {
-        await store.updateConnection(id, name, input, form.persistPassword);
+        await store.updateConnection(id, name, input);
       } catch (err) {
         // Deleted elsewhere while the dialog was open: save it as a new profile.
         if (!(err instanceof ApiRequestError && err.code === "not_found")) {
@@ -664,7 +656,7 @@ export function ConnectModal({
       }
     }
     if (id === null) {
-      id = await store.createConnection(name, input, form.persistPassword);
+      id = await store.createConnection(name, input);
       setSavedId(id);
     }
     setConnMeta(id, {
@@ -672,9 +664,6 @@ export function ConnectModal({
       color: form.color,
       tags: form.tags.split(","),
     });
-    const typedSecret =
-      form.password !== "" || form.sshPassword !== "" || form.httpPassword !== "";
-    setStoredSecrets(form.persistPassword && (storedSecrets || typedSecret));
     initialRef.current = form;
     onSaved();
     return id;
@@ -706,10 +695,7 @@ export function ConnectModal({
       if (!(await checkFiles())) {
         return;
       }
-      const result = await store.testConnection(
-        buildInput(form),
-        form.persistPassword ? (savedId ?? undefined) : undefined,
-      );
+      const result = await store.testConnection(buildInput(form));
       setStatus({
         kind: "ok",
         text: t("연결 성공 · {driver} · 테이블 {tables}개 · {ms}ms", {
@@ -744,7 +730,7 @@ export function ConnectModal({
     } catch (err) {
       const missing = missingSecretOf(err);
       if (missing !== null) {
-        const text = err instanceof Error ? err.message : t("비밀번호를 입력하세요");
+        const text = err instanceof Error ? t(err.message) : t("비밀번호를 입력하세요");
         setProblems([{ field: SECRET_FIELD[missing], message: text }]);
         setStatus({ kind: "error", text });
         focusSecret(missing);
@@ -807,7 +793,6 @@ export function ConnectModal({
     return form[field];
   }
 
-  const storedPlaceholder = isEdit && storedSecrets ? t("저장된 비밀번호 사용") : "";
   const title = editing !== null ? t("연결 편집") : t("{driver} 연결", { driver: DRIVER_LABEL[form.driver] });
 
   return (
@@ -995,7 +980,6 @@ export function ConnectModal({
                     className={invalid.has("password") ? "invalid" : ""}
                     type={showPassword ? "text" : "password"}
                     value={form.password}
-                    placeholder={storedPlaceholder}
                     autoComplete="new-password"
                     onChange={(event) => update({ password: event.target.value })}
                   />
@@ -1009,15 +993,6 @@ export function ConnectModal({
                     {showPassword ? <EyeOffIcon size={11} /> : <EyeIcon size={11} />}
                   </button>
                 </div>
-                <select
-                  className="cm-store"
-                  value={form.persistPassword ? "keychain" : "none"}
-                  onChange={(event) => update({ persistPassword: event.target.value === "keychain" })}
-                  title={t("DB·SSH·프록시 비밀번호 저장 방식")}
-                >
-                  <option value="keychain">{t("키체인에 저장")}</option>
-                  <option value="none">{t("매번 입력")}</option>
-                </select>
               </div>
             </Row>
             <Row label={t("데이터베이스")} htmlFor="cm-database">
@@ -1176,7 +1151,6 @@ export function ConnectModal({
                     className={invalid.has("sshPassword") ? "invalid" : ""}
                     type="password"
                     value={form.sshPassword}
-                    placeholder={storedPlaceholder}
                     autoComplete="new-password"
                     onChange={(event) => update({ sshPassword: event.target.value })}
                   />
@@ -1234,7 +1208,6 @@ export function ConnectModal({
                     className={invalid.has("httpPassword") ? "invalid" : ""}
                     type="password"
                     value={form.httpPassword}
-                    placeholder={storedPlaceholder}
                     autoComplete="new-password"
                     onChange={(event) => update({ httpPassword: event.target.value })}
                     aria-label={t("프록시 비밀번호")}

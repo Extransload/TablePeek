@@ -84,6 +84,8 @@ pub struct SavedConnection {
     pub ssh: Option<SavedSsh>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_tunnel: Option<SavedHttpTunnel>,
+    // Set by older versions that kept this profile's passwords in the keychain;
+    // cleared (and the entries removed) by forget_saved_passwords.
     #[serde(default)]
     pub persist_password: bool,
     #[serde(default)]
@@ -113,6 +115,9 @@ pub struct StoreData {
     pub history: Vec<HistoryEntry>,
     #[serde(default)]
     pub favorites: Vec<FavoriteEntry>,
+    // The one-time sweep of passwords older versions left in the keychain has run.
+    #[serde(default)]
+    pub keychain_swept: bool,
 }
 
 pub struct StoreFile {
@@ -189,6 +194,65 @@ impl StoreFile {
         }
         self.persist()?;
         Ok(true)
+    }
+
+    /// Passwords are no longer kept. Profiles an older version saved them for get
+    /// their keychain entries removed (through `delete`, given each account) and
+    /// the flag cleared, once. Returns how many profiles that touched.
+    pub fn forget_saved_passwords(
+        &mut self,
+        mut delete: impl FnMut(&str),
+    ) -> Result<usize, String> {
+        let mut touched = 0;
+        for connection in self
+            .data
+            .connections
+            .iter_mut()
+            .filter(|connection| connection.persist_password)
+        {
+            for kind in SECRET_KINDS {
+                delete(&connection_account(&connection.id, kind));
+            }
+            connection.persist_password = false;
+            touched += 1;
+        }
+        if touched > 0 {
+            self.persist()?;
+        }
+        Ok(touched)
+    }
+
+    /// Removes, once, every keychain item older versions wrote under TablePeek's
+    /// service names, including ones whose profile is long gone. `first_account`
+    /// names an item left in a service (None when it is empty); `delete` removes
+    /// one and says whether it did. An account TablePeek never writes stops that
+    /// service's sweep untouched. Returns how many items went.
+    pub fn sweep_keychain_once(
+        &mut self,
+        mut first_account: impl FnMut(&str) -> Option<String>,
+        mut delete: impl FnMut(&str, &str) -> bool,
+    ) -> Result<usize, String> {
+        if self.data.keychain_swept {
+            return Ok(0);
+        }
+        let mut removed = 0;
+        for service in std::iter::once(KEYRING_SERVICE).chain(LEGACY_KEYRING_SERVICES) {
+            for _ in 0..SWEEP_LIMIT {
+                let Some(account) = first_account(service) else {
+                    break;
+                };
+                let own = OWN_ACCOUNT_PREFIXES
+                    .iter()
+                    .any(|prefix| account.starts_with(prefix));
+                if !own || !delete(service, &account) {
+                    break;
+                }
+                removed += 1;
+            }
+        }
+        self.data.keychain_swept = true;
+        self.persist()?;
+        Ok(removed)
     }
 
     pub fn find_connection(&self, id: &str) -> Option<&SavedConnection> {
@@ -297,150 +361,90 @@ pub fn connection_account(id: &str, kind: &str) -> String {
     format!("conn:{id}:{kind}")
 }
 
-#[cfg(not(target_os = "macos"))]
-fn keyring_entry_for(service: &str, account: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(service, account).map_err(|err| format!("키체인을 열 수 없습니다: {err}"))
-}
+// Every keychain account an older version could have written for a profile.
+const SECRET_KINDS: [&str; 6] = ["postgres", "cockroach", "mysql", "mssql", "ssh", "http"];
+// Accounts TablePeek ever wrote: profiles ("conn:…") and its keychain test ("test:…").
+const OWN_ACCOUNT_PREFIXES: [&str; 2] = ["conn:", "test:"];
+// More than any real keychain holds; keeps a misbehaving lookup from looping forever.
+const SWEEP_LIMIT: usize = 10_000;
 
-#[cfg(not(target_os = "macos"))]
-fn keyring_entry(account: &str) -> Result<keyring::Entry, String> {
-    keyring_entry_for(KEYRING_SERVICE, account)
-}
+// Passwords are never stored now; these only remove what older versions left
+// in the keychain (under the current and legacy service names).
 
+// /usr/bin/security, given up on after a few seconds: a keychain that wants a
+// dialog answered must not hold up the server.
 #[cfg(target_os = "macos")]
-fn security_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-#[cfg(target_os = "macos")]
-fn security_run(command: &str) -> Result<std::process::Output, String> {
-    use std::io::Write;
+fn security(args: &[&str]) -> Option<std::process::Output> {
     use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
     let mut child = Command::new("/usr/bin/security")
-        .arg("-i")
-        .stdin(Stdio::piped())
+        .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
-        .map_err(|err| format!("키체인을 열 수 없습니다: {err}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(command.as_bytes())
-            .and_then(|_| stdin.write_all(b"\n"))
-            .map_err(|err| format!("키체인 요청을 전달할 수 없습니다: {err}"))?;
-    }
-    child
-        .wait_with_output()
-        .map_err(|err| format!("키체인 응답을 읽을 수 없습니다: {err}"))
-}
-
-#[cfg(target_os = "macos")]
-fn security_error(output: &std::process::Output, fallback: &str) -> String {
-    let raw = String::from_utf8_lossy(&output.stderr);
-    let line = raw.lines().next().unwrap_or("").trim();
-    if line.is_empty() {
-        fallback.to_string()
-    } else {
-        line.to_string()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn security_get(service: &str, account: &str) -> Option<String> {
-    let command = format!(
-        "find-generic-password -s {} -a {} -w",
-        security_quote(service),
-        security_quote(account)
-    );
-    let output = security_run(&command).ok()?;
+pub fn delete_password(account: &str) {
+    for service in std::iter::once(KEYRING_SERVICE).chain(LEGACY_KEYRING_SERVICES) {
+        let _ = security(&["delete-generic-password", "-s", service, "-a", account]);
+    }
+}
+
+/// One account left under `service`, read from the item's attributes (never its secret).
+#[cfg(target_os = "macos")]
+pub fn first_keychain_account(service: &str) -> Option<String> {
+    let output = security(&["find-generic-password", "-s", service])?;
     if !output.status.success() {
         return None;
     }
-    let mut text = String::from_utf8(output.stdout).ok()?;
-    while text.ends_with('\n') || text.ends_with('\r') {
-        text.pop();
-    }
-    Some(text)
+    account_from_attributes(&String::from_utf8_lossy(&output.stdout))
+}
+
+// The account in `security find-generic-password` attributes: `"acct"<blob>="conn:…"`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn account_from_attributes(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("\"acct\"<blob>=\"")?;
+        value.strip_suffix('"').map(str::to_string)
+    })
 }
 
 #[cfg(target_os = "macos")]
-pub fn get_password(account: &str) -> Option<String> {
-    if let Some(password) = security_get(KEYRING_SERVICE, account) {
-        return Some(password);
-    }
-    for service in LEGACY_KEYRING_SERVICES {
-        if let Some(password) = security_get(service, account) {
-            let _ = set_password(account, &password);
-            return Some(password);
-        }
-    }
-    None
+pub fn delete_keychain_item(service: &str, account: &str) -> bool {
+    security(&["delete-generic-password", "-s", service, "-a", account])
+        .is_some_and(|output| output.status.success())
 }
 
-#[cfg(target_os = "macos")]
-pub fn set_password(account: &str, password: &str) -> Result<(), String> {
-    if password.contains('\n') || password.contains('\r') {
-        return Err("줄바꿈이 포함된 비밀번호는 저장할 수 없습니다".into());
-    }
-    let command = format!(
-        "add-generic-password -U -s {} -a {} -w {} -T /usr/bin/security",
-        security_quote(KEYRING_SERVICE),
-        security_quote(account),
-        security_quote(password)
-    );
-    let output = security_run(&command)?;
-    if !output.status.success() {
-        return Err(format!(
-            "비밀번호를 키체인에 저장할 수 없습니다: {}",
-            security_error(&output, "알 수 없는 오류")
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-pub fn delete_password(account: &str) {
-    for service in std::iter::once(KEYRING_SERVICE).chain(LEGACY_KEYRING_SERVICES) {
-        let _ = std::process::Command::new("/usr/bin/security")
-            .args(["delete-generic-password", "-s", service, "-a", account])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output();
-    }
-}
-
+// Other platforms' keychains can't be listed: only per-profile cleanup there.
 #[cfg(not(target_os = "macos"))]
-pub fn get_password(account: &str) -> Option<String> {
-    if let Some(password) = keyring_entry(account)
-        .ok()
-        .and_then(|entry| entry.get_password().ok())
-    {
-        return Some(password);
-    }
-    for service in LEGACY_KEYRING_SERVICES {
-        if let Some(password) = keyring_entry_for(service, account)
-            .ok()
-            .and_then(|entry| entry.get_password().ok())
-        {
-            let _ = set_password(account, &password);
-            return Some(password);
-        }
-    }
+pub fn first_keychain_account(_service: &str) -> Option<String> {
     None
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn set_password(account: &str, password: &str) -> Result<(), String> {
-    keyring_entry(account)?
-        .set_password(password)
-        .map_err(|err| format!("비밀번호를 키체인에 저장할 수 없습니다: {err}"))
+pub fn delete_keychain_item(_service: &str, _account: &str) -> bool {
+    false
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn delete_password(account: &str) {
     for service in std::iter::once(KEYRING_SERVICE).chain(LEGACY_KEYRING_SERVICES) {
-        if let Ok(entry) = keyring_entry_for(service, account) {
+        if let Ok(entry) = keyring::Entry::new(service, account) {
             let _ = entry.delete_credential();
         }
     }
@@ -572,21 +576,145 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "실제 macOS 키체인에 기록합니다"]
-    fn macos_keyring_roundtrip() {
-        let account = format!("test:{}", uuid::Uuid::new_v4().simple());
-        let result = (|| {
-            set_password(&account, "tablepeek-keyring-roundtrip")?;
-            let found = get_password(&account);
-            if found.as_deref() != Some("tablepeek-keyring-roundtrip") {
-                return Err(format!("키체인 왕복 실패: {found:?}"));
-            }
-            Ok(())
-        })();
-        delete_password(&account);
-        result.unwrap();
+    fn forget_saved_passwords_clears_each_profile_once() {
+        let dir = temp_dir("forget");
+        let mut store = StoreFile::load(&dir);
+        store.add_connection(sample_connection("kept")).unwrap();
+        let mut typed = sample_mysql_connection("typed");
+        typed.persist_password = false;
+        store.add_connection(typed).unwrap();
+
+        let mut deleted = Vec::new();
+        let touched = store
+            .forget_saved_passwords(|account| deleted.push(account.to_string()))
+            .unwrap();
+        assert_eq!(touched, 1);
+        for kind in ["postgres", "cockroach", "mysql", "mssql", "ssh", "http"] {
+            assert!(
+                deleted.contains(&connection_account("kept", kind)),
+                "{kind}"
+            );
+        }
+        assert!(
+            deleted
+                .iter()
+                .all(|account| account.starts_with("conn:kept:")),
+            "{deleted:?}"
+        );
+
+        let mut reloaded = StoreFile::load(&dir);
+        assert!(reloaded
+            .data()
+            .connections
+            .iter()
+            .all(|connection| !connection.persist_password));
+        let mut again = Vec::new();
+        assert_eq!(
+            reloaded
+                .forget_saved_passwords(|account| again.push(account.to_string()))
+                .unwrap(),
+            0
+        );
+        assert!(again.is_empty(), "nothing left to forget");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sweep_keychain_once_removes_only_tablepeek_accounts() {
+        use std::collections::HashMap;
+        let dir = temp_dir("sweep");
+        let mut store = StoreFile::load(&dir);
+        // A fake keychain: service -> accounts, in lookup order.
+        let mut keychain: HashMap<&str, Vec<String>> = HashMap::from([
+            (
+                "tablepeek",
+                vec![
+                    "conn:gone:mysql".into(),
+                    "conn:gone:ssh".into(),
+                    "test:abc".into(),
+                ],
+            ),
+            (
+                "wrendb",
+                vec![
+                    "conn:old:postgres".into(),
+                    "someone-else".into(),
+                    "conn:after:http".into(),
+                ],
+            ),
+            ("prodb", vec![]),
+            ("unrelated", vec!["conn:x:mysql".into()]),
+        ]);
+        let mut deleted = Vec::new();
+        let removed = {
+            let keychain = std::cell::RefCell::new(&mut keychain);
+            store
+                .sweep_keychain_once(
+                    |service| {
+                        keychain
+                            .borrow()
+                            .get(service)
+                            .and_then(|accounts| accounts.first().cloned())
+                    },
+                    |service, account| {
+                        deleted.push(format!("{service}/{account}"));
+                        let mut keychain = keychain.borrow_mut();
+                        let accounts = keychain.get_mut(service).unwrap();
+                        accounts.retain(|item| item != account);
+                        true
+                    },
+                )
+                .unwrap()
+        };
+        assert_eq!(removed, 4);
+        assert_eq!(
+            deleted,
+            [
+                "tablepeek/conn:gone:mysql",
+                "tablepeek/conn:gone:ssh",
+                "tablepeek/test:abc",
+                "wrendb/conn:old:postgres"
+            ]
+        );
+        assert_eq!(
+            keychain["wrendb"],
+            ["someone-else", "conn:after:http"],
+            "stops at an account it didn't write"
+        );
+        assert_eq!(
+            keychain["unrelated"].len(),
+            1,
+            "other services are never touched"
+        );
+
+        let mut again = 0;
+        let mut reloaded = StoreFile::load(&dir);
+        assert_eq!(
+            reloaded
+                .sweep_keychain_once(
+                    |_| {
+                        again += 1;
+                        None
+                    },
+                    |_, _| true
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(again, 0, "runs once");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn account_is_read_from_security_attributes() {
+        let attributes = "keychain: \"/Users/u/Library/Keychains/login.keychain-db\"\nclass: \"genp\"\nattributes:\n    0x00000007 <blob>=\"tablepeek\"\n    \"acct\"<blob>=\"conn:abc123:mysql\"\n    \"svce\"<blob>=\"tablepeek\"\n";
+        assert_eq!(
+            account_from_attributes(attributes).as_deref(),
+            Some("conn:abc123:mysql")
+        );
+        assert_eq!(account_from_attributes("    \"acct\"<blob>=<NULL>\n"), None);
+        assert_eq!(account_from_attributes(""), None);
     }
 
     #[test]

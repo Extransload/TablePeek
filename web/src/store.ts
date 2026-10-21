@@ -209,8 +209,6 @@ export interface SavedConnection {
   mssql?: SavedMssql;
   ssh?: SavedSsh;
   http_tunnel?: SavedHttpTunnel;
-  persist_password: boolean;
-  has_password: boolean;
   last_used?: number;
 }
 
@@ -351,7 +349,7 @@ export class ApiRequestError extends Error {
 
 export type MissingSecret = "db" | "ssh" | "http";
 
-// Which stored secret the server needs typed in, if that is why a connect failed.
+// Which password the server needs typed in, if that is why a connect failed.
 export function missingSecretOf(error: unknown): MissingSecret | null {
   if (!(error instanceof ApiRequestError)) {
     return null;
@@ -859,18 +857,11 @@ async function listConnections(): Promise<SavedConnection[]> {
   return body.connections;
 }
 
-async function createConnection(
-  name: string,
-  input: ConnectInput,
-  persistPassword: boolean,
-): Promise<string> {
+// Passwords in `input` are used for nothing: profiles never keep them.
+async function createConnection(name: string, input: ConnectInput): Promise<string> {
   const body = await api<{ id: string }>("/api/connections", {
     method: "POST",
-    body: JSON.stringify({
-      name,
-      connect: input,
-      persist_password: persistPassword,
-    }),
+    body: JSON.stringify({ name, connect: input }),
   });
   return body.id;
 }
@@ -880,7 +871,6 @@ export interface ExportConnectionsRequest {
   // Color, tags and group name per saved id (the page keeps these, not the server).
   meta: Record<string, { color: string; tags: string[]; group: string }>;
   groups: { name: string; color: string }[];
-  include_passwords: boolean;
   passphrase: string;
 }
 
@@ -902,8 +892,6 @@ export interface ExportConnectionsResult {
   // The sealed ".tablepeek" file's text.
   file: string;
   count: number;
-  // How many connections carried a password into the file.
-  secrets: number;
 }
 
 async function exportConnections(request: ExportConnectionsRequest): Promise<ExportConnectionsResult> {
@@ -921,19 +909,10 @@ async function importConnections(file: string, passphrase: string, label: string
   });
 }
 
-async function updateConnection(
-  id: string,
-  name: string,
-  input: ConnectInput,
-  persistPassword: boolean,
-): Promise<void> {
+async function updateConnection(id: string, name: string, input: ConnectInput): Promise<void> {
   await api<{ id: string }>(`/api/connections/${encodeURIComponent(id)}`, {
     method: "PUT",
-    body: JSON.stringify({
-      name,
-      connect: input,
-      persist_password: persistPassword,
-    }),
+    body: JSON.stringify({ name, connect: input }),
   });
 }
 
@@ -944,13 +923,10 @@ export interface ConnectionTestResult {
   tables: number;
 }
 
-async function testConnection(
-  input: ConnectInput,
-  savedId?: string,
-): Promise<ConnectionTestResult> {
+async function testConnection(input: ConnectInput): Promise<ConnectionTestResult> {
   return api<ConnectionTestResult>("/api/connections/test", {
     method: "POST",
-    body: JSON.stringify({ connect: input, saved_id: savedId }),
+    body: JSON.stringify({ connect: input }),
   });
 }
 

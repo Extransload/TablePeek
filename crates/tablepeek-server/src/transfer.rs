@@ -3,8 +3,8 @@
 //!
 //! The file is a small JSON envelope around one AES-256-GCM ciphertext whose key
 //! comes from the file password through Argon2id. Everything that identifies a
-//! connection (names, hosts, users, and passwords when included) is inside the
-//! ciphertext; the envelope only says how to open it, and is itself
+//! connection (names, hosts, users) is inside the ciphertext; passwords never
+//! are, since none are stored; the envelope only says how to open it, and is itself
 //! authenticated, so a changed parameter fails like a wrong password.
 
 use std::collections::HashSet;
@@ -112,7 +112,7 @@ pub struct BundleGroup {
 }
 
 /// One connection inside the file. `connect` has the shape of a connect
-/// request, passwords included when the export asked for them.
+/// request, without passwords.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BundleConnection {
     pub name: String,
@@ -145,13 +145,11 @@ pub struct ExportMeta {
     pub group: String,
 }
 
-/// A connection ready to save: final name, request with any passwords, and
-/// whether those passwords should go to the keychain.
+/// A connection ready to save: final name and a request without passwords.
 #[derive(Debug)]
 pub struct ImportItem {
     pub name: String,
     pub connect: ConnectRequest,
-    pub persist_password: bool,
     pub color: String,
     pub tags: Vec<String>,
     pub group: String,
@@ -200,19 +198,27 @@ pub fn open(file: &str, passphrase: &str) -> Result<Vec<u8>, OpenError> {
     }
     let version = value.get("version").and_then(Value::as_u64);
     if version != Some(u64::from(VERSION)) {
-        return Err(OpenError::Unsupported("지원하지 않는 연결 파일 버전입니다".into()));
+        return Err(OpenError::Unsupported(
+            "지원하지 않는 연결 파일 버전입니다".into(),
+        ));
     }
     let envelope: Envelope =
         serde_json::from_value(value).map_err(|_| OpenError::WrongPassphraseOrDamaged)?;
     if envelope.kdf.name != KDF_NAME || envelope.cipher != CIPHER {
-        return Err(OpenError::Unsupported("지원하지 않는 암호화 방식입니다".into()));
+        return Err(OpenError::Unsupported(
+            "지원하지 않는 암호화 방식입니다".into(),
+        ));
     }
-    let out_of_range = || OpenError::Unsupported("연결 파일의 암호화 설정이 허용 범위를 벗어났습니다".into());
+    let out_of_range =
+        || OpenError::Unsupported("연결 파일의 암호화 설정이 허용 범위를 벗어났습니다".into());
     let kdf = envelope.kdf.params();
     if kdf.m_kib > MAX_M_KIB || kdf.t == 0 || kdf.t > MAX_T || kdf.p == 0 || kdf.p > MAX_P {
         return Err(out_of_range());
     }
-    let decode = |text: &str| B64.decode(text).map_err(|_| OpenError::WrongPassphraseOrDamaged);
+    let decode = |text: &str| {
+        B64.decode(text)
+            .map_err(|_| OpenError::WrongPassphraseOrDamaged)
+    };
     let salt = decode(&envelope.kdf.salt)?;
     let nonce_bytes = decode(&envelope.nonce)?;
     let data = decode(&envelope.data)?;
@@ -222,7 +228,12 @@ pub fn open(file: &str, passphrase: &str) -> Result<Vec<u8>, OpenError> {
     let nonce = <&Nonce<Aes256Gcm>>::try_from(nonce_bytes.as_slice())
         .map_err(|_| OpenError::WrongPassphraseOrDamaged)?;
     let cipher = derive_key(passphrase, &salt, kdf).map_err(|_| out_of_range())?;
-    let aad = associated_data(envelope.version, &envelope.kdf, &envelope.cipher, &envelope.nonce);
+    let aad = associated_data(
+        envelope.version,
+        &envelope.kdf,
+        &envelope.cipher,
+        &envelope.nonce,
+    );
     cipher
         .decrypt(
             nonce,
@@ -234,10 +245,9 @@ pub fn open(file: &str, passphrase: &str) -> Result<Vec<u8>, OpenError> {
         .map_err(|_| OpenError::WrongPassphraseOrDamaged)
 }
 
-/// The `connect` value for a saved profile. `secret(kind)` is asked for the
-/// database password (kind = driver), "ssh" and "http"; None leaves it out.
-pub fn export_connect(saved: &SavedConnection, secret: impl Fn(&str) -> Option<String>) -> Value {
-    let secret = |kind: &str| secret(kind).filter(|value| !value.is_empty());
+/// The `connect` value for a saved profile. Saved profiles carry no passwords,
+/// so neither does this.
+pub fn export_connect(saved: &SavedConnection) -> Value {
     let mut connect = json!({ "driver": saved.driver });
     let db = match saved.driver.as_str() {
         "postgres" => saved.postgres.as_ref().map(serde_json::to_value),
@@ -246,22 +256,13 @@ pub fn export_connect(saved: &SavedConnection, secret: impl Fn(&str) -> Option<S
         "mssql" => saved.mssql.as_ref().map(serde_json::to_value),
         _ => None,
     };
-    if let Some(Ok(mut db)) = db {
-        if let Some(password) = secret(&saved.driver) {
-            db["password"] = json!(password);
-        }
+    if let Some(Ok(db)) = db {
         connect[saved.driver.as_str()] = db;
     }
-    if let Some(Ok(mut ssh)) = saved.ssh.as_ref().map(serde_json::to_value) {
-        if let Some(password) = secret("ssh") {
-            ssh["password"] = json!(password);
-        }
+    if let Some(Ok(ssh)) = saved.ssh.as_ref().map(serde_json::to_value) {
         connect["ssh"] = ssh;
     }
-    if let Some(Ok(mut tunnel)) = saved.http_tunnel.as_ref().map(serde_json::to_value) {
-        if let Some(password) = secret("http") {
-            tunnel["password"] = json!(password);
-        }
+    if let Some(Ok(tunnel)) = saved.http_tunnel.as_ref().map(serde_json::to_value) {
         connect["http_tunnel"] = tunnel;
     }
     connect
@@ -288,6 +289,29 @@ pub fn is_hex_color(value: &str) -> bool {
         && value[1..].chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
+// A file from elsewhere may carry passwords; they are dropped, never kept.
+fn drop_passwords(connect: &mut ConnectRequest) {
+    for password in [
+        connect.postgres.as_mut().map(|config| &mut config.password),
+        connect
+            .cockroach
+            .as_mut()
+            .map(|config| &mut config.password),
+        connect.mysql.as_mut().map(|config| &mut config.password),
+        connect.mssql.as_mut().map(|config| &mut config.password),
+        connect.ssh.as_mut().map(|config| &mut config.password),
+        connect
+            .http_tunnel
+            .as_mut()
+            .map(|config| &mut config.password),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *password = None;
+    }
+}
+
 /// Checks every connection before any is saved and names them against `taken`.
 /// The error names the first bad connection (1-based).
 pub fn prepare_import(
@@ -303,27 +327,22 @@ pub fn prepare_import(
         if name.is_empty() {
             return Err(problem("이름이 없습니다"));
         }
-        let connect: ConnectRequest = serde_json::from_value(entry.connect)
+        let mut connect: ConnectRequest = serde_json::from_value(entry.connect)
             .map_err(|err| problem(&format!("접속 정보가 올바르지 않습니다 ({err})")))?;
         if let Some((_, message)) = crate::connect_problem(&connect) {
             return Err(problem(message));
         }
-        let carries_secret = crate::request_db_password(&connect).is_some()
-            || connect
-                .ssh
-                .as_ref()
-                .is_some_and(|ssh| ssh.password.as_deref().is_some_and(|pw| !pw.is_empty()))
-            || connect
-                .http_tunnel
-                .as_ref()
-                .is_some_and(|tunnel| tunnel.password.as_deref().is_some_and(|pw| !pw.is_empty()));
+        drop_passwords(&mut connect);
         let name = unique_name(name, &names, label);
         names.insert(name.clone());
         items.push(ImportItem {
             name,
             connect,
-            persist_password: carries_secret,
-            color: if is_hex_color(&entry.color) { entry.color } else { String::new() },
+            color: if is_hex_color(&entry.color) {
+                entry.color
+            } else {
+                String::new()
+            },
             tags: entry.tags,
             group: entry.group,
         });
@@ -337,7 +356,11 @@ mod tests {
     use serde_json::json;
 
     // Cheap enough for tests; the real cost is DEFAULT_KDF.
-    const FAST: KdfParams = KdfParams { m_kib: 64, t: 1, p: 1 };
+    const FAST: KdfParams = KdfParams {
+        m_kib: 64,
+        t: 1,
+        p: 1,
+    };
 
     fn saved_mysql() -> SavedConnection {
         serde_json::from_value(json!({
@@ -378,7 +401,10 @@ mod tests {
     #[test]
     fn wrong_passphrase_is_refused() {
         let file = seal(b"x", "correct horse", FAST).unwrap();
-        assert_eq!(open(&file, "wrong horse"), Err(OpenError::WrongPassphraseOrDamaged));
+        assert_eq!(
+            open(&file, "wrong horse"),
+            Err(OpenError::WrongPassphraseOrDamaged)
+        );
     }
 
     #[test]
@@ -388,24 +414,43 @@ mod tests {
 
         let mut data = envelope.clone();
         let text = data["data"].as_str().unwrap().to_string();
-        let flipped = if text.starts_with('A') { format!("B{}", &text[1..]) } else { format!("A{}", &text[1..]) };
+        let flipped = if text.starts_with('A') {
+            format!("B{}", &text[1..])
+        } else {
+            format!("A{}", &text[1..])
+        };
         data["data"] = json!(flipped);
-        assert_eq!(open(&data.to_string(), "correct horse"), Err(OpenError::WrongPassphraseOrDamaged));
+        assert_eq!(
+            open(&data.to_string(), "correct horse"),
+            Err(OpenError::WrongPassphraseOrDamaged)
+        );
 
         // The cost is authenticated too: lowering it can't be used to open the file another way.
         let mut cost = envelope.clone();
         cost["kdf"]["t"] = json!(2);
-        assert_eq!(open(&cost.to_string(), "correct horse"), Err(OpenError::WrongPassphraseOrDamaged));
+        assert_eq!(
+            open(&cost.to_string(), "correct horse"),
+            Err(OpenError::WrongPassphraseOrDamaged)
+        );
     }
 
     #[test]
     fn other_files_and_versions_are_told_apart() {
-        assert_eq!(open("not json", "correct horse"), Err(OpenError::NotConnectionsFile));
-        assert_eq!(open("{\"format\":\"other\"}", "correct horse"), Err(OpenError::NotConnectionsFile));
+        assert_eq!(
+            open("not json", "correct horse"),
+            Err(OpenError::NotConnectionsFile)
+        );
+        assert_eq!(
+            open("{\"format\":\"other\"}", "correct horse"),
+            Err(OpenError::NotConnectionsFile)
+        );
         let file = seal(b"x", "correct horse", FAST).unwrap();
         let mut newer: Value = serde_json::from_str(&file).unwrap();
         newer["version"] = json!(2);
-        assert!(matches!(open(&newer.to_string(), "correct horse"), Err(OpenError::Unsupported(_))));
+        assert!(matches!(
+            open(&newer.to_string(), "correct horse"),
+            Err(OpenError::Unsupported(_))
+        ));
     }
 
     #[test]
@@ -413,7 +458,10 @@ mod tests {
         let file = seal(b"x", "correct horse", FAST).unwrap();
         let mut heavy: Value = serde_json::from_str(&file).unwrap();
         heavy["kdf"]["m_kib"] = json!(64 * 1024 * 1024);
-        assert!(matches!(open(&heavy.to_string(), "correct horse"), Err(OpenError::Unsupported(_))));
+        assert!(matches!(
+            open(&heavy.to_string(), "correct horse"),
+            Err(OpenError::Unsupported(_))
+        ));
     }
 
     #[test]
@@ -422,7 +470,11 @@ mod tests {
         for salt in ["", "AAAA"] {
             let mut broken: Value = serde_json::from_str(&file).unwrap();
             broken["kdf"]["salt"] = json!(salt);
-            assert_eq!(open(&broken.to_string(), "correct horse"), Err(OpenError::WrongPassphraseOrDamaged), "salt {salt:?}");
+            assert_eq!(
+                open(&broken.to_string(), "correct horse"),
+                Err(OpenError::WrongPassphraseOrDamaged),
+                "salt {salt:?}"
+            );
         }
     }
 
@@ -433,47 +485,59 @@ mod tests {
         newer["version"] = json!(2);
         assert_eq!(
             open(&newer.to_string(), "correct horse"),
-            Err(OpenError::Unsupported("지원하지 않는 연결 파일 버전입니다".into()))
+            Err(OpenError::Unsupported(
+                "지원하지 않는 연결 파일 버전입니다".into()
+            ))
         );
         let mut other: Value = serde_json::from_str(&file).unwrap();
         other["cipher"] = json!("chacha20-poly1305");
         assert_eq!(
             open(&other.to_string(), "correct horse"),
-            Err(OpenError::Unsupported("지원하지 않는 암호화 방식입니다".into()))
+            Err(OpenError::Unsupported(
+                "지원하지 않는 암호화 방식입니다".into()
+            ))
         );
     }
 
     #[test]
-    fn export_without_secrets_has_no_password_fields() {
-        let connect = export_connect(&saved_mysql(), |_| None);
+    fn export_has_no_password_fields() {
+        let connect = export_connect(&saved_mysql());
         assert!(!connect.to_string().contains("password\""), "{connect}");
         assert_eq!(connect["driver"], json!("mysql"));
         assert_eq!(connect["mysql"]["host"], json!("db.internal"));
         assert_eq!(connect["mysql"]["ssl_root_cert"], json!("/k/ca.pem"));
         assert_eq!(connect["ssh"]["private_key_path"], json!("/k/id"));
         assert_eq!(connect["http_tunnel"]["username"], json!("me"));
+        // And it is a connect request the server accepts as-is.
+        let request: ConnectRequest = serde_json::from_value(connect).unwrap();
+        assert_eq!(request.mysql.unwrap().host, "db.internal");
     }
 
     #[test]
-    fn export_with_secrets_puts_each_in_its_place() {
-        let connect = export_connect(&saved_mysql(), |kind| match kind {
-            "mysql" => Some("db-pw".into()),
-            "ssh" => Some("ssh-pw".into()),
-            "http" => Some("proxy-pw".into()),
-            _ => None,
-        });
-        assert_eq!(connect["mysql"]["password"], json!("db-pw"));
-        assert_eq!(connect["ssh"]["password"], json!("ssh-pw"));
-        assert_eq!(connect["http_tunnel"]["password"], json!("proxy-pw"));
-        // And it is a connect request the server accepts as-is.
-        let request: ConnectRequest = serde_json::from_value(connect).unwrap();
-        assert_eq!(request.mysql.unwrap().password.as_deref(), Some("db-pw"));
-        assert_eq!(request.ssh.unwrap().password.as_deref(), Some("ssh-pw"));
+    fn prepare_import_drops_passwords_a_file_carries() {
+        let mut connect = export_connect(&saved_mysql());
+        connect["mysql"]["password"] = json!("db-pw");
+        connect["ssh"]["password"] = json!("ssh-pw");
+        connect["http_tunnel"]["password"] = json!("proxy-pw");
+        let items =
+            prepare_import(vec![entry("prod", connect)], &HashSet::new(), "가져옴").unwrap();
+        let request = &items[0].connect;
+        assert_eq!(request.mysql.as_ref().unwrap().password, None);
+        assert_eq!(request.ssh.as_ref().unwrap().password, None);
+        assert_eq!(request.http_tunnel.as_ref().unwrap().password, None);
+        assert_eq!(
+            request.mysql.as_ref().unwrap().host,
+            "db.internal",
+            "the rest is kept"
+        );
     }
 
     #[test]
     fn names_get_numbered_when_taken() {
-        let taken: HashSet<String> = ["rf-web", "rf-web (가져옴)"].into_iter().map(String::from).collect();
+        let taken: HashSet<String> = ["rf-web", "rf-web (가져옴)"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         assert_eq!(unique_name("fresh", &taken, "가져옴"), "fresh");
         assert_eq!(unique_name("rf-web", &HashSet::new(), "가져옴"), "rf-web");
         assert_eq!(unique_name("rf-web", &taken, "가져옴"), "rf-web (가져옴 2)");
@@ -501,43 +565,58 @@ mod tests {
     }
 
     #[test]
-    fn prepare_import_names_and_marks_secrets() {
-        let with_pw = export_connect(&saved_mysql(), |kind| (kind == "mysql").then(|| "db-pw".to_string()));
-        let without = export_connect(&saved_mysql(), |_| None);
+    fn prepare_import_numbers_clashing_names() {
         let taken: HashSet<String> = ["prod".to_string()].into();
         let items = prepare_import(
-            vec![entry("prod", with_pw), entry("prod", without), entry("other", json!({ "driver": "postgres", "postgres": { "host": "h", "port": 5432, "user": "u", "database": "d" } }))],
+            vec![
+                entry("prod", export_connect(&saved_mysql())),
+                entry("prod", export_connect(&saved_mysql())),
+                entry("other", json!({ "driver": "postgres", "postgres": { "host": "h", "port": 5432, "user": "u", "database": "d" } })),
+            ],
             &taken,
             "가져옴",
         )
         .unwrap();
         let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
-        assert_eq!(names, ["prod (가져옴)", "prod (가져옴 2)", "other"], "later items see earlier names too");
-        assert!(items[0].persist_password, "a carried password goes to the keychain");
-        assert!(!items[1].persist_password);
+        assert_eq!(
+            names,
+            ["prod (가져옴)", "prod (가져옴 2)", "other"],
+            "later items see earlier names too"
+        );
         assert_eq!(items[0].group, "CiteWell");
         assert_eq!(items[0].tags, ["prod"]);
     }
 
     #[test]
     fn prepare_import_rejects_the_whole_file_for_one_bad_entry() {
-        let good = export_connect(&saved_mysql(), |_| None);
+        let good = export_connect(&saved_mysql());
         let cases = [
             entry("  ", good.clone()),
             entry("x", json!({ "driver": "oracle" })),
-            entry("x", json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "database": "d" } })),
-            entry("x", json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "user": "u", "database": "d", "ssl_mode": "verify-full" } })),
+            entry(
+                "x",
+                json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "database": "d" } }),
+            ),
+            entry(
+                "x",
+                json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "user": "u", "database": "d", "ssl_mode": "verify-full" } }),
+            ),
             entry("x", json!({ "driver": "mysql" })),
         ];
         for (index, bad) in cases.into_iter().enumerate() {
-            let error = prepare_import(vec![entry("ok", good.clone()), bad], &HashSet::new(), "가져옴").unwrap_err();
+            let error = prepare_import(
+                vec![entry("ok", good.clone()), bad],
+                &HashSet::new(),
+                "가져옴",
+            )
+            .unwrap_err();
             assert!(error.starts_with("2번째 연결"), "case {index}: {error}");
         }
     }
 
     #[test]
     fn prepare_import_drops_bad_colors() {
-        let mut item = entry("x", export_connect(&saved_mysql(), |_| None));
+        let mut item = entry("x", export_connect(&saved_mysql()));
         item.color = "url(x)".into();
         let items = prepare_import(vec![item], &HashSet::new(), "가져옴").unwrap();
         assert_eq!(items[0].color, "");

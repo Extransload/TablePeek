@@ -326,7 +326,6 @@ const RULES: Rule[] = [
       const user = pick(found, 1, 3, 4);
       const fixes = [
         t("사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다."),
-        t("저장된 비밀번호가 바뀌었다면 연결을 편집해 새 비밀번호를 입력하세요."),
       ];
       if (context.driver === "mysql") {
         fixes.push(

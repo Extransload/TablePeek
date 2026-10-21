@@ -112,7 +112,6 @@ import { IS_MAC, actionForEvent, shortcutHint, type KeyAction } from "./shortcut
 import type { SortIndicator } from "./grid/CanvasGrid";
 import { subscribePendingChanges, type WindowedRowSource } from "./grid/windowSource";
 import {
-  missingSecretOf,
   store,
   type ConnSummary,
   type EngineMeta,
@@ -2117,7 +2116,8 @@ export default function App() {
     }
   }
 
-  // "asking": a secret isn't stored and the connection dialog now asks for it.
+  // "asking": the connection dialog now asks for the password. None is stored, so
+  // it asks before any attempt: a try without one only logs a failed login.
   async function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
     const existing = conns.find((conn) => conn.saved_id === id);
     if (existing !== undefined) {
@@ -2125,21 +2125,15 @@ export default function App() {
     }
     setBusySaved(id);
     try {
-      const live = await store.connectSaved(id);
-      await afterOpen(live);
-      return "entered";
-    } catch (err) {
-      // A secret isn't stored: ask for it in the connection dialog instead of failing.
-      const missing = missingSecretOf(err);
-      const saved =
-        missing !== null
-          ? (await store.listConnections().catch(() => [])).find((entry) => entry.id === id)
-          : undefined;
-      if (missing !== null && saved !== undefined) {
-        openConnectionEditor(saved, errorOf(err, t("비밀번호를 입력하세요")), missing);
-        return "asking";
+      const saved = (await store.listConnections()).find((entry) => entry.id === id);
+      if (saved === undefined) {
+        store.setError(t("연결을 찾을 수 없습니다"));
+        return "failed";
       }
-      store.setError(errorOf(err, "연결에 실패했습니다"));
+      openConnectionEditor(saved, t("비밀번호를 입력해 연결하세요 (없으면 비워 두세요)"), "db");
+      return "asking";
+    } catch (err) {
+      store.setError(errorOf(err, t("저장된 연결을 불러오지 못했습니다")));
       return "failed";
     } finally {
       setBusySaved(null);

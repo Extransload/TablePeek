@@ -7,15 +7,14 @@ interface ExportConnectionsModalProps {
   title: string;
   count: number;
   // Resolves to a message when the export failed; the dialog then stays open.
-  onExport(passphrase: string, includePasswords: boolean): Promise<string | null>;
+  onExport(passphrase: string): Promise<string | null>;
   onClose(): void;
 }
 
-// Export always seals the file with a password; saved passwords go in only when asked.
+// Export always seals the file with a password. It never holds DB passwords: none are stored.
 export function ExportConnectionsModal({ title, count, onExport, onClose }: ExportConnectionsModalProps) {
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [includePasswords, setIncludePasswords] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const firstRef = useRef<HTMLInputElement | null>(null);
@@ -51,7 +50,7 @@ export function ExportConnectionsModal({ title, count, onExport, onClose }: Expo
     setBusy(true);
     setFailure(null);
     try {
-      const result = await onExport(passphrase, includePasswords);
+      const result = await onExport(passphrase);
       if (result !== null) {
         setFailure(result);
         return;
@@ -116,19 +115,8 @@ export function ExportConnectionsModal({ title, count, onExport, onClose }: Expo
                   : t("두 암호가 서로 다릅니다"))}
             </span>
           ) : null}
-          <label className="cm-switch export-include">
-            <input
-              type="checkbox"
-              checked={includePasswords}
-              disabled={busy}
-              onChange={(event) => setIncludePasswords(event.target.checked)}
-            />
-            <span>{t("저장된 비밀번호 포함")}</span>
-          </label>
           <p className="export-hint">
-            {includePasswords
-              ? t("키체인에 저장된 DB·SSH·프록시 비밀번호가 파일 안에 함께 암호화됩니다. 파일 암호를 아는 사람은 누구나 꺼낼 수 있습니다.")
-              : t("비밀번호는 넣지 않습니다. 가져온 쪽에서 처음 연결할 때 묻습니다.")}
+            {t("DB·SSH·프록시 비밀번호는 담기지 않습니다. 가져온 쪽에서 연결할 때 입력합니다.")}
           </p>
           <p className="export-hint">
             {t("SSH 키와 SSL 인증서는 파일 경로만 담깁니다. 가져올 컴퓨터의 같은 경로에 파일을 옮겨 두세요.")}

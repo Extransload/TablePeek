@@ -6576,7 +6576,7 @@ button.cm-driver.active {
   min-width: 0;
 }
 
-/* :where() keeps this at (0,2,0) so .cm-port / .cm-store widths below can win. */
+/* :where() keeps this at (0,2,0) so the .cm-port width below can win. */
 .cm-modal .cm-value :where(input:not([type="checkbox"]):not([type="color"]), select) {
   width: 100%;
   height: 30px;
@@ -6637,12 +6637,13 @@ button.cm-eye:hover {
   color: var(--ink);
 }
 
-.cm-modal select.cm-store {
-  flex: none;
-  width: 136px;
+.cm-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
 }
 
-.cm-swatches,
 .cm-swatch {
   position: relative;
   width: 24px;
@@ -8214,10 +8215,6 @@ button.launcher-plus.active {
   height: 32px;
   padding: 0 10px;
   font-size: 12.5px;
-}
-
-.export-include {
-  margin-top: 2px;
 }
 
 /* Home's backup/restore: which connection. */

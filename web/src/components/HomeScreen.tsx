@@ -215,12 +215,7 @@ export function HomeScreen({
   async function duplicate(connection: SavedConnection): Promise<void> {
     setNotice(null);
     try {
-      // The keychain secret stays with the original; the copy asks on first connect.
-      const id = await store.createConnection(
-        t("{name} 복사본", { name: connection.name }),
-        inputFromSaved(connection),
-        false,
-      );
+      const id = await store.createConnection(t("{name} 복사본", { name: connection.name }), inputFromSaved(connection));
       const meta = metaById[connection.id];
       if (meta !== undefined) {
         setConnMeta(id, { ...meta });
@@ -236,24 +231,14 @@ export function HomeScreen({
     setExporting({ title, ids: connections.map((connection) => connection.id), groups: scopeGroups });
   }
 
-  async function runExport(passphrase: string, includePasswords: boolean): Promise<string | null> {
+  async function runExport(passphrase: string): Promise<string | null> {
     if (exporting === null) {
       return null;
     }
     try {
-      const result = await store.exportConnections(
-        exportRequest(exporting.ids, metaById, exporting.groups, includePasswords, passphrase),
-      );
+      const result = await store.exportConnections(exportRequest(exporting.ids, metaById, exporting.groups, passphrase));
       downloadText(CONNECTIONS_FILE_NAME, result.file);
-      // Say plainly when "include passwords" found none to include.
-      const text = !includePasswords
-        ? t("연결 {count}개를 내보냈습니다", { count: result.count })
-        : result.secrets > 0
-          ? t("연결 {count}개를 내보냈습니다 (비밀번호 포함 {secrets}개)", { count: result.count, secrets: result.secrets })
-          : t("연결 {count}개를 내보냈습니다. 저장된 비밀번호가 있는 연결이 없어 비밀번호는 들어가지 않았습니다.", {
-              count: result.count,
-            });
-      setNotice({ kind: "ok", text });
+      setNotice({ kind: "ok", text: t("연결 {count}개를 내보냈습니다", { count: result.count }) });
       return null;
     } catch (err) {
       return t(errorText(err, t("내보내지 못했습니다")));

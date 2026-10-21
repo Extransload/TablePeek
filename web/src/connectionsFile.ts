@@ -4,8 +4,8 @@ import { t } from "./i18n";
 import type { ExportConnectionsRequest } from "./store";
 
 // The encrypted connections file (".tablepeek") that "export connections"
-// writes and "import" reads. The server seals and opens it, so stored
-// passwords never reach the page in the clear.
+// writes and "import" reads, sealed and opened by the server. It never holds
+// passwords: none are stored.
 
 export const CONNECTIONS_FILE_NAME = "tablepeek-connections.tablepeek";
 export const CONNECTIONS_FILE_ACCEPT = ".tablepeek";
@@ -20,7 +20,6 @@ export function exportRequest(
   ids: string[],
   metaById: Record<string, ConnMeta>,
   groups: ConnGroup[],
-  includePasswords: boolean,
   passphrase: string,
 ): ExportConnectionsRequest {
   const nameById = new Map(groups.map((group) => [group.id, group.name]));
@@ -33,7 +32,6 @@ export function exportRequest(
       }),
     ),
     groups: groups.map((group) => ({ name: group.name, color: group.color })),
-    include_passwords: includePasswords,
     passphrase,
   };
 }

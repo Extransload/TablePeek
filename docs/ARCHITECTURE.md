@@ -20,7 +20,7 @@
 | 렌더링 | Canvas 가상화 그리드 (M1 적용, M3 셀 편집) | DOM 테이블은 대량 행에서 한계 |
 | SQL 에디터 | CodeMirror 6 (M1 적용) | 브라우저 네이티브 IME가 최대 리스크를 제거 |
 | 파일 탐색 | 엔진측 디렉터리 API(`/api/fs/list`) + 브라우저 모달 | 경로 직접 입력은 오타·미검증 위험 |
-| 원격 접속 | SSH 터널 내장(russh, M4) + OS 키체인(keyring) | 클라우드 릴레이·서버 비용 불필요, 비밀 정보는 키체인만 |
+| 원격 접속 | SSH 터널 내장(russh, M4), 비밀번호는 연결할 때마다 입력 | 클라우드 릴레이·서버 비용 불필요, 비밀번호는 어디에도 저장하지 않음 |
 | 편집 안전 | PK 기반 단일 셀 UPDATE + 명시적 트랜잭션(M3), 행 추가/삭제(M9) | 안전한 최소 편집 표면. 세션 스냅샷 패치로 일관성 유지. 구조 변경 시 전 세션 무효화 |
 | 다중 DB | SQLite · PostgreSQL · MySQL/MariaDB · CockroachDB · SQL Server | 드라이버 선택은 연결 모달에서. 서버 프로세스당 활성 DB 1개(교체형) |
 | 개발 기간 | 제약 없음 (성능 우선) | |
@@ -36,7 +36,7 @@
     tablepeek-server (axum)
       - 정적 자산(rust-embed), 토큰·Host 검증
       - WS 스트리밍, SSH 터널(russh)
-      - store.json(비밀 아님) + OS 키체인(비밀번호)
+      - store.json(비밀번호 없음)
     tablepeek-engine
       - rusqlite | tokio-postgres(PG·CRDB) | mysql_async(MySQL) | tiberius(TDS)
               │
@@ -49,7 +49,7 @@
 | 크레이트 | 책임 | 의존 |
 |---|---|---|
 | `tablepeek` | CLI 엔트리: `serve` 서브커맨드, 포트·토큰 발급, 브라우저 오픈 | server, engine |
-| `tablepeek-server` | axum 라우터, 토큰·Host 인증, 웹 자산(rust-embed), WS 스트리밍, 세션 스냅샷·저널, SSH 터널(russh), store.json·키체인 | engine, types |
+| `tablepeek-server` | axum 라우터, 토큰·Host 인증, 웹 자산(rust-embed), WS 스트리밍, 세션 스냅샷·저널, SSH 터널(russh), store.json, 연결 내보내기·가져오기(.tablepeek) | engine, types |
 | `tablepeek-engine` | 커넥션·세션·쿼리 실행. 백엔드 enum(rusqlite / tokio-postgres / mysql_async / tiberius), Arrow IPC 직렬화, 쿼리 취소, 행 추가·삭제 | types |
 | `tablepeek-types` | 메시지·결과·접속 설정 공용 타입 (serde) | — |
 
@@ -60,7 +60,8 @@
 - **127.0.0.1 바인딩만** — 외부 인터페이스 노출 금지.
 - **실행 시마다 랜덤 토큰** 발급. 페이지 로드 시 쿼리 파라미터, API 호출 시 `x-tablepeek-token` 헤더로 검증.
 - **Host 헤더 검증** (M2 적용) — DNS 리바인딩 방어.
-- 자격증명: DB/SSH 비밀번호는 **OS 키체인에만** 저장(사용자가 "비밀번호도 저장" 선택 시). `~/.tablepeek/store.json`에는 비밀번호를 기록하지 않으며 SSH 개인키 경로만 저장.
+- 자격증명: DB/SSH/프록시 비밀번호는 **저장하지 않는다**. 연결할 때마다 입력받아 그 연결에만 쓴다. `~/.tablepeek/store.json`에는 SSH 개인키 경로만 저장한다. 이전 버전이 OS 키체인에 남긴 비밀번호는 첫 실행 때 지운다(`StoreFile::forget_saved_passwords`).
+- 연결 내보내기 파일(`.tablepeek`): 파일 암호(8자 이상)에서 Argon2id(64 MiB·3회)로 키를 만들고 AES-256-GCM으로 암호화한다. 봉투(형식·버전·KDF 값·salt·nonce)는 연관 데이터로 인증한다. 비밀번호는 담지 않으며, 가져올 때 들어 있어도 버린다. 가져오기는 전부 저장하거나 하나도 저장하지 않는다.
 - SSH 터널(russh, M4): 원격 DB는 사용자 머신에서 SSH 채널을 열어 127.0.0.1 임의 포트로 포워딩. PG 호스트/포트는 SSH 서버 관점 주소로 지정.
 - TLS: PostgreSQL/CockroachDB는 `ssl_mode=disable/prefer/require`와 CA·클라이언트 인증서(mTLS)를 지원한다. MySQL은 `SslOpts`로 CA·클라이언트 인증서를 적용하며 `prefer`는 TLS 실패 시 평문으로 폴백한다. 모든 rustls 경로는 `ensure_crypto_provider()`로 ring provider를 먼저 설치한다. 연결 전 점검은 `/api/fs/stat`으로 로컬 인증서·SSH 키 파일의 존재/파일 여부/읽기 가능 여부만 확인하고 실제 접속은 하지 않는다.
 

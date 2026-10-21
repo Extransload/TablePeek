@@ -14,7 +14,7 @@ TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or conn
 | **Runtime** | Local Rust engine + browser UI |
 | **Transport** | HTTP + WebSocket, Arrow IPC streaming |
 | **Editing** | Primary-key cell edits, row insert/delete, transactions |
-| **Security** | Loopback-only, per-run token, OS keychain, TLS/mTLS, SSH tunnels |
+| **Security** | Loopback-only, per-run token, no stored passwords, TLS/mTLS, SSH tunnels |
 | **Themes** | 9 built-in themes + Base16/VS Code theme import |
 
 ## Why TablePeek
@@ -48,7 +48,7 @@ brew install node                                               # Node.js 20+ (o
 **Linux (Debian/Ubuntu)**
 
 ```sh
-sudo apt install build-essential pkg-config libdbus-1-dev       # compiler; D-Bus headers for the password keyring
+sudo apt install build-essential pkg-config libdbus-1-dev       # compiler; D-Bus headers for the one-time keyring cleanup
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
@@ -112,7 +112,7 @@ make help                          # full command list
 
 ## Database connections
 
-Create connections from the in-app connection screen. Profiles are saved in `~/.tablepeek/store.json` without passwords. If you opt in to saving a password, it is stored in the operating system keychain.
+Create connections from the in-app connection screen. Profiles are saved in `~/.tablepeek/store.json` without passwords; you type the password each time you connect. Passwords an older version saved in the operating system keychain are removed on the first start.
 
 | Driver | Connect to | Notes |
 |---|---|---|
@@ -215,11 +215,8 @@ flowchart LR
     UI["Browser UI<br/>React · CodeMirror 6 · Canvas grid"]
     SERVER["tablepeek-server<br/>axum · static assets · auth"]
     ENGINE["tablepeek-engine<br/>connections · queries · Arrow IPC"]
-    KEYCHAIN["OS keychain"]
-
     UI <-->|"HTTP + WebSocket<br/>Arrow IPC"| SERVER
     SERVER <--> ENGINE
-    SERVER -.->|"passwords only when opted in"| KEYCHAIN
   end
 
   ENGINE --> SQLITE[("SQLite file")]
@@ -238,7 +235,8 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and protoc
 - **Loopback only.** The HTTP/WebSocket listener binds to `127.0.0.1`; there is no remote listener.
 - **Per-run access token.** Each server start generates a token. The browser receives it in the launch URL and sends it with API requests as `x-tablepeek-token`.
 - **Host header validation.** Requests with unexpected `Host` headers are rejected to mitigate DNS rebinding.
-- **Credentials stay local.** `store.json` contains connection metadata and key paths, not passwords. Passwords are stored only in the OS keychain when explicitly requested.
+- **No stored passwords.** `store.json` contains connection metadata and key paths, never passwords. You type a password each time you connect, and it is used only for that connection. Passwords an older version kept in the OS keychain are removed on the first start.
+- **Encrypted exports.** Exported connections (`.tablepeek`) are sealed with a file password (Argon2id + AES-256-GCM) and never contain passwords.
 - **Encrypted connections.** PostgreSQL and CockroachDB support `disable`/`prefer`/`require` SSL modes plus CA and client certificates. MySQL supports TLS with CA and client certificates. SQL Server exposes an encryption toggle.
 - **SSH without a relay.** Remote databases are reached through a local SSH tunnel, not a hosted proxy.
 - **MCP is read-only by policy.** The query filter blocks writes, but a token holder can still read any database the active connection can see. Enforce stricter limits with database roles.
