@@ -689,6 +689,22 @@ const EN: Record<string, string> = {
   "SSL 끄고 다시 테스트": "Turn off SSL and test again",
   "SSL ‘필수’로 바꾸고 다시 테스트": "Set SSL to ‘Require’ and test again",
   "SSL 연결만 허용하는 서버일 수도 있습니다. SSL 모드를 ‘필수’로 바꿔 보세요.": "The server may only accept SSL. Try setting SSL mode to ‘Require’.",
+  // Home screen
+  "다시 시도": "Try again",
+  "데모 데이터베이스": "Demo database",
+  "추가할 데이터베이스를 고르세요": "Pick a database to add",
+  "{driver} 연결 추가": "Add a {driver} connection",
+  "첫 데이터베이스를 연결해 보세요": "Connect your first database",
+  "테이블을 둘러보고, 쿼리를 실행하고, 데이터를 바로 고칠 수 있습니다.": "Browse tables, run queries, and edit data in place.",
+  "연결할 때 필요한 정보": "What you'll need",
+  "호스트와 포트 (예: 127.0.0.1 : 5432)": "Host and port (e.g. 127.0.0.1 : 5432)",
+  "사용자 이름과 비밀번호": "User name and password",
+  "데이터베이스 이름": "Database name",
+  "필요하면 SSH 터널이나 SSL 인증서": "An SSH tunnel or SSL certificates, if your server needs them",
+  "postgres://… 같은 연결 URL을 호스트 칸에 붙여 넣으면 나머지가 자동으로 채워집니다.": "Paste a connection URL such as postgres://… into the host field to fill in the rest.",
+  "시작하기": "Get started",
+  "연결 정보는 이 컴퓨터(~/.tablepeek)에만 저장됩니다. 비밀번호는 저장을 고른 경우에만 OS 키체인에 보관됩니다.": "Connections are saved only on this computer (~/.tablepeek). Passwords go to the OS keychain, and only if you choose to save them.",
+  "데모 데이터로 먼저 둘러보려면 make run DEMO=1 로 실행하세요.": "To look around with demo data first, start with make run DEMO=1.",
 };
 
 let current: Language = readLanguage();

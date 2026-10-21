@@ -25,7 +25,7 @@
 
 토큰은 프로세스 목록에 남지 않도록 `--token` 인자보다 환경 변수를 권장한다. 로컬 디버깅에서는 `--url`, `--token`, `--conn` 인자도 사용할 수 있다.
 
-`--conn`/`TABLEPEEK_CONN`을 생략하면 기본 연결을 사용한다.
+`--conn`/`TABLEPEEK_CONN`을 생략하면 서버의 기본 연결을 사용한다. 기본 연결은 서버를 `--db`나 `--demo`로 띄웠을 때만 있다. 기본 연결이 없으면 `tablepeek_list_connections`로 연결 ID를 확인해 각 도구의 `conn` 인자로 지정한다.
 
 ## 제공 도구
 

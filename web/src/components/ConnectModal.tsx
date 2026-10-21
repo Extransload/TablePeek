@@ -43,6 +43,8 @@ interface ConnectModalProps {
   notice?: string | null;
   // Secret the dialog was opened to ask for (focused and highlighted).
   missingSecret?: MissingSecret | null;
+  // Driver picked before opening a new connection (home's "new connection" card).
+  initialDriver?: Driver | null;
   onClose(): void;
   onConnected(result: LiveConn): void;
   onSaved(): void;
@@ -488,13 +490,18 @@ export function ConnectModal({
   openConnId = null,
   notice = null,
   missingSecret = null,
+  initialDriver = null,
   onClose,
   onConnected,
   onSaved,
   onSwitch,
 }: ConnectModalProps) {
   const [form, setForm] = useState<ConnectForm>(() =>
-    editing !== null ? formFromSaved(editing) : EMPTY_FORM,
+    editing !== null
+      ? formFromSaved(editing)
+      : initialDriver
+        ? { ...EMPTY_FORM, driver: initialDriver, port: DEFAULT_PORT[initialDriver] }
+        : EMPTY_FORM,
   );
   const [savedId, setSavedId] = useState<string | null>(editing?.id ?? null);
   const [storedSecrets, setStoredSecrets] = useState(editing?.persist_password ?? false);

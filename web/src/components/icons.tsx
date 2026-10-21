@@ -55,6 +55,15 @@ export function AlertIcon({ size = 12, className }: IconProps) {
   );
 }
 
+export function ExternalIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M9.2 2.8h4v4M13.2 2.8 7.6 8.4" />
+      <path d="M11.6 9.6v2.8a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V5.4a1 1 0 0 1 1-1h2.8" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

@@ -2,7 +2,8 @@ import { tableFromIPC } from "apache-arrow";
 
 const base = process.argv[2];
 if (!base) {
-  console.error("usage: node scripts/ws-smoke.mjs <http://127.0.0.1:PORT/?token=TOKEN>");
+  // Needs the demo table: start the server with `tablepeek serve --demo-rows 200000`.
+  console.error("usage: node scripts/ws-smoke.mjs <http://127.0.0.1:PORT/?token=TOKEN>  (server: serve --demo)");
   process.exit(2);
 }
 

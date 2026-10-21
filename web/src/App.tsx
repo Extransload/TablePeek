@@ -114,6 +114,7 @@ import {
   missingSecretOf,
   store,
   type ConnSummary,
+  type Driver,
   type EngineMeta,
   type Favorite,
   type GridResult,
@@ -374,6 +375,8 @@ export default function App() {
     notice: string | null;
     missingSecret: MissingSecret | null;
   } | null>(null);
+  // Driver chosen on the home screen for a new connection.
+  const [newConnDriver, setNewConnDriver] = useState<Driver | null>(null);
   const [savedVersion, setSavedVersion] = useState(0);
   const [schemaOpen, setSchemaOpen] = useState(true);
   const [resultView, setResultView] = useState<"grid" | "message" | "plan">("grid");
@@ -2127,6 +2130,13 @@ export default function App() {
     missingSecret: MissingSecret | null = null,
   ): void {
     setConnectEditing(saved === null ? null : { saved, notice, missingSecret });
+    setNewConnDriver(null);
+    setConnectOpen(true);
+  }
+
+  function openNewConnection(driver?: Driver): void {
+    setConnectEditing(null);
+    setNewConnDriver(driver ?? null);
     setConnectOpen(true);
   }
 
@@ -2984,7 +2994,7 @@ export default function App() {
         </header>
         <div className="home">
           <div className="home-inner">
-            <div className="home-empty">{t("불러오는 중…")}</div>
+            <div className="home-loading">{t("불러오는 중…")}</div>
           </div>
         </div>
       </div>
@@ -3037,9 +3047,8 @@ export default function App() {
           onOpenConn={(id) => void enterConn(id)}
           onOpenNewWindow={openNewWindow}
           onCloseConn={(id) => void closeConn(id)}
-          onOpenDemo={() => void openDemo()}
           onOpenFile={() => setFsOpen(true)}
-          onNewConnection={() => openConnectionEditor(null)}
+          onNewConnection={openNewConnection}
           onConnectSaved={(id) => void connectSavedById(id)}
           onEditConnection={(saved) => openConnectionEditor(saved)}
           savedVersion={savedVersion}
@@ -3850,8 +3859,9 @@ export default function App() {
       )}
       {connectOpen && (
         <ConnectModal
-          key={connectEditing?.saved.id ?? "new"}
+          key={connectEditing?.saved.id ?? `new:${newConnDriver ?? ""}`}
           editing={connectEditing?.saved ?? null}
+          initialDriver={newConnDriver}
           notice={connectEditing?.notice ?? null}
           missingSecret={connectEditing?.missingSecret ?? null}
           openConnId={

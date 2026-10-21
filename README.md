@@ -80,12 +80,19 @@ Windows has no `make`, so run the same steps in PowerShell:
 git clone https://github.com/Extransload/TablePeek.git
 cd TablePeek
 cd web; npm install; npm run build; cd ..
-cargo run -p tablepeek -- serve --port 7870 --demo-rows 10000
+cargo run -p tablepeek -- serve --port 7870
 ```
 
 The first build compiles every Rust dependency and takes a few minutes; later starts take seconds.
 
-`make run` builds the web bundle and Rust binary, starts a 10,000-row demo database, and opens the browser. The console prints a tokenized loopback URL; keep that URL private.
+`make run` builds the web bundle and Rust binary, starts the server, and opens the browser on the connection home, where you add your first connection. The console prints a tokenized loopback URL; keep that URL private.
+
+To look around with sample data first, start with an in-memory demo database:
+
+```sh
+make run DEMO=1
+# Windows: cargo run -p tablepeek -- serve --demo
+```
 
 Open an existing SQLite file:
 
@@ -98,7 +105,7 @@ Useful options:
 
 ```sh
 make run PORT=7871                 # default port is 7870
-make run DEMO_ROWS=500000          # demo rows, up to 2,000,000
+make run DEMO=1 DEMO_ROWS=500000   # demo database with more rows, up to 2,000,000
 make run NO_OPEN=1                 # do not open a browser automatically
 make help                          # full command list
 ```

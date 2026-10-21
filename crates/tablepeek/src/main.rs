@@ -13,6 +13,8 @@ const MAX_DEMO_ROWS: usize = 2_000_000;
 struct Args {
     db: Option<PathBuf>,
     port: u16,
+    // Start with an in-memory demo database (--demo or --demo-rows).
+    demo: bool,
     demo_rows: usize,
     no_open: bool,
     mcp: bool,
@@ -23,7 +25,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "사용법:\n  tablepeek serve [--db <SQLite 파일>] [--port <포트>] [--demo-rows <행 수>] [--no-open]\n  tablepeek mcp [--url <URL>] [--token <토큰>] [--conn <연결 ID>]"
+        "사용법:\n  tablepeek serve [--db <SQLite 파일>] [--port <포트>] [--demo] [--demo-rows <행 수>] [--no-open]\n  tablepeek mcp [--url <URL>] [--token <토큰>] [--conn <연결 ID>]"
     );
     std::process::exit(2);
 }
@@ -32,6 +34,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         db: None,
         port: 0,
+        demo: false,
         demo_rows: DEFAULT_DEMO_ROWS,
         no_open: false,
         mcp: false,
@@ -51,7 +54,9 @@ fn parse_args() -> Args {
         match arg.as_str() {
             "--db" => args.db = it.next().map(PathBuf::from),
             "--port" => args.port = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            "--demo" => args.demo = true,
             "--demo-rows" => {
+                args.demo = true;
                 args.demo_rows = it
                     .next()
                     .and_then(|v| v.parse().ok())
@@ -98,18 +103,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = match &args.db {
-        Some(path) => Engine::open_file(path)?,
-        None => Engine::open_demo(args.demo_rows)?,
+    // The server starts with no connection unless a file or the demo is asked for.
+    let main = match &args.db {
+        Some(path) => {
+            println!("SQLite 연결: {}", path.display());
+            Some((path.display().to_string(), Engine::open_file(path)?))
+        }
+        None if args.demo => {
+            println!(
+                "데모용 인메모리 SQLite에 demo 테이블({}행)을 만들었습니다.",
+                args.demo_rows
+            );
+            Some(("데모 데이터베이스".to_string(), Engine::open_demo(args.demo_rows)?))
+        }
+        None => {
+            println!("열린 연결 없이 시작합니다. 데모 데이터가 필요하면 --demo 옵션을 주세요.");
+            None
+        }
     };
-
-    match &args.db {
-        Some(path) => println!("SQLite 연결: {}", path.display()),
-        None => println!(
-            "데모용 인메모리 SQLite에 demo 테이블({}행)을 만들었습니다.",
-            args.demo_rows
-        ),
-    }
 
     let token = format!(
         "{}{}",
@@ -125,17 +136,9 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         format!("localhost:{}", addr.port()),
     ]);
     let mut registry = Registry::new();
-    let main_label = match &args.db {
-        Some(path) => path.display().to_string(),
-        None => "데모 데이터베이스".to_string(),
-    };
-    registry.insert(Arc::new(ConnSlot::new(
-        "main".into(),
-        main_label,
-        None,
-        None,
-        engine,
-    )));
+    if let Some((label, engine)) = main {
+        registry.insert(Arc::new(ConnSlot::new("main".into(), label, None, None, engine)));
+    }
 
     let state = AppState {
         registry: Arc::new(tokio::sync::Mutex::new(registry)),

@@ -60,7 +60,7 @@ Redshift/Percona/Yugabyte/MariaDB는 현행 호환 드라이버로 접속을 시
 - `touch crates/tablepeek-server/src/lib.rs && cargo build -p tablepeek`
 - `cargo test -p tablepeek-server`
 - `TABLEPEEK_TEST_PG=1 TABLEPEEK_TEST_MYSQL=1 TABLEPEEK_TEST_COCKROACH=1 TABLEPEEK_TEST_MSSQL=1 TABLEPEEK_TEST_DOCKER=1 cargo test -p tablepeek-engine -- --test-threads=1`
-- 200000행 데모 서버 + `node web/scripts/ws-smoke.mjs <URL>`
+- 200000행 데모 서버(`tablepeek serve --demo-rows 200000`) + `node web/scripts/ws-smoke.mjs <URL>`
 - `cdp-m15.mjs` 및 연결 상태·Explain·테마·점검 CDP 시나리오
 - `tablepeek mcp` JSON-RPC initialize/tools/list/query/거부 왕복
 - `cargo fmt --all -- --check`

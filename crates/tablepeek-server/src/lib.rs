@@ -260,12 +260,15 @@ async fn slot_for(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(state.default_conn.as_ref());
-    state
-        .registry
-        .lock()
-        .await
-        .get(id)
-        .ok_or_else(|| not_found("연결을 찾을 수 없습니다"))
+    state.registry.lock().await.get(id).ok_or_else(|| {
+        // Without --db or --demo there is no default connection to fall back
+        // to (WebSocket messages without a conn name it explicitly).
+        not_found(if id == state.default_conn.as_ref() {
+            "열린 연결이 없습니다. 먼저 연결을 여세요"
+        } else {
+            "연결을 찾을 수 없습니다"
+        })
+    })
 }
 
 async fn register_slot(

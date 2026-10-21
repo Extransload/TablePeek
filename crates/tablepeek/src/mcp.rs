@@ -114,18 +114,28 @@ impl Mcp {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        // A tool's own conn wins over --conn; without either the server's
+        // default connection (from --db or --demo) is used, if it has one.
+        let conn = args
+            .get("conn")
+            .and_then(Value::as_str)
+            .or(self.conn.as_deref());
         let result = match name {
-            "tablepeek_list_connections" => self.get("/api/conns"),
+            "tablepeek_list_connections" => self.get_with_query("/api/conns", &[], None),
             "tablepeek_list_tables" => {
                 let system = args
                     .get("include_system")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                self.get_with_query("/api/schema", &[("system", if system { "1" } else { "0" })])
+                self.get_with_query(
+                    "/api/schema",
+                    &[("system", if system { "1" } else { "0" })],
+                    conn,
+                )
             }
             "tablepeek_describe_table" => {
                 let table = required_string(&args, "table")?;
-                self.get_with_query("/api/table", &[("name", table)])
+                self.get_with_query("/api/table", &[("name", table)], conn)
             }
             "tablepeek_query" => {
                 let sql = required_string(&args, "sql")?;
@@ -139,10 +149,6 @@ impl Mcp {
                     .and_then(Value::as_u64)
                     .unwrap_or(200)
                     .clamp(1, 1000);
-                let conn = args
-                    .get("conn")
-                    .and_then(Value::as_str)
-                    .or(self.conn.as_deref());
                 self.post_query(sql, max_rows as usize, conn)
             }
             other => return Err((-32602, format!("알 수 없는 도구: {other}"))),
@@ -153,17 +159,18 @@ impl Mcp {
         })
     }
 
-    fn get(&self, path: &str) -> Result<Value, String> {
-        self.get_with_query(path, &[])
-    }
-
-    fn get_with_query(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, String> {
+    fn get_with_query(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        conn: Option<&str>,
+    ) -> Result<Value, String> {
         let mut request = self
             .client
             .get(format!("{}{}", self.base, path))
             .header("x-tablepeek-token", &self.token)
             .query(query);
-        if let Some(conn) = self.conn.as_deref() {
+        if let Some(conn) = conn {
             request = request.query(&[("conn", conn)]);
         }
         parse_response(request.send())
@@ -241,6 +248,9 @@ fn contains_word(text: &str, word: &str) -> bool {
     })
 }
 
+const CONN_DESCRIPTION: &str =
+    "연결 ID (tablepeek_list_connections로 확인). 생략하면 --conn, 그다음 서버의 기본 연결";
+
 fn tools() -> Value {
     json!([
         {
@@ -254,7 +264,8 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "include_system": { "type": "boolean", "description": "시스템 테이블 포함" }
+                    "include_system": { "type": "boolean", "description": "시스템 테이블 포함" },
+                    "conn": { "type": "string", "description": CONN_DESCRIPTION }
                 },
                 "additionalProperties": false
             }
@@ -264,7 +275,10 @@ fn tools() -> Value {
             "description": "테이블의 컬럼, 인덱스, 외래 키, DDL을 반환합니다.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "table": { "type": "string" } },
+                "properties": {
+                    "table": { "type": "string" },
+                    "conn": { "type": "string", "description": CONN_DESCRIPTION }
+                },
                 "required": ["table"],
                 "additionalProperties": false
             }
@@ -276,7 +290,7 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "sql": { "type": "string" },
-                    "conn": { "type": "string" },
+                    "conn": { "type": "string", "description": CONN_DESCRIPTION },
                     "max_rows": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 }
                 },
                 "required": ["sql"],
