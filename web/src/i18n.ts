@@ -753,7 +753,6 @@ const EN: Record<string, string> = {
   "복제": "Duplicate",
   "그룹으로 이동": "Move to group",
   "그룹 없음": "No group",
-  "새 그룹…": "New group…",
   "그룹 이름": "Group name",
   "만들기": "Create",
   "그룹 이름 바꾸기": "Rename group",

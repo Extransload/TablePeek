@@ -97,7 +97,6 @@ export function HomeScreen({
   const [saved, setSaved] = useState<SavedConnection[] | null>(null);
   const [savedError, setSavedError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [plusMenu, setPlusMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; target: ListTarget | null } | null>(null);
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
@@ -315,6 +314,7 @@ export function HomeScreen({
       submenu: [
         { label: t("그룹…"), onSelect: () => setPrompt({ kind: "newGroup" }) },
         { label: t("연결…"), onSelect: () => onNewConnection(groupId === "" ? undefined : { group: groupId }) },
+        { label: t("SQLite 파일 열기…"), onSelect: onOpenFile },
         { label: t("연결 가져오기"), submenu: importItems(groupId) },
       ],
     };
@@ -414,15 +414,6 @@ export function HomeScreen({
     ];
   }
 
-  function plusItems(): ContextMenuItem[] {
-    return [
-      { label: t("새 연결…"), onSelect: () => onNewConnection() },
-      { label: t("새 그룹…"), onSelect: () => setPrompt({ kind: "newGroup" }) },
-      { label: t("SQLite 파일 열기…"), onSelect: onOpenFile },
-      { label: t("연결 가져오기"), separatorBefore: true, submenu: importItems("") },
-    ];
-  }
-
   let listArea;
   if (saved === null && !failed) {
     listArea = (
@@ -518,19 +509,6 @@ export function HomeScreen({
         </div>
         <section className="home-list">
           <div className="launcher-top">
-            <button
-              type="button"
-              className={`launcher-plus${plusMenu !== null ? " active" : ""}`}
-              title={t("새로 만들기")}
-              aria-label={t("새로 만들기")}
-              onClick={(event) => {
-                const anchor = event.currentTarget;
-                const rect = anchor.getBoundingClientRect();
-                setPlusMenu(plusMenu !== null ? null : { x: rect.left, y: rect.bottom + 4, anchor });
-              }}
-            >
-              <PlusIcon size={11} />
-            </button>
             <label className="launcher-search">
               <SearchIcon size={10} className="launcher-search-icon" />
               <input
@@ -657,15 +635,6 @@ export function HomeScreen({
           confirmLabel={t("열기")}
           onSubmit={(url) => onNewConnection({ url, group: prompt.group === "" ? undefined : prompt.group })}
           onClose={() => setPrompt(null)}
-        />
-      ) : null}
-      {plusMenu !== null ? (
-        <ContextMenu
-          x={plusMenu.x}
-          y={plusMenu.y}
-          anchor={plusMenu.anchor}
-          items={plusItems()}
-          onClose={() => setPlusMenu(null)}
         />
       ) : null}
     </div>

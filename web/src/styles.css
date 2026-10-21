@@ -7597,7 +7597,8 @@ button.error-notice-close {
   flex-direction: column;
   min-height: 0;
   padding: 24px 16px;
-  overflow: auto;
+  /* Home never scrolls as a page; a long list scrolls in its own box. */
+  overflow: hidden;
   background:
     radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%),
     var(--bg);
@@ -7611,12 +7612,28 @@ button.error-notice-close {
   flex-direction: column;
   gap: 16px;
   width: min(760px, 100%);
-  margin: auto;
+  height: 100%;
+  min-height: 0;
+  margin: 0 auto;
+  /* Anchored near the top, so the brand and actions stay put however many
+     connections there are; the list grows below them. */
+  padding-top: clamp(24px, 8vh, 88px);
+}
+
+/* Everything but the list keeps its size; the list takes what is left. */
+.home-column > * {
+  flex: none;
+}
+
+.home-column > .home-list {
+  flex: 0 1 auto;
+  min-height: 0;
 }
 
 .home-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
 }
 
@@ -7646,6 +7663,8 @@ button.home-settings:hover {
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  /* Set apart from the actions and list below. */
+  margin-bottom: 28px;
   text-align: center;
   user-select: none;
 }
@@ -7680,8 +7699,9 @@ button.home-settings:hover {
   flex-wrap: wrap;
   justify-content: center;
   gap: 6px 20px;
-  margin: 0;
-  padding: 0;
+  /* At the foot of the page, however short the list is. */
+  margin: auto 0 0;
+  padding: 12px 0 0;
   color: var(--faint);
   font-size: 11.5px;
   list-style: none;
@@ -7707,6 +7727,14 @@ button.home-settings:hover {
   .home-specs,
   .home-tips {
     display: none;
+  }
+
+  .home-intro {
+    margin-bottom: 12px;
+  }
+
+  .home-column {
+    padding-top: 8px;
   }
 }
 
@@ -7748,24 +7776,6 @@ button.launcher-action:hover {
   gap: 8px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line-soft);
-}
-
-button.launcher-plus {
-  flex: none;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  justify-content: center;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted);
-}
-
-button.launcher-plus:hover,
-button.launcher-plus.active {
-  border-color: var(--accent-line, var(--accent));
-  color: var(--ink);
 }
 
 /* The input is the box (it takes the app's input styling); the icon sits on it. */
@@ -7816,8 +7826,11 @@ button.launcher-plus.active {
 }
 
 .launcher-list {
+  flex: 0 1 auto;
   min-height: 120px;
   padding: 6px 0 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .launcher-group-head {
@@ -8062,10 +8075,13 @@ button.launcher-plus.active {
 /* First run, in the list's place */
 .launcher-welcome {
   display: flex;
+  flex: 0 1 auto;
   flex-direction: column;
   align-items: center;
   gap: 11px;
+  min-height: 0;
   padding: 18px 20px 6px;
+  overflow-y: auto;
   text-align: center;
 }
 
