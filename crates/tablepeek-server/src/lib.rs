@@ -786,6 +786,16 @@ fn store_error(message: String) -> (StatusCode, Json<ApiError>) {
     )
 }
 
+fn keyring_error(message: String) -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiError {
+            code: "keyring_error".into(),
+            message,
+        }),
+    )
+}
+
 struct ConnectError {
     status: StatusCode,
     code: &'static str,
@@ -821,15 +831,15 @@ fn stored_password_missing(kind: &str) -> ConnectError {
     let (code, message) = match kind {
         "ssh" => (
             "ssh_password_required",
-            "SSH 비밀번호를 입력해 연결하세요",
+            "저장된 SSH 비밀번호가 없습니다 — SSH 비밀번호를 입력해 연결하세요",
         ),
         "http" => (
             "http_password_required",
-            "프록시 비밀번호를 입력해 연결하세요",
+            "저장된 프록시 비밀번호가 없습니다 — 프록시 비밀번호를 입력해 연결하세요",
         ),
         _ => (
             "password_required",
-            "비밀번호를 입력해 연결하세요",
+            "저장된 비밀번호가 없습니다 — 비밀번호를 입력해 연결하세요",
         ),
     };
     ConnectError::new(StatusCode::BAD_REQUEST, code, message)
@@ -1067,13 +1077,17 @@ async fn connect(
 struct NewConnectionRequest {
     name: String,
     connect: ConnectRequest,
+    #[serde(default)]
+    persist_password: bool,
 }
 
-// A saved profile for the page; the old "kept a password" flag stays in the store only.
 fn connection_json(connection: &store::SavedConnection) -> Value {
     let mut value = serde_json::to_value(connection).unwrap_or(Value::Null);
     if let Some(object) = value.as_object_mut() {
-        object.remove("persist_password");
+        object.insert(
+            "has_password".into(),
+            Value::Bool(connection.persist_password),
+        );
     }
     value
 }
@@ -1175,8 +1189,14 @@ fn set_request_db_password(connect: &mut ConnectRequest, password: String) {
     }
 }
 
-// Shared by create and update. Passwords are never stored: the profile keeps
-// everything else, and a connect asks for them.
+fn delete_connection_passwords(id: &str) {
+    for kind in ["postgres", "cockroach", "mysql", "mssql", "ssh", "http"] {
+        store::delete_password(&store::connection_account(id, kind));
+    }
+}
+
+// Shared by create and update. On update an empty password keeps the stored
+// one (moved to the new driver's account if the driver changed).
 async fn save_connection(
     state: &AppState,
     id: &str,
@@ -1188,6 +1208,52 @@ async fn save_connection(
         return Err(bad_request("invalid_request", "이름이 필요합니다"));
     }
     validate_connect_request(&req.connect)?;
+
+    let password_account = store::connection_account(id, &req.connect.driver);
+    let ssh_account = store::connection_account(id, "ssh");
+    let http_account = store::connection_account(id, "http");
+    let fresh = previous.is_none();
+    // Every keychain write remembers what it replaced so a later failure can undo it.
+    let mut written: Vec<(String, Option<String>)> = Vec::new();
+    if req.persist_password {
+        let carried = previous
+            .filter(|old| old.persist_password && old.driver != req.connect.driver)
+            .and_then(|old| store::get_password(&store::connection_account(id, &old.driver)));
+        let db_password = request_db_password(&req.connect)
+            .map(str::to_string)
+            .or(carried);
+        let ssh_password = req
+            .connect
+            .ssh
+            .as_ref()
+            .and_then(|ssh| ssh.password.clone())
+            .filter(|password| !password.is_empty());
+        let http_password = req
+            .connect
+            .http_tunnel
+            .as_ref()
+            .and_then(|tunnel| tunnel.password.clone())
+            .filter(|password| !password.is_empty());
+        for (account, secret) in [
+            (&password_account, db_password),
+            (&ssh_account, ssh_password),
+            (&http_account, http_password),
+        ] {
+            let Some(secret) = secret else {
+                continue;
+            };
+            let replaced = if fresh {
+                None
+            } else {
+                store::get_password(account)
+            };
+            if let Err(message) = store::set_password(account, &secret) {
+                restore_secrets(&written);
+                return Err(keyring_error(message));
+            }
+            written.push((account.clone(), replaced));
+        }
+    }
 
     let mut postgres = req.connect.postgres.clone();
     let mut cockroach = req.connect.cockroach.clone();
@@ -1219,21 +1285,61 @@ async fn save_connection(
             .http_tunnel
             .as_ref()
             .map(store::SavedHttpTunnel::from_config),
-        persist_password: false,
+        persist_password: req.persist_password,
         last_used: previous.map(|old| old.last_used).unwrap_or(0),
     };
     let outcome = {
         let mut store = state.store.lock().await;
-        if previous.is_none() {
+        if fresh {
             store.add_connection(connection).map(|_| true)
         } else {
             store.update_connection(connection)
         }
     };
     match outcome {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(not_found("연결을 찾을 수 없습니다")),
-        Err(message) => Err(store_error(message)),
+        Ok(true) => {}
+        Ok(false) => {
+            restore_secrets(&written);
+            return Err(not_found("연결을 찾을 수 없습니다"));
+        }
+        Err(message) => {
+            restore_secrets(&written);
+            return Err(store_error(message));
+        }
+    }
+
+    // Drop secrets the saved profile no longer refers to. The old driver's
+    // account goes only once its password has been moved to the new account.
+    let had_secrets = previous.is_some_and(|old| old.persist_password);
+    if !req.persist_password {
+        if had_secrets {
+            delete_connection_passwords(id);
+        }
+    } else if had_secrets {
+        let moved = written.iter().any(|(account, _)| account == &password_account);
+        if let Some(old) = previous.filter(|old| old.driver != req.connect.driver) {
+            if moved {
+                store::delete_password(&store::connection_account(id, &old.driver));
+            }
+        }
+        if req.connect.ssh.is_none() {
+            store::delete_password(&ssh_account);
+        }
+        if req.connect.http_tunnel.is_none() {
+            store::delete_password(&http_account);
+        }
+    }
+    Ok(())
+}
+
+fn restore_secrets(written: &[(String, Option<String>)]) {
+    for (account, replaced) in written.iter().rev() {
+        match replaced {
+            Some(secret) => {
+                let _ = store::set_password(account, secret);
+            }
+            None => store::delete_password(account),
+        }
     }
 }
 
@@ -1278,10 +1384,13 @@ struct ExportConnectionsRequest {
     meta: HashMap<String, transfer::ExportMeta>,
     #[serde(default)]
     groups: Vec<transfer::BundleGroup>,
+    #[serde(default)]
+    include_passwords: bool,
     passphrase: String,
 }
 
-// Seals the chosen profiles into a ".tablepeek" file. No passwords: none are stored.
+// Seals the chosen profiles into a ".tablepeek" file. Passwords come from the
+// keychain only when asked for, so they never pass through the page.
 async fn connections_export(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1308,10 +1417,11 @@ async fn connections_export(
     let ExportConnectionsRequest {
         meta,
         groups,
+        include_passwords,
         passphrase,
         ..
     } = req;
-    // The key derivation blocks, so it doesn't run on the async workers.
+    // Keychain reads and the key derivation both block, so neither runs on the async workers.
     let sealed = tokio::task::spawn_blocking(move || {
         let color = |value: &str| {
             if transfer::is_hex_color(value) {
@@ -1320,13 +1430,27 @@ async fn connections_export(
                 String::new()
             }
         };
+        let mut secrets = 0;
         let connections = saved
             .iter()
             .map(|connection| {
                 let meta = meta.get(&connection.id).cloned().unwrap_or_default();
+                let with_secrets = include_passwords && connection.persist_password;
+                let carried = std::cell::Cell::new(false);
+                let connect = transfer::export_connect(connection, |kind| {
+                    let secret = with_secrets
+                        .then(|| store::get_password(&store::connection_account(&connection.id, kind)))
+                        .flatten()
+                        .filter(|secret| !secret.is_empty());
+                    carried.set(carried.get() || secret.is_some());
+                    secret
+                });
+                if carried.get() {
+                    secrets += 1;
+                }
                 transfer::BundleConnection {
                     name: connection.name.clone(),
-                    connect: transfer::export_connect(connection),
+                    connect,
                     color: color(&meta.color),
                     tags: meta.tags,
                     group: meta.group,
@@ -1344,12 +1468,13 @@ async fn connections_export(
         let plaintext = serde_json::to_vec(&transfer::Bundle { groups, connections })
             .map_err(|err| err.to_string())?;
         let file = transfer::seal(&plaintext, &passphrase, transfer::DEFAULT_KDF)?;
-        Ok::<_, String>((file, count))
+        Ok::<_, String>((file, count, secrets))
     })
     .await
     .map_err(|err| internal_error(err.to_string()))?;
-    let (file, count) = sealed.map_err(internal_error)?;
-    Ok(Json(json!({ "file": file, "count": count })))
+    let (file, count, secrets) = sealed.map_err(internal_error)?;
+    // secrets: how many profiles carried a password into the file.
+    Ok(Json(json!({ "file": file, "count": count, "secrets": secrets })))
 }
 
 #[derive(Deserialize)]
@@ -1408,23 +1533,40 @@ async fn connections_import(
     let items = transfer::prepare_import(bundle.connections, &taken, &label)
         .map_err(|message| bad_request("invalid_file", message))?;
 
-    let mut saved: Vec<String> = Vec::new();
+    let mut saved: Vec<(String, bool)> = Vec::new();
     let mut created = Vec::new();
     for item in items {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let request = NewConnectionRequest {
             name: item.name.clone(),
             connect: item.connect,
+            persist_password: item.persist_password,
         };
         if let Err(err) = save_connection(&state, &id, request, None).await {
-            // Take back what this import already saved.
-            let mut store = state.store.lock().await;
-            for id in &saved {
-                let _ = store.remove_connection(id);
+            // Take back what this import already saved; the keychain outside the store lock.
+            {
+                let mut store = state.store.lock().await;
+                for (id, _) in &saved {
+                    let _ = store.remove_connection(id);
+                }
+            }
+            for (id, persisted) in &saved {
+                if *persisted {
+                    delete_connection_passwords(id);
+                }
+            }
+            if err.1.code == "keyring_error" {
+                return Err((
+                    err.0,
+                    Json(ApiError {
+                        code: "import_keyring_error".into(),
+                        message: "파일에 든 비밀번호를 이 컴퓨터의 키체인에 저장하지 못해 아무것도 가져오지 않았습니다. 비밀번호를 빼고 내보낸 파일로 다시 가져오세요.".into(),
+                    }),
+                ));
             }
             return Err(err);
         }
-        saved.push(id.clone());
+        saved.push((id.clone(), item.persist_password));
         created.push(json!({
             "id": id,
             "name": item.name,
@@ -1451,10 +1593,12 @@ async fn connections_import(
 #[derive(Deserialize)]
 struct TestConnectionRequest {
     connect: ConnectRequest,
+    #[serde(default)]
+    saved_id: Option<String>,
 }
 
 // Opens the connection exactly like /api/connect, reports how it went, and
-// closes it again.
+// closes it again. With saved_id, blank passwords fall back to the keychain.
 async fn connections_test(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1464,7 +1608,32 @@ async fn connections_test(
         return Err(unauthorized());
     }
     validate_connect_request(&req.connect)?;
-    let connect = req.connect;
+    let mut connect = req.connect;
+    if let Some(id) = req.saved_id.as_deref() {
+        let saved = {
+            let store = state.store.lock().await;
+            store.find_connection(id).cloned()
+        };
+        if let Some(saved) = saved.filter(|saved| saved.persist_password) {
+            if request_db_password(&connect).is_none() {
+                if let Some(password) =
+                    store::get_password(&store::connection_account(id, &saved.driver))
+                {
+                    set_request_db_password(&mut connect, password);
+                }
+            }
+            if let Some(ssh) = connect.ssh.as_mut() {
+                if ssh.password.as_deref().map_or(true, str::is_empty) {
+                    ssh.password = store::get_password(&store::connection_account(id, "ssh"));
+                }
+            }
+            if let Some(tunnel) = connect.http_tunnel.as_mut() {
+                if tunnel.password.as_deref().map_or(true, str::is_empty) {
+                    tunnel.password = store::get_password(&store::connection_account(id, "http"));
+                }
+            }
+        }
+    }
     // Spawned so the probe slot is always removed, even if the client goes away mid-test.
     let task_state = state.clone();
     let probe = tokio::spawn(async move {
@@ -1505,6 +1674,7 @@ async fn connections_delete(
     if !removed {
         return Err(not_found("연결을 찾을 수 없습니다"));
     }
+    delete_connection_passwords(&id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1588,7 +1758,7 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.is_empty())
 }
 
-// Passwords come only from this request (typed for this one connect); none are stored.
+// Passwords typed for this one connect win over the keychain; nothing is stored.
 async fn connection_connect(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -1631,7 +1801,14 @@ async fn connection_connect(
         ssh: None,
         http_tunnel: None,
     };
-    if let Some(password) = non_empty(secrets.password) {
+    let db_password = non_empty(secrets.password).or_else(|| {
+        if saved.persist_password {
+            store::get_password(&store::connection_account(&id, &saved.driver))
+        } else {
+            None
+        }
+    });
+    if let Some(password) = db_password {
         set_request_db_password(&mut request, password);
     }
     let supplied_password = request_db_password(&request).is_some();
@@ -1644,7 +1821,14 @@ async fn connection_connect(
             .map(|path| !path.trim().is_empty())
             .unwrap_or(false);
         if !has_key {
-            match non_empty(secrets.ssh_password) {
+            let password = non_empty(secrets.ssh_password).or_else(|| {
+                if saved.persist_password {
+                    store::get_password(&store::connection_account(&id, "ssh"))
+                } else {
+                    None
+                }
+            });
+            match password {
                 Some(password) => ssh_config.password = Some(password),
                 None => return Err(stored_password_missing("ssh").into_response()),
             }
@@ -1656,7 +1840,13 @@ async fn connection_connect(
         .as_ref()
         .map(store::SavedHttpTunnel::to_config);
     if let Some(tunnel_config) = http_tunnel.as_mut() {
-        let password = non_empty(secrets.http_password);
+        let password = non_empty(secrets.http_password).or_else(|| {
+            if saved.persist_password {
+                store::get_password(&store::connection_account(&id, "http"))
+            } else {
+                None
+            }
+        });
         if password.is_some() {
             tunnel_config.password = password;
         } else if tunnel_config.username.is_some() {
@@ -3074,6 +3264,7 @@ mod tests {
             ids,
             meta: HashMap::new(),
             groups: Vec::new(),
+            include_passwords: false,
             passphrase: passphrase.into(),
         }
     }
@@ -3093,6 +3284,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: name.into(),
                 connect,
+                persist_password: false,
             }),
         )
         .await
@@ -3120,16 +3312,18 @@ mod tests {
             transfer::ExportMeta { color: "#22c55e".into(), tags: vec!["production".into()], group: "CiteWell".into() },
         );
         request.groups = vec![transfer::BundleGroup { name: "CiteWell".into(), color: "#f59e0b".into() }];
+        request.include_passwords = true; // nothing is in the keychain for these profiles
         let exported = connections_export(State(source.clone()), test_headers(), Json(request))
             .await
             .unwrap();
         assert_eq!(exported.0["count"], json!(2));
+        assert_eq!(exported.0["secrets"], json!(0), "asked for passwords, but none was stored");
         let file = exported.0["file"].as_str().unwrap().to_string();
         for hidden in ["분석 DB", "db.internal", "bastion", "CiteWell", "password"] {
             assert!(!file.contains(hidden), "{hidden} visible in the file");
         }
         let inside: Value = serde_json::from_slice(&transfer::open(&file, "correct horse").unwrap()).unwrap();
-        assert!(!inside.to_string().contains("password"), "passwords are never stored, so never exported");
+        assert!(!inside.to_string().contains("password"), "no secret was stored, so none is exported");
 
         let target = test_state(&temp_dir("import-target"));
         let imported = connections_import(State(target.clone()), test_headers(), Json(import_request(&file, "correct horse")))
@@ -3222,7 +3416,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connections_routes_crud() {
+    async fn connections_routes_crud_without_keyring() {
         let dir = temp_dir("connections-crud");
         let state = test_state(&dir);
         let headers = test_headers();
@@ -3233,6 +3427,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "테스트 연결".into(),
                 connect: test_connect_request("postgres"),
+                persist_password: false,
             }),
         )
         .await
@@ -3247,8 +3442,8 @@ mod tests {
         assert_eq!(connections.len(), 1);
         assert_eq!(connections[0]["name"], json!("테스트 연결"));
         assert_eq!(connections[0]["driver"], json!("postgres"));
-        assert!(connections[0].get("persist_password").is_none(), "nothing about passwords in the listing");
-        assert!(connections[0].get("has_password").is_none());
+        assert_eq!(connections[0]["persist_password"], json!(false));
+        assert_eq!(connections[0]["has_password"], json!(false));
         assert!(connections[0]["postgres"].get("password").is_none());
         assert!(!listed.0.to_string().contains("tablepeek_test_pw"));
 
@@ -3282,7 +3477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connections_update_replaces_profile() {
+    async fn connections_update_replaces_profile_without_keyring() {
         let dir = temp_dir("connections-update");
         let state = test_state(&dir);
         let headers = test_headers();
@@ -3293,6 +3488,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "원래 이름".into(),
                 connect: test_connect_request("postgres"),
+                persist_password: false,
             }),
         )
         .await
@@ -3316,6 +3512,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "  바뀐 이름 ".into(),
                 connect: edited,
+                persist_password: false,
             }),
         )
         .await
@@ -3342,6 +3539,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "x".into(),
                 connect: test_connect_request("postgres"),
+                persist_password: false,
             }),
         )
         .await
@@ -3355,6 +3553,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "   ".into(),
                 connect: test_connect_request("postgres"),
+                persist_password: false,
             }),
         )
         .await
@@ -3381,6 +3580,7 @@ mod tests {
         let request = || NewConnectionRequest {
             name: "x".into(),
             connect: test_connect_request("postgres"),
+            persist_password: false,
         };
 
         let err = connections_update(
@@ -3398,6 +3598,7 @@ mod tests {
             HeaderMap::new(),
             Json(TestConnectionRequest {
                 connect: test_connect_request("postgres"),
+                saved_id: None,
             }),
         )
         .await
@@ -3409,6 +3610,7 @@ mod tests {
             test_headers(),
             Json(TestConnectionRequest {
                 connect: test_connect_request("oracle"),
+                saved_id: None,
             }),
         )
         .await
@@ -3426,6 +3628,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "pasted".into(),
                 connect: pasted,
+                persist_password: false,
             }),
         )
         .await
@@ -3452,6 +3655,7 @@ mod tests {
                 Json(NewConnectionRequest {
                     name: name.into(),
                     connect: test_connect_request("postgres"),
+                    persist_password: false,
                 }),
             )
             .await
@@ -3465,6 +3669,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "first, renamed".into(),
                 connect: test_connect_request("postgres"),
+                persist_password: false,
             }),
         )
         .await
@@ -3482,7 +3687,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connections_routes_crud_mysql() {
+    async fn connections_routes_crud_mysql_without_keyring() {
         let dir = temp_dir("connections-crud-mysql");
         let state = test_state(&dir);
         let headers = test_headers();
@@ -3493,6 +3698,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "테스트 MySQL".into(),
                 connect: test_mysql_connect_request(),
+                persist_password: false,
             }),
         )
         .await
@@ -3539,7 +3745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connections_routes_crud_cockroach() {
+    async fn connections_routes_crud_cockroach_without_keyring() {
         let dir = temp_dir("connections-crud-cockroach");
         let state = test_state(&dir);
         let headers = test_headers();
@@ -3550,6 +3756,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "테스트 CockroachDB".into(),
                 connect: test_cockroach_connect_request(),
+                persist_password: false,
             }),
         )
         .await
@@ -3585,7 +3792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connections_routes_crud_mssql() {
+    async fn connections_routes_crud_mssql_without_keyring() {
         let dir = temp_dir("connections-crud-mssql");
         let state = test_state(&dir);
         let headers = test_headers();
@@ -3596,6 +3803,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "테스트 SQL Server".into(),
                 connect: test_mssql_connect_request(),
+                persist_password: false,
             }),
         )
         .await
@@ -3649,6 +3857,7 @@ mod tests {
             Json(NewConnectionRequest {
                 name: "비밀번호 미저장".into(),
                 connect: request,
+                persist_password: false,
             }),
         )
         .await
@@ -3662,7 +3871,7 @@ mod tests {
         assert_eq!(err.1.code, "password_required");
         assert_eq!(
             err.1.message,
-            "비밀번호를 입력해 연결하세요"
+            "저장된 비밀번호가 없습니다 — 비밀번호를 입력해 연결하세요"
         );
 
         std::fs::remove_dir_all(&dir).unwrap();

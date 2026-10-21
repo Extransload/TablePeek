@@ -146,7 +146,7 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         token: token.clone().into(),
         demo_rows: args.demo_rows,
         allowed_hosts,
-        store: Arc::new(tokio::sync::Mutex::new(load_store())),
+        store: Arc::new(tokio::sync::Mutex::new(StoreFile::load_home())),
     };
 
     let url = format!("http://127.0.0.1:{}/?token={}", addr.port(), token);
@@ -177,33 +177,4 @@ fn open_browser(url: &str) {
     {
         let _ = ProcessCommand::new("xdg-open").arg(url).spawn();
     }
-}
-
-// TablePeek no longer keeps passwords: what an older version left in the
-// keychain is removed on the first start (each lookup gives up after a few
-// seconds, so a keychain waiting on a dialog can't hold the server).
-fn load_store() -> StoreFile {
-    use tablepeek_server::store;
-    let mut store = StoreFile::load_home();
-    let flagged = store
-        .data()
-        .connections
-        .iter()
-        .filter(|connection| connection.persist_password)
-        .count();
-    if flagged > 0 {
-        println!("이전 버전이 키체인에 저장한 비밀번호를 지우는 중입니다 (연결 {flagged}개)…");
-    }
-    let retry = "다음에 시작할 때 다시 시도합니다";
-    match store.forget_saved_passwords(store::delete_password) {
-        Ok(0) => {}
-        Ok(count) => println!("저장돼 있던 비밀번호를 키체인에서 지웠습니다 (연결 {count}개). 이제 연결할 때마다 입력합니다."),
-        Err(message) => eprintln!("저장돼 있던 비밀번호를 정리하지 못했습니다: {message} ({retry})"),
-    }
-    match store.sweep_keychain_once(store::first_keychain_account, store::delete_keychain_item) {
-        Ok(0) => {}
-        Ok(count) => println!("키체인에 남아 있던 TablePeek 비밀번호 {count}개를 더 지웠습니다."),
-        Err(message) => eprintln!("키체인에 남은 비밀번호를 정리하지 못했습니다: {message} ({retry})"),
-    }
-    store
 }

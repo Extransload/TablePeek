@@ -112,6 +112,7 @@ import { IS_MAC, actionForEvent, shortcutHint, type KeyAction } from "./shortcut
 import type { SortIndicator } from "./grid/CanvasGrid";
 import { subscribePendingChanges, type WindowedRowSource } from "./grid/windowSource";
 import {
+  missingSecretOf,
   store,
   type ConnSummary,
   type EngineMeta,
@@ -2116,8 +2117,9 @@ export default function App() {
     }
   }
 
-  // "asking": the connection dialog now asks for the password. None is stored, so
-  // it asks before any attempt: a try without one only logs a failed login.
+  // "asking": the connection dialog now asks for a password. A profile that keeps
+  // its password connects at once; one that doesn't asks first, since a try
+  // without the password only logs a failed login.
   async function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
     const existing = conns.find((conn) => conn.saved_id === id);
     if (existing !== undefined) {
@@ -2130,8 +2132,24 @@ export default function App() {
         store.setError(t("연결을 찾을 수 없습니다"));
         return "failed";
       }
-      openConnectionEditor(saved, t("비밀번호를 입력해 연결하세요 (없으면 비워 두세요)"), "db");
-      return "asking";
+      if (!saved.has_password) {
+        openConnectionEditor(saved, t("비밀번호를 입력해 연결하세요 (없으면 비워 두세요)"), "db");
+        return "asking";
+      }
+      try {
+        const live = await store.connectSaved(id);
+        await afterOpen(live);
+        return "entered";
+      } catch (err) {
+        // The keychain had nothing for it after all: ask in the dialog instead of failing.
+        const missing = missingSecretOf(err);
+        if (missing !== null) {
+          openConnectionEditor(saved, t(errorOf(err, t("비밀번호를 입력하세요"))), missing);
+          return "asking";
+        }
+        store.setError(errorOf(err, "연결에 실패했습니다"));
+        return "failed";
+      }
     } catch (err) {
       store.setError(errorOf(err, t("저장된 연결을 불러오지 못했습니다")));
       return "failed";

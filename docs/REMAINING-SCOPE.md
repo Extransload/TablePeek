@@ -18,7 +18,7 @@
 | MySQL 테이블 옵션 | collation·ROW_FORMAT·COMMENT preview/DDL 일치 CDP 검증 |
 | PostgreSQL 오류 상세 | message/detail/hint를 사용자 메시지에 포함, API 검증 |
 | MariaDB/Percona/Yugabyte/Redshift 표시 | 버전 문자열 기반 호환 모드 카드 |
-| 비밀번호 저장 제거 | 비밀번호는 저장하지 않고 연결할 때마다 입력. 이전 버전이 키체인에 남긴 항목은 첫 실행 때 한 번 정리(`forget_saved_passwords`, `sweep_keychain_once`). 단위 테스트로 고정 |
+| keyring 왕복 | macOS `security` 비대화형 경로로 저장·조회·삭제 왕복 검증. 전용 ignored 테스트 통과 |
 | Quick Look·Quick Edit 동작 | 셀 가운데 클릭·⌘Enter Quick Look, 사이드바 가운데/⌘클릭 새 탭, ⌥클릭 Quick Edit 메뉴. CDP 확인 |
 | 디자인 시스템 | 입력·체크박스·포커스·모달 공통 토큰, 모션, `prefers-reduced-motion` 적용. 흰 체크박스 테두리 제거 |
 | MCP 서버 | `tablepeek mcp` stdio 서버, 연결·스키마·읽기 전용 쿼리 도구. 실제 JSON-RPC 왕복 확인 |
@@ -33,9 +33,9 @@ Quick Look의 인코딩/HEX 탭은 현재 표시 값의 UTF-8 바이트를 선�
 
 `IoError::Tls`, `NoClientSslFlagFromServer`, 서버 코드 2026/3159, TLS·SSL·certificate 문자열을 포함한 `Other` 오류에만 평문 재시도를 허용한다. 인증 실패(1045)와 DB 없음(1049)은 폴백하지 않는다. 단위 테스트로 고정했다.
 
-### 키체인 — 저장 기능 제거, 정리만 남음
+### 키체인 — 검증 완료
 
-비밀번호는 더 이상 저장하지 않는다. 첫 실행 때 이전 버전이 남긴 항목을 지운다: 저장 표시가 있는 연결의 계정 6종을 지우고(`store::tests::forget_saved_passwords_clears_each_profile_once`), macOS에서는 `tablepeek`·`wrendb`·`prodb` 서비스 아래 TablePeek 계정(`conn:`·`test:`)을 한 번 쓸어 지운다(`store::tests::sweep_keychain_once_removes_only_tablepeek_accounts`). `security` 호출은 5초 제한이 있다.
+macOS `security` 비대화형 경로로 저장·조회·삭제 왕복을 확인했다(`store::tests::macos_keyring_roundtrip`, ignored). CI에서는 실행하지 않는다.
 
 ### MCP와 Plugin — MCP 구현, Plugin 보류
 

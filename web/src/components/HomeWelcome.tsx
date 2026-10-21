@@ -56,7 +56,7 @@ export function HomeWelcome({ onNewConnection, onOpenFile, onImportFile }: HomeW
         </button>
       </div>
       <p className="launcher-welcome-note">
-        {t("연결 정보는 이 컴퓨터(~/.tablepeek)에만 저장됩니다. 비밀번호는 저장하지 않고 연결할 때마다 입력합니다.")}
+        {t("연결 정보는 이 컴퓨터(~/.tablepeek)에만 저장됩니다. 비밀번호는 OS 키체인에 보관되며, 연결마다 ‘매번 입력’으로 바꿀 수 있습니다.")}
       </p>
       <p className="launcher-welcome-note">{t("데모 데이터로 먼저 둘러보려면 make run DEMO=1 로 실행하세요.")}</p>
     </div>
