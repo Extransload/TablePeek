@@ -462,7 +462,17 @@ export function HomeScreen({
   }
 
   return (
-    <div className="home">
+    <div
+      className="home"
+      onContextMenu={(event) => {
+        // Anywhere on the page (fields aside) offers what the list's empty space does.
+        if ((event.target as HTMLElement).closest("input, textarea")) {
+          return;
+        }
+        event.preventDefault();
+        setMenu({ x: event.clientX, y: event.clientY, target: null });
+      }}
+    >
       <button
         type="button"
         className="icon-button home-settings"
@@ -472,44 +482,41 @@ export function HomeScreen({
       >
         <SettingsIcon size={14} />
       </button>
-      {/* The welcome page the start window floats on. */}
-      <div className="home-intro">
-        <div className="home-word" aria-hidden="true">
-          Table<span className="brand-word-peek">Peek</span>
-        </div>
-        <p className="home-tagline">{t("빠르고 정확한 전문가용 데이터베이스 클라이언트")}</p>
-        <p className="home-specs">{t("Rust 엔진 · Arrow 스트리밍 · 캔버스 그리드")}</p>
-      </div>
-      {appError !== null && appError !== savedError ? (
-        <div className="home-notice">
-          <ErrorNotice message={appError} onClose={onDismissAppError} />
-        </div>
-      ) : null}
-      <div className="launcher">
-        {/* The brand sits on the welcome page above; this side holds the actions only. */}
-        <aside className="launcher-side">
-          <div className="launcher-actions">
-            <button type="button" className="launcher-action" onClick={() => onNewConnection()}>
-              <span className="launcher-action-icon" aria-hidden="true">
-                <PlusIcon size={11} />
-              </span>
-              {t("새 연결 만들기…")}
-            </button>
-            <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("backup")}>
-              <span className="launcher-action-icon" aria-hidden="true">
-                <DownloadIcon size={11} />
-              </span>
-              {t("데이터베이스 백업…")}
-            </button>
-            <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("restore")}>
-              <span className="launcher-action-icon" aria-hidden="true">
-                <UploadIcon size={11} />
-              </span>
-              {t("데이터베이스 복원…")}
-            </button>
+      {/* The welcome page: one column of intro, actions, search, the list, and tips. */}
+      <div className="home-column">
+        <div className="home-intro">
+          <div className="home-word" aria-hidden="true">
+            Table<span className="brand-word-peek">Peek</span>
           </div>
-        </aside>
-        <section className="launcher-main">
+          <p className="home-tagline">{t("빠르고 정확한 전문가용 데이터베이스 클라이언트")}</p>
+          <p className="home-specs">{t("Rust 엔진 · Arrow 스트리밍 · 캔버스 그리드")}</p>
+        </div>
+        {appError !== null && appError !== savedError ? (
+          <div className="home-notice">
+            <ErrorNotice message={appError} onClose={onDismissAppError} />
+          </div>
+        ) : null}
+        <div className="home-actions">
+          <button type="button" className="launcher-action" onClick={() => onNewConnection()}>
+            <span className="launcher-action-icon" aria-hidden="true">
+              <PlusIcon size={11} />
+            </span>
+            {t("새 연결 만들기…")}
+          </button>
+          <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("backup")}>
+            <span className="launcher-action-icon" aria-hidden="true">
+              <DownloadIcon size={11} />
+            </span>
+            {t("데이터베이스 백업…")}
+          </button>
+          <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("restore")}>
+            <span className="launcher-action-icon" aria-hidden="true">
+              <UploadIcon size={11} />
+            </span>
+            {t("데이터베이스 복원…")}
+          </button>
+        </div>
+        <section className="home-list">
           <div className="launcher-top">
             <button
               type="button"
@@ -571,23 +578,23 @@ export function HomeScreen({
           ) : null}
           {listArea}
         </section>
-      </div>
-      <ul className="home-tips">
-        {paletteHint !== "" ? (
+        <ul className="home-tips">
+          {paletteHint !== "" ? (
+            <li>
+              <kbd>{paletteHint}</kbd>
+              {t("명령 팔레트")}
+            </li>
+          ) : null}
           <li>
-            <kbd>{paletteHint}</kbd>
-            {t("명령 팔레트")}
+            <kbd>{t("오른쪽 클릭")}</kbd>
+            {t("그룹·가져오기·내보내기")}
           </li>
-        ) : null}
-        <li>
-          <kbd>{t("오른쪽 클릭")}</kbd>
-          {t("그룹·가져오기·내보내기")}
-        </li>
-        <li>
-          <kbd>{t("끌어 놓기")}</kbd>
-          {t("그룹으로 옮기기")}
-        </li>
-      </ul>
+          <li>
+            <kbd>{t("끌어 놓기")}</kbd>
+            {t("그룹으로 옮기기")}
+          </li>
+        </ul>
+      </div>
       <input
         ref={fileRef}
         type="file"
