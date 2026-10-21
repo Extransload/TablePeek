@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseExplainPlan, type PlanNode } from "../explainPlan";
+import { t } from "../i18n";
 import type { GridResult } from "../store";
 
 interface ExplainPlanPanelProps {
@@ -41,12 +42,12 @@ function PlanNodeView({
           ) : null}
           {node.rows !== undefined ? (
             <span className="plan-metric">
-              예상 {node.rows.toLocaleString()}행
+              {t("예상 {count}행", { count: node.rows.toLocaleString() })}
             </span>
           ) : null}
           {node.actualRows !== undefined ? (
             <span className="plan-metric actual">
-              실제 {node.actualRows.toLocaleString()}행
+              {t("실제 {count}행", { count: node.actualRows.toLocaleString() })}
               {node.actualMs !== undefined
                 ? ` · ${node.actualMs.toFixed(2)}ms`
                 : ""}
@@ -54,7 +55,7 @@ function PlanNodeView({
           ) : null}
         </div>
         {pct > 0 ? (
-          <div className="plan-bar" title={`상대 비용 ${pct.toFixed(0)}%`}>
+          <div className="plan-bar" title={t("상대 비용 {percent}%", { percent: pct.toFixed(0) })}>
             <span style={{ width: `${pct}%` }} />
           </div>
         ) : null}
@@ -102,7 +103,7 @@ export function ExplainPlanPanel({ result, kind }: ExplainPlanPanelProps) {
       } catch (err) {
         if (alive) {
           setError(
-            err instanceof Error ? err.message : "실행 계획을 읽지 못했습니다",
+            err instanceof Error ? err.message : t("실행 계획을 읽지 못했습니다"),
           );
         }
       }
@@ -129,12 +130,12 @@ export function ExplainPlanPanel({ result, kind }: ExplainPlanPanelProps) {
     return <div className="plan-empty">{error}</div>;
   }
   if (rows === null) {
-    return <div className="plan-empty">실행 계획을 분석하는 중…</div>;
+    return <div className="plan-empty">{t("실행 계획을 분석하는 중…")}</div>;
   }
   if (plan === null) {
     return (
       <div className="plan-empty">
-        이 실행 계획 형식은 시각화할 수 없습니다. 그리드에서 원본을 확인하세요.
+        {t("이 실행 계획 형식은 시각화할 수 없습니다. 그리드에서 원본을 확인하세요.")}
       </div>
     );
   }
@@ -143,13 +144,13 @@ export function ExplainPlanPanel({ result, kind }: ExplainPlanPanelProps) {
     <div className="plan-panel">
       <div className="plan-head">
         <div>
-          <div className="plan-title">실행 계획</div>
+          <div className="plan-title">{t("실행 계획")}</div>
           <div className="plan-engine">{plan.engine}</div>
         </div>
         <div className="plan-summary">
-          {plan.costLabel ? <span>총 비용 {plan.costLabel}</span> : null}
-          {plan.rowsLabel ? <span>예상 {plan.rowsLabel}행</span> : null}
-          {plan.actualLabel ? <span>실제 {plan.actualLabel}</span> : null}
+          {plan.costLabel ? <span>{t("총 비용 {cost}", { cost: plan.costLabel })}</span> : null}
+          {plan.rowsLabel ? <span>{t("예상 {count}행", { count: plan.rowsLabel })}</span> : null}
+          {plan.actualLabel ? <span>{t("실제 {value}", { value: plan.actualLabel })}</span> : null}
         </div>
         <span className="spacer" />
         {plan.raw ? (
@@ -158,7 +159,7 @@ export function ExplainPlanPanel({ result, kind }: ExplainPlanPanelProps) {
             className="icon-text-button"
             onClick={() => setRawOpen((v) => !v)}
           >
-            {rawOpen ? "원본 숨기기" : "원본 JSON"}
+            {rawOpen ? t("원본 숨기기") : t("원본 JSON")}
           </button>
         ) : null}
       </div>

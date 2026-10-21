@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatBytes, formatRowEstimate } from "../format";
+import { t } from "../i18n";
 import { store, type EngineMeta, type TableDetail, type TableSchema } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon, SearchIcon } from "./icons";
@@ -88,7 +89,7 @@ export function OverviewPanel({
       }
       setDetails(next);
     } catch (err) {
-      setError(errorOf(err, "테이블 목록을 불러오지 못했습니다"));
+      setError(errorOf(err, t("테이블 목록을 불러오지 못했습니다")));
     } finally {
       setLoading(false);
     }
@@ -126,13 +127,15 @@ export function OverviewPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <span className="panel-title">테이블 개요</span>
-        <span className="panel-stat">{`테이블 ${schemas === null ? "…" : schemas.length}개`}</span>
-        <span className="panel-stat">{`컬럼 ${totalColumns}개`}</span>
+        <span className="panel-title">{t("테이블 개요")}</span>
+        <span className="panel-stat">
+          {t("테이블 {count}개", { count: schemas === null ? "…" : schemas.length })}
+        </span>
+        <span className="panel-stat">{t("컬럼 {count}개", { count: totalColumns })}</span>
         <span className="spacer" />
         {loading ? (
               <span className="panel-dim">
-                <Spinner size={10} /> 불러오는 중…
+                <Spinner size={10} /> {t("불러오는 중…")}
               </span>
             ) : null}
         <button
@@ -140,17 +143,17 @@ export function OverviewPanel({
           className="icon-text-button"
           disabled={loading}
           onClick={() => setNonce((value) => value + 1)}
-          title="개요 새로고침"
+          title={t("개요 새로고침")}
         >
           <RefreshIcon size={11} />
-          새로고침
+          {t("새로고침")}
         </button>
       </div>
       <div className="schema-search overview-search">
         <SearchIcon size={11} className="schema-search-icon" />
         <input
           value={search}
-          placeholder="테이블 이름 검색"
+          placeholder={t("테이블 이름 검색")}
           spellCheck={false}
           onChange={(event) => setSearch(event.target.value)}
         />
@@ -158,19 +161,19 @@ export function OverviewPanel({
       <div className="panel-body">
         {error ? <ErrorNotice message={error} /> : null}
         {schemas === null ? (
-          error ? null : <div className="panel-empty">불러오는 중…</div>
+          error ? null : <div className="panel-empty">{t("불러오는 중…")}</div>
         ) : rows.length === 0 ? (
           <div className="panel-empty-inline">
-            {search.trim() === "" ? "테이블이 없습니다" : "검색 결과가 없습니다"}
+            {search.trim() === "" ? t("테이블이 없습니다") : t("검색 결과가 없습니다")}
           </div>
         ) : (
           <table className="panel-table overview-table">
             <thead>
               <tr>
-                <th>이름</th>
-                <th>컬럼</th>
-                <th>행 수</th>
-                <th>크기</th>
+                <th>{t("이름")}</th>
+                <th>{t("컬럼")}</th>
+                <th>{t("행 수")}</th>
+                <th>{t("크기")}</th>
               </tr>
             </thead>
             <tbody>
@@ -180,7 +183,7 @@ export function OverviewPanel({
                     <button
                       type="button"
                       className="link-button mono"
-                      title="데이터 열기"
+                      title={t("데이터 열기")}
                       onClick={() => onOpenData(row.name)}
                       onDoubleClick={(event) => {
                         event.preventDefault();
@@ -205,7 +208,9 @@ export function OverviewPanel({
           </table>
         )}
         {schemas !== null && schemas.length > DETAIL_LIMIT ? (
-          <div className="panel-empty-inline">{`행 수·크기는 상위 ${DETAIL_LIMIT}개 테이블만 표시합니다`}</div>
+          <div className="panel-empty-inline">
+            {t("행 수·크기는 상위 {count}개 테이블만 표시합니다", { count: DETAIL_LIMIT })}
+          </div>
         ) : null}
       </div>
     </div>

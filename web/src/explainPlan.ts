@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export interface PlanNode {
   label: string;
   subtitle?: string;
@@ -131,7 +133,7 @@ function mysqlTable(table: Record<string, unknown>): PlanNode {
     );
   }
   return {
-    label: `테이블 ${text(table.table_name) ?? "?"}`,
+    label: t("테이블 {name}", { name: text(table.table_name) ?? "?" }),
     subtitle: [
       text(table.access_type),
       text(table.key) ? `key ${text(table.key)}` : null,
@@ -194,8 +196,8 @@ function mysqlWalk(value: Record<string, unknown>, path: string): PlanNode[] {
       nodes.push(
         groupNode(
           selectId !== undefined
-            ? `쿼리 블록 #${String(selectId)}`
-            : "쿼리 블록",
+            ? t("쿼리 블록 #{id}", { id: String(selectId) })
+            : t("쿼리 블록"),
           record,
           path,
         ),
@@ -246,7 +248,7 @@ function parsePostgres(rows: unknown[][]): ParsedPlan | null {
     rowsLabel: node.rows?.toLocaleString(),
     actualLabel:
       node.actualRows !== undefined
-        ? `${node.actualRows.toLocaleString()}행${node.actualMs !== undefined ? ` · ${node.actualMs.toFixed(2)}ms` : ""}`
+        ? `${t("{count}행", { count: node.actualRows.toLocaleString() })}${node.actualMs !== undefined ? ` · ${node.actualMs.toFixed(2)}ms` : ""}`
         : undefined,
     raw,
   };
@@ -296,7 +298,7 @@ function parseSqlite(columns: string[], rows: unknown[][]): ParsedPlan | null {
   for (const row of rows) {
     const id = idIndex >= 0 ? String(row[idIndex] ?? "") : String(byId.size);
     const parent = parentIndex >= 0 ? String(row[parentIndex] ?? "") : "0";
-    const detail = text(row[detailIndex]) ?? "(상세 없음)";
+    const detail = text(row[detailIndex]) ?? t("(상세 없음)");
     const node: PlanNode = { label: detail, children: [] };
     byId.set(id, node);
     parents.set(id, parent);

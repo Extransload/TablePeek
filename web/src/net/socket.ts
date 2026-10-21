@@ -1,5 +1,6 @@
 import { tableFromIPC } from "apache-arrow";
 import { WindowedRowSource } from "../grid/windowSource";
+import { t } from "../i18n";
 
 export type SocketStatus = "connecting" | "open" | "closed";
 
@@ -271,7 +272,7 @@ export class TablePeekSocket {
         }
         failed = true;
         this.connectPromise = null;
-        reject(new TablePeekSocketError(CONNECT_ERROR, false));
+        reject(new TablePeekSocketError(t(CONNECT_ERROR), false));
       };
       ws.onopen = () => {
         if (this.ws !== ws) {
@@ -295,7 +296,7 @@ export class TablePeekSocket {
           this.ws = null;
           this.connectPromise = null;
           this.setStatus("closed");
-          this.failPending(new TablePeekSocketError(CLOSED_ERROR, false));
+          this.failPending(new TablePeekSocketError(t(CLOSED_ERROR), false));
         }
         failConnect();
       };
@@ -312,7 +313,7 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
     }
     this.cancelPending(conn);
     const queryId = crypto.randomUUID();
@@ -358,19 +359,19 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
     }
     const key = this.windowKey(conn, id, offset);
     const existing = this.windowWaiters.get(key);
     if (existing) {
       this.windowWaiters.delete(key);
       clearTimeout(existing.timer);
-      existing.reject(new TablePeekSocketError(CANCELLED_ERROR, true));
+      existing.reject(new TablePeekSocketError(t(CANCELLED_ERROR), true));
     }
     return new Promise<unknown[][]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.windowWaiters.delete(key);
-        reject(new TablePeekSocketError(FETCH_TIMEOUT_ERROR, false));
+        reject(new TablePeekSocketError(t(FETCH_TIMEOUT_ERROR), false));
       }, FETCH_TIMEOUT_MS);
       this.windowWaiters.set(key, { id, conn, timer, resolve, reject });
       ws.send(JSON.stringify({ type: "fetch", conn, id, offset, limit }));
@@ -388,10 +389,10 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
     }
     if (this.editWaiters.has(conn)) {
-      throw new TablePeekSocketError("이전 수정 요청이 아직 완료되지 않았습니다", false);
+      throw new TablePeekSocketError(t("이전 수정 요청이 아직 완료되지 않았습니다"), false);
     }
     const result = new Promise<EditResult>((resolve, reject) => {
       this.editWaiters.set(conn, { conn, resolve, reject });
@@ -440,7 +441,7 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
     }
     const id = crypto.randomUUID();
     const promise = new Promise<RowChange>((resolve, reject) => {
@@ -460,10 +461,10 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(CLOSED_ERROR, false);
+      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
     }
     if (this.txWaiters.has(conn)) {
-      throw new TablePeekSocketError("이전 트랜잭션 요청이 아직 완료되지 않았습니다", false);
+      throw new TablePeekSocketError(t("이전 트랜잭션 요청이 아직 완료되지 않았습니다"), false);
     }
     const expected: TxMessage["state"] =
       action === "begin" ? "began" : action === "commit" ? "committed" : "rolledback";
@@ -634,7 +635,10 @@ export class TablePeekSocket {
         if (target.expected === message.state) {
           target.resolve();
         } else {
-          target.reject(new TablePeekSocketError(`예상하지 못한 트랜잭션 상태: ${message.state}`, false));
+          target.reject(new TablePeekSocketError(
+            t("예상하지 못한 트랜잭션 상태: {state}", { state: message.state }),
+            false,
+          ));
         }
       }
       if (message.invalidate === true) {
@@ -668,7 +672,7 @@ export class TablePeekSocket {
   }
 
   private cancelPending(conn: string): void {
-    const error = new TablePeekSocketError(CANCELLED_ERROR, true);
+    const error = new TablePeekSocketError(t(CANCELLED_ERROR), true);
     for (const [id, waiter] of this.metaWaiters) {
       if (waiter.conn === conn) {
         this.metaWaiters.delete(id);

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { TableDetail } from "./store";
 
 export interface ColumnDraft {
@@ -141,40 +142,40 @@ export function validateDraft(draft: StructureDraft): string[] {
   for (const column of draft.columns) {
     const name = column.name.trim();
     if (name === "") {
-      errors.push("컬럼 이름이 비어 있습니다");
+      errors.push(t("컬럼 이름이 비어 있습니다"));
       continue;
     }
     if (names.has(name)) {
-      errors.push(`컬럼 이름이 중복됩니다: ${name}`);
+      errors.push(t("컬럼 이름이 중복됩니다: {name}", { name }));
     }
     names.add(name);
     if (column.type.trim() === "") {
-      errors.push(`컬럼 타입이 비어 있습니다: ${name}`);
+      errors.push(t("컬럼 타입이 비어 있습니다: {name}", { name }));
     }
   }
   if (draft.columns.length === 0) {
-    errors.push("컬럼이 하나 이상 필요합니다");
+    errors.push(t("컬럼이 하나 이상 필요합니다"));
   }
   for (const index of draft.indexes) {
     if (index.name.trim() === "") {
-      errors.push("인덱스 이름이 비어 있습니다");
+      errors.push(t("인덱스 이름이 비어 있습니다"));
     }
     if (splitList(index.columns).length === 0) {
       errors.push(
-        `인덱스 컬럼이 비어 있습니다: ${index.name || "(이름 없음)"}`,
+        t("인덱스 컬럼이 비어 있습니다: {name}", { name: index.name || t("(이름 없음)") }),
       );
     }
   }
   const indexNames = new Set<string>();
   for (const index of draft.indexes) {
     if (indexNames.has(index.name)) {
-      errors.push(`인덱스 이름이 중복됩니다: ${index.name}`);
+      errors.push(t("인덱스 이름이 중복됩니다: {name}", { name: index.name }));
     }
     indexNames.add(index.name);
   }
   for (const fk of draft.foreignKeys) {
     if (splitList(fk.columns).length === 0 || fk.refTable.trim() === "") {
-      errors.push(`외래 키 정의가 불완전합니다: ${fk.name || "(이름 없음)"}`);
+      errors.push(t("외래 키 정의가 불완전합니다: {name}", { name: fk.name || t("(이름 없음)") }));
     }
   }
   return errors;
@@ -280,7 +281,7 @@ export function diffStructure(
     for (const column of next.columns) {
       if (column.orig === null && column.notNull && column.def.trim() === "") {
         errors.push(
-          `SQLite는 기본값 없는 NOT NULL 컬럼을 추가할 수 없습니다: ${column.name}`,
+          t("SQLite는 기본값 없는 NOT NULL 컬럼을 추가할 수 없습니다: {name}", { name: column.name }),
         );
       }
     }
@@ -318,7 +319,7 @@ export function diffStructure(
     const fkChanged = sig(orig.foreignKeys) !== sig(next.foreignKeys);
     const indexChanged = sig(orig.indexes) !== sig(next.indexes);
     if (fkChanged) {
-      errors.push("SQLite에서는 이 편집기로 외래 키를 변경할 수 없습니다");
+      errors.push(t("SQLite에서는 이 편집기로 외래 키를 변경할 수 없습니다"));
     }
     if (needsRebuild) {
       return {
@@ -440,7 +441,7 @@ export function diffStructure(
     }
     if (kind === "mssql") {
       if (defChanged) {
-        errors.push(`MSSQL은 기본값 변경을 지원하지 않습니다: ${column.name}`);
+        errors.push(t("MSSQL은 기본값 변경을 지원하지 않습니다: {name}", { name: column.name }));
         continue;
       }
       statements.push(
@@ -492,7 +493,7 @@ export function diffStructure(
         );
       }
     } else {
-      errors.push("이 엔진은 기본 키 변경을 지원하지 않습니다");
+      errors.push(t("이 엔진은 기본 키 변경을 지원하지 않습니다"));
     }
   }
 

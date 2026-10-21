@@ -101,7 +101,17 @@ pub struct ForeignKeyInfo {
 pub struct TableDetail {
     pub name: String,
     pub row_count_estimate: Option<i64>,
+    /// 전체 크기 (데이터 + 인덱스)
     pub size_bytes: Option<i64>,
+    /// 데이터 크기 (힙/클러스터드 + TOAST/LOB, 인덱스 제외)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_bytes: Option<i64>,
+    /// 인덱스 크기
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_bytes: Option<i64>,
+    /// 테이블 주석 (비어 있으면 None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     pub columns: Vec<ColumnSchema>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKeyInfo>,

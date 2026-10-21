@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
 
 export function formatBytes(bytes: number | null): string | null {
@@ -20,7 +22,7 @@ export function formatRowEstimate(count: number | null, exact: boolean): string 
   if (count === null || !Number.isFinite(count) || count < 0) {
     return null;
   }
-  const text = `${Math.floor(count).toLocaleString("ko-KR")}행`;
+  const text = t("{count}행", { count: Math.floor(count).toLocaleString("ko-KR") });
   return exact ? text : `≈ ${text}`;
 }
 
@@ -33,15 +35,19 @@ export function humanizeElapsed(ms: number | null): string | null {
   }
   const totalSeconds = ms / 1000;
   if (totalSeconds < 60) {
-    return `${(Math.round(totalSeconds * 10) / 10).toFixed(1)}초`;
+    return t("{seconds}초", { seconds: (Math.round(totalSeconds * 10) / 10).toFixed(1) });
   }
   const seconds = Math.round(totalSeconds);
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   if (minutes < 60) {
-    return rest === 0 ? `${minutes}분` : `${minutes}분 ${rest}초`;
+    return rest === 0
+      ? t("{minutes}분", { minutes })
+      : t("{minutes}분 {seconds}초", { minutes, seconds: rest });
   }
   const hours = Math.floor(minutes / 60);
   const restMinutes = minutes % 60;
-  return restMinutes === 0 ? `${hours}시간` : `${hours}시간 ${restMinutes}분`;
+  return restMinutes === 0
+    ? t("{hours}시간", { hours })
+    : t("{hours}시간 {minutes}분", { hours, minutes: restMinutes });
 }

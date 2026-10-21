@@ -35,9 +35,10 @@ import { FilterBar } from "./components/FilterBar";
 import { FavoritesMenu } from "./components/Dropdowns";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
+import type { SelectedRows } from "./grid/CanvasGrid";
 import { HomeScreen, type NewConnectionOptions } from "./components/HomeScreen";
 import { HoverTooltip } from "./components/HoverTooltip";
-import { t, tTableCount } from "./i18n";
+import { t, tServer, tTableCount } from "./i18n";
 import { ImportModal } from "./components/ImportModal";
 import { JobsModal } from "./components/JobsModal";
 import { ParamModal } from "./components/ParamModal";
@@ -61,7 +62,6 @@ import { UserManagerModal } from "./components/UserManagerModal";
 import { TabStrip } from "./components/TabStrip";
 import {
   CheckIcon,
-  DatabaseIcon,
   JobsIcon,
   MoreIcon,
   PanelIcon,
@@ -69,7 +69,6 @@ import {
   PanelBottomIcon,
   PlayIcon,
   PlusIcon,
-  RefreshIcon,
   SettingsIcon,
   SnippetIcon,
   StopIcon,
@@ -136,7 +135,6 @@ import {
   createOverviewTab,
   createQueryTab,
   createServerTab,
-  dataPageInfo,
   migrateTabsState,
   patchFromOutcome,
   patchTab,
@@ -152,7 +150,6 @@ import {
 } from "./tabs";
 
 const EMPTY_TABLES: string[] = [];
-const MAX_ROWS_LIMIT = 500000;
 const CONSOLE_HEIGHT_KEY = "tablepeek.console-height";
 const CONSOLE_DEFAULT = 180;
 const CONSOLE_MIN = 90;
@@ -288,12 +285,6 @@ interface PersistedPayload {
   workspaces: Record<string, Workspace>;
 }
 
-function clampRows(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 1;
-  }
-  return Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(value)));
-}
 
 function primaryKeyOf(detail: TableDetail | undefined): string[] | null {
   if (!detail) {
@@ -344,7 +335,7 @@ async function writeClipboard(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    store.setError("클립보드에 복사하지 못했습니다");
+    store.setError(t("클립보드에 복사하지 못했습니다"));
   }
 }
 
@@ -460,7 +451,6 @@ export default function App() {
   const [activeConnId, setActiveConnId] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
   const [busySaved, setBusySaved] = useState<string | null>(null);
-  const [maxRows, setMaxRows] = useState(10000);
   const [fsOpen, setFsOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [connectEditing, setConnectEditing] = useState<{
@@ -477,10 +467,15 @@ export default function App() {
   const [editorHeight, setEditorHeight] = useState<number | null>(null);
   const [filterOpen, setFilterOpen] = useState<Record<string, boolean>>({});
   // The row detail panel stays open or closed per connection, across its
-  // tables; detailRow is the row it shows (null until one is picked).
+  // tables; detailRows is the span of rows it describes (null until picked).
   const [detailPanels, setDetailPanels] = useState<Record<string, boolean>>({});
-  const [detailRow, setDetailRow] = useState<number | null>(null);
-  const [rowDetailInfo, setRowDetailInfo] = useState<TableDetail | null>(null);
+  const [detailRows, setDetailRows] = useState<SelectedRows | null>(null);
+  // Keyed by "conn:table" so a panel never shows another table's detail.
+  const [rowDetailInfo, setRowDetailInfo] = useState<{ key: string; detail: TableDetail | null } | null>(
+    null,
+  );
+  // Bumped whenever cached table details may be out of date.
+  const [detailNonce, setDetailNonce] = useState(0);
   const [rowDetailLoading, setRowDetailLoading] = useState(false);
   const [cellQuickLook, setCellQuickLook] = useState<{ row: number; col: number; anchor: CellAnchor | null } | null>(
     null,
@@ -528,6 +523,8 @@ export default function App() {
   const [jobsOpen, setJobsOpen] = useState(false);
   const [jobsRunning, setJobsRunning] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(() => getSettings());
+  // Rows a query run fetches at most (Settings → Data).
+  const maxRows = settings.maxRows;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [applying, setApplying] = useState(false);
   const [, setPendingVersion] = useState(0);
@@ -669,7 +666,9 @@ export default function App() {
   const metricsOpenRef = useRef(metricsOpen);
   const detailCacheRef = useRef(new Map<string, TableDetail>());
   const shortcutRef = useRef<(action: KeyAction) => void>(() => {});
-  const lastSelectedRowRef = useRef<number | null>(null);
+  const lastSelectionRef = useRef<SelectedRows | null>(null);
+  // A drag changes the selection many times a frame; the panel follows once per frame.
+  const selectionFrameRef = useRef(0);
   const invalidateRef = useRef<() => void>(() => {});
   const applyingRef = useRef(false);
   const cycleViewRef = useRef<(delta: -1 | 1) => void>(() => {});
@@ -752,9 +751,6 @@ export default function App() {
         .map((sort) => ({ columnIndex: dataMeta.columns.indexOf(sort.column), dir: sort.dir }))
         .filter((indicator) => indicator.columnIndex >= 0)
     : undefined;
-  const pageInfo = activeDataTab
-    ? dataPageInfo(activeDataTab, activeDataTab.count ?? null)
-    : null;
   const columnEntries: ColumnEntry[] = (() => {
     if (!activeDataTab) {
       return [];
@@ -938,7 +934,7 @@ export default function App() {
         setTabsFor(conn, patchTab(latest, tabId, { count }));
       }
     } catch (err) {
-      store.setError(errorOf(err, "행 수를 계산하지 못했습니다"));
+      store.setError(errorOf(err, t("행 수를 계산하지 못했습니다")));
     } finally {
       setCountingTabId((value) => (value === tabId ? null : value));
     }
@@ -972,7 +968,7 @@ export default function App() {
       entry === name ? !visible.includes(entry) : visible.includes(entry),
     );
     if (next.length === 0) {
-      store.setInfo("최소 한 개의 컬럼이 필요합니다");
+      store.setInfo(t("최소 한 개의 컬럼이 필요합니다"));
       return;
     }
     const normalized =
@@ -1048,11 +1044,13 @@ export default function App() {
       } catch (err) {
         setRunningTabId(null);
         setHistoryVersion((value) => value + 1);
-        store.setError(errorOf(err, "쿼리를 실행하지 못했습니다"));
+        store.setError(errorOf(err, t("쿼리를 실행하지 못했습니다")));
         return;
       }
       setRunningTabId(null);
       setHistoryVersion((value) => value + 1);
+      // A statement may have changed rows, structure or sizes.
+      forgetTableDetails();
       const last = outcomes[outcomes.length - 1];
       if (last !== undefined) {
         handleOutcome(conn, tabId, last);
@@ -1062,7 +1060,7 @@ export default function App() {
           conn,
           tabId,
           entries: outcomes.map((outcome, index) => ({
-            label: `결과 ${index + 1}`,
+            label: t("결과 {n}", { n: index + 1 }),
             outcome,
           })),
         });
@@ -1709,12 +1707,12 @@ export default function App() {
     setDetailPanels((prev) => (prev[conn] === open ? prev : { ...prev, [conn]: open }));
   }
 
-  // The panel opens on any tab; with no grid row to show it says so.
+  // The panel opens on any tab: the selected row, else the table's info.
   function toggleDetailPanel(): void {
     if (detailPanelOpenRef.current) {
       setDetailPanelOpen(false);
     } else {
-      setDetailRow(lastSelectedRowRef.current ?? 0);
+      setDetailRows(lastSelectionRef.current);
       setDetailPanelOpen(true);
     }
   }
@@ -1806,7 +1804,7 @@ export default function App() {
     const detail = await ensureDetail(conn, sourceTable);
     const fk = detail?.foreign_keys.find((entry) => entry.columns.includes(column));
     if (!fk) {
-      store.setInfo("외래 키 컬럼이 아닙니다");
+      store.setInfo(t("외래 키 컬럼이 아닙니다"));
       return;
     }
     const value = result.source.cell(row, col);
@@ -1814,7 +1812,7 @@ export default function App() {
     const refColumn = fk.ref_columns[index] ?? fk.ref_columns[0];
     const filter = fkFilterFor(refColumn, value);
     if (filter === null) {
-      store.setInfo("NULL 값은 참조 행이 없습니다");
+      store.setInfo(t("NULL 값은 참조 행이 없습니다"));
       return;
     }
     openDataTabFiltered(fk.ref_table, filter);
@@ -1866,11 +1864,11 @@ export default function App() {
     }
     const prefix = explainPrefixFor(meta?.kind ?? "");
     if (prefix === null) {
-      store.setInfo("이 드라이버는 실행 계획 보기를 지원하지 않습니다");
+      store.setInfo(t("이 드라이버는 실행 계획 보기를 지원하지 않습니다"));
       return;
     }
     const planSql = planSqlFor(sqlText, prefix);
-    const planTab = { ...createQueryTab(nextSeq()), title: `실행 계획 — ${tab.title}`, sql: planSql };
+    const planTab = { ...createQueryTab(nextSeq()), title: t("실행 계획 — {title}", { title: tab.title }), sql: planSql };
     activateNewTab(conn, planTab);
     focusRequestRef.current = true;
     setRunningTabId(planTab.id);
@@ -1886,8 +1884,8 @@ export default function App() {
       tab && tab.kind === "data" ? tab.table : (meta?.tables[0] ?? "table");
     const prefix = explainPrefixFor(meta?.kind ?? "") ?? "EXPLAIN ";
     return [
-      { label: "SQL 정리 (Beautify)", onSelect: () => formatCurrent("beautify") },
-      { label: "SQL 축약 (Minify)", onSelect: () => formatCurrent("minify") },
+      { label: t("SQL 정리 (Beautify)"), onSelect: () => formatCurrent("beautify") },
+      { label: t("SQL 축약 (Minify)"), onSelect: () => formatCurrent("minify") },
       ...snippetList(table, prefix, meta?.kind ?? "postgres").map((snippet, index) => ({
         label: snippet.name,
         separatorBefore: index === 0,
@@ -1904,12 +1902,12 @@ export default function App() {
     try {
       const databases = await store.fetchDatabases(conn);
       if (databases.length === 0) {
-        store.setInfo("이 연결은 데이터베이스 전환을 지원하지 않습니다");
+        store.setInfo(t("이 연결은 데이터베이스 전환을 지원하지 않습니다"));
         return;
       }
       setDbMenu({ x, y, databases });
     } catch (err) {
-      store.setError(errorOf(err, "데이터베이스 목록을 불러오지 못했습니다"));
+      store.setError(errorOf(err, t("데이터베이스 목록을 불러오지 못했습니다")));
     }
   }
 
@@ -1942,11 +1940,11 @@ export default function App() {
         const tab = activeTabOf(ws.tabs);
         store.activate(conn, live.meta, tab ? snapshotOf(tab) : null, ws.tx);
       }
-      detailCacheRef.current = new Map();
+      forgetTableDetails();
       setMetaNonce((value) => value + 1);
-      store.setInfo(`데이터베이스: ${database}`);
+      store.setInfo(t("데이터베이스: {name}", { name: database }));
     } catch (err) {
-      store.setError(errorOf(err, "데이터베이스를 전환하지 못했습니다"));
+      store.setError(errorOf(err, t("데이터베이스를 전환하지 못했습니다")));
     }
   }
 
@@ -1964,7 +1962,7 @@ export default function App() {
     if (conn === null || !serverConn) {
       return;
     }
-    const name = window.prompt("새 데이터베이스 이름", "");
+    const name = window.prompt(t("새 데이터베이스 이름"), "");
     const trimmed = name?.trim() ?? "";
     if (trimmed === "") {
       return;
@@ -1972,9 +1970,9 @@ export default function App() {
     setDbMenu(null);
     try {
       await store.exec(conn, `CREATE DATABASE ${quoteIdent(kind, trimmed)}`);
-      store.setInfo(`데이터베이스 생성됨: ${trimmed}`);
+      store.setInfo(t("데이터베이스 생성됨: {name}", { name: trimmed }));
     } catch (err) {
-      store.setError(errorOf(err, "데이터베이스를 만들지 못했습니다"));
+      store.setError(errorOf(err, t("데이터베이스를 만들지 못했습니다")));
     }
   }
 
@@ -1984,24 +1982,24 @@ export default function App() {
     if (conn === null || !serverConn) {
       return;
     }
-    const name = window.prompt("삭제할 데이터베이스 이름", "");
+    const name = window.prompt(t("삭제할 데이터베이스 이름"), "");
     const trimmed = name?.trim() ?? "";
     if (trimmed === "") {
       return;
     }
     if (trimmed === currentDatabase()) {
-      store.setError("현재 사용 중인 데이터베이스는 삭제할 수 없습니다");
+      store.setError(t("현재 사용 중인 데이터베이스는 삭제할 수 없습니다"));
       return;
     }
-    if (!window.confirm(`데이터베이스 "${trimmed}"를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) {
+    if (!window.confirm(t('데이터베이스 "{name}"를 삭제할까요? 이 작업은 되돌릴 수 없습니다.', { name: trimmed }))) {
       return;
     }
     setDbMenu(null);
     try {
       await store.exec(conn, `DROP DATABASE ${quoteIdent(kind, trimmed)}`);
-      store.setInfo(`데이터베이스 삭제됨: ${trimmed}`);
+      store.setInfo(t("데이터베이스 삭제됨: {name}", { name: trimmed }));
     } catch (err) {
-      store.setError(errorOf(err, "데이터베이스를 삭제하지 못했습니다"));
+      store.setError(errorOf(err, t("데이터베이스를 삭제하지 못했습니다")));
     }
   }
 
@@ -2039,18 +2037,18 @@ export default function App() {
       return;
     }
     if (action === "rename") {
-      const name = window.prompt("새 테이블 이름", table);
+      const name = window.prompt(t("새 테이블 이름"), table);
       if (name === null) {
         return;
       }
       const nextName = name.trim();
       if (nextName === "" || nextName === table) {
-        store.setInfo("테이블 이름을 확인하세요");
+        store.setInfo(t("테이블 이름을 확인하세요"));
         return;
       }
       try {
         await store.exec(conn, renameTableSql(kind, table, nextName));
-        store.setInfo(`테이블 이름을 변경했습니다: ${table} → ${nextName}`);
+        store.setInfo(t("테이블 이름을 변경했습니다: {from} → {to}", { from: table, to: nextName }));
         const current = tabsOf(conn);
         if (current !== null) {
           let next = current;
@@ -2068,10 +2066,10 @@ export default function App() {
             setTabsFor(conn, next);
           }
         }
-        detailCacheRef.current = new Map();
+        forgetTableDetails();
         setMetaNonce((value) => value + 1);
       } catch (err) {
-        store.setError(errorOf(err, "테이블 이름을 변경하지 못했습니다"));
+        store.setError(errorOf(err, t("테이블 이름을 변경하지 못했습니다")));
       }
       return;
     }
@@ -2080,7 +2078,7 @@ export default function App() {
       if (detail?.ddl) {
         await writeClipboard(detail.ddl);
       } else {
-        store.setInfo("DDL을 가져올 수 없습니다");
+        store.setInfo(t("DDL을 가져올 수 없습니다"));
       }
       return;
     }
@@ -2093,21 +2091,21 @@ export default function App() {
     if (action === "copyLaravel") {
       const detail = await ensureDetail(conn, table);
       if (detail === null) {
-        store.setInfo("테이블 정보를 가져올 수 없습니다");
+        store.setInfo(t("테이블 정보를 가져올 수 없습니다"));
         return;
       }
       await writeClipboard(laravelSchemaScript(detail, kind));
-      store.setInfo("Laravel 스키마 코드를 복사했습니다");
+      store.setInfo(t("Laravel 스키마 코드를 복사했습니다"));
       return;
     }
     if (action === "duplicate") {
-      const name = window.prompt("복제할 테이블 이름", `${table.replace(/\./g, "_")}_copy`);
+      const name = window.prompt(t("복제할 테이블 이름"), `${table.replace(/\./g, "_")}_copy`);
       if (name === null) {
         return;
       }
       const target = name.trim();
       if (target === "" || target === table) {
-        store.setInfo("테이블 이름을 확인하세요");
+        store.setInfo(t("테이블 이름을 확인하세요"));
         return;
       }
       const targetQuoted = quoteIdent(kind, target);
@@ -2117,39 +2115,39 @@ export default function App() {
           : `CREATE TABLE ${targetQuoted} AS SELECT * FROM ${quoted};`;
       try {
         await store.exec(conn, sql);
-        store.setInfo(`테이블을 복제했습니다: ${target}`);
+        store.setInfo(t("테이블을 복제했습니다: {name}", { name: target }));
         await refreshActiveMeta();
       } catch (err) {
-        store.setError(errorOf(err, "테이블을 복제하지 못했습니다"));
+        store.setError(errorOf(err, t("테이블을 복제하지 못했습니다")));
       }
       return;
     }
     if (action === "truncate") {
-      if (!window.confirm(`${table} 테이블의 모든 행을 삭제할까요?`)) {
+      if (!window.confirm(t("{table} 테이블의 모든 행을 삭제할까요?", { table }))) {
         return;
       }
       const sql = kind === "sqlite" ? `DELETE FROM ${quoted};` : `TRUNCATE TABLE ${quoted};`;
       try {
         await store.exec(conn, sql);
-        store.setInfo(`테이블을 비웠습니다: ${table}`);
+        store.setInfo(t("테이블을 비웠습니다: {table}", { table }));
         const ws = workspacesRef.current[conn];
         const tab = ws !== undefined ? activeTabOf(ws.tabs) : null;
         if (ws !== undefined && tab !== null && tab.kind === "data" && tab.table === table) {
           runDataWith(conn, tab, dataSpecOf(tab, 0, tab.pageSize));
         }
       } catch (err) {
-        store.setError(errorOf(err, "테이블을 비우지 못했습니다"));
+        store.setError(errorOf(err, t("테이블을 비우지 못했습니다")));
       }
       return;
     }
     if (action === "delete") {
-      if (!window.confirm(`테이블 ${table}을(를) 삭제하면 되돌릴 수 없습니다. 삭제할까요?`)) {
+      if (!window.confirm(t("테이블 {table}을(를) 삭제하면 되돌릴 수 없습니다. 삭제할까요?", { table }))) {
         return;
       }
       const sql = `DROP TABLE ${quoted};`;
       try {
         await store.exec(conn, sql);
-        store.setInfo(`테이블을 삭제했습니다: ${table}`);
+        store.setInfo(t("테이블을 삭제했습니다: {table}", { table }));
         const current = tabsOf(conn);
         if (current !== null) {
           const doomed = current.tabs.filter(
@@ -2161,9 +2159,15 @@ export default function App() {
         }
         await refreshActiveMeta();
       } catch (err) {
-        store.setError(errorOf(err, "테이블을 삭제하지 못했습니다"));
+        store.setError(errorOf(err, t("테이블을 삭제하지 못했습니다")));
       }
     }
+  }
+
+  // Structure, data or sizes may have changed; details are fetched again.
+  function forgetTableDetails(): void {
+    detailCacheRef.current = new Map();
+    setDetailNonce((value) => value + 1);
   }
 
   async function refreshActiveMeta(): Promise<void> {
@@ -2172,7 +2176,7 @@ export default function App() {
       try {
         setConns(await store.listConns());
       } catch (err) {
-        store.setError(errorOf(err, "연결 목록을 불러오지 못했습니다"));
+        store.setError(errorOf(err, t("연결 목록을 불러오지 못했습니다")));
       }
       return;
     }
@@ -2186,8 +2190,9 @@ export default function App() {
       commitWorkspaces({ ...workspacesRef.current, [conn]: next });
       const tab = activeTabOf(next.tabs);
       store.activate(conn, nextMeta, tab ? snapshotOf(tab) : null, next.tx);
+      forgetTableDetails();
     } catch (err) {
-      store.setError(errorOf(err, "메타를 새로고침하지 못했습니다"));
+      store.setError(errorOf(err, t("메타를 새로고침하지 못했습니다")));
     }
   }
 
@@ -2231,7 +2236,7 @@ export default function App() {
       setActiveConnId(id);
       return true;
     } catch (err) {
-      store.setError(errorOf(err, "연결에 들어가지 못했습니다"));
+      store.setError(errorOf(err, t("연결에 들어가지 못했습니다")));
       try {
         setConns(await store.listConns());
       } catch {}
@@ -2257,7 +2262,7 @@ export default function App() {
       const live = await store.openDb(null);
       await afterOpen(live);
     } catch (err) {
-      store.setError(errorOf(err, "데모를 열지 못했습니다"));
+      store.setError(errorOf(err, t("데모를 열지 못했습니다")));
     }
   }
 
@@ -2271,7 +2276,7 @@ export default function App() {
       const live = await store.openDb(path);
       await afterOpen(live);
     } catch (err) {
-      store.setError(errorOf(err, "파일을 열지 못했습니다"));
+      store.setError(errorOf(err, t("파일을 열지 못했습니다")));
     }
   }
 
@@ -2305,7 +2310,7 @@ export default function App() {
           openConnectionEditor(saved, t(errorOf(err, t("비밀번호를 입력하세요"))), missing);
           return "asking";
         }
-        store.setError(errorOf(err, "연결에 실패했습니다"));
+        store.setError(errorOf(err, t("연결에 실패했습니다")));
         return "failed";
       }
     } catch (err) {
@@ -2368,7 +2373,7 @@ export default function App() {
   async function closeConn(id: string): Promise<void> {
     const summary = conns.find((conn) => conn.id === id);
     if (summary?.is_default) {
-      store.setError("기본 연결은 닫을 수 없습니다");
+      store.setError(t("기본 연결은 닫을 수 없습니다"));
       return;
     }
     const ws = workspacesRef.current[id];
@@ -2401,7 +2406,7 @@ export default function App() {
     try {
       await store.closeConn(id);
     } catch (err) {
-      store.setError(errorOf(err, "연결을 닫지 못했습니다"));
+      store.setError(errorOf(err, t("연결을 닫지 못했습니다")));
     }
     try {
       setConns(await store.listConns());
@@ -2631,17 +2636,21 @@ export default function App() {
 
   function openRowDetail(row: number): void {
     setCellQuickLook(null);
-    setDetailRow(row);
+    setDetailRows({ from: row, to: row });
     setDetailPanelOpen(true);
   }
 
-  function handleSelectionChange(row: number | null): void {
-    if (row !== null) {
-      lastSelectedRowRef.current = row;
-      // Only an open panel follows the selection; opening it reads the ref.
-      if (detailPanelOpenRef.current) {
-        setDetailRow(row);
-      }
+  function handleSelectionChange(row: number | null, rows: SelectedRows | null): void {
+    if (row === null || rows === null) {
+      return;
+    }
+    lastSelectionRef.current = rows;
+    // Only an open panel follows the selection; opening it reads the ref.
+    if (detailPanelOpenRef.current && selectionFrameRef.current === 0) {
+      selectionFrameRef.current = requestAnimationFrame(() => {
+        selectionFrameRef.current = 0;
+        setDetailRows(lastSelectionRef.current);
+      });
     }
   }
 
@@ -2678,7 +2687,7 @@ export default function App() {
           : null;
     const items: ContextMenuItem[] = [
       {
-        label: "셀 값 복사",
+        label: t("셀 값 복사"),
         onSelect: () => {
           void (async () => {
             if (source.cell(menuState.row, menuState.col) === undefined) {
@@ -2690,7 +2699,7 @@ export default function App() {
         },
       },
       {
-        label: "행 복사 (TSV)",
+        label: t("행 복사 (TSV)"),
         onSelect: () => {
           void (async () => {
             const values = await rowValues(source, menuState.row);
@@ -2721,7 +2730,7 @@ export default function App() {
       onSelect: () => openCellQuickLook(menuState.row, menuState.col),
     });
     items.push({
-      label: "행 상세 보기",
+      label: t("행 상세 보기"),
       onSelect: () => openRowDetail(menuState.row),
     });
     if (result.meta.sourceTable !== null) {
@@ -2749,7 +2758,7 @@ export default function App() {
         cached.foreign_keys.some((entry) => entry.columns.includes(columnName));
       if (hasFk) {
         items.push({
-          label: "참조 행 열기",
+          label: t("참조 행 열기"),
           onSelect: () => {
             void fkJump(menuState.row, menuState.col);
           },
@@ -2758,7 +2767,7 @@ export default function App() {
     }
     if (table !== null) {
       items.push({
-        label: "INSERT 문 복사",
+        label: t("INSERT 문 복사"),
         separatorBefore: true,
         onSelect: () => {
           void (async () => {
@@ -2768,7 +2777,7 @@ export default function App() {
         },
       });
       items.push({
-        label: "UPDATE 문 복사",
+        label: t("UPDATE 문 복사"),
         disabled: !keyed || inserted,
         onSelect: () => {
           void (async () => {
@@ -2781,7 +2790,7 @@ export default function App() {
               meta?.kind ?? "postgres",
             );
             if (sql === null) {
-              store.setError("기본 키가 없어 UPDATE 문을 만들 수 없습니다");
+              store.setError(t("기본 키가 없어 UPDATE 문을 만들 수 없습니다"));
               return;
             }
             await writeClipboard(sql);
@@ -2791,7 +2800,7 @@ export default function App() {
     }
     if (canEdit) {
       items.push({
-        label: "이 셀 편집",
+        label: t("이 셀 편집"),
         separatorBefore: true,
         onSelect: () => gridHostRef.current?.beginEdit(menuState.row, menuState.col),
       });
@@ -2930,7 +2939,7 @@ export default function App() {
         list = await store.listConns();
         setConns(list);
       } catch (err) {
-        store.setError(errorOf(err, "연결 목록을 불러오지 못했습니다"));
+        store.setError(errorOf(err, t("연결 목록을 불러오지 못했습니다")));
       }
       const kept: Record<string, Workspace> = {};
       for (const [id, ws] of Object.entries(workspacesRef.current)) {
@@ -3040,7 +3049,7 @@ export default function App() {
     }
     prevConnRef.current = activeConnId;
     setResultView("grid");
-    setDetailRow(null);
+    setDetailRows(null);
     setCellQuickLook(null);
     setExportTarget(null);
     setMenu(null);
@@ -3196,20 +3205,32 @@ export default function App() {
       ((activeTab.kind === "data" && (activeTab.view ?? "data") === "data") ||
         resultView === "message"));
 
-  const messageAvailable = state.error !== null || state.info !== null;
+  const chipsShown =
+    resultChips !== null && resultChips.conn === activeConnId && resultChips.tabId === activeTab?.id;
   const planAvailable = state.result !== null && isExplainSql(state.result.sql);
   const detailPanelOpen = activeConnId !== null && detailPanels[activeConnId] === true;
   // The grid row the panel can describe, if the current tab shows a grid.
   const gridTab =
     activeTab !== null && (activeTab.kind === "query" || (activeTab.kind === "data" && dataView));
   const detailResult = gridTab && resultView === "grid" ? state.result : null;
-  const detailOpen = detailPanelOpen && detailResult !== null;
+  // The table the panel describes when no row is picked.
   const detailTable =
-    activeDataTab !== null ? activeDataTab.table : state.result?.meta.sourceTable ?? null;
+    activeTab !== null && (activeTab.kind === "data" || activeTab.kind === "structure")
+      ? activeTab.table
+      : (detailResult?.meta.sourceTable ?? null);
+  const detailOpen = detailPanelOpen && (detailResult !== null || detailTable !== null);
+
+  const detailKey = activeConnId !== null && detailTable !== null ? `${activeConnId}:${detailTable}` : null;
+  // Only the current table's detail reaches the panel; a cached one shows at once.
+  const panelDetail =
+    detailKey === null
+      ? null
+      : rowDetailInfo?.key === detailKey
+        ? rowDetailInfo.detail
+        : (detailCacheRef.current.get(detailKey) ?? null);
 
   useEffect(() => {
-    if (!detailOpen || activeConnId === null || detailTable === null) {
-      setRowDetailInfo(null);
+    if (!detailOpen || activeConnId === null || detailTable === null || detailKey === null) {
       setRowDetailLoading(false);
       return;
     }
@@ -3218,7 +3239,7 @@ export default function App() {
     void ensureDetail(activeConnId, detailTable)
       .then((detail) => {
         if (alive) {
-          setRowDetailInfo(detail);
+          setRowDetailInfo({ key: detailKey, detail });
         }
       })
       .finally(() => {
@@ -3229,7 +3250,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [detailOpen, activeConnId, detailTable]);
+  }, [detailOpen, activeConnId, detailTable, detailKey, detailNonce]);
 
   // The cell popover belongs to the grid result it was opened on.
   useEffect(() => {
@@ -3239,8 +3260,8 @@ export default function App() {
   // A new table keeps the panel as it was but has no row picked yet.
   useEffect(() => {
     setCellQuickLook(null);
-    setDetailRow(null);
-    lastSelectedRowRef.current = null;
+    setDetailRows(null);
+    lastSelectionRef.current = null;
   }, [tabs?.activeId]);
   const filterVisible = activeDataTab !== null && (filterOpen[activeDataTab.id] ?? false);
   const connRunning = state.status === "running" && state.connId === activeConnId;
@@ -3313,16 +3334,6 @@ export default function App() {
             onClose={(id) => void closeConn(id)}
           />
           <span className="spacer" />
-          {!home ? (
-            <button
-              type="button"
-              className="icon-button appbar-icon"
-              onClick={() => void refreshActiveMeta()}
-              title={`${t("새로고침")} (${shortcutHint(settings.keymap, "refresh")})`}
-            >
-              <RefreshIcon size={12} />
-            </button>
-          ) : null}
           <button
             type="button"
             className="icon-button appbar-icon"
@@ -3355,166 +3366,6 @@ export default function App() {
         />
       ) : (
         <>
-          <div className="toolbar">
-            <button
-              type="button"
-              className="primary run-button"
-              disabled={connRunning}
-              onClick={run}
-              title={`${t("실행")} (${shortcutHint(settings.keymap, "run")})`}
-            >
-              <PlayIcon size={11} />
-              {t("실행")}
-            </button>
-            {connRunning ? (
-              <button type="button" onClick={() => store.cancelQuery()} title={t("정지")}>
-                <StopIcon size={11} />
-                {t("정지")}
-              </button>
-            ) : null}
-            {activeTab !== null &&
-            (activeTab.kind === "query" || activeTab.kind === "data") ? (
-              <button
-                type="button"
-                className="icon-text-button"
-                disabled={connRunning}
-                onClick={explain}
-                title={t("실행 계획")}
-              >
-                {t("실행 계획")}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="icon-text-button"
-              title={t("SQL 스니펫")}
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect();
-                setSnippetMenu({ x: rect.left, y: rect.bottom + 2 });
-              }}
-            >
-              <SnippetIcon size={11} />
-              {t("스니펫")}
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              onClick={createNewTab}
-              title={`${t("새 탭")} (${shortcutHint(settings.keymap, "newTab")})`}
-            >
-              <PlusIcon size={12} />
-            </button>
-            <div className="toolbar-right">
-              {serverConn ? (
-                <button
-                  type="button"
-                  className="icon-text-button"
-                  title={`${t("데이터베이스 전환")} (${shortcutHint(settings.keymap, "dbSwitch")})`}
-                  onClick={(event) => {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    void openDbMenu(rect.left, rect.bottom + 2);
-                  }}
-                >
-                  <DatabaseIcon size={11} />
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="icon-button toolbar-icon"
-                title={t("작업 큐 (가져오기·내보내기·덤프)")}
-                onClick={() => setJobsOpen(true)}
-              >
-                <JobsIcon size={12} />
-                {jobsRunning > 0 ? <span className="toolbar-badge">{jobsRunning}</span> : null}
-              </button>
-              <label className="max-rows" title={t("최대 행")}>
-                {t("최대 행")}
-                <input
-                  type="number"
-                  min={1}
-                  max={MAX_ROWS_LIMIT}
-                  value={maxRows}
-                  onChange={(event) => setMaxRows(clampRows(Number(event.target.value)))}
-                />
-              </label>
-              <FavoritesMenu onPickSql={pickSql} getSql={() => editorRef.current?.getSql() ?? ""} />
-              <SafeModeMenu mode={alertMode} onChange={setAlertMode} />
-              {pendingSummary !== null && pendingSummary.total > 0 ? (
-                <div className="pending-bar" role="status">
-                  <span
-                    className="pending-count"
-                    title={t("수정 {edits} · 추가 {inserts} · 삭제 {deletes}", {
-                      edits: pendingSummary.edits,
-                      inserts: pendingSummary.inserts,
-                      deletes: pendingSummary.deletes,
-                    })}
-                  >
-                    <span className="pending-dot" aria-hidden="true" />
-                    {t("변경 {count}건", { count: pendingSummary.total })}
-                  </span>
-                  <button
-                    type="button"
-                    className="pending-discard"
-                    disabled={applying}
-                    onClick={discardChanges}
-                    title={t("적용하지 않은 변경사항 버리기")}
-                  >
-                    {t("버리기")}
-                  </button>
-                  <button
-                    type="button"
-                    className="primary pending-apply"
-                    disabled={applying || connRunning}
-                    onClick={() => void applyChanges()}
-                    title={`${t("변경사항 적용")} (${shortcutHint(settings.keymap, "applyChanges")})`}
-                  >
-                    {applying ? <Spinner size={13} /> : <CheckIcon size={12} />}
-                    {t("변경사항 적용")}
-                  </button>
-                </div>
-              ) : null}
-              <div className="tx-slot">
-                {state.tx === "active" ? (
-                  <>
-                    <span className="tx-badge" title={t("트랜잭션 진행 중")}>
-                      TX
-                    </span>
-                    <button
-                      type="button"
-                      disabled={connRunning}
-                      onClick={() => void store.commitTx()}
-                      title={t("커밋")}
-                    >
-                      {t("커밋")}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={connRunning}
-                      onClick={() => void store.rollbackTx()}
-                      title={t("롤백")}
-                    >
-                      {t("롤백")}
-                    </button>
-                  </>
-                ) : null}
-                {canEditResult && state.tx !== "active" ? (
-                  <button
-                    type="button"
-                    disabled={connRunning}
-                    onClick={() => void store.beginTx()}
-                    title={t("트랜잭션 시작")}
-                  >
-                    {t("트랜잭션 시작")}
-                  </button>
-                ) : null}
-                {!canEditResult && state.tx !== "active" ? (
-                  <span className="tx-auto" title={t("자동 커밋")}>
-                    {t("자동 커밋")}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          </div>
           <div className="tabbar">
             <button
               type="button"
@@ -3534,7 +3385,60 @@ export default function App() {
                 onRename={renameTabById}
               />
             ) : null}
+            <button
+              type="button"
+              className="icon-button tabbar-new"
+              onClick={createNewTab}
+              title={`${t("새 탭")} (${shortcutHint(settings.keymap, "newTab")})`}
+            >
+              <PlusIcon size={12} />
+            </button>
             <div className="tabbar-actions">
+              {jobsRunning > 0 ? (
+                <button
+                  type="button"
+                  className="icon-button tabbar-side tabbar-jobs"
+                  title={t("작업 큐 (가져오기·내보내기·덤프)")}
+                  onClick={() => setJobsOpen(true)}
+                >
+                  <JobsIcon size={13} />
+                  <span className="toolbar-badge">{jobsRunning}</span>
+                </button>
+              ) : null}
+              {state.tx === "active" ? (
+                <div className="tx-slot compact">
+                  <span className="tx-badge" title={t("트랜잭션 진행 중")}>
+                    TX
+                  </span>
+                  <button
+                    type="button"
+                    disabled={connRunning}
+                    onClick={() => void store.commitTx()}
+                    title={t("커밋")}
+                  >
+                    {t("커밋")}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={connRunning}
+                    onClick={() => void store.rollbackTx()}
+                    title={t("롤백")}
+                  >
+                    {t("롤백")}
+                  </button>
+                </div>
+              ) : canEditResult ? (
+                <button
+                  type="button"
+                  className="tabbar-tx"
+                  disabled={connRunning}
+                  onClick={() => void store.beginTx()}
+                  title={t("트랜잭션 시작")}
+                >
+                  TX
+                </button>
+              ) : null}
+              <SafeModeMenu mode={alertMode} onChange={setAlertMode} compact />
               <button
                 type="button"
                 className={`icon-button tabbar-side${moreMenu !== null ? " active" : ""}`}
@@ -3600,6 +3504,7 @@ export default function App() {
                   onOpenCreateTable={() => setCreateTableOpen(true)}
                   onOpenSql={openSqlTab}
                   onOpenUsers={() => setUserMgrOpen(true)}
+                  onSwitchDatabase={serverConn ? (x, y) => void openDbMenu(x, y) : undefined}
                 />
                 <div
                   className="sidebar-splitter"
@@ -3650,6 +3555,48 @@ export default function App() {
                         favorites={favoriteSnippets}
                         runKey={settings.keymap.run[0]?.replaceAll("+", "-") ?? null}
                       />
+                      {/* What acts on the editor lives with it, as in TablePlus. */}
+                      <div className="editor-bar">
+                        <button
+                          type="button"
+                          className="primary run-button"
+                          disabled={connRunning}
+                          onClick={run}
+                          title={`${t("실행")} (${shortcutHint(settings.keymap, "run")})`}
+                        >
+                          <PlayIcon size={10} />
+                          {t("실행")}
+                        </button>
+                        {connRunning ? (
+                          <button type="button" onClick={() => store.cancelQuery()} title={t("정지")}>
+                            <StopIcon size={10} />
+                            {t("정지")}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="icon-text-button"
+                          disabled={connRunning}
+                          onClick={explain}
+                          title={t("실행 계획")}
+                        >
+                          {t("실행 계획")}
+                        </button>
+                        <span className="spacer" />
+                        <FavoritesMenu onPickSql={pickSql} getSql={() => editorRef.current?.getSql() ?? ""} />
+                        <button
+                          type="button"
+                          className="icon-text-button"
+                          title={t("SQL 스니펫")}
+                          onClick={(event) => {
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            setSnippetMenu({ x: rect.right - 220, y: rect.top - 4 });
+                          }}
+                        >
+                          <SnippetIcon size={11} />
+                          {t("스니펫")}
+                        </button>
+                      </div>
                     </div>
                     <div
                       className={splitSide === "right" ? "v-splitter" : "h-splitter"}
@@ -3660,6 +3607,41 @@ export default function App() {
                   </>
                 ) : null}
                 <div className="result-pane">
+                  {/* Staged edits wait here until applied or dropped. */}
+                {pendingSummary !== null && pendingSummary.total > 0 ? (
+                  <div className="pending-bar floating" role="status">
+                    <span
+                      className="pending-count"
+                      title={t("수정 {edits} · 추가 {inserts} · 삭제 {deletes}", {
+                        edits: pendingSummary.edits,
+                        inserts: pendingSummary.inserts,
+                        deletes: pendingSummary.deletes,
+                      })}
+                    >
+                      <span className="pending-dot" aria-hidden="true" />
+                      {t("변경 {count}건", { count: pendingSummary.total })}
+                    </span>
+                    <button
+                      type="button"
+                      className="pending-discard"
+                      disabled={applying}
+                      onClick={discardChanges}
+                      title={t("적용하지 않은 변경사항 버리기")}
+                    >
+                      {t("버리기")}
+                    </button>
+                    <button
+                      type="button"
+                      className="primary pending-apply"
+                      disabled={applying || connRunning}
+                      onClick={() => void applyChanges()}
+                      title={`${t("변경사항 적용")} (${shortcutHint(settings.keymap, "applyChanges")})`}
+                    >
+                      {applying ? <Spinner size={13} /> : <CheckIcon size={12} />}
+                      {t("변경사항 적용")}
+                    </button>
+                  </div>
+                ) : null}
                   {activeTab === null ? (
                     <EmptyWorkspace onNewQuery={createNewTab} onHome={goHome} />
                   ) : activeTab.kind === "structure" && activeConnId !== null ? (
@@ -3854,7 +3836,7 @@ export default function App() {
                           </div>
                           <div className="panel-body">
                             {activeDataTab.detail?.ddl == null ? (
-                              <div className="panel-empty">DDL을 가져오는 중…</div>
+                              <div className="panel-empty">{t("DDL을 가져오는 중…")}</div>
                             ) : (
                               <div className="panel-code">
                                 <pre className="panel-pre">{activeDataTab.detail.ddl}</pre>
@@ -3887,55 +3869,54 @@ export default function App() {
                           }
                         />
                       ) : null}
-                      {dataView ? null : (
-                      <div className="result-tabs">
-                        <button
-                          type="button"
-                          className={`result-tab${resultView === "grid" ? " active" : ""}`}
-                          onClick={() => setResultView("grid")}
-                        >
-                          {t("그리드")}
-                        </button>
-                        <button
-                          type="button"
-                          className={`result-tab${resultView === "message" ? " active" : ""}`}
-                          onClick={() => setResultView("message")}
-                        >
-                          {t("메시지")}
-                          {messageAvailable ? <span className="dot" aria-hidden="true" /> : null}
-                        </button>
-                        {planAvailable ? (
-                          <button
-                            type="button"
-                            className={`result-tab${resultView === "plan" ? " active" : ""}`}
-                            onClick={() => setResultView("plan")}
-                          >
-                            {t("계획")}
-                          </button>
-                        ) : null}
-                        {resultChips !== null &&
-                        resultChips.conn === activeConnId &&
-                        resultChips.tabId === activeTab?.id
-                          ? resultChips.entries.map((entry) => (
+                      {/* Results show on their own; this bar appears only for a plan to
+                          switch to, several statements' results, or rows cut off. */}
+                      {!dataView && (planAvailable || chipsShown || state.result?.meta.truncated) ? (
+                        <div className="result-tabs">
+                          {planAvailable ? (
+                            <>
                               <button
                                 type="button"
-                                className="result-tab chip"
-                                key={entry.label}
-                                title={
-                                  entry.outcome.kind === "ok"
-                                    ? `${entry.outcome.result.meta.rowCount.toLocaleString()}행`
-                                    : entry.outcome.kind === "error"
-                                      ? entry.outcome.error
-                                      : "취소됨"
-                                }
-                                onClick={() => showResultChip(entry)}
+                                className={`result-tab${resultView === "grid" ? " active" : ""}`}
+                                onClick={() => setResultView("grid")}
                               >
-                                {entry.label}
+                                {t("그리드")}
                               </button>
-                            ))
-                          : null}
-                      </div>
-                      )}
+                              <button
+                                type="button"
+                                className={`result-tab${resultView === "plan" ? " active" : ""}`}
+                                onClick={() => setResultView("plan")}
+                              >
+                                {t("계획")}
+                              </button>
+                            </>
+                          ) : null}
+                          {chipsShown && resultChips !== null
+                            ? resultChips.entries.map((entry) => (
+                                <button
+                                  type="button"
+                                  className="result-tab chip"
+                                  key={entry.label}
+                                  title={
+                                    entry.outcome.kind === "ok"
+                                      ? t("{count}행", { count: entry.outcome.result.meta.rowCount.toLocaleString() })
+                                      : entry.outcome.kind === "error"
+                                        ? entry.outcome.error
+                                        : t("취소됨")
+                                  }
+                                  onClick={() => showResultChip(entry)}
+                                >
+                                  {entry.label}
+                                </button>
+                              ))
+                            : null}
+                          {state.result?.meta.truncated ? (
+                            <span className="result-truncated warn">
+                              {t("최대 {count}행까지만 가져왔습니다", { count: maxRows.toLocaleString() })}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {dataView && state.error ? (
                         <div className="data-error-slot">
                           <ErrorNotice
@@ -3946,7 +3927,7 @@ export default function App() {
                         </div>
                       ) : null}
                       {dataView && state.info && state.status !== "running" ? (
-                        <div className="data-notice info">{state.info}</div>
+                        <div className="data-notice info">{tServer(state.info)}</div>
                       ) : null}
                       <div className="result-body">
                         <div className={`result-layer${resultView === "grid" ? "" : " hidden"}`}>
@@ -3995,7 +3976,7 @@ export default function App() {
                             {state.error ? (
                               <ErrorNotice message={state.error} />
                             ) : state.info ? (
-                              <div className="message-info">{state.info}</div>
+                              <div className="message-info">{tServer(state.info)}</div>
                             ) : (
                               <div className="message-empty">{t("메시지가 없습니다")}</div>
                             )}
@@ -4007,37 +3988,6 @@ export default function App() {
                             {t("실행 중…")}
                           </div>
                         ) : null}
-                      </div>
-                      <div className="result-statusline">
-                        <span>
-                          {state.status === "running"
-                            ? t("실행 중…")
-                            : state.result
-                              ? `${t("총 {count}행", { count: state.result.meta.rowCount.toLocaleString() })} · ${state.result.meta.elapsedMs.toFixed(1)}ms`
-                              : t("준비됨")}
-                        </span>
-                        {state.result?.meta.truncated ? <span className="warn">{t("잘림")}</span> : null}
-                        {activeDataTab && pageInfo ? (
-                          <span className="dim">
-                            {pageInfo.rows === null
-                              ? t("{page} 페이지+", { page: pageInfo.page })
-                              : pageInfo.exact
-                                ? t("{page} / {pages} 페이지 · 총 {count}행", {
-                                    page: pageInfo.page,
-                                    pages: pageInfo.pages ?? 1,
-                                    count: pageInfo.rows.toLocaleString(),
-                                  })
-                                : t("{page} 페이지+ · {count}+행", {
-                                    page: pageInfo.page,
-                                    count: pageInfo.rows.toLocaleString(),
-                                  })}
-                          </span>
-                        ) : null}
-                        {state.info && state.status !== "running" ? (
-                          <span className="dim ellipsis">{state.info}</span>
-                        ) : null}
-                        <span className="spacer" />
-                        {activeTab ? <span className="dim">{activeTab.title}</span> : null}
                       </div>
                         </>
                       )}
@@ -4091,13 +4041,11 @@ export default function App() {
                 />
                 <RowDetailPanel
                   result={detailResult}
-                  row={detailRow}
-                  table={activeDataTab ? activeDataTab.table : (detailResult?.meta.sourceTable ?? null)}
-                  kind={meta?.kind ?? "postgres"}
-                  detail={rowDetailInfo}
+                  rows={detailRows}
+                  table={detailTable}
+                  detail={panelDetail}
                   detailLoading={rowDetailLoading}
                   onOpenReference={(row, col) => void fkJump(row, col)}
-                  onClose={() => setDetailPanelOpen(false)}
                 />
               </>
             ) : null}
@@ -4118,7 +4066,7 @@ export default function App() {
           onClose={() => setCreateTableOpen(false)}
           onCreated={(table) => {
             setCreateTableOpen(false);
-            detailCacheRef.current = new Map();
+            forgetTableDetails();
             setMetaNonce((value) => value + 1);
             void refreshActiveMeta();
             openDataTab(table);
@@ -4144,20 +4092,20 @@ export default function App() {
               },
             })),
             {
-              label: "데이터베이스 만들기…",
+              label: t("데이터베이스 만들기…"),
               separatorBefore: true,
               onSelect: () => {
                 void createDatabase();
               },
             },
             {
-              label: "데이터베이스 삭제…",
+              label: t("데이터베이스 삭제…"),
               onSelect: () => {
                 void dropDatabase();
               },
             },
             {
-              label: "백업 (SQL 덤프)…",
+              label: t("백업 (SQL 덤프)…"),
               separatorBefore: true,
               onSelect: () => {
                 setDbMenu(null);
@@ -4165,7 +4113,7 @@ export default function App() {
               },
             },
             {
-              label: "복원 (SQL 실행)…",
+              label: t("복원 (SQL 실행)…"),
               onSelect: () => {
                 setDbMenu(null);
                 setDumpTab("restore");
@@ -4312,7 +4260,7 @@ export default function App() {
           initialTab={dumpTab}
           onClose={() => setDumpTab(null)}
           onRestored={() => {
-            detailCacheRef.current = new Map();
+            forgetTableDetails();
             setMetaNonce((value) => value + 1);
             void refreshActiveMeta();
           }}

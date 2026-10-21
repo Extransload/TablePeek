@@ -28,9 +28,11 @@ const LEVELS: SafeMode[] = [0, 1, 2];
 interface SafeModeMenuProps {
   mode: SafeMode;
   onChange(mode: SafeMode): void;
+  // Shield only, for the tab bar; the level shows as its colour.
+  compact?: boolean;
 }
 
-export function SafeModeMenu({ mode, onChange }: SafeModeMenuProps) {
+export function SafeModeMenu({ mode, onChange, compact = false }: SafeModeMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dismiss = useCallback(() => setOpen(false), []);
@@ -40,15 +42,19 @@ export function SafeModeMenu({ mode, onChange }: SafeModeMenuProps) {
     <div className="safe-mode" ref={rootRef}>
       <button
         type="button"
-        className={`safe-mode-button level-${mode}${open ? " open" : ""}`}
+        className={`safe-mode-button level-${mode}${open ? " open" : ""}${compact ? " compact" : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         title={`${t("안전 모드")}: ${t(SAFE_MODE_LABELS[mode].title)}`}
       >
-        <ShieldIcon size={12} />
-        <span>{t(SAFE_MODE_LABELS[mode].short)}</span>
-        <ChevronDownIcon size={9} />
+        <ShieldIcon size={compact ? 13 : 12} />
+        {compact ? null : (
+          <>
+            <span>{t(SAFE_MODE_LABELS[mode].short)}</span>
+            <ChevronDownIcon size={9} />
+          </>
+        )}
       </button>
       {open ? (
         <div className="menu-panel safe-mode-panel" role="menu" aria-label={t("안전 모드")}>

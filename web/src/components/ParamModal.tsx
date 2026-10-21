@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { t } from "../i18n";
 
 interface ParamModalProps {
   params: string[];
@@ -37,8 +38,8 @@ export function ParamModal({ params, initial, onSubmit, onClose }: ParamModalPro
         }}
       >
         <div className="modal-head">
-          <span className="modal-title">쿼리 파라미터</span>
-          <span className="modal-path">{`${params.length}개`}</span>
+          <span className="modal-title">{t("쿼리 파라미터")}</span>
+          <span className="modal-path">{t("{count}개", { count: params.length })}</span>
         </div>
         <div className="modal-body param-body">
           {params.map((name, index) => (
@@ -47,22 +48,22 @@ export function ParamModal({ params, initial, onSubmit, onClose }: ParamModalPro
               <input
                 autoFocus={index === 0}
                 value={values[name] ?? ""}
-                placeholder="값 (문자열은 자동 따옴표)"
+                placeholder={t("값 (문자열은 자동 따옴표)")}
                 onChange={(event) =>
                   setValues((prev) => ({ ...prev, [name]: event.target.value }))
                 }
               />
             </label>
           ))}
-          <p className="helper">값은 SQL 리터럴로 바인딩됩니다. :name 형식만 지원합니다.</p>
+          <p className="helper">{t("값은 SQL 리터럴로 바인딩됩니다. :name 형식만 지원합니다.")}</p>
         </div>
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" onClick={onClose}>
-            취소
+            {t("취소")}
           </button>
           <button type="submit" className="primary">
-            실행
+            {t("실행")}
           </button>
         </div>
       </form>

@@ -48,7 +48,8 @@ function codeOnly(raw: string): RegExpExecArray {
   return Object.assign([""], { index: 0, input: raw }) as unknown as RegExpExecArray;
 }
 
-// The local TablePeek server could not be reached (see store.ts).
+// The local TablePeek server could not be reached (see store.ts). The
+// message may arrive translated, so it is matched in both languages.
 const APP_SERVER_DOWN = "서버에 연결할 수 없습니다";
 
 const DEFAULT_PORTS = "MySQL 3306 · PostgreSQL 5432 · SQL Server 1433 · CockroachDB 26257";
@@ -725,7 +726,8 @@ function explainWith(raw: string, code: string, driver: Driver): ErrorHelp | nul
   if (code === "unauthorized") {
     return tokenHelp();
   }
-  if (raw.trim() === APP_SERVER_DOWN) {
+  const trimmed = raw.trim();
+  if (trimmed === APP_SERVER_DOWN || trimmed === t(APP_SERVER_DOWN)) {
     return appServerDownHelp();
   }
   const context: Context = { raw, code, driver };

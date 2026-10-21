@@ -2,6 +2,7 @@ import type { PkPair, WindowedRowSource } from "./grid/windowSource";
 import { cellToString } from "./rowOps";
 import { TablePeekSocket, TablePeekSocketError, type QueryMeta } from "./net/socket";
 import type { DefinitionKind } from "./sqlTools";
+import { t } from "./i18n";
 
 export interface EngineMeta {
   kind: string;
@@ -68,7 +69,11 @@ export interface TableDetail {
   name: string;
   schema: string | null;
   row_count_estimate: number | null;
+  // Total of data and indexes; the parts and the comment when the driver knows them.
   size_bytes: number | null;
+  data_bytes?: number | null;
+  index_bytes?: number | null;
+  comment?: string | null;
   columns: TableDetailColumn[];
   indexes: TableDetailIndex[];
   foreign_keys: TableDetailForeignKey[];
@@ -344,7 +349,7 @@ function setState(patch: Partial<StoreState>): void {
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message
     ? error.message
-    : UNKNOWN_ERROR;
+    : t(UNKNOWN_ERROR);
 }
 
 export class ApiRequestError extends Error {
@@ -387,7 +392,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       },
     });
   } catch {
-    throw new Error(NETWORK_ERROR);
+    throw new Error(t(NETWORK_ERROR));
   }
   let body: unknown = null;
   try {
@@ -526,7 +531,7 @@ async function runQuery(
     inflight.delete(conn);
     if (error instanceof TablePeekSocketError && error.cancelled) {
       if (isView()) {
-        setState({ status: "idle", error: null, info: CANCELLED_INFO });
+        setState({ status: "idle", error: null, info: t(CANCELLED_INFO) });
       } else if (state.connId === conn) {
         setState({ status: "idle" });
       }
@@ -585,11 +590,11 @@ function isApplying(): boolean {
 // or while a batch is being written, so no change is silently dropped.
 function stagingBlocked(result: GridResult): boolean {
   if (applying) {
-    setState({ info: "변경사항을 적용하는 중입니다" });
+    setState({ info: t("변경사항을 적용하는 중입니다") });
     return true;
   }
   if (state.status === "running" && state.connId === result.conn) {
-    setState({ info: "쿼리 실행 중에는 편집할 수 없습니다" });
+    setState({ info: t("쿼리 실행 중에는 편집할 수 없습니다") });
     return true;
   }
   return false;
@@ -604,7 +609,7 @@ async function editCell(
 ): Promise<EditOutcome | null> {
   const result = state.result;
   if (!result || !result.meta.sourceTable) {
-    setState({ info: "편집할 수 없는 결과입니다" });
+    setState({ info: t("편집할 수 없는 결과입니다") });
     return null;
   }
   if (stagingBlocked(result)) {
@@ -612,19 +617,19 @@ async function editCell(
   }
   const source = result.source;
   if (source.isDeleted(row)) {
-    setState({ info: "삭제 예정인 행은 편집할 수 없습니다" });
+    setState({ info: t("삭제 예정인 행은 편집할 수 없습니다") });
     return null;
   }
   if (source.isInserted(row)) {
     return source.stageEdit(row, col, value, null) ? { row, col, value } : null;
   }
   if (!result.meta.pk || result.meta.pk.length === 0) {
-    setState({ info: "기본 키가 없어 편집할 수 없습니다" });
+    setState({ info: t("기본 키가 없어 편집할 수 없습니다") });
     return null;
   }
   const key = rowKey(result, row);
   if (key === null) {
-    setState({ info: "아직 로드되지 않은 행입니다" });
+    setState({ info: t("아직 로드되지 않은 행입니다") });
     return null;
   }
   return source.stageEdit(row, col, value, key) ? { row, col, value } : null;
@@ -661,7 +666,7 @@ export interface ApplyOutcome {
 function requireRow(rowsAffected: number): void {
   if (rowsAffected === 0) {
     throw new Error(
-      "대상 행을 찾지 못했습니다. 다른 곳에서 변경·삭제되었을 수 있습니다. 새로고침 후 다시 시도하세요.",
+      t("대상 행을 찾지 못했습니다. 다른 곳에서 변경·삭제되었을 수 있습니다. 새로고침 후 다시 시도하세요."),
     );
   }
 }
@@ -739,10 +744,10 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
       } catch {
         // The server may still hold the transaction open; surface the TX controls.
         setState({ tx: "active" });
-        message = `${message} — 롤백하지 못했습니다. 트랜잭션을 확인하세요.`;
+        message = t("{message} — 롤백하지 못했습니다. 트랜잭션을 확인하세요.", { message });
       }
     } else if (!ownTx && phase === "write") {
-      message = `${message} — 일부 변경이 진행 중인 트랜잭션에 반영되었을 수 있습니다. 롤백 후 다시 적용하세요.`;
+      message = t("{message} — 일부 변경이 진행 중인 트랜잭션에 반영되었을 수 있습니다. 롤백 후 다시 적용하세요.", { message });
     }
     setState({ error: message });
     return null;
@@ -762,7 +767,7 @@ function setActiveRunner(runner: (() => void) | null): void {
 
 function activeConnOrThrow(): string {
   if (state.connId === null) {
-    throw new Error("열린 연결이 없습니다");
+    throw new Error(t("열린 연결이 없습니다"));
   }
   return state.connId;
 }

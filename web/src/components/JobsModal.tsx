@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { t } from "../i18n";
 import { clearFinishedJobs, subscribeJobs, type Job } from "../jobs";
 import { ErrorNotice } from "./ErrorNotice";
 
@@ -33,15 +34,15 @@ export function JobsModal({ onClose }: JobsModalProps) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal jobs-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <span className="modal-title">작업 큐</span>
+          <span className="modal-title">{t("작업 큐")}</span>
           <span className="spacer" />
           <button type="button" onClick={clearFinishedJobs}>
-            완료 항목 지우기
+            {t("완료 항목 지우기")}
           </button>
         </div>
         <div className="modal-body jobs-body">
           {jobs.length === 0 ? (
-            <div className="panel-empty-inline">작업이 없습니다</div>
+            <div className="panel-empty-inline">{t("작업이 없습니다")}</div>
           ) : (
             jobs.map((job) => (
               <div className="job-row" key={job.id}>
@@ -59,10 +60,10 @@ export function JobsModal({ onClose }: JobsModalProps) {
                     }
                   >
                     {job.status === "running"
-                      ? "진행 중"
+                      ? t("진행 중")
                       : job.status === "done"
-                        ? "완료"
-                        : "실패"}
+                        ? t("완료")
+                        : t("실패")}
                   </span>
                   <span className="job-time dim">{formatWhen(job.startedAt)}</span>
                 </div>
@@ -78,7 +79,7 @@ export function JobsModal({ onClose }: JobsModalProps) {
                   {job.total > 0
                     ? `${job.done.toLocaleString()} / ${job.total.toLocaleString()}`
                     : job.status === "running"
-                      ? "진행 중…"
+                      ? t("진행 중…")
                       : ""}
                 </div>
                 {job.error ? <ErrorNotice message={job.error} variant="compact" /> : null}
@@ -89,7 +90,7 @@ export function JobsModal({ onClose }: JobsModalProps) {
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" onClick={onClose}>
-            닫기
+            {t("닫기")}
           </button>
         </div>
       </div>

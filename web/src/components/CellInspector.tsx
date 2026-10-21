@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { t } from "../i18n";
 import type { GridResult } from "../store";
+import { FieldBox } from "./FieldBox";
 import { ChevronIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
@@ -42,6 +43,8 @@ interface MoreRow {
 const ROOT = "$";
 // Children listed per container before a "show more" row.
 const CHILD_PAGE = 500;
+// Fields shown on the right for one picked container.
+const FIELD_LIMIT = 300;
 const ARROW = 8;
 const MARGIN = 12;
 
@@ -192,6 +195,17 @@ export function CellInspector({ result, row, col, table, anchor, onClose }: Cell
   const showTree = doc !== null && !raw;
   // Serializing a large document is not free; do it once per picked node.
   const detail = useMemo(() => (current !== null ? detailText(current) : ""), [current]);
+  // The right side lists a picked object's or array's members as fields, or
+  // the picked value alone.
+  const fields = useMemo(() => {
+    if (current === null) {
+      return [];
+    }
+    if (current.kind === "object" || current.kind === "array") {
+      return childrenOf(current.value).map(([key, value]) => ({ key, kind: kindOf(value), value }));
+    }
+    return [{ key: current.key, kind: current.kind, value: current.value }];
+  }, [current]);
 
   useEffect(() => {
     setExpanded(new Set([ROOT]));
@@ -444,16 +458,21 @@ export function CellInspector({ result, row, col, table, anchor, onClose }: Cell
                 )}
               </div>
               <div className="cell-pop-detail">
-                <div className="cell-pop-detail-head">
-                  <span className="cell-pop-detail-key">{current?.key ?? ""}</span>
-                  <span className="cell-pop-detail-kind">{current?.kind ?? ""}</span>
+                <div className="field-list">
+                  {fields.slice(0, FIELD_LIMIT).map((field) => (
+                    <FieldBox key={field.key} name={field.key} type={field.kind} value={field.value} />
+                  ))}
+                  {fields.length > FIELD_LIMIT ? (
+                    <div className="cell-pop-fields-more">
+                      {t("나머지 {count}개는 왼쪽 트리에서 고르세요", {
+                        count: (fields.length - FIELD_LIMIT).toLocaleString(),
+                      })}
+                    </div>
+                  ) : null}
+                  {fields.length === 0 ? (
+                    <div className="panel-empty">{current?.kind === "array" ? "[]" : "{}"}</div>
+                  ) : null}
                 </div>
-                <textarea
-                  className="cell-pop-text"
-                  readOnly
-                  spellCheck={false}
-                  value={detail}
-                />
               </div>
             </>
           ) : (

@@ -2,6 +2,7 @@ import type { RowSource, RowState } from "./rowSource";
 import { palette } from "../palette";
 import { getSettings } from "../settings";
 import { classifyValue } from "./valueKind";
+import { edgeScrollStep } from "./edgeScroll";
 
 const ROW_H = 26;
 const HEADER_H = 28;
@@ -44,7 +45,13 @@ export interface SortIndicator {
 }
 
 type HeaderClickHandler = (columnIndex: number, event: { shiftKey: boolean }) => void;
-type SelectionHandler = (row: number | null) => void;
+// The cursor row, and the span of rows the selection covers (null for a
+// column selection, which takes every row).
+export interface SelectedRows {
+  from: number;
+  to: number;
+}
+type SelectionHandler = (row: number | null, rows: SelectedRows | null) => void;
 type CellContextMenuHandler = (row: number, col: number, x: number, y: number) => void;
 type DeleteRowsHandler = (rows: number[]) => void;
 
@@ -90,6 +97,10 @@ export class CanvasGrid {
   private cursor: CellPos | null = null;
 
   private drag: DragState = { kind: "none" };
+  // Where a selection drag's pointer is, so dragging past an edge keeps
+  // scrolling (and extending the selection) while the pointer holds still.
+  private dragPoint: { x: number; y: number } | null = null;
+  private autoScrollId = 0;
   private focused = false;
 
   private editable: GridEditHandlers | null = null;
@@ -103,7 +114,7 @@ export class CanvasGrid {
   private deleteRowsHandler: DeleteRowsHandler | null = null;
   private quickLook: ((row: number, col: number) => void) | null = null;
   private cellQuickLook: ((row: number, col: number) => void) | null = null;
-  private lastNotifiedRow: number | null = null;
+  private lastNotified = "";
   private pendingHeaderClick: { col: number; x: number; y: number; shiftKey: boolean } | null =
     null;
 
@@ -159,6 +170,7 @@ export class CanvasGrid {
     canvas.addEventListener("pointermove", this.onPointerMove);
     canvas.addEventListener("pointerup", this.onPointerUp);
     canvas.addEventListener("pointercancel", this.onPointerUp);
+    canvas.addEventListener("lostpointercapture", this.onLostCapture);
     canvas.addEventListener("contextmenu", this.onContextMenu);
     canvas.addEventListener("auxclick", this.onAuxClick);
     canvas.addEventListener("dblclick", this.onDblClick);
@@ -317,6 +329,7 @@ export class CanvasGrid {
   }
 
   destroy(): void {
+    this.stopAutoScroll();
     if (this.editor) {
       this.cancelEdit();
     }
@@ -330,6 +343,7 @@ export class CanvasGrid {
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
     this.canvas.removeEventListener("pointercancel", this.onPointerUp);
+    this.canvas.removeEventListener("lostpointercapture", this.onLostCapture);
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
     this.canvas.removeEventListener("auxclick", this.onAuxClick);
     this.canvas.removeEventListener("dblclick", this.onDblClick);
@@ -431,12 +445,15 @@ export class CanvasGrid {
 
   private notifySelection(): void {
     const row = this.selMode === "col" || !this.cursor ? null : this.cursor.row;
-    if (row === this.lastNotifiedRow) {
+    const range = row === null ? null : this.selectionRange();
+    const rows = range === null ? null : { from: range.r0, to: range.r1 };
+    const key = `${row}:${rows?.from}:${rows?.to}`;
+    if (key === this.lastNotified) {
       return;
     }
-    this.lastNotifiedRow = row;
+    this.lastNotified = key;
     if (this.selectionListener) {
-      this.selectionListener(row);
+      this.selectionListener(row, rows);
     }
   }
 
@@ -1220,7 +1237,13 @@ export class CanvasGrid {
     }
     this.resizeSurface();
     this.updateSizer();
-    this.schedulePaint();
+    // A new canvas size clears it; drawing in this same frame (resize
+    // observers run before paint) keeps a panel drag from flashing it blank.
+    if (this.rafId !== 0) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+    this.paint();
   };
 
   private readonly onSourceUpdate = (): void => {
@@ -1380,25 +1403,10 @@ export class CanvasGrid {
       return;
     }
     if (drag.kind === "select") {
-      const p = this.localPos(e);
-      const row = this.hitRowClamped(p.y);
-      const col = this.hitColClamped(p.x);
-      if (this.selMode === "row") {
-        if (!this.cursor || this.cursor.row !== row) {
-          this.cursor = { row, col: 0 };
-          this.notifySelection();
-          this.schedulePaint();
-        }
-      } else if (this.selMode === "col") {
-        if (!this.cursor || this.cursor.col !== col) {
-          this.cursor = { row: 0, col };
-          this.notifySelection();
-          this.schedulePaint();
-        }
-      } else if (!this.cursor || this.cursor.row !== row || this.cursor.col !== col) {
-        this.cursor = { row, col };
-        this.notifySelection();
-        this.schedulePaint();
+      this.dragPoint = { x: e.clientX, y: e.clientY };
+      this.extendSelectionTo(e.clientX, e.clientY);
+      if (this.autoScrollId === 0) {
+        this.autoScrollId = requestAnimationFrame(this.autoScrollTick);
       }
       return;
     }
@@ -1429,7 +1437,76 @@ export class CanvasGrid {
     }
   };
 
+  private extendSelectionTo(clientX: number, clientY: number): void {
+    const p = this.localPos({ clientX, clientY });
+    const row = this.hitRowClamped(p.y);
+    const col = this.hitColClamped(p.x);
+    if (this.selMode === "row") {
+      if (!this.cursor || this.cursor.row !== row) {
+        this.cursor = { row, col: 0 };
+        this.notifySelection();
+        this.schedulePaint();
+      }
+    } else if (this.selMode === "col") {
+      if (!this.cursor || this.cursor.col !== col) {
+        this.cursor = { row: 0, col };
+        this.notifySelection();
+        this.schedulePaint();
+      }
+    } else if (!this.cursor || this.cursor.row !== row || this.cursor.col !== col) {
+      this.cursor = { row, col };
+      this.notifySelection();
+      this.schedulePaint();
+    }
+  }
+
+  // Runs every frame while a selection drag sits in an edge zone of the
+  // visible cells: scrolls that way and extends the selection with it.
+  private readonly autoScrollTick = (): void => {
+    this.autoScrollId = 0;
+    const point = this.dragPoint;
+    if (this.drag.kind !== "select" || point === null) {
+      return;
+    }
+    const rect = this.canvas.getBoundingClientRect();
+    const dx =
+      this.selMode === "row" ? 0 : edgeScrollStep(point.x, rect.left + this.gutterW, rect.right);
+    const dy =
+      this.selMode === "col" ? 0 : edgeScrollStep(point.y, rect.top + HEADER_H, rect.bottom);
+    if (dx === 0 && dy === 0) {
+      return;
+    }
+    const before = this.scroller.scrollLeft + this.scroller.scrollTop;
+    this.scroller.scrollLeft += dx;
+    this.scroller.scrollTop += dy;
+    // At the end of the content there is nothing left to scroll; the next
+    // pointer move starts the loop again if it can go on.
+    if (this.scroller.scrollLeft + this.scroller.scrollTop === before) {
+      return;
+    }
+    this.extendSelectionTo(point.x, point.y);
+    this.autoScrollId = requestAnimationFrame(this.autoScrollTick);
+  };
+
+  private stopAutoScroll(): void {
+    if (this.autoScrollId !== 0) {
+      cancelAnimationFrame(this.autoScrollId);
+      this.autoScrollId = 0;
+    }
+    this.dragPoint = null;
+  }
+
+  // Capture can go away without a pointerup (the window loses focus, say);
+  // the drag ends there too.
+  private readonly onLostCapture = (): void => {
+    this.stopAutoScroll();
+    if (this.drag.kind === "select") {
+      this.drag = { kind: "none" };
+    }
+  };
+
   private readonly onPointerUp = (e: PointerEvent): void => {
+    this.stopAutoScroll();
     if (this.canvas.hasPointerCapture(e.pointerId)) {
       this.canvas.releasePointerCapture(e.pointerId);
     }

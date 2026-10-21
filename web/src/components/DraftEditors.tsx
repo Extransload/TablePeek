@@ -1,5 +1,6 @@
 import type { ColumnDraft, DiffResult, FkDraft, IndexDraft } from "../ddl";
 import { draftKey } from "../ddl";
+import { t } from "../i18n";
 import { UpIcon } from "./icons";
 
 interface ColumnsEditorProps {
@@ -28,11 +29,11 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
     <div className="draft-table">
       <div className="draft-row draft-head">
         <span className="draft-move" />
-        <span>이름</span>
-        <span>타입</span>
+        <span>{t("이름")}</span>
+        <span>{t("타입")}</span>
         <span className="draft-nn">NN</span>
         <span className="draft-pk">PK</span>
-        <span>기본값</span>
+        <span>{t("기본값")}</span>
         <span />
       </div>
       {columns.map((column, index) => (
@@ -40,7 +41,7 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
           <span className="draft-move">
             <button
               type="button"
-              title="위로"
+              title={t("위로")}
               disabled={index === 0}
               onClick={() => onChange(moveItem(columns, index, -1))}
             >
@@ -49,7 +50,7 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
             <button
               type="button"
               className="down"
-              title="아래로"
+              title={t("아래로")}
               disabled={index === columns.length - 1}
               onClick={() => onChange(moveItem(columns, index, 1))}
             >
@@ -59,13 +60,13 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
           <input
             value={column.name}
             spellCheck={false}
-            placeholder="컬럼 이름"
+            placeholder={t("컬럼 이름")}
             onChange={(event) => patch(index, { name: event.target.value })}
           />
           <input
             value={column.type}
             spellCheck={false}
-            placeholder="타입"
+            placeholder={t("타입")}
             onChange={(event) => patch(index, { type: event.target.value })}
           />
           <label className="draft-check draft-nn">
@@ -85,13 +86,13 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
           <input
             value={column.def}
             spellCheck={false}
-            placeholder="기본값"
+            placeholder={t("기본값")}
             onChange={(event) => patch(index, { def: event.target.value })}
           />
           <button
             type="button"
             className="draft-remove"
-            title="컬럼 삭제"
+            title={t("컬럼 삭제")}
             onClick={() => onChange(columns.filter((_, i) => i !== index))}
           >
             ×
@@ -116,7 +117,7 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
           ])
         }
       >
-        + 컬럼 추가
+        {t("+ 컬럼 추가")}
       </button>
     </div>
   );
@@ -135,9 +136,9 @@ export function IndexesEditor({ indexes, onChange }: IndexesEditorProps) {
   return (
     <div className="draft-table">
       <div className="draft-row draft-head">
-        <span>이름</span>
+        <span>{t("이름")}</span>
         <span className="draft-unique">UNIQUE</span>
-        <span>컬럼 (쉼표 구분)</span>
+        <span>{t("컬럼 (쉼표 구분)")}</span>
         <span />
       </div>
       {indexes.map((index, i) => (
@@ -145,7 +146,7 @@ export function IndexesEditor({ indexes, onChange }: IndexesEditorProps) {
           <input
             value={index.name}
             spellCheck={false}
-            placeholder="인덱스 이름"
+            placeholder={t("인덱스 이름")}
             onChange={(event) => patch(i, { name: event.target.value })}
           />
           <label className="draft-check draft-unique">
@@ -164,7 +165,7 @@ export function IndexesEditor({ indexes, onChange }: IndexesEditorProps) {
           <button
             type="button"
             className="draft-remove"
-            title="인덱스 삭제"
+            title={t("인덱스 삭제")}
             onClick={() => onChange(indexes.filter((_, j) => j !== i))}
           >
             ×
@@ -181,7 +182,7 @@ export function IndexesEditor({ indexes, onChange }: IndexesEditorProps) {
           ])
         }
       >
-        + 인덱스 추가
+        {t("+ 인덱스 추가")}
       </button>
     </div>
   );
@@ -200,10 +201,10 @@ export function FksEditor({ fks, onChange }: FksEditorProps) {
   return (
     <div className="draft-table">
       <div className="draft-row draft-head">
-        <span>이름</span>
-        <span>컬럼 (쉼표 구분)</span>
-        <span>참조 테이블</span>
-        <span>참조 컬럼</span>
+        <span>{t("이름")}</span>
+        <span>{t("컬럼 (쉼표 구분)")}</span>
+        <span>{t("참조 테이블")}</span>
+        <span>{t("참조 컬럼")}</span>
         <span />
       </div>
       {fks.map((fk, i) => (
@@ -211,7 +212,7 @@ export function FksEditor({ fks, onChange }: FksEditorProps) {
           <input
             value={fk.name}
             spellCheck={false}
-            placeholder="제약 이름"
+            placeholder={t("제약 이름")}
             onChange={(event) => patch(i, { name: event.target.value })}
           />
           <input
@@ -235,7 +236,7 @@ export function FksEditor({ fks, onChange }: FksEditorProps) {
           <button
             type="button"
             className="draft-remove"
-            title="외래 키 삭제"
+            title={t("외래 키 삭제")}
             onClick={() => onChange(fks.filter((_, j) => j !== i))}
           >
             ×
@@ -252,7 +253,7 @@ export function FksEditor({ fks, onChange }: FksEditorProps) {
           ])
         }
       >
-        + 외래 키 추가
+        {t("+ 외래 키 추가")}
       </button>
     </div>
   );
@@ -266,14 +267,14 @@ export function DdlPreview({ result }: DdlPreviewProps) {
   return (
     <div className="panel-code">
       <div className="panel-code-head">
-        <span className="dim">{`실행할 문장 ${result.statements.length}개`}</span>
+        <span className="dim">{t("실행할 문장 {count}개", { count: result.statements.length })}</span>
       </div>
       {result.errors.length > 0 ? (
         <div className="panel-error">{result.errors.join("\n")}</div>
       ) : null}
       <pre className="panel-pre">
         {result.statements.length === 0
-          ? "변경 사항이 없습니다"
+          ? t("변경 사항이 없습니다")
           : result.statements.map((statement) => `${statement};`).join("\n")}
       </pre>
     </div>

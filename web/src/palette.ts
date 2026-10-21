@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export type ValueKind =
   | "string"
   | "integer"
@@ -619,7 +621,7 @@ export function isCustomTheme(id: string): boolean {
 
 export function themeFromJson(input: unknown): Theme {
   if (typeof input !== "object" || input === null) {
-    throw new Error("테마 JSON 객체가 아닙니다");
+    throw new Error(t("테마 JSON 객체가 아닙니다"));
   }
   const source = input as Record<string, unknown>;
   const label =

@@ -1,4 +1,5 @@
 import { addActivity } from "./activity";
+import { t } from "./i18n";
 
 export type JobStatus = "running" | "done" | "error";
 
@@ -90,7 +91,7 @@ export function startJob(label: string, detail: string, total: number): JobHandl
           ? { ...entry, status: "error", error: message, finishedAt: Date.now() }
           : entry,
       );
-      addActivity("job", `${job.label} 실패`, message);
+      addActivity("job", t("{label} 실패", { label: job.label }), message);
       emit();
     },
   };

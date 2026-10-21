@@ -440,11 +440,71 @@ pub(crate) async fn delete_row(
     Ok(changed)
 }
 
+const DETAIL_SAVEPOINT: &str = "tablepeek_detail";
+
 pub(crate) async fn table_detail(
     inner: &PostgresInner,
     name: &str,
 ) -> Result<TableDetail, EngineError> {
     let client = inner.client.lock().await;
+    // The lookups below may fail on servers that lack a catalog view or
+    // function (CockroachDB has no pg_table_size, say). Inside the user's open
+    // transaction one failed statement aborts it, and a later COMMIT quietly
+    // rolls back, so there a savepoint fences them off. now() is the
+    // transaction's start, so it differs from statement_timestamp() only
+    // inside an explicit transaction block.
+    let in_block = client
+        .query_one("SELECT now() <> statement_timestamp()", &[])
+        .await
+        .map(|row| row.get::<_, bool>(0))
+        .unwrap_or(true);
+    let fenced = in_block
+        && client
+            .batch_execute(&format!("SAVEPOINT {DETAIL_SAVEPOINT}"))
+            .await
+            .is_ok();
+    let detail = table_detail_in(&client, inner, name, fenced).await;
+    if fenced {
+        if detail.is_err() {
+            recover(&client, fenced).await;
+        }
+        let _ = client
+            .batch_execute(&format!("RELEASE SAVEPOINT {DETAIL_SAVEPOINT}"))
+            .await;
+    }
+    detail
+}
+
+// After a failed lookup inside the fence, return to the savepoint so the
+// transaction stays usable for the next statement.
+async fn recover(client: &Client, fenced: bool) {
+    if fenced {
+        let _ = client
+            .batch_execute(&format!("ROLLBACK TO SAVEPOINT {DETAIL_SAVEPOINT}"))
+            .await;
+    }
+}
+
+async fn ok_or_recover<T>(
+    client: &Client,
+    fenced: bool,
+    result: Result<T, tokio_postgres::Error>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(_) => {
+            recover(client, fenced).await;
+            None
+        }
+    }
+}
+
+async fn table_detail_in(
+    client: &Client,
+    inner: &PostgresInner,
+    name: &str,
+    fenced: bool,
+) -> Result<TableDetail, EngineError> {
     let (schema_name, table_name) = split_display(name);
     let relation = client
         .query_opt(
@@ -497,6 +557,8 @@ pub(crate) async fn table_detail(
                 columns: row.get::<_, Option<Vec<String>>>(3).unwrap_or_default(),
             });
         }
+    } else {
+        recover(client, fenced).await;
     }
     indexes.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -530,44 +592,99 @@ pub(crate) async fn table_detail(
                 ref_columns: row.get::<_, Option<Vec<String>>>(4).unwrap_or_default(),
             });
         }
+    } else {
+        recover(client, fenced).await;
     }
 
-    let mut row_count_estimate = client
-        .query_opt(
-            "SELECT reltuples::bigint FROM pg_class WHERE oid = $1",
-            &[&oid],
+    let mut row_count_estimate = ok_or_recover(
+        client,
+        fenced,
+        client
+            .query_opt("SELECT reltuples::bigint FROM pg_class WHERE oid = $1", &[&oid])
+            .await,
+    )
+    .await
+    .flatten()
+    .and_then(|row| row.get::<_, Option<i64>>(0))
+    .filter(|count| *count >= 0);
+    if row_count_estimate.is_none() && inner.kind == "cockroach" {
+        let table_id = i64::from(oid);
+        row_count_estimate = ok_or_recover(
+            client,
+            fenced,
+            client
+                .query_opt(
+                    "SELECT estimated_row_count FROM crdb_internal.table_row_statistics \
+                     WHERE table_id = $1",
+                    &[&table_id],
+                )
+                .await,
         )
         .await
-        .ok()
         .flatten()
         .and_then(|row| row.get::<_, Option<i64>>(0))
         .filter(|count| *count >= 0);
-    if row_count_estimate.is_none() && inner.kind == "cockroach" {
-        let table_id = i64::from(oid);
-        row_count_estimate = client
-            .query_opt(
-                "SELECT estimated_row_count FROM crdb_internal.table_row_statistics \
-                 WHERE table_id = $1",
-                &[&table_id],
-            )
-            .await
-            .ok()
-            .flatten()
-            .and_then(|row| row.get::<_, Option<i64>>(0))
-            .filter(|count| *count >= 0);
     }
 
-    let size_bytes = client
-        .query_opt("SELECT pg_total_relation_size($1::oid)", &[&oid])
-        .await
-        .ok()
-        .flatten()
-        .map(|row| row.get::<_, i64>(0));
+    let sizes = ok_or_recover(
+        client,
+        fenced,
+        client
+            .query_opt(
+                "SELECT pg_table_size($1::oid), pg_indexes_size($1::oid), \
+                 pg_total_relation_size($1::oid)",
+                &[&oid],
+            )
+            .await,
+    )
+    .await
+    .flatten()
+    .map(|row| {
+        (
+            row.get::<_, Option<i64>>(0),
+            row.get::<_, Option<i64>>(1),
+            row.get::<_, Option<i64>>(2),
+        )
+    });
+    // CockroachDB may lack the split size functions; keep the total-only query
+    // as a fallback so size_bytes never regresses.
+    let (data_bytes, index_bytes, size_bytes) = match sizes {
+        Some(sizes) => sizes,
+        None => (
+            None,
+            None,
+            ok_or_recover(
+                client,
+                fenced,
+                client
+                    .query_opt("SELECT pg_total_relation_size($1::oid)", &[&oid])
+                    .await,
+            )
+            .await
+            .flatten()
+            .map(|row| row.get::<_, i64>(0)),
+        ),
+    };
+
+    let comment = ok_or_recover(
+        client,
+        fenced,
+        client
+            .query_opt("SELECT obj_description($1::oid, 'pg_class')", &[&oid])
+            .await,
+    )
+    .await
+    .flatten()
+    .and_then(|row| row.get::<_, Option<String>>(0))
+    .filter(|text| !text.is_empty());
 
     Ok(TableDetail {
         name: display_name(&schema_name, &table_name),
         row_count_estimate,
         size_bytes,
+        data_bytes,
+        index_bytes,
+        comment,
         ddl: Some(build_create_table(&qualified_ref, &columns)),
         columns,
         indexes,

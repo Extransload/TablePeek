@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, VALUE_KINDS, palette, themeFromJson } from "../palette";
 import {
+  MAX_ROWS_LIMIT,
   getPasscodeHash,
   setPasscodeHash,
   sha256Hex,
@@ -184,7 +185,7 @@ export function SettingsModal({
     } catch (err) {
       setThemeMessage(
         err instanceof Error && err.message
-          ? `가져오지 못했습니다: ${err.message}`
+          ? t("가져오지 못했습니다: {message}", { message: err.message })
           : t("가져오지 못했습니다"),
       );
     } finally {
@@ -503,6 +504,27 @@ export function SettingsModal({
               </div>
 
               <div className="settings-category" hidden={category !== "data"}>
+                <section className="settings-section">
+                  <h4>{t("쿼리")}</h4>
+                  <div className="settings-row">
+                    <span className="settings-label">{t("최대 행")}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_ROWS_LIMIT}
+                      value={settings.maxRows}
+                      onChange={(event) =>
+                        onChange({
+                          maxRows: Math.min(
+                            MAX_ROWS_LIMIT,
+                            Math.max(1, Math.trunc(Number(event.target.value)) || 1),
+                          ),
+                        })
+                      }
+                    />
+                  </div>
+                  <p className="helper">{t("쿼리 한 번에 가져오는 최대 행 수입니다.")}</p>
+                </section>
                 <section className="settings-section">
                   <h4>{t("가져오기 · 내보내기 기본값")}</h4>
                   <div className="settings-row">

@@ -21,13 +21,10 @@ import {
   FileIcon,
   KeyIcon,
   ListIcon,
+  MoreIcon,
   PinIcon,
-  PlusIcon,
-  RefreshIcon,
   SearchIcon,
-  ServerIcon,
   TableIcon,
-  UserIcon,
 } from "./icons";
 
 export type TableAction =
@@ -62,6 +59,8 @@ interface SchemaSidebarProps {
   onOpenCreateTable(): void;
   onOpenSql(sql: string, title: string): void;
   onOpenUsers(): void;
+  // Offered only for servers that hold several databases.
+  onSwitchDatabase?(x: number, y: number): void;
 }
 
 const EMPTY_OBJECTS: ObjectList = {
@@ -153,6 +152,7 @@ export function SchemaSidebar({
   onOpenCreateTable,
   onOpenSql,
   onOpenUsers,
+  onSwitchDatabase,
 }: SchemaSidebarProps) {
   // Seeded from the cache so switching back to a connection paints at once.
   const [tables, setTables] = useState<TableSchema[] | null>(() =>
@@ -176,6 +176,7 @@ export function SchemaSidebar({
     obj: ObjectKind;
     name: string;
   } | null>(null);
+  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
   const [sectionMenu, setSectionMenu] = useState<{
     x: number;
     y: number;
@@ -197,7 +198,7 @@ export function SchemaSidebar({
     try {
       setTables(await loadSchema(conn, system, refreshKey, force));
     } catch (err) {
-      setError(errorOf(err, "스키마를 불러오지 못했습니다"));
+      setError(errorOf(err, t("스키마를 불러오지 못했습니다")));
     } finally {
       setLoading(false);
     }
@@ -489,53 +490,6 @@ export function SchemaSidebar({
     <div
       className="schema-sidebar"
     >
-      <div className="sidebar-head">
-        <span className="sidebar-title">{t("스키마")}</span>
-        {tables ? <span className="schema-count">{tables.length}</span> : null}
-        <span className="spacer" />
-        <button
-          type="button"
-          className={system ? "chip-button active" : "chip-button"}
-          title={t("시스템 스키마/테이블 표시")}
-          onClick={toggleSystem}
-        >
-          SYS
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          title={t("새 테이블 생성")}
-          onClick={onOpenCreateTable}
-        >
-          <PlusIcon size={12} />
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          title={t("테이블 개요")}
-          onClick={onOpenOverview}
-        >
-          <ListIcon size={12} />
-        </button>
-        <button type="button" className="icon-button" title={t("사용자 관리")} onClick={onOpenUsers}>
-          <UserIcon size={12} />
-        </button>
-        <button type="button" className="icon-button" title={t("서버 정보")} onClick={onOpenServer}>
-          <ServerIcon size={12} />
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          title={t("스키마 새로고침")}
-          disabled={loading}
-          onClick={() => {
-            forceRef.current = true;
-            setNonce((value) => value + 1);
-          }}
-        >
-          {loading ? <Spinner size={11} /> : <RefreshIcon size={12} />}
-        </button>
-      </div>
       <div className="schema-search">
         <SearchIcon size={11} className="schema-search-icon" />
         <input
@@ -544,6 +498,19 @@ export function SchemaSidebar({
           spellCheck={false}
           onChange={(event) => setFilter(event.target.value)}
         />
+        {/* Everything else the sidebar offers sits behind one menu, as in TablePlus. */}
+        <button
+          type="button"
+          className="icon-button schema-more"
+          title={t("더 보기")}
+          aria-haspopup="menu"
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setMoreMenu({ x: rect.left, y: rect.bottom + 4 });
+          }}
+        >
+          {loading ? <Spinner size={11} /> : <MoreIcon size={13} />}
+        </button>
       </div>
       <div className="schema-list" ref={listRef}>
         {error ? (
@@ -702,7 +669,7 @@ export function SchemaSidebar({
                     const detail = await store.fetchDefinition(conn, objectMenu.obj, objectMenu.name);
                     onOpenSql(detail.ddl ?? `-- ${objectMenu.name}`, objectMenu.name);
                   } catch {
-                    store.setError("정의를 불러오지 못했습니다");
+                    store.setError(t("정의를 불러오지 못했습니다"));
                   }
                 })();
               },
@@ -717,6 +684,36 @@ export function SchemaSidebar({
           onClose={() => setObjectMenu(null)}
         />
       ) : null}
+      {moreMenu !== null ? (
+        <ContextMenu
+          x={moreMenu.x}
+          y={moreMenu.y}
+          items={[
+            {
+              label: t("스키마 새로고침"),
+              disabled: loading,
+              onSelect: () => {
+                forceRef.current = true;
+                setNonce((value) => value + 1);
+              },
+            },
+            ...(onSwitchDatabase !== undefined
+              ? [{ label: t("데이터베이스 전환…"), onSelect: () => onSwitchDatabase(moreMenu.x, moreMenu.y) }]
+              : []),
+            { label: t("새 테이블 생성"), separatorBefore: true, onSelect: onOpenCreateTable },
+            { label: t("테이블 개요"), onSelect: onOpenOverview },
+            { label: t("서버 정보"), onSelect: onOpenServer },
+            { label: t("사용자 관리"), onSelect: onOpenUsers },
+            {
+              label: t("시스템 스키마/테이블 표시"),
+              checked: system,
+              separatorBefore: true,
+              onSelect: toggleSystem,
+            },
+          ]}
+          onClose={() => setMoreMenu(null)}
+        />
+      ) : null}
       {sectionMenu !== null ? (
         <ContextMenu
           x={sectionMenu.x}
@@ -727,10 +724,10 @@ export function SchemaSidebar({
               onSelect: () => {
                 const template = createTemplate(kind, sectionMenu.obj);
                 if (template === "") {
-                  store.setInfo("이 엔진은 해당 오브젝트 템플릿을 지원하지 않습니다");
+                  store.setInfo(t("이 엔진은 해당 오브젝트 템플릿을 지원하지 않습니다"));
                   return;
                 }
-                onOpenSql(template, `${sectionMenu.obj} 템플릿`);
+                onOpenSql(template, t("{kind} 템플릿", { kind: sectionMenu.obj }));
               },
             },
           ]}

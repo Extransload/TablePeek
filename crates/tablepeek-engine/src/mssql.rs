@@ -659,6 +659,36 @@ pub(crate) async fn table_detail(
         })
         .unwrap_or((None, None));
 
+    // Data size and comment are extras: a failure here leaves them empty
+    // instead of failing the whole detail.
+    let extra = match client
+        .query(
+            "SELECT (SELECT SUM(au.total_pages) * 8192
+                     FROM sys.allocation_units au
+                     JOIN sys.partitions p ON p.partition_id = au.container_id
+                     WHERE p.object_id = OBJECT_ID(@P1) AND p.index_id IN (0,1)),
+                    (SELECT CAST(ep.value AS nvarchar(4000))
+                     FROM sys.extended_properties ep
+                     WHERE ep.class = 1 AND ep.major_id = OBJECT_ID(@P1)
+                       AND ep.minor_id = 0 AND ep.name = 'MS_Description')",
+            &[&object_ref as &dyn ToSql],
+        )
+        .await
+    {
+        Ok(stream) => stream.into_row().await.ok().flatten(),
+        Err(_) => None,
+    };
+    let (data_bytes, comment) = extra
+        .map(|row| {
+            let values: Vec<ColumnData<'static>> = row.into_iter().collect();
+            (cd_i64(values.first()), cd_string(values.get(1)))
+        })
+        .unwrap_or((None, None));
+    let comment = comment.filter(|text| !text.is_empty());
+    let index_bytes = size_bytes
+        .zip(data_bytes)
+        .map(|(total, data)| (total - data).max(0));
+
     let table_ref = qualified(&inner.database, &schema, &table_name);
     Ok(TableDetail {
         name: if schema_part.is_some() {
@@ -668,6 +698,9 @@ pub(crate) async fn table_detail(
         },
         row_count_estimate,
         size_bytes,
+        data_bytes,
+        index_bytes,
+        comment,
         ddl: Some(build_create_table(&table_ref, &schema, &columns)),
         columns,
         indexes,

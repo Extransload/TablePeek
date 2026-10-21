@@ -15,6 +15,11 @@ interface ConnSwitcherProps {
   onClose(id: string): void;
 }
 
+// The server names the demo in Korean; show it in the UI language.
+function connLabel(conn: ConnSummary): string {
+  return conn.demo ? t("데모 데이터베이스") : conn.label;
+}
+
 export function ConnSwitcher({
   conns,
   activeId,
@@ -49,7 +54,7 @@ export function ConnSwitcher({
                 aria-selected={active}
                 className={`conn-tab${active ? " active" : ""}${conn.is_default ? "" : " closable"}`}
                 onClick={() => onSwitch(conn.id)}
-                title={`${conn.label} · ${driverName(conn.kind)} — ${
+                title={`${connLabel(conn)} · ${driverName(conn.kind)} — ${
                   state === "open"
                     ? t("연결됨")
                     : state === "connecting"
@@ -63,7 +68,7 @@ export function ConnSwitcher({
                 <span className="conn-tab-icon">
                   <DriverIcon kind={conn.kind} />
                 </span>
-                <span className="conn-tab-label">{conn.label}</span>
+                <span className="conn-tab-label">{connLabel(conn)}</span>
               </button>
               {conn.is_default ? null : (
                 <button

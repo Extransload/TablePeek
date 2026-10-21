@@ -67,7 +67,7 @@ export function StructurePanel({
         }
       } catch (err) {
         if (!cancelled) {
-          setError(errorOf(err, "테이블 정보를 불러오지 못했습니다"));
+          setError(errorOf(err, t("테이블 정보를 불러오지 못했습니다")));
         }
       } finally {
         if (!cancelled) {
@@ -105,7 +105,7 @@ export function StructurePanel({
     if (result.statements.length === 0) {
       setEditing(false);
       setDraft(null);
-      store.setInfo("변경 사항이 없습니다");
+      store.setInfo(t("변경 사항이 없습니다"));
       return;
     }
     setBusy(true);
@@ -114,15 +114,19 @@ export function StructurePanel({
       for (const statement of result.statements) {
         await store.exec(conn, statement);
       }
-      store.setInfo(`구조를 변경했습니다 (${result.statements.length}문장)`);
-      addActivity("ddl", `구조 변경: ${table}`, `${result.statements.length}문장`);
+      store.setInfo(t("구조를 변경했습니다 ({count}문장)", { count: result.statements.length }));
+      addActivity(
+        "ddl",
+        t("구조 변경: {table}", { table }),
+        t("{count}문장", { count: result.statements.length }),
+      );
       setEditing(false);
       setDraft(null);
       setPreview(false);
       setNonce((value) => value + 1);
       onChanged();
     } catch (err) {
-      setSaveError(errorOf(err, "구조 변경에 실패했습니다"));
+      setSaveError(errorOf(err, t("구조 변경에 실패했습니다")));
     } finally {
       setBusy(false);
     }

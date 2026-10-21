@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { t } from "../i18n";
+import { t, tServer } from "../i18n";
 import { store, type HistoryEntry } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { CloseIcon } from "./icons";
@@ -145,7 +145,7 @@ export function ConsolePanel({ conn, version, height, onOpenSql, onClose }: Cons
               </span>
               <span className="console-sql">
                 {entry.sql.replace(/\s+/g, " ")}
-                {entry.error !== undefined ? <span className="console-error">{entry.error}</span> : null}
+                {entry.error !== undefined ? <span className="console-error">{tServer(entry.error)}</span> : null}
               </span>
             </div>
           ))

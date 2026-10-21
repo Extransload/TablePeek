@@ -241,52 +241,8 @@ select {
   color: var(--faint);
 }
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: var(--toolbar-h);
-  padding: 0 6px;
-  background: var(--head);
-  border-bottom: 1px solid var(--line);
-  flex: none;
-}
-
 .run-button {
   padding: 0 10px;
-}
-
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-}
-
-.max-rows {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.max-rows input {
-  width: 68px;
-  height: 20px;
-  padding: 0 5px;
-  background: var(--bg);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.max-rows input:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 
 .tx-badge {
@@ -787,27 +743,6 @@ select {
   flex-direction: column;
   background: var(--panel);
   border-right: 1px solid var(--line);
-}
-
-.sidebar-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px 0 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.sidebar-title {
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.schema-count {
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 11px;
 }
 
 .schema-search {
@@ -1591,147 +1526,6 @@ select {
   background: var(--panel);
   border-left: 1px solid var(--line);
   z-index: 5;
-}
-
-.row-detail-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 4px 0 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.row-detail-title {
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.row-detail-row {
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 400;
-}
-
-.detail-tabs {
-  display: flex;
-  gap: 2px;
-}
-
-.detail-tabs button {
-  height: 20px;
-  padding: 0 8px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.detail-tabs button.active {
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-.row-detail-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-.row-detail-empty {
-  padding: 16px 12px;
-  color: var(--faint);
-  font-size: 12px;
-  text-align: center;
-}
-
-.detail-fields {
-  display: flex;
-  flex-direction: column;
-}
-
-.detail-field {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 4px 6px 4px 10px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.detail-field-name {
-  flex: none;
-  width: 102px;
-  color: var(--muted);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.detail-field-value {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.detail-field-value.null {
-  color: var(--faint);
-  font-style: italic;
-}
-
-.detail-copy {
-  flex: none;
-  height: 18px;
-  padding: 0 4px;
-  background: transparent;
-  color: var(--faint);
-}
-
-.detail-copy:hover {
-  background: transparent;
-  color: var(--ink);
-}
-
-.detail-blocks {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 8px;
-}
-
-.detail-block {
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--bg);
-}
-
-.detail-block-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 4px 2px 8px;
-  background: var(--head);
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.detail-pre {
-  margin: 0;
-  padding: 8px;
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .context-menu {
@@ -2617,25 +2411,6 @@ input.num-box::-webkit-outer-spin-button {
   color: var(--warn);
 }
 
-.detail-json-editor {
-  width: 100%;
-  min-height: 220px;
-  padding: 8px;
-  background: var(--bg);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  resize: vertical;
-}
-
-.detail-json-editor:focus {
-  outline: none;
-  border-color: var(--accent-line);
-}
-
 .link-button {
   background: transparent;
   border: none;
@@ -3465,10 +3240,6 @@ textarea:focus-visible {
   border-bottom-color: var(--line-soft);
 }
 
-.toolbar {
-  border-bottom-color: var(--line-soft);
-}
-
 .conn-badge,
 .conn-switcher-button {
   border-radius: 999px;
@@ -3514,7 +3285,6 @@ textarea:focus-visible {
 }
 
 .tab-rename,
-.max-rows input,
 .menu-input,
 .schema-search input {
   border-radius: var(--r-sm);
@@ -3608,10 +3378,6 @@ textarea:focus-visible {
 
 .schema-sidebar {
   border-right-color: var(--line-soft);
-}
-
-.sidebar-head {
-  border-bottom-color: var(--line-soft);
 }
 
 .schema-search {
@@ -3860,57 +3626,6 @@ textarea:focus-visible {
 
 /* ── M16.1: 사이드바 밀도/정렬 ─────────────────────────────── */
 
-.sidebar-head {
-  height: 32px;
-  gap: 2px;
-  padding: 0 5px 0 10px;
-}
-
-.sidebar-title {
-  flex: none;
-  white-space: nowrap;
-}
-
-.schema-count {
-  flex: none;
-  margin-right: 2px;
-}
-
-.sidebar-head .spacer {
-  min-width: 2px;
-}
-
-.sidebar-head .chip-button {
-  height: 20px;
-  padding: 0 7px;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
-}
-
-.sidebar-head .chip-button:hover {
-  background: var(--hover-fill);
-  color: var(--ink);
-}
-
-.sidebar-head .chip-button.active {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-.sidebar-head .icon-button {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  justify-content: center;
-  border-radius: var(--r-xs);
-}
-
 .schema-search {
   padding: 6px 8px 7px;
 }
@@ -4069,17 +3784,6 @@ textarea:focus-visible {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-}
-
-.tx-auto {
-  color: var(--faint);
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-
-.toolbar-right {
-  margin-left: auto;
 }
 
 /* ── M17: 디자인 시스템 / 입력 · 모션 ─────────────────────── */
@@ -4455,134 +4159,6 @@ input[type="color"]::-webkit-color-swatch {
   color: var(--accent);
 }
 
-.detail-fk-badge {
-  display: inline-flex;
-  align-items: center;
-  height: 13px;
-  margin-left: 4px;
-  padding: 0 3px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  border-radius: 3px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 8px;
-  line-height: 1;
-}
-
-.detail-relation-jump {
-  color: var(--accent);
-}
-
-.detail-relations {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-}
-
-.relation-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  padding: 0 2px 2px;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.relation-card {
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-sm);
-  background: var(--bg);
-  overflow: hidden;
-}
-
-.relation-card-head {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 26px;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--line-soft);
-  background: color-mix(in srgb, var(--head) 50%, transparent);
-  color: var(--accent);
-}
-
-.relation-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.relation-target {
-  margin-left: auto;
-  flex: none;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.relation-pairs {
-  display: flex;
-  flex-direction: column;
-}
-
-.relation-pair {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  height: 27px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink);
-  box-shadow: none;
-  font-family: var(--mono);
-  font-size: 10px;
-  text-align: left;
-}
-
-.relation-pair:hover:not(:disabled) {
-  background: var(--hover-fill);
-  box-shadow: none;
-}
-
-.relation-pair:disabled {
-  opacity: 0.55;
-}
-
-.relation-local {
-  color: var(--syntax-label);
-}
-
-.relation-op,
-.relation-arrow {
-  color: var(--faint);
-}
-
-.relation-value {
-  max-width: 84px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--syntax-string);
-}
-
-.relation-ref {
-  margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--accent);
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -4641,14 +4217,6 @@ textarea:focus-visible {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   color: var(--ink);
-}
-
-.toolbar-icon {
-  position: relative;
-  width: 24px;
-  height: 22px;
-  padding: 0;
-  justify-content: center;
 }
 
 .toolbar-badge {
@@ -5442,17 +5010,9 @@ body.col-resizing * {
   user-select: none !important;
 }
 
-.sidebar-head {
-  background: transparent;
-}
-
+/* Table icons carry the accent colour; the open table's icon is lighter. */
 .schema-table-icon {
   flex: none;
-  color: var(--faint);
-}
-
-.schema-table-row:hover .schema-table-icon,
-.schema-table-row:focus-visible .schema-table-icon {
   color: var(--accent);
 }
 
@@ -5675,16 +5235,6 @@ body.col-resizing * {
 .conn-bar-add {
   width: 32px;
   height: 32px;
-}
-
-.toolbar-icon {
-  width: 30px;
-  height: 28px;
-}
-
-.sidebar-head .icon-button {
-  width: 26px;
-  height: 26px;
 }
 
 .result-action {
@@ -8089,7 +7639,6 @@ textarea.cell-pop-text {
 /* The table open in the current tab. */
 .schema-table-row.active {
   background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .schema-table-row.active .schema-table-name {
@@ -8098,7 +7647,8 @@ textarea.cell-pop-text {
 }
 
 .schema-table-row.active .schema-table-icon {
-  color: var(--accent);
+  color: color-mix(in srgb, var(--accent) 50%, var(--ink));
+  opacity: 0.75;
 }
 
 /* ── Bottom console (TablePlus style) ───────────────────────────
@@ -8286,3 +7836,339 @@ button.console-clear {
   line-height: 1.5;
   text-align: center;
 }
+
+/* ── Field boxes (right panel, cell popover) ────────────────────
+   TablePlus style: name and type over a boxed value. */
+
+.field-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: 10px 10px 4px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--faint);
+}
+
+/* Matches the global input rule's :not() chain so the bare input inside the
+   pill loses its own border and background. */
+.field-search input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
+.field-search input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):focus {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  outline: none;
+  box-shadow: none;
+}
+
+/* The pill shows focus instead of the bare input inside it. */
+.field-search:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.field-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 8px 10px 14px;
+  overflow: auto;
+}
+
+.field-box {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field-box-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.field-box-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.field-box-type {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+}
+
+button.field-box-link {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 16px;
+  padding: 0 3px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  align-self: center;
+}
+
+.field-box-value {
+  position: relative;
+  min-height: 30px;
+  max-height: 220px;
+  padding: 6px 28px 6px 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.field-box-value.placeholder {
+  color: var(--faint);
+  opacity: 0.7;
+}
+
+button.field-box-copy {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.field-box-value:hover button.field-box-copy,
+button.field-box-copy:focus-visible {
+  opacity: 1;
+}
+
+button.field-box-copy:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+
+/* In the popover the fields fill the right pane and scroll together. */
+.cell-pop-detail .field-list {
+  padding: 0 2px 4px 0;
+}
+
+.cell-pop-detail .field-box-value {
+  max-height: 260px;
+}
+
+.cell-pop-fields-more {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* ── Editor bar and tab bar controls (no separate toolbar row) ── */
+
+.editor-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-pane .sql-editor {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.editor-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+
+.editor-bar button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.editor-bar .run-button {
+  gap: 5px;
+}
+
+button.tabbar-new {
+  flex: none;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  margin: 0 2px 0 0;
+  padding: 0;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+.tabbar-actions .tx-slot.compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+}
+
+.tabbar-actions .tx-slot.compact button,
+button.tabbar-tx {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+button.tabbar-tx {
+  margin-right: 4px;
+  border-color: var(--line-soft);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+button.tabbar-tx:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.safe-mode-button.compact {
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  margin-right: 2px;
+}
+
+button.tabbar-jobs {
+  position: relative;
+}
+
+.result-pane {
+  position: relative;
+}
+
+/* Staged grid edits float over the results until applied or dropped. */
+.pending-bar.floating {
+  position: absolute;
+  right: 14px;
+  bottom: 44px;
+  z-index: 8;
+  box-shadow: var(--shadow-1, 0 6px 18px rgba(0, 0, 0, 0.3));
+}
+
+/* Search box with the sidebar's ⋯ menu beside it. */
+.schema-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.schema-search input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]) {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+button.schema-more {
+  flex: none;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 7px;
+}
+
+/* ── One-line data footer (TablePlus style) ─────────────────── */
+
+.data-toolbar {
+  overflow: visible;
+}
+
+.data-toolbar button.icon-button {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+.page-size-menu {
+  position: relative;
+  flex: none;
+}
+
+.data-toolbar button.page-size-button {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.page-size-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 190px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.page-size-panel .page-size {
+  justify-content: space-between;
+}
+
+.page-nav {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.data-toolbar .page-nav button {
+  width: 24px;
+  padding: 0;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+

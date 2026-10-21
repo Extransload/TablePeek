@@ -626,9 +626,11 @@ pub(crate) async fn table_detail(
         }
     }
 
-    let stats: Option<(Option<u64>, Option<u64>)> = conn
-        .exec_first(
-            "SELECT TABLE_ROWS, DATA_LENGTH + INDEX_LENGTH FROM information_schema.TABLES \
+    let (row_count_estimate, data_bytes, index_bytes, comment) = conn
+        .exec_first::<(Option<u64>, Option<u64>, Option<u64>, Option<String>), _, _>(
+            "SELECT TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, \
+             CASE WHEN TABLE_TYPE = 'VIEW' THEN NULL ELSE TABLE_COMMENT END \
+             FROM information_schema.TABLES \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
             vec![
                 MyValue::from(canonical_schema.clone()),
@@ -637,15 +639,19 @@ pub(crate) async fn table_detail(
         )
         .await
         .ok()
-        .flatten();
-    let (row_count_estimate, size_bytes) = stats
-        .map(|(rows, size)| {
+        .flatten()
+        .map(|(rows, data, index, comment)| {
             (
                 rows.map(|value| value as i64),
-                size.map(|value| value as i64),
+                data.map(|value| value as i64),
+                index.map(|value| value as i64),
+                comment.filter(|text| !text.is_empty()),
             )
         })
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, None, None));
+    let size_bytes = data_bytes
+        .zip(index_bytes)
+        .map(|(data, index)| data + index);
 
     let table_ref = qualified(&canonical_schema, &canonical_table);
     Ok(TableDetail {
@@ -656,6 +662,9 @@ pub(crate) async fn table_detail(
         },
         row_count_estimate,
         size_bytes,
+        data_bytes,
+        index_bytes,
+        comment,
         ddl: Some(build_create_table(&table_ref, &columns)),
         columns,
         indexes,

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { t } from "../i18n";
 import { store, type FsListing } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { FileIcon, FolderIcon, UpIcon } from "./icons";
@@ -35,7 +36,7 @@ export function FsModal({ onClose, onOpenDb }: FsModalProps) {
       const next = await store.listDir(dir);
       setListing(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "폴더를 불러오지 못했습니다");
+      setError(err instanceof Error ? err.message : t("폴더를 불러오지 못했습니다"));
     } finally {
       setLoading(false);
     }
@@ -63,12 +64,12 @@ export function FsModal({ onClose, onOpenDb }: FsModalProps) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <span className="modal-title">데이터베이스 열기</span>
+          <span className="modal-title">{t("데이터베이스 열기")}</span>
           <span className="modal-path">{listing?.path ?? ""}</span>
         </div>
         <div className="fs-list">
           {loading ? (
-            <div className="fs-empty">불러오는 중…</div>
+            <div className="fs-empty">{t("불러오는 중…")}</div>
           ) : error ? (
             <div className="fs-error-slot">
               <ErrorNotice message={error} variant="compact" />
@@ -78,7 +79,7 @@ export function FsModal({ onClose, onOpenDb }: FsModalProps) {
               {parent && (
                 <button type="button" className="fs-entry" onClick={() => void load(parent)}>
                   <UpIcon size={12} className="icon" />
-                  <span>상위 폴더</span>
+                  <span>{t("상위 폴더")}</span>
                 </button>
               )}
               {listing.entries.map((entry) =>
@@ -107,17 +108,17 @@ export function FsModal({ onClose, onOpenDb }: FsModalProps) {
                 ),
               )}
               {listing.entries.length === 0 && !parent ? (
-                <div className="fs-empty">폴더가 비어 있습니다</div>
+                <div className="fs-empty">{t("폴더가 비어 있습니다")}</div>
               ) : null}
             </>
           ) : null}
         </div>
         <div className="modal-foot">
           <button type="button" onClick={() => onOpenDb(null)}>
-            데모 열기
+            {t("데모 열기")}
           </button>
           <button type="button" onClick={onClose}>
-            닫기
+            {t("닫기")}
           </button>
         </div>
       </div>

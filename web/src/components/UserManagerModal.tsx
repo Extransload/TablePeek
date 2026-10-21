@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { t } from "../i18n";
 import { store, type EngineMeta } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon } from "./icons";
@@ -76,7 +77,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
         setUsers(rows);
       }
     } catch (err) {
-      setError(errorOf(err, "사용자 목록을 불러오지 못했습니다"));
+      setError(errorOf(err, t("사용자 목록을 불러오지 못했습니다")));
       setUsers([]);
     } finally {
       setBusy(false);
@@ -97,7 +98,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
       store.setInfo(info);
       await load();
     } catch (err) {
-      setError(errorOf(err, info + "에 실패했습니다"));
+      setError(errorOf(err, t("{action}에 실패했습니다", { action: info })));
     } finally {
       setBusy(false);
     }
@@ -106,20 +107,20 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
   async function createUser(): Promise<void> {
     const name = newName.trim();
     if (name === "" || newPassword === "") {
-      setError("이름과 비밀번호를 입력하세요");
+      setError(t("이름과 비밀번호를 입력하세요"));
       return;
     }
     if (kind === "mysql") {
       const statements = [
         `CREATE USER ${quoteLiteral(name)}@${quoteLiteral(newHost.trim() || "%")} IDENTIFIED BY ${quoteLiteral(newPassword)}`,
       ];
-      void runSql(statements, `사용자를 생성했습니다: ${name}`);
+      void runSql(statements, t("사용자를 생성했습니다: {name}", { name }));
       return;
     }
     if (kind === "mssql") {
       void runSql(
         [`CREATE LOGIN ${quoteName(kind, name)} WITH PASSWORD = ${quoteLiteral(newPassword)}`],
-        `로그인을 생성했습니다: ${name}`,
+        t("로그인을 생성했습니다: {name}", { name }),
       );
       return;
     }
@@ -129,29 +130,35 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
     if (superUser) {
       statements.push(`ALTER ROLE ${quoteName(kind, name)} SUPERUSER`);
     }
-    void runSql(statements, `역할을 생성했습니다: ${name}`);
+    void runSql(statements, t("역할을 생성했습니다: {name}", { name }));
   }
 
   async function dropUser(row: UserRow): Promise<void> {
-    if (!window.confirm(`사용자 ${row.name}을(를) 삭제할까요?`)) {
+    if (!window.confirm(t("사용자 {name}을(를) 삭제할까요?", { name: row.name }))) {
       return;
     }
     if (kind === "mysql") {
       void runSql(
         [`DROP USER ${quoteLiteral(row.name)}@${quoteLiteral(row.extra)}`],
-        `사용자를 삭제했습니다: ${row.name}`,
+        t("사용자를 삭제했습니다: {name}", { name: row.name }),
       );
       return;
     }
     if (kind === "mssql") {
-      void runSql([`DROP LOGIN ${quoteName(kind, row.name)}`], `로그인을 삭제했습니다: ${row.name}`);
+      void runSql(
+        [`DROP LOGIN ${quoteName(kind, row.name)}`],
+        t("로그인을 삭제했습니다: {name}", { name: row.name }),
+      );
       return;
     }
-    void runSql([`DROP ROLE ${quoteName(kind, row.name)}`], `역할을 삭제했습니다: ${row.name}`);
+    void runSql(
+      [`DROP ROLE ${quoteName(kind, row.name)}`],
+      t("역할을 삭제했습니다: {name}", { name: row.name }),
+    );
   }
 
   async function changePassword(row: UserRow): Promise<void> {
-    const password = window.prompt(`${row.name}의 새 비밀번호`, "");
+    const password = window.prompt(t("{name}의 새 비밀번호", { name: row.name }), "");
     if (password === null || password === "") {
       return;
     }
@@ -160,20 +167,20 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
         [
           `ALTER USER ${quoteLiteral(row.name)}@${quoteLiteral(row.extra)} IDENTIFIED BY ${quoteLiteral(password)}`,
         ],
-        `비밀번호를 변경했습니다: ${row.name}`,
+        t("비밀번호를 변경했습니다: {name}", { name: row.name }),
       );
       return;
     }
     if (kind === "mssql") {
       void runSql(
         [`ALTER LOGIN ${quoteName(kind, row.name)} WITH PASSWORD = ${quoteLiteral(password)}`],
-        `비밀번호를 변경했습니다: ${row.name}`,
+        t("비밀번호를 변경했습니다: {name}", { name: row.name }),
       );
       return;
     }
     void runSql(
       [`ALTER ROLE ${quoteName(kind, row.name)} WITH PASSWORD ${quoteLiteral(password)}`],
-      `비밀번호를 변경했습니다: ${row.name}`,
+      t("비밀번호를 변경했습니다: {name}", { name: row.name }),
     );
   }
 
@@ -183,7 +190,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
     <div className="modal-backdrop" onClick={() => (busy ? undefined : onClose())}>
       <div className="modal user-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <span className="modal-title">사용자 관리</span>
+          <span className="modal-title">{t("사용자 관리")}</span>
           <span className="modal-path">{meta.kind}</span>
           <span className="spacer" />
           <button
@@ -191,15 +198,15 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
             className="icon-text-button"
             disabled={busy || !supported}
             onClick={() => void load()}
-            title="새로고침"
+            title={t("새로고침")}
           >
             <RefreshIcon size={11} />
-            새로고침
+            {t("새로고침")}
           </button>
         </div>
         {!supported ? (
           <div className="modal-body">
-            <p className="helper">이 엔진은 사용자 관리를 지원하지 않습니다</p>
+            <p className="helper">{t("이 엔진은 사용자 관리를 지원하지 않습니다")}</p>
           </div>
         ) : (
           <>
@@ -208,8 +215,8 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
               <table className="panel-table">
                 <thead>
                   <tr>
-                    <th>이름</th>
-                    <th>{kind === "mysql" ? "호스트" : "유형"}</th>
+                    <th>{t("이름")}</th>
+                    <th>{kind === "mysql" ? t("호스트") : t("유형")}</th>
                     <th />
                   </tr>
                 </thead>
@@ -225,7 +232,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                           disabled={busy}
                           onClick={() => void changePassword(row)}
                         >
-                          비밀번호 변경
+                          {t("비밀번호 변경")}
                         </button>
                         <button
                           type="button"
@@ -233,7 +240,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                           disabled={busy}
                           onClick={() => void dropUser(row)}
                         >
-                          삭제
+                          {t("삭제")}
                         </button>
                       </td>
                     </tr>
@@ -241,14 +248,14 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                 </tbody>
               </table>
               {users !== null && users.length === 0 && !error ? (
-                <div className="panel-empty-inline">사용자가 없습니다</div>
+                <div className="panel-empty-inline">{t("사용자가 없습니다")}</div>
               ) : null}
             </div>
             <div className="modal-body user-create">
-              <div className="section-title">사용자 생성</div>
+              <div className="section-title">{t("사용자 생성")}</div>
               <div className="create-inline">
                 <label className="field">
-                  <span>이름</span>
+                  <span>{t("이름")}</span>
                   <input
                     value={newName}
                     spellCheck={false}
@@ -257,7 +264,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                 </label>
                 {kind === "mysql" ? (
                   <label className="field">
-                    <span>호스트</span>
+                    <span>{t("호스트")}</span>
                     <input
                       value={newHost}
                       spellCheck={false}
@@ -266,7 +273,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                   </label>
                 ) : null}
                 <label className="field">
-                  <span>비밀번호</span>
+                  <span>{t("비밀번호")}</span>
                   <input
                     value={newPassword}
                     type="password"
@@ -290,7 +297,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                   disabled={busy || !canCreate}
                   onClick={() => void createUser()}
                 >
-                  생성
+                  {t("생성")}
                 </button>
               </div>
             </div>
@@ -299,7 +306,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={onClose}>
-            닫기
+            {t("닫기")}
           </button>
         </div>
       </div>

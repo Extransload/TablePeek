@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { writeClipboard } from "../clipboard";
+import { t } from "../i18n";
 import { store, type DefinitionDetail } from "../store";
 import { DEFINITION_KIND_LABELS, type DefinitionKind } from "../sqlTools";
 import type { DefinitionTab } from "../tabs";
@@ -39,7 +40,7 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(errorOf(err, "정의를 가져오지 못했습니다"));
+          setError(errorOf(err, t("정의를 가져오지 못했습니다")));
         }
       } finally {
         if (!cancelled) {
@@ -53,7 +54,8 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
   }, [conn, tab.obj, tab.name, nonce]);
 
   const detail = tab.definition ?? null;
-  const label = DEFINITION_KIND_LABELS[tab.obj as DefinitionKind] ?? tab.obj;
+  const kindLabel = DEFINITION_KIND_LABELS[tab.obj as DefinitionKind];
+  const label = kindLabel !== undefined ? t(kindLabel) : tab.obj;
 
   function copyDdl(ddl: string): void {
     void writeClipboard(ddl, (message) => store.setError(message));
@@ -67,7 +69,7 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
         <span className="spacer" />
         {loading ? (
               <span className="panel-dim">
-                <Spinner size={10} /> 불러오는 중…
+                <Spinner size={10} /> {t("불러오는 중…")}
               </span>
             ) : null}
         <button
@@ -75,18 +77,18 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
           className="icon-text-button"
           disabled={loading}
           onClick={() => setNonce((value) => value + 1)}
-          title="정의 새로고침"
+          title={t("정의 새로고침")}
         >
           <RefreshIcon size={11} />
-          새로고침
+          {t("새로고침")}
         </button>
       </div>
       <div className="panel-body">
         {error ? <ErrorNotice message={error} /> : null}
         {detail === null ? (
-          error ? null : <div className="panel-empty">불러오는 중…</div>
+          error ? null : <div className="panel-empty">{t("불러오는 중…")}</div>
         ) : detail.ddl === null ? (
-          <div className="panel-empty-inline">정의를 가져올 수 없습니다</div>
+          <div className="panel-empty-inline">{t("정의를 가져올 수 없습니다")}</div>
         ) : (
           <div className="panel-code">
             <div className="panel-code-head">
@@ -96,10 +98,10 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
                 type="button"
                 className="icon-text-button"
                 onClick={() => copyDdl(detail.ddl ?? "")}
-                title="DDL 복사"
+                title={t("DDL 복사")}
               >
                 <CopyIcon size={11} />
-                복사
+                {t("복사")}
               </button>
             </div>
             <pre className="panel-pre">{detail.ddl}</pre>

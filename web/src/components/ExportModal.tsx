@@ -12,6 +12,7 @@ import {
   toXml,
   type ExportFormat,
 } from "../export";
+import { t } from "../i18n";
 import { store, type GridResult } from "../store";
 import { dataPageInfo, type DataTab } from "../tabs";
 import { getSettings } from "../settings";
@@ -114,7 +115,7 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
       if (detached) {
         detached.dispose();
       }
-      setError(errorOf(err, "내보내기에 실패했습니다"));
+      setError(errorOf(err, t("내보내기에 실패했습니다")));
     } finally {
       setBusy(false);
       setProgress(null);
@@ -127,12 +128,12 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
     <div className="modal-backdrop" onClick={() => (busy ? undefined : onClose())}>
       <div className="modal export-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <span className="modal-title">내보내기</span>
+          <span className="modal-title">{t("내보내기")}</span>
           <span className="modal-path">{title}</span>
         </div>
         <div className="export-body">
           <section className="export-section">
-            <div className="section-title">형식</div>
+            <div className="section-title">{t("형식")}</div>
             <div className="export-options">
               {(
                 [
@@ -156,7 +157,7 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
             </div>
           </section>
           <section className="export-section">
-            <div className="section-title">범위</div>
+            <div className="section-title">{t("범위")}</div>
             <div className="export-options">
               <label className="check-row">
                 <input
@@ -166,7 +167,7 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
                   disabled={busy}
                   onChange={() => setScope("loaded")}
                 />
-                <span>{`로드된 행 (${loadedRows.toLocaleString()}행)`}</span>
+                <span>{t("로드된 행 ({count}행)", { count: loadedRows.toLocaleString() })}</span>
               </label>
               <label className="check-row">
                 <input
@@ -176,30 +177,30 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
                   disabled={busy}
                   onChange={() => setScope("all")}
                 />
-                <span>{dataTab ? "전체 (필터·정렬 적용해 재실행)" : "전체 (SQL 재실행)"}</span>
+                <span>{dataTab ? t("전체 (필터·정렬 적용해 재실행)") : t("전체 (SQL 재실행)")}</span>
               </label>
             </div>
             <p className="helper">
               {dataTab
-                ? "전체는 현재 필터·정렬로 최대 200,000행까지 다시 실행합니다"
-                : "전체는 현재 SQL을 최대 200,000행까지 다시 실행합니다"}
+                ? t("전체는 현재 필터·정렬로 최대 200,000행까지 다시 실행합니다")
+                : t("전체는 현재 SQL을 최대 200,000행까지 다시 실행합니다")}
             </p>
           </section>
           {format === "csv" ? (
             <section className="export-section">
-              <div className="section-title">CSV 옵션</div>
+              <div className="section-title">{t("CSV 옵션")}</div>
               <div className="export-options">
                 <label className="field">
-                  <span>구분자</span>
+                  <span>{t("구분자")}</span>
                   <select
                     value={csvDelimiter}
                     disabled={busy}
                     onChange={(event) => setCsvDelimiter(event.target.value)}
                   >
-                    <option value=",">쉼표 (,)</option>
-                    <option value={"\t"}>탭</option>
-                    <option value=";">세미콜론 (;)</option>
-                    <option value="|">파이프 (|)</option>
+                    <option value=",">{t("쉼표 (,)")}</option>
+                    <option value={"\t"}>{t("탭")}</option>
+                    <option value=";">{t("세미콜론 (;)")}</option>
+                    <option value="|">{t("파이프 (|)")}</option>
                   </select>
                 </label>
               </div>
@@ -210,7 +211,7 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
                   disabled={busy}
                   onChange={(event) => setCsvHeader(event.target.checked)}
                 />
-                <span>헤더 포함</span>
+                <span>{t("헤더 포함")}</span>
               </label>
               <label className="check-row">
                 <input
@@ -224,17 +225,22 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
             </section>
           ) : null}
           {format === "sql" && sqlDisabled ? (
-            <p className="helper">테이블 이름을 알 수 없어 SQL INSERT를 만들 수 없습니다</p>
+            <p className="helper">{t("테이블 이름을 알 수 없어 SQL INSERT를 만들 수 없습니다")}</p>
           ) : null}
           {progress !== null ? (
-            <p className="helper">{`${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}행 수집 중…`}</p>
+            <p className="helper">
+              {t("{done} / {total}행 수집 중…", {
+                done: progress.done.toLocaleString(),
+                total: progress.total.toLocaleString(),
+              })}
+            </p>
           ) : null}
           {error ? <ErrorNotice message={error} /> : null}
         </div>
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={onClose}>
-            닫기
+            {t("닫기")}
           </button>
           <button
             type="button"
@@ -242,7 +248,7 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
             disabled={busy || (format === "sql" && sqlDisabled)}
             onClick={() => void run()}
           >
-            다운로드
+            {t("다운로드")}
           </button>
         </div>
       </div>

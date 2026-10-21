@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { createTableSql, emptyDrafts, type StructureDraft } from "../ddl";
+import { t } from "../i18n";
 import { store, type EngineMeta } from "../store";
 import { ColumnsEditor, DdlPreview, IndexesEditor } from "./DraftEditors";
 import { ErrorNotice } from "./ErrorNotice";
@@ -30,7 +31,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
 
   const result = useMemo(() => {
     if (name.trim() === "") {
-      return { statements: [], errors: ["테이블 이름을 입력하세요"] };
+      return { statements: [], errors: [t("테이블 이름을 입력하세요")] };
     }
     return createTableSql(kind, name.trim(), draft, {
       mysqlEngine: engine,
@@ -51,10 +52,10 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
       for (const statement of result.statements) {
         await store.exec(conn, statement);
       }
-      store.setInfo(`테이블을 생성했습니다: ${name.trim()}`);
+      store.setInfo(t("테이블을 생성했습니다: {name}", { name: name.trim() }));
       onCreated(name.trim());
     } catch (err) {
-      setError(errorOf(err, "테이블을 생성하지 못했습니다"));
+      setError(errorOf(err, t("테이블을 생성하지 못했습니다")));
     } finally {
       setBusy(false);
     }
@@ -64,14 +65,14 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
     <div className="modal-backdrop" onClick={() => (busy ? undefined : onClose())}>
       <div className="modal create-table-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <span className="modal-title">테이블 생성</span>
+          <span className="modal-title">{t("테이블 생성")}</span>
           <span className="modal-path">{meta.kind}</span>
           <span className="spacer" />
-          <span className="dim">⌘S 미리보기</span>
+          <span className="dim">{t("⌘S 미리보기")}</span>
         </div>
         <div className="modal-body create-table-body">
           <label className="field">
-            <span>테이블 이름</span>
+            <span>{t("테이블 이름")}</span>
             <input
               value={name}
               spellCheck={false}
@@ -84,7 +85,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
             <>
               <div className="create-inline">
                 <label className="field">
-                  <span>엔진</span>
+                  <span>{t("엔진")}</span>
                   <input
                     value={engine}
                     spellCheck={false}
@@ -92,7 +93,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
                   />
                 </label>
                 <label className="field">
-                  <span>문자셋</span>
+                  <span>{t("문자셋")}</span>
                   <input
                     value={charset}
                     spellCheck={false}
@@ -100,7 +101,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
                   />
                 </label>
                 <label className="field">
-                  <span>콜레이션</span>
+                  <span>{t("콜레이션")}</span>
                   <input
                     value={collation}
                     spellCheck={false}
@@ -112,26 +113,26 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
                   <input
                     value={rowFormat}
                     spellCheck={false}
-                    placeholder="기본값"
+                    placeholder={t("기본값")}
                     onChange={(e) => setRowFormat(e.target.value)}
                   />
                 </label>
               </div>
               <label className="field">
-                <span>테이블 설명</span>
+                <span>{t("테이블 설명")}</span>
                 <input value={comment} onChange={(e) => setComment(e.target.value)} />
               </label>
             </>
           ) : null}
           <section className="export-section">
-            <div className="section-title">컬럼</div>
+            <div className="section-title">{t("컬럼")}</div>
             <ColumnsEditor
               columns={draft.columns}
               onChange={(columns) => setDraft({ ...draft, columns })}
             />
           </section>
           <section className="export-section">
-            <div className="section-title">인덱스</div>
+            <div className="section-title">{t("인덱스")}</div>
             <IndexesEditor
               indexes={draft.indexes}
               onChange={(indexes) => setDraft({ ...draft, indexes })}
@@ -146,10 +147,10 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
           ) : null}
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={() => setPreview((value) => !value)}>
-            {preview ? "미리보기 숨기기" : "미리보기"}
+            {preview ? t("미리보기 숨기기") : t("미리보기")}
           </button>
           <button type="button" disabled={busy} onClick={onClose}>
-            취소
+            {t("취소")}
           </button>
           <button
             type="button"
@@ -157,7 +158,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
             disabled={busy || result.errors.length > 0 || name.trim() === ""}
             onClick={() => void run()}
           >
-            생성
+            {t("생성")}
           </button>
         </div>
       </div>

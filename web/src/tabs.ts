@@ -296,7 +296,7 @@ export function patchFromOutcome(state: TabsState, id: string, outcome: QueryOut
     });
   }
   if (outcome.kind === "cancelled") {
-    return patchTab(state, id, { info: "쿼리가 취소되었습니다", error: undefined });
+    return patchTab(state, id, { info: t("쿼리가 취소되었습니다"), error: undefined });
   }
   return patchTab(state, id, { info: undefined, error: outcome.error });
 }

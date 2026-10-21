@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { escapeSqlIdentifier, sqlLiteral } from "../export";
+import { t } from "../i18n";
 import { parseCsv, parseJsonImport, detectDelimiter } from "../importParse";
 import { startJob } from "../jobs";
 import { getSettings } from "../settings";
@@ -57,7 +58,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(errorOf(err, "테이블 구조를 불러오지 못했습니다"));
+          setError(errorOf(err, t("테이블 구조를 불러오지 못했습니다")));
           setTargetColumns([]);
         }
       }
@@ -70,7 +71,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
   function applyParsed(columns: string[], nextRows: unknown[][], resetMapping: boolean): void {
     setSources(columns);
     setRows(nextRows);
-    setInfo(`${nextRows.length.toLocaleString()}행을 읽었습니다`);
+    setInfo(t("{count}행을 읽었습니다", { count: nextRows.length.toLocaleString() }));
     if (targetColumns !== null) {
       setMapping((prev) => {
         const next: Record<string, Mapping> = {};
@@ -109,7 +110,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
         applyParsed(parsed.columns, parsed.rows, true);
       }
     } catch (err) {
-      setError(errorOf(err, "파일을 해석하지 못했습니다"));
+      setError(errorOf(err, t("파일을 해석하지 못했습니다")));
     }
   }
 
@@ -141,7 +142,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
     if (included.length === 0 || rows.length === 0 || busy) {
       return;
     }
-    const job = startJob(`가져오기: ${table}`, fileName, rows.length);
+    const job = startJob(t("가져오기: {table}", { table }), fileName, rows.length);
     setBusy(true);
     setError(null);
     try {
@@ -168,9 +169,9 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
         job.update(done);
       }
       job.finish();
-      store.setInfo(`가져오기 완료: ${table}에 ${rows.length.toLocaleString()}행`);
+      store.setInfo(t("가져오기 완료: {table}에 {count}행", { table, count: rows.length.toLocaleString() }));
     } catch (err) {
-      const message = errorOf(err, "가져오기에 실패했습니다");
+      const message = errorOf(err, t("가져오기에 실패했습니다"));
       job.fail(message);
       setError(message);
     } finally {
@@ -192,7 +193,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
     <div className="modal-backdrop" onClick={() => (busy ? undefined : onClose())}>
       <div className="modal import-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <span className="modal-title">데이터 가져오기</span>
+          <span className="modal-title">{t("데이터 가져오기")}</span>
           <span className="modal-path">{`${table} · ${kind}`}</span>
           <span className="spacer" />
           {info ? <span className="dim">{info}</span> : null}
@@ -200,11 +201,11 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
         <div className="modal-body import-body">
           {error ? <ErrorNotice message={error} /> : null}
           <section className="export-section">
-            <div className="section-title">파일</div>
+            <div className="section-title">{t("파일")}</div>
             <div className="create-inline">
               <label className="file-button">
                 <FolderIcon size={12} />
-                파일 선택
+                {t("파일 선택")}
                 <input
                   type="file"
                   accept=".csv,.tsv,.txt,.json"
@@ -219,7 +220,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
               </label>
               {fileName ? <span className="dim">{fileName}</span> : null}
               <label className="field">
-                <span>인코딩</span>
+                <span>{t("인코딩")}</span>
                 <select
                   value={encoding}
                   onChange={(event) =>
@@ -232,15 +233,15 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
                 </select>
               </label>
               <label className="field">
-                <span>구분자</span>
+                <span>{t("구분자")}</span>
                 <select
                   value={delimiter}
                   onChange={(event) => setDelimiter(event.target.value)}
                 >
-                  <option value="auto">자동</option>
-                  <option value=",">쉼표</option>
-                  <option value="tab">탭</option>
-                  <option value=";">세미콜론</option>
+                  <option value="auto">{t("자동")}</option>
+                  <option value=",">{t("쉼표")}</option>
+                  <option value="tab">{t("탭")}</option>
+                  <option value=";">{t("세미콜론")}</option>
                 </select>
               </label>
               <label className="check-row inline">
@@ -249,7 +250,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
                   checked={header}
                   onChange={(event) => setHeader(event.target.checked)}
                 />
-                <span>첫 줄이 헤더</span>
+                <span>{t("첫 줄이 헤더")}</span>
               </label>
               <label className="check-row inline">
                 <input
@@ -257,23 +258,23 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
                   checked={emptyAsNull}
                   onChange={(event) => setEmptyAsNull(event.target.checked)}
                 />
-                <span>빈 문자열 → NULL</span>
+                <span>{t("빈 문자열 → NULL")}</span>
               </label>
             </div>
           </section>
           {sources.length > 0 && targetColumns !== null ? (
             <section className="export-section">
               <div className="section-title">
-                컬럼 매핑
+                {t("컬럼 매핑")}
                 <span className="panel-count">
                   {`${included.length} / ${targetColumns.length}`}
                 </span>
                 <span className="spacer" />
                 <button type="button" className="link-button" onClick={() => includeAll(true)}>
-                  모두 포함
+                  {t("모두 포함")}
                 </button>
                 <button type="button" className="link-button" onClick={() => includeAll(false)}>
-                  모두 제외
+                  {t("모두 제외")}
                 </button>
               </div>
               <div className="import-map">
@@ -306,7 +307,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
                           }))
                         }
                       >
-                        <option value="">(건너뜀)</option>
+                        <option value="">{t("(건너뜀)")}</option>
                         {sources.map((source, index) => (
                           <option value={String(index)} key={`${source}:${index}`}>
                             {source}
@@ -321,7 +322,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
           ) : null}
           {rows.length > 0 ? (
             <section className="export-section">
-              <div className="section-title">미리보기</div>
+              <div className="section-title">{t("미리보기")}</div>
               <div className="import-preview">
                 <table className="panel-table">
                   <thead>
@@ -354,7 +355,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={onClose}>
-            닫기
+            {t("닫기")}
           </button>
           <button
             type="button"
@@ -362,7 +363,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
             disabled={busy || included.length === 0 || rows.length === 0}
             onClick={() => void run()}
           >
-            {`가져오기 (${rows.length.toLocaleString()}행)`}
+            {t("가져오기 ({count}행)", { count: rows.length.toLocaleString() })}
           </button>
         </div>
       </div>

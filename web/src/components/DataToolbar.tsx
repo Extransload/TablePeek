@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useMenuDismiss } from "./Dropdowns";
 import { dataPageInfo, type DataTab } from "../tabs";
 import { t } from "../i18n";
 import { ColumnsIcon, FilterIcon, PlusIcon, RefreshIcon } from "./icons";
@@ -68,6 +69,66 @@ function NumBox({ value, min, max, disabled, title, onCommit }: NumBoxProps) {
   );
 }
 
+interface PageSizeMenuProps {
+  tab: DataTab;
+  running: boolean;
+  counting: boolean;
+  hasMeta: boolean;
+  onLimit(limit: number): void;
+  onOffset(offset: number): void;
+  onCount(): void;
+}
+
+// LIMIT, OFFSET and an exact COUNT, kept behind the page size so the footer
+// stays one quiet line.
+function PageSizeMenu({ tab, running, counting, hasMeta, onLimit, onOffset, onCount }: PageSizeMenuProps) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const dismiss = useCallback(() => setOpen(false), []);
+  useMenuDismiss(open, rootRef, dismiss);
+  return (
+    <div className="page-size-menu" ref={rootRef}>
+      <button
+        type="button"
+        className={open ? "page-size-button active" : "page-size-button"}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        title={t("가져올 행 수 (LIMIT)")}
+      >
+        {t("{count}행씩", { count: tab.pageSize.toLocaleString() })}
+      </button>
+      {open ? (
+        <div className="page-size-panel" role="dialog" aria-label={t("페이지 설정")}>
+          <label className="page-size" title={t("가져올 행 수 (LIMIT)")}>
+            LIMIT
+            <NumBox
+              value={tab.pageSize}
+              min={1}
+              max={MAX_LIMIT}
+              disabled={running}
+              title="LIMIT"
+              onCommit={onLimit}
+            />
+          </label>
+          <label className="page-size" title={t("시작 행 (OFFSET)")}>
+            OFFSET
+            <NumBox value={tab.offset} min={0} disabled={running} title="OFFSET" onCommit={onOffset} />
+          </label>
+          <button
+            type="button"
+            disabled={running || counting || !hasMeta}
+            onClick={onCount}
+            title={t("정확한 총 행 수 (COUNT) 새로고침")}
+          >
+            {counting ? t("계산 중…") : "COUNT"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 interface DataTabToolbarProps {
   tab: DataTab;
   running: boolean;
@@ -117,106 +178,87 @@ export function DataTabToolbar({
     <>
       <button
         type="button"
-        className="icon-text-button"
+        className="icon-button"
         disabled={running}
         onClick={onRefresh}
         title={t("데이터 새로고침")}
       >
-        <RefreshIcon size={11} />
-        {t("새로고침")}
+        <RefreshIcon size={12} />
       </button>
       <button
         type="button"
-        className="icon-text-button"
+        className="icon-button"
         disabled={running || !canInsert}
         onClick={onInsertRow}
         title={t("새 행 추가 (변경사항 적용 시 저장)")}
       >
-        <PlusIcon size={11} />
-        {t("행 추가")}
+        <PlusIcon size={12} />
       </button>
       <button
         type="button"
-        className={filterOpen ? "icon-text-button active" : "icon-text-button"}
+        className={filterOpen ? "icon-button active" : "icon-button"}
         onClick={onToggleFilter}
         title={t("필터 표시/숨김")}
       >
-        <FilterIcon size={11} />
-        {t("필터")}
+        <FilterIcon size={12} />
       </button>
       <button
         type="button"
-        className={columnsOpen ? "icon-text-button active" : "icon-text-button"}
+        className={columnsOpen ? "icon-button active" : "icon-button"}
         onClick={onToggleColumns}
         title={t("컬럼 표시/숨김·순서")}
       >
-        <ColumnsIcon size={11} />
-        {t("컬럼")}
-      </button>
-      <span className="toolbar-sep" />
-      <label className="page-size" title={t("가져올 행 수 (LIMIT)")}>
-        LIMIT
-        <NumBox
-          value={tab.pageSize}
-          min={1}
-          max={MAX_LIMIT}
-          disabled={running}
-          title="LIMIT"
-          onCommit={onLimit}
-        />
-      </label>
-      <label className="page-size" title={t("시작 행 (OFFSET)")}>
-        OFFSET
-        <NumBox
-          value={tab.offset}
-          min={0}
-          disabled={running}
-          title="OFFSET"
-          onCommit={onOffset}
-        />
-      </label>
-      <button
-        type="button"
-        className="icon-text-button"
-        disabled={running || counting || !hasMeta}
-        onClick={onCount}
-        title={t("정확한 총 행 수 (COUNT) 새로고침")}
-      >
-        {counting ? t("계산 중…") : "COUNT"}
-      </button>
-      <span className="toolbar-sep" />
-      <button
-        type="button"
-        disabled={running || !hasMeta || tab.offset === 0}
-        onClick={onFirst}
-        title={t("첫 페이지")}
-      >
-        {t("처음")}
-      </button>
-      <button
-        type="button"
-        disabled={running || !hasMeta || tab.offset === 0}
-        onClick={onPrev}
-        title={t("이전 페이지")}
-      >
-        {t("이전")}
-      </button>
-      {info.pages === null ? (
-        <span className="page-label dim">{t("{page} 페이지+", { page: info.page })}</span>
-      ) : (
-        <span className="page-label">{t("{page} / {pages} 페이지", { page: info.page, pages: info.pages })}</span>
-      )}
-      <button type="button" disabled={!nextEnabled} onClick={onNext} title={t("다음 페이지")}>
-        {t("다음")}
+        <ColumnsIcon size={12} />
       </button>
       <span className="spacer" />
+      <PageSizeMenu
+        tab={tab}
+        running={running}
+        counting={counting}
+        hasMeta={hasMeta}
+        onLimit={onLimit}
+        onOffset={onOffset}
+        onCount={onCount}
+      />
+      <span className="page-nav">
+        <button
+          type="button"
+          disabled={running || !hasMeta || tab.offset === 0}
+          onClick={onFirst}
+          title={t("첫 페이지")}
+          aria-label={t("첫 페이지")}
+        >
+          «
+        </button>
+        <button
+          type="button"
+          disabled={running || !hasMeta || tab.offset === 0}
+          onClick={onPrev}
+          title={t("이전 페이지")}
+          aria-label={t("이전 페이지")}
+        >
+          ‹
+        </button>
+        <span className="page-label">
+          {info.pages === null ? `${info.page}+` : `${info.page} / ${info.pages}`}
+        </span>
+        <button
+          type="button"
+          disabled={!nextEnabled}
+          onClick={onNext}
+          title={t("다음 페이지")}
+          aria-label={t("다음 페이지")}
+        >
+          ›
+        </button>
+      </span>
       <span className="row-count">
         {info.rows === null
           ? running
             ? t("불러오는 중…")
             : ""
           : info.exact
-            ? t("총 {count}행", { count: info.rows.toLocaleString() })
+            ? t("{count}행", { count: info.rows.toLocaleString() })
             : t("{count}+행", { count: info.rows.toLocaleString() })}
       </span>
     </>

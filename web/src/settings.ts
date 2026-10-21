@@ -35,8 +35,12 @@ export interface AppSettings {
   csvDelimiter: string;
   csvHeader: boolean;
   csvEncoding: CsvEncoding;
+  // Rows a query run fetches at most.
+  maxRows: number;
   keymap: Keymap;
 }
+
+export const MAX_ROWS_LIMIT = 500000;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   language: "ko",
@@ -53,6 +57,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   csvDelimiter: ",",
   csvHeader: true,
   csvEncoding: "utf-8",
+  maxRows: 10000,
   keymap: normalizeKeymap(null),
 };
 
@@ -77,6 +82,10 @@ function readSettings(): AppSettings {
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
+      maxRows:
+        typeof parsed.maxRows === "number" && Number.isFinite(parsed.maxRows)
+          ? Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(parsed.maxRows)))
+          : DEFAULT_SETTINGS.maxRows,
       keymap: normalizeKeymap(parsed.keymap),
     };
   } catch {

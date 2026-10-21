@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { CanvasGrid, type SortIndicator } from "../grid/CanvasGrid";
+import { CanvasGrid, type SelectedRows, type SortIndicator } from "../grid/CanvasGrid";
 import { store, type GridResult } from "../store";
 
 export interface GridHostHandle {
@@ -14,7 +14,7 @@ interface GridHostProps {
   result: GridResult | null;
   sortColumns?: SortIndicator[];
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
-  onSelectionChange?(row: number | null): void;
+  onSelectionChange?(row: number | null, rows: SelectedRows | null): void;
   onCellContextMenu?(row: number, col: number, x: number, y: number): void;
   onDeleteRows?(rows: number[]): void;
   onQuickLook?(row: number): void;
@@ -61,8 +61,8 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     }
     const grid = new CanvasGrid(host);
     gridRef.current = grid;
-    grid.setSelectionListener((row) => {
-      selectionRef.current?.(row);
+    grid.setSelectionListener((row, rows) => {
+      selectionRef.current?.(row, rows);
     });
     grid.setCellContextMenuHandler((row, col, x, y) => {
       contextMenuRef.current?.(row, col, x, y);

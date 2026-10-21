@@ -56,6 +56,35 @@ interface TabStripProps {
   onRename(id: string, title: string): void;
 }
 
+// Tabs keep the default name they were made with ("쿼리 3", "서버 정보",
+// "Plan — Query 2"); show those defaults in the current language. Names the
+// user typed come through as written.
+function defaultTitle(title: string): string {
+  const query = /^(?:쿼리|Query) (\d+)$/.exec(title);
+  if (query) {
+    return t("쿼리 {count}", { count: query[1] });
+  }
+  if (title === "테이블 개요" || title === "Table overview") {
+    return t("테이블 개요");
+  }
+  if (title === "서버 정보" || title === "Server info") {
+    return t("서버 정보");
+  }
+  const structure = /^(?:구조|Structure): (.+)$/.exec(title);
+  if (structure) {
+    return `${t("구조")}: ${structure[1]}`;
+  }
+  const plan = /^(?:실행 계획|Plan) — (.+)$/.exec(title);
+  if (plan) {
+    return t("실행 계획 — {title}", { title: defaultTitle(plan[1]) });
+  }
+  return title;
+}
+
+function titleOf(tab: WorkbenchTab): string {
+  return defaultTitle(tab.title);
+}
+
 export function TabStrip({
   tabs,
   activeId,
@@ -101,7 +130,7 @@ export function TabStrip({
   function startRename(tab: WorkbenchTab): void {
     cancelledRef.current = false;
     setRenamingId(tab.id);
-    setDraft(tab.title);
+    setDraft(titleOf(tab));
   }
 
   function commitRename(): void {
@@ -138,7 +167,7 @@ export function TabStrip({
             aria-selected={active}
             className={`tab tab-${tab.kind}${active ? " active" : ""}${(tab.kind === "query" || tab.kind === "data") && tab.error ? " has-error" : ""}`}
             data-kind={tab.kind}
-            title={`${tabKindLabel(tab)} · ${tab.title}`}
+            title={`${tabKindLabel(tab)} · ${titleOf(tab)}`}
             onClick={() => onActivate(tab.id)}
             onDoubleClick={() => startRename(tab)}
             onAuxClick={(event) => {
@@ -171,7 +200,7 @@ export function TabStrip({
                 }}
               />
             ) : (
-              <span className="tab-label">{tab.title}</span>
+              <span className="tab-label">{titleOf(tab)}</span>
             )}
             <button
               type="button"

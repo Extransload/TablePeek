@@ -1468,10 +1468,48 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
         )
         .ok();
 
+    // Page sizes come from the dbstat virtual table; a build without it
+    // (the query errors) leaves the sizes unknown. A name with no pages
+    // (a view, or a WITHOUT ROWID primary key that lives in the table itself)
+    // sums to NULL. dbstat walks every page of the table and of each index
+    // while the connection is held, so a large database skips it.
+    let database_bytes = conn
+        .query_row(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(i64::MAX);
+    let measure = database_bytes <= DBSTAT_MAX_BYTES;
+    let dbstat_bytes = |object: &str| {
+        if !measure {
+            return None;
+        }
+        conn.query_row(
+            "SELECT SUM(pgsize) FROM dbstat WHERE name = ?1 AND aggregate = TRUE",
+            [object],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+    };
+    let data_bytes = dbstat_bytes(&name).flatten();
+    let index_bytes = data_bytes.and_then(|_| {
+        indexes
+            .iter()
+            .map(|index| dbstat_bytes(&index.name).map(|bytes| bytes.unwrap_or(0)))
+            .sum::<Option<i64>>()
+    });
+    let size_bytes = data_bytes
+        .zip(index_bytes)
+        .map(|(data, index)| data + index);
+
     Ok(TableDetail {
         name,
         row_count_estimate,
-        size_bytes: None,
+        size_bytes,
+        data_bytes,
+        index_bytes,
+        comment: None,
         columns,
         indexes,
         foreign_keys,
@@ -1479,6 +1517,10 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
         schema: None,
     })
 }
+
+/// Above this database size, table detail leaves SQLite sizes unknown rather
+/// than walking every page to measure them.
+const DBSTAT_MAX_BYTES: i64 = 256 * 1024 * 1024;
 
 fn server_info_sync(inner: &SqliteInner) -> Result<ServerInfo, EngineError> {
     let conn = lock_conn(inner)?;
@@ -1817,6 +1859,62 @@ mod tests {
             ssl_client_cert: None,
             ssl_client_key: None,
         })
+    }
+
+    #[tokio::test]
+    async fn pg_table_detail_keeps_open_transaction() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        engine.execute("DROP TABLE IF EXISTS tp_detail_tx", 1).await.unwrap();
+        engine
+            .execute("CREATE TABLE tp_detail_tx (id int PRIMARY KEY, note text)", 1)
+            .await
+            .unwrap();
+        engine
+            .execute("COMMENT ON TABLE tp_detail_tx IS 'notes'", 1)
+            .await
+            .unwrap();
+
+        // Reading table info in the middle of the user's transaction must
+        // leave it committable, with nothing (no savepoint) left behind.
+        engine.begin_tx().await.unwrap();
+        engine
+            .execute("INSERT INTO tp_detail_tx VALUES (1, 'kept')", 1)
+            .await
+            .unwrap();
+        let detail = engine.table_detail("tp_detail_tx").await.unwrap();
+        assert_eq!(detail.comment.as_deref(), Some("notes"));
+        assert!(detail.size_bytes.is_some());
+        assert_eq!(
+            detail.size_bytes,
+            Some(detail.data_bytes.unwrap() + detail.index_bytes.unwrap())
+        );
+        let release = engine
+            .execute("RELEASE SAVEPOINT tablepeek_detail", 1)
+            .await;
+        assert!(release.is_err(), "the detail savepoint should already be released");
+        engine.rollback_tx().await.unwrap();
+
+        engine.begin_tx().await.unwrap();
+        engine
+            .execute("INSERT INTO tp_detail_tx VALUES (2, 'kept')", 1)
+            .await
+            .unwrap();
+        engine.table_detail("tp_detail_tx").await.unwrap();
+        engine.commit_tx().await.unwrap();
+        let check = engine
+            .execute("SELECT note FROM tp_detail_tx WHERE id = 2", 1)
+            .await
+            .unwrap();
+        assert_eq!(check.rows[0][0], Value::from("kept"));
+
+        // Outside a transaction no savepoint is taken at all.
+        let detail = engine.table_detail("tp_detail_tx").await.unwrap();
+        assert_eq!(detail.comment.as_deref(), Some("notes"));
+        engine.execute("DROP TABLE tp_detail_tx", 1).await.unwrap();
     }
 
     #[tokio::test]
@@ -2720,7 +2818,13 @@ mod tests {
         let detail = engine.table_detail("items").await.unwrap();
         assert_eq!(detail.name, "items");
         assert_eq!(detail.row_count_estimate, Some(2));
-        assert!(detail.size_bytes.is_none());
+        assert_eq!(
+            detail.size_bytes,
+            detail
+                .data_bytes
+                .zip(detail.index_bytes)
+                .map(|(data, index)| data + index)
+        );
         assert!(detail.foreign_keys.is_empty());
 
         let id_col = detail.columns.iter().find(|c| c.name == "id").unwrap();
@@ -2743,6 +2847,47 @@ mod tests {
         let ddl = detail.ddl.unwrap();
         assert!(ddl.contains("CREATE TABLE"));
         assert!(ddl.contains("items_name_idx"));
+
+        std::fs::remove_file(&db).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_table_detail_sizes() {
+        let db = temp_db("sizes");
+        let dbstat_available = {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                 CREATE INDEX notes_body_idx ON notes(body);
+                 INSERT INTO notes (body) VALUES ('a'), ('b'), ('c');
+                 CREATE VIEW notes_view AS SELECT body FROM notes;",
+            )
+            .unwrap();
+            conn.query_row("SELECT count(*) FROM dbstat", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .is_ok()
+        };
+
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_file(&db).await.unwrap();
+
+        let detail = engine.table_detail("notes").await.unwrap();
+        assert_eq!(detail.data_bytes.is_some(), dbstat_available);
+        assert_eq!(detail.index_bytes.is_some(), dbstat_available);
+        if let (Some(data), Some(index)) = (detail.data_bytes, detail.index_bytes) {
+            assert!(data > 0);
+            assert!(index > 0);
+            assert_eq!(detail.size_bytes, Some(data + index));
+        } else {
+            assert!(detail.size_bytes.is_none());
+        }
+        assert!(detail.comment.is_none());
+
+        let view = engine.table_detail("notes_view").await.unwrap();
+        assert!(view.data_bytes.is_none());
+        assert!(view.index_bytes.is_none());
+        assert!(view.size_bytes.is_none());
 
         std::fs::remove_file(&db).unwrap();
     }

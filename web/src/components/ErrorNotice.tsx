@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { writeClipboard } from "../clipboard";
 import { explainError, type ErrorHelp } from "../errorHelp";
-import { t } from "../i18n";
+import { t, tServer } from "../i18n";
 import { AlertIcon, CheckIcon, CloseIcon, CopyIcon } from "./icons";
 
 interface ErrorNoticeProps {
@@ -46,7 +46,7 @@ export function ErrorNotice({
       <div className={`error-notice ${variant} plain`} role="alert">
         <div className="error-notice-head">
           <AlertIcon size={11} className="error-notice-icon" />
-          <span className="error-notice-message">{message}</span>
+          <span className="error-notice-message">{tServer(message)}</span>
           {close}
         </div>
       </div>

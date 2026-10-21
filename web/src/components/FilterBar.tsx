@@ -6,6 +6,7 @@ import {
   type FilterRow,
   type FilterState,
 } from "../dataQuery";
+import { t } from "../i18n";
 import { CloseIcon, PlusIcon } from "./icons";
 
 interface FilterBarProps {
@@ -43,12 +44,12 @@ function valuePlaceholder(op: FilterOp): string {
     return "a,b";
   }
   if (op === "IN") {
-    return "쉼표로 구분";
+    return t("쉼표로 구분");
   }
   if (op === "LIKE" || op === "NOT LIKE") {
-    return "%패턴%";
+    return t("%패턴%");
   }
-  return "값";
+  return t("값");
 }
 
 export function FilterBar({ columns, filter, running, onApply, onReset }: FilterBarProps) {
@@ -80,7 +81,7 @@ export function FilterBar({ columns, filter, running, onApply, onReset }: Filter
   return (
     <div className="filter-bar">
       <div className="filter-head">
-        <div className="filter-logic" role="group" aria-label="조건 결합">
+        <div className="filter-logic" role="group" aria-label={t("조건 결합")}>
           <button
             type="button"
             className={draft.logic === "AND" ? "active" : ""}
@@ -98,12 +99,12 @@ export function FilterBar({ columns, filter, running, onApply, onReset }: Filter
         </div>
         <button type="button" className="icon-text-button" onClick={addRow}>
           <PlusIcon size={11} />
-          조건 추가
+          {t("조건 추가")}
         </button>
         <span className="spacer" />
-        <span className="filter-hint">적용 시 즉시 재실행됩니다</span>
+        <span className="filter-hint">{t("적용 시 즉시 재실행됩니다")}</span>
         <button type="button" disabled={running} onClick={() => onReset()}>
-          초기화
+          {t("초기화")}
         </button>
         <button
           type="button"
@@ -111,11 +112,11 @@ export function FilterBar({ columns, filter, running, onApply, onReset }: Filter
           disabled={running}
           onClick={() => onApply(cloneFilter(draft))}
         >
-          적용
+          {t("적용")}
         </button>
       </div>
       {draft.rows.length === 0 ? (
-        <div className="filter-empty">조건이 없습니다 — "조건 추가"로 필터를 만드세요</div>
+        <div className="filter-empty">{t("조건이 없습니다 — \"조건 추가\"로 필터를 만드세요")}</div>
       ) : (
         <div className="filter-rows">
           {draft.rows.map((row) => (
@@ -123,7 +124,7 @@ export function FilterBar({ columns, filter, running, onApply, onReset }: Filter
               <input
                 type="checkbox"
                 className="filter-enabled"
-                title="조건 사용"
+                title={t("조건 사용")}
                 checked={row.enabled}
                 onChange={(event) => patchRow(row.id, { enabled: event.target.checked })}
               />
@@ -166,7 +167,7 @@ export function FilterBar({ columns, filter, running, onApply, onReset }: Filter
               <button
                 type="button"
                 className="filter-remove"
-                title="조건 삭제"
+                title={t("조건 삭제")}
                 onClick={() => removeRow(row.id)}
               >
                 <CloseIcon size={10} />

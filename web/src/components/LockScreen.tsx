@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { t } from "../i18n";
 import { getPasscodeHash, sha256Hex } from "../settings";
 
 interface LockScreenProps {
@@ -24,7 +25,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
       onUnlock();
       return;
     }
-    setError("암호가 올바르지 않습니다");
+    setError(t("암호가 올바르지 않습니다"));
   }
 
   return (
@@ -37,17 +38,17 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
         }}
       >
         <div className="lock-brand">tablepeek</div>
-        <p className="lock-hint">잠금 상태입니다. 암호를 입력하세요.</p>
+        <p className="lock-hint">{t("잠금 상태입니다. 암호를 입력하세요.")}</p>
         <input
           type="password"
           autoFocus
           value={value}
-          placeholder="암호"
+          placeholder={t("암호")}
           onChange={(event) => setValue(event.target.value)}
         />
         {error !== null ? <div className="lock-error">{error}</div> : null}
         <button type="submit" className="primary" disabled={busy || value.length === 0}>
-          잠금 해제
+          {t("잠금 해제")}
         </button>
       </form>
     </div>

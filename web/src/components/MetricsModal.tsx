@@ -53,36 +53,36 @@ export function MetricsModal({ conn, onClose }: MetricsModalProps) {
       <div className="modal metrics-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">Metrics</span>
-          <span className="modal-path">최근 쿼리 기준</span>
+          <span className="modal-path">{t("최근 쿼리 기준")}</span>
         </div>
         <div className="modal-body metrics-body">
           <div className="metrics-cards">
             <div className="metrics-card">
               <span className="metrics-value">{total.toLocaleString()}</span>
-              <span className="dim">쿼리 수</span>
+              <span className="dim">{t("쿼리 수")}</span>
             </div>
             <div className="metrics-card">
               <span className="metrics-value">{avg.toLocaleString()}ms</span>
-              <span className="dim">평균 시간</span>
+              <span className="dim">{t("평균 시간")}</span>
             </div>
             <div className="metrics-card">
               <span className="metrics-value">{max.toLocaleString()}ms</span>
-              <span className="dim">최대 시간</span>
+              <span className="dim">{t("최대 시간")}</span>
             </div>
             <div className="metrics-card">
               <span className="metrics-value">{rows.toLocaleString()}</span>
-              <span className="dim">반환 행</span>
+              <span className="dim">{t("반환 행")}</span>
             </div>
             <div className="metrics-card">
               <span className={`metrics-value${errors > 0 ? " error" : ""}`}>
                 {errors.toLocaleString()}
               </span>
-              <span className="dim">오류</span>
+              <span className="dim">{t("오류")}</span>
             </div>
           </div>
           <div className="metrics-chart">
             {recent.length === 0 ? (
-              <div className="log-empty">쿼리를 실행하면 차트가 표시됩니다</div>
+              <div className="log-empty">{t("쿼리를 실행하면 차트가 표시됩니다")}</div>
             ) : (
               <svg viewBox={`0 0 ${recent.length * 12} 100`} preserveAspectRatio="none">
                 {recent.map((entry, index) => {
@@ -110,7 +110,7 @@ export function MetricsModal({ conn, onClose }: MetricsModalProps) {
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" onClick={onClose}>
-            닫기
+            {t("닫기")}
           </button>
         </div>
       </div>

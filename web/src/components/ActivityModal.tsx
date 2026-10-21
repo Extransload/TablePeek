@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { clearActivity, subscribeActivity, type ActivityEntry } from "../activity";
+import { t } from "../i18n";
 
 interface ActivityModalProps {
   onClose(): void;
@@ -31,19 +32,19 @@ export function ActivityModal({ onClose }: ActivityModalProps) {
       <div className="modal activity-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">Activity</span>
-          <span className="modal-path">{`${entries.length}개`}</span>
+          <span className="modal-path">{t("{count}개", { count: entries.length })}</span>
         </div>
         <div className="modal-body activity-body">
           <div className="log-tools">
-            <span className="helper">설정의 보관 기간이 지난 기록은 자동 정리됩니다.</span>
+            <span className="helper">{t("설정의 보관 기간이 지난 기록은 자동 정리됩니다.")}</span>
             <span className="spacer" />
             <button type="button" onClick={() => clearActivity()}>
-              비우기
+              {t("비우기")}
             </button>
           </div>
           <div className="log-list">
             {entries.length === 0 ? (
-              <div className="log-empty">기록된 활동이 없습니다</div>
+              <div className="log-empty">{t("기록된 활동이 없습니다")}</div>
             ) : (
               entries
                 .slice()
@@ -53,7 +54,9 @@ export function ActivityModal({ onClose }: ActivityModalProps) {
                     <span className="log-time mono">
                       {new Date(entry.at).toLocaleString("ko-KR", { hour12: false })}
                     </span>
-                    <span className="activity-kind">{KIND_LABELS[entry.kind] ?? entry.kind}</span>
+                    <span className="activity-kind">
+                      {KIND_LABELS[entry.kind] !== undefined ? t(KIND_LABELS[entry.kind]) : entry.kind}
+                    </span>
                     <span className="activity-message">{entry.message}</span>
                     {entry.detail !== undefined ? (
                       <span className="activity-detail dim">{entry.detail}</span>
@@ -66,7 +69,7 @@ export function ActivityModal({ onClose }: ActivityModalProps) {
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" onClick={onClose}>
-            닫기
+            {t("닫기")}
           </button>
         </div>
       </div>
