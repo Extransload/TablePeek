@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { store, type EngineMeta } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon } from "./icons";
 
 interface UserManagerModalProps {
@@ -203,7 +204,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
         ) : (
           <>
             <div className="modal-body user-body">
-              {error ? <div className="panel-error">{error}</div> : null}
+              {error ? <ErrorNotice message={error} /> : null}
               <table className="panel-table">
                 <thead>
                   <tr>

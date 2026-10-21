@@ -4,6 +4,7 @@ import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts }
 import { startJob } from "../jobs";
 import { splitSqlStatements } from "../sqlSplit";
 import { store, type EngineMeta, type TableDetail } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import { FolderIcon } from "./icons";
 
 interface DumpModalProps {
@@ -223,7 +224,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
           </div>
         </div>
         <div className="modal-body dump-body">
-          {error ? <div className="panel-error">{error}</div> : null}
+          {error ? <ErrorNotice message={error} /> : null}
           {info ? <div className="helper">{info}</div> : null}
           {tab === "backup" ? (
             <>

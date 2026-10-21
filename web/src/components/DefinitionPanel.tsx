@@ -3,6 +3,7 @@ import { writeClipboard } from "../clipboard";
 import { store, type DefinitionDetail } from "../store";
 import { DEFINITION_KIND_LABELS, type DefinitionKind } from "../sqlTools";
 import type { DefinitionTab } from "../tabs";
+import { ErrorNotice } from "./ErrorNotice";
 import { CopyIcon, RefreshIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
@@ -81,7 +82,7 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
         </button>
       </div>
       <div className="panel-body">
-        {error ? <div className="panel-error">{error}</div> : null}
+        {error ? <ErrorNotice message={error} /> : null}
         {detail === null ? (
           error ? null : <div className="panel-empty">불러오는 중…</div>
         ) : detail.ddl === null ? (

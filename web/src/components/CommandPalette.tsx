@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
+import { ErrorNotice } from "./ErrorNotice";
 
 export interface PaletteAction {
   id: string;
@@ -191,7 +192,9 @@ export function CommandPalette({ actions, sources, onClose }: CommandPaletteProp
         </div>
         <div className="palette-list">
           {error ? (
-            <div className="palette-error">{error}</div>
+            <div className="palette-error-slot">
+              <ErrorNotice message={error} variant="compact" />
+            </div>
           ) : loading ? (
             <div className="palette-empty">{t("불러오는 중…")}</div>
           ) : items.length === 0 ? (

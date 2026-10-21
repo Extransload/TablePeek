@@ -100,9 +100,25 @@ fn mysql_err(err: mysql_async::Error) -> EngineError {
     EngineError::MySql(err.to_string())
 }
 
+// rustls failures (an untrusted certificate, say) reach mysql_async as plain
+// I/O errors that wrap the rustls::Error.
+fn is_tls_io_error(err: &std::io::Error) -> bool {
+    let mut current = err
+        .get_ref()
+        .map(|inner| inner as &(dyn std::error::Error + 'static));
+    while let Some(inner) = current {
+        if inner.is::<rustls::Error>() {
+            return true;
+        }
+        current = inner.source();
+    }
+    false
+}
+
 fn tls_fallback_allowed(err: &MyError) -> bool {
     match err {
         MyError::Io(mysql_async::IoError::Tls(_)) => true,
+        MyError::Io(mysql_async::IoError::Io(io)) => is_tls_io_error(io),
         MyError::Driver(DriverError::NoClientSslFlagFromServer) => true,
         MyError::Server(server) => matches!(server.code, 2026 | 3159),
         MyError::Other(source) => {
@@ -1309,5 +1325,20 @@ mod tests {
         )));
         assert!(!tls_fallback_allowed(&server(1045)));
         assert!(!tls_fallback_allowed(&server(1049)));
+    }
+
+    #[test]
+    fn prefer_falls_back_for_untrusted_certificates() {
+        let untrusted = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        );
+        assert!(tls_fallback_allowed(&MyError::Io(mysql_async::IoError::Io(
+            untrusted
+        ))));
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(!tls_fallback_allowed(&MyError::Io(mysql_async::IoError::Io(
+            refused
+        ))));
     }
 }

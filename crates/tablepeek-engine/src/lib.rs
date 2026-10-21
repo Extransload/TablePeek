@@ -79,6 +79,9 @@ pub(crate) fn postgres_message(err: &tokio_postgres::Error) -> String {
                 message.push_str(&format!(" — {hint}"));
             }
         }
+        // The code identifies the error even when the server's messages are
+        // localized; the UI keys its explanations off it.
+        message.push_str(&format!(" [SQLSTATE {}]", db.code().code()));
         return message;
     }
     let mut parts: Vec<String> = Vec::new();

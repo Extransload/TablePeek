@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { getLanguage, t } from "../i18n";
 import { store, type Favorite, type HistoryEntry } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import { Spinner } from "./Spinner";
 
 interface PickSqlProps {
@@ -117,7 +118,9 @@ export function HistoryMenu({ onPickSql }: PickSqlProps) {
         <div className="menu-panel">
           <div className="menu-list">
             {error ? (
-              <div className="menu-error">{error}</div>
+              <div className="menu-error-slot">
+                <ErrorNotice message={error} variant="compact" />
+              </div>
             ) : items === null ? (
               <div className="menu-empty">
                 <Spinner size={11} /> {t("불러오는 중…")}
@@ -253,7 +256,11 @@ export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {
               {t("현재 SQL 저장")}
             </button>
           </div>
-          {error ? <div className="menu-error">{error}</div> : null}
+          {error ? (
+            <div className="menu-error-slot">
+              <ErrorNotice message={error} variant="compact" />
+            </div>
+          ) : null}
           <div className="menu-list">
             {loading && items === null ? (
               <div className="menu-empty">

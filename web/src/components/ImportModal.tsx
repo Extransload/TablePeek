@@ -5,6 +5,7 @@ import { startJob } from "../jobs";
 import { getSettings } from "../settings";
 import { store } from "../store";
 import { quoteIdent } from "../ddl";
+import { ErrorNotice } from "./ErrorNotice";
 import { FolderIcon } from "./icons";
 
 interface ImportModalProps {
@@ -197,7 +198,7 @@ export function ImportModal({ conn, kind, table, onClose }: ImportModalProps) {
           {info ? <span className="dim">{info}</span> : null}
         </div>
         <div className="modal-body import-body">
-          {error ? <div className="panel-error">{error}</div> : null}
+          {error ? <ErrorNotice message={error} /> : null}
           <section className="export-section">
             <div className="section-title">파일</div>
             <div className="create-inline">

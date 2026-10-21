@@ -16,6 +16,7 @@ import { store, type GridResult } from "../store";
 import { dataPageInfo, type DataTab } from "../tabs";
 import { getSettings } from "../settings";
 import type { WindowedRowSource } from "../grid/windowSource";
+import { ErrorNotice } from "./ErrorNotice";
 
 interface ExportModalProps {
   conn: string;
@@ -228,9 +229,9 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
           {progress !== null ? (
             <p className="helper">{`${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}행 수집 중…`}</p>
           ) : null}
+          {error ? <ErrorNotice message={error} /> : null}
         </div>
         <div className="modal-foot">
-          {error ? <span className="connect-error">{error}</span> : null}
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={onClose}>
             닫기

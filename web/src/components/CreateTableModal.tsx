@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { createTableSql, emptyDrafts, type StructureDraft } from "../ddl";
 import { store, type EngineMeta } from "../store";
 import { ColumnsEditor, DdlPreview, IndexesEditor } from "./DraftEditors";
+import { ErrorNotice } from "./ErrorNotice";
 
 interface CreateTableModalProps {
   conn: string;
@@ -137,9 +138,9 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
             />
           </section>
           {preview ? <DdlPreview result={result} /> : null}
+          {error ? <ErrorNotice message={error} /> : null}
         </div>
         <div className="modal-foot">
-          {error ? <span className="connect-error">{error}</span> : null}
           {result.errors.length > 0 ? (
             <span className="connect-error">{result.errors[0]}</span>
           ) : null}

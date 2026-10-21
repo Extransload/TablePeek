@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   ENVIRONMENT_OPTIONS,
   environmentLabel,
@@ -6,6 +6,7 @@ import {
   setConnMeta,
   type ConnectionEnvironment,
 } from "../connMeta";
+import { explainError, type ErrorHelp } from "../errorHelp";
 import { t } from "../i18n";
 import {
   ApiRequestError,
@@ -21,6 +22,7 @@ import {
   type SslMode,
 } from "../store";
 import { DriverIcon } from "./DriverIcon";
+import { ErrorNotice } from "./ErrorNotice";
 import { FilePickerModal } from "./FilePickerModal";
 import {
   CheckIcon,
@@ -107,6 +109,16 @@ interface Problem {
 interface Status {
   kind: "ok" | "error" | "info";
   text: string;
+  // Server error code, which helps explain the error.
+  code?: string;
+}
+
+function errorStatus(err: unknown, fallback: string): Status {
+  return {
+    kind: "error",
+    text: err instanceof Error ? err.message : fallback,
+    code: err instanceof ApiRequestError ? err.code : undefined,
+  };
 }
 
 const DRIVERS: Driver[] = ["postgres", "mysql", "mssql", "cockroach"];
@@ -495,6 +507,8 @@ export function ConnectModal({
     notice !== null ? { kind: "info", text: notice } : null,
   );
   const [busy, setBusy] = useState<"save" | "test" | "connect" | null>(null);
+  // Set by an error's fix button: test again once the changed form renders.
+  const [retest, setRetest] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [picker, setPicker] = useState<{ field: FileField; title: string } | null>(null);
   const passwordRef = useRef<HTMLInputElement | null>(null);
@@ -657,7 +671,7 @@ export function ConnectModal({
       await persist();
       onClose();
     } catch (err) {
-      setStatus({ kind: "error", text: err instanceof Error ? err.message : t("저장하지 못했습니다") });
+      setStatus(errorStatus(err, t("저장하지 못했습니다")));
     } finally {
       setBusy(null);
     }
@@ -687,7 +701,7 @@ export function ConnectModal({
         }),
       });
     } catch (err) {
-      setStatus({ kind: "error", text: err instanceof Error ? err.message : t("연결하지 못했습니다") });
+      setStatus(errorStatus(err, t("연결하지 못했습니다")));
     } finally {
       setBusy(null);
     }
@@ -717,12 +731,59 @@ export function ConnectModal({
         setStatus({ kind: "error", text });
         focusSecret(missing);
       } else {
-        setStatus({ kind: "error", text: err instanceof Error ? err.message : t("연결하지 못했습니다") });
+        setStatus(errorStatus(err, t("연결하지 못했습니다")));
       }
     } finally {
       setBusy(null);
     }
   }
+
+  useEffect(() => {
+    if (retest) {
+      setRetest(false);
+      void test();
+    }
+    // Runs after the fix's form change has rendered, so test() sees it.
+  }, [retest]);
+
+  // One-click versions of the fixes an explained error suggests.
+  function errorActions(help: ErrorHelp): ReactNode {
+    if (form.driver === "mssql" || busy !== null) {
+      return null;
+    }
+    if (help.action === "ssl-off" && form.sslMode !== "disable") {
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            update({ sslMode: "disable" });
+            setRetest(true);
+          }}
+        >
+          {t("SSL 끄고 다시 테스트")}
+        </button>
+      );
+    }
+    if (help.action === "ssl-on" && form.sslMode !== "require") {
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            update({ sslMode: "require" });
+            setRetest(true);
+          }}
+        >
+          {t("SSL ‘필수’로 바꾸고 다시 테스트")}
+        </button>
+      );
+    }
+    return null;
+  }
+
+  const statusHelp = useMemo(
+    () => (status?.kind === "error" ? explainError(status.text, status.code) : null),
+    [status],
+  );
 
   function fileValue(field: FileField): string {
     return form[field];
@@ -1193,6 +1254,17 @@ export function ConnectModal({
           ) : null}
         </div>
 
+        {status !== null && statusHelp !== null && busy === null ? (
+          <div className="cm-error-slot">
+            <ErrorNotice
+              message={status.text}
+              code={status.code}
+              variant="compact"
+              renderActions={errorActions}
+              onClose={() => setStatus(null)}
+            />
+          </div>
+        ) : null}
         <footer className="cm-foot">
           <span className={`cm-status${status ? ` ${status.kind}` : ""}`} role="status">
             {busy === "test" ? (
@@ -1208,7 +1280,7 @@ export function ConnectModal({
             ) : status ? (
               <>
                 {status.kind === "ok" ? <CheckIcon size={11} /> : null}
-                {status.text}
+                {statusHelp !== null ? statusHelp.title : status.text}
               </>
             ) : (
               <span className="cm-hint">{t("Enter 연결 · ⌘S 저장 · Esc 닫기")}</span>

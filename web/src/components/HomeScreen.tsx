@@ -7,6 +7,7 @@ import {
 } from "../connMeta";
 import { t, tTableCount } from "../i18n";
 import { store, type ConnSummary, type SavedConnection } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import {
   CloseIcon,
   DatabaseIcon,
@@ -32,6 +33,9 @@ interface HomeScreenProps {
   onEditConnection(connection: SavedConnection): void;
   // Bumped when the connection dialog saved a profile, so the list reloads.
   savedVersion: number;
+  // The app's latest error, shown here instead of in a corner toast.
+  appError: string | null;
+  onDismissAppError(): void;
 }
 
 function relativeTime(at: number | undefined): string | null {
@@ -75,6 +79,8 @@ export function HomeScreen({
   onConnectSaved,
   onEditConnection,
   savedVersion,
+  appError,
+  onDismissAppError,
 }: HomeScreenProps) {
   const [saved, setSaved] = useState<SavedConnection[] | null>(null);
   const [savedError, setSavedError] = useState<string | null>(null);
@@ -342,6 +348,10 @@ export function HomeScreen({
           </div>
         </section>
 
+        {appError !== null && appError !== savedError ? (
+          <ErrorNotice message={appError} onClose={onDismissAppError} />
+        ) : null}
+
         <section className="home-section">
           <div className="home-section-head">
             <span className="home-section-title">{t("저장된 연결")}</span>
@@ -350,7 +360,7 @@ export function HomeScreen({
             </span>
           </div>
           {savedError !== null ? (
-            <div className="home-empty err">{savedError}</div>
+            <ErrorNotice message={savedError} />
           ) : saved === null ? (
             <div className="home-empty">
               <Spinner size={12} />

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { t } from "../i18n";
 import { store, type FsListing } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import { FileIcon, FolderIcon, UpIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
@@ -121,7 +122,9 @@ export function FilePickerModal({ title, current, homeSubdir, onPick, onClose }:
               <Spinner size={12} />
             </div>
           ) : error ? (
-            <div className="fs-error">{error}</div>
+            <div className="fs-error-slot">
+              <ErrorNotice message={error} variant="compact" />
+            </div>
           ) : listing ? (
             <>
               {parent && (

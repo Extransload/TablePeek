@@ -26,6 +26,7 @@ import { DefinitionPanel } from "./components/DefinitionPanel";
 import { ExplainPlanPanel } from "./components/ExplainPlanPanel";
 import { DumpModal } from "./components/DumpModal";
 import { EmptyWorkspace } from "./components/EmptyWorkspace";
+import { ErrorNotice } from "./components/ErrorNotice";
 import { ExportModal } from "./components/ExportModal";
 import { FilterBar } from "./components/FilterBar";
 import { FavoritesMenu, HistoryMenu } from "./components/Dropdowns";
@@ -57,7 +58,6 @@ import { UserManagerModal } from "./components/UserManagerModal";
 import { TabStrip } from "./components/TabStrip";
 import {
   CheckIcon,
-  CloseIcon,
   DatabaseIcon,
   JobsIcon,
   MoreIcon,
@@ -2891,13 +2891,14 @@ export default function App() {
     state.result !== null && state.result.meta.sourceTable !== null
       ? state.result.source.pendingSummary()
       : null;
-  // With the footer gone, errors not already shown inline get a dismissible toast.
+  // With the footer gone, errors not already shown inline (the home screen,
+  // a data grid, the message view) get a dismissible toast.
   const errorInline =
-    !home &&
-    activeTab !== null &&
-    (activeTab.kind === "query" || activeTab.kind === "data") &&
-    ((activeTab.kind === "data" && (activeTab.view ?? "data") === "data") ||
-      resultView === "message");
+    home ||
+    (activeTab !== null &&
+      (activeTab.kind === "query" || activeTab.kind === "data") &&
+      ((activeTab.kind === "data" && (activeTab.view ?? "data") === "data") ||
+        resultView === "message"));
 
   const messageAvailable = state.error !== null || state.info !== null;
   const planAvailable = state.result !== null && isExplainSql(state.result.sql);
@@ -3042,6 +3043,8 @@ export default function App() {
           onConnectSaved={(id) => void connectSavedById(id)}
           onEditConnection={(saved) => openConnectionEditor(saved)}
           savedVersion={savedVersion}
+          appError={state.error}
+          onDismissAppError={() => store.setError(null)}
         />
       ) : (
         <>
@@ -3590,7 +3593,13 @@ export default function App() {
                     </div>
                     )}
                     {dataView && state.error ? (
-                      <div className="data-notice error">{state.error}</div>
+                      <div className="data-error-slot">
+                        <ErrorNotice
+                          message={state.error}
+                          variant="compact"
+                          onClose={() => store.setError(null)}
+                        />
+                      </div>
                     ) : null}
                     {dataView && state.info && state.status !== "running" ? (
                       <div className="data-notice info">{state.info}</div>
@@ -3650,7 +3659,7 @@ export default function App() {
                       {resultView === "message" && (
                         <div className="message-pane">
                           {state.error ? (
-                            <div className="message-error">{state.error}</div>
+                            <ErrorNotice message={state.error} />
                           ) : state.info ? (
                             <div className="message-info">{state.info}</div>
                           ) : (
@@ -3706,17 +3715,7 @@ export default function App() {
         </>
       )}
       {state.error !== null && !errorInline ? (
-        <div className="error-toast" role="alert">
-          <span className="error-toast-text">{state.error}</span>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => store.setError(null)}
-            title={t("닫기")}
-          >
-            <CloseIcon size={11} />
-          </button>
-        </div>
+        <ErrorNotice message={state.error} variant="toast" onClose={() => store.setError(null)} />
       ) : null}
       {menu !== null ? (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu)} onClose={() => setMenu(null)} />

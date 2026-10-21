@@ -560,12 +560,6 @@ select {
   background: var(--bg);
 }
 
-.message-error {
-  color: var(--error);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .message-info {
   color: var(--muted);
   white-space: pre-wrap;
@@ -866,13 +860,6 @@ select {
   font-size: 12px;
 }
 
-.schema-error {
-  padding: 8px 10px;
-  color: var(--error);
-  font-size: 12px;
-  word-break: break-word;
-}
-
 .schema-table-row {
   display: flex;
   align-items: center;
@@ -1035,14 +1022,6 @@ select {
   text-align: center;
   color: var(--faint);
   font-size: 12px;
-}
-
-.menu-error {
-  padding: 7px 9px;
-  color: var(--error);
-  font-size: 12px;
-  border-bottom: 1px solid var(--line);
-  word-break: break-word;
 }
 
 .menu-row {
@@ -1222,11 +1201,6 @@ select {
   padding: 24px;
   text-align: center;
   color: var(--faint);
-}
-
-.fs-error {
-  padding: 10px;
-  color: var(--error);
 }
 
 .fs-entry {
@@ -2195,14 +2169,6 @@ select {
   text-align: center;
 }
 
-.palette-error {
-  margin: 4px;
-  padding: 6px 8px;
-  background: rgba(244, 135, 113, 0.08);
-  border-radius: 4px;
-  color: var(--error);
-}
-
 /* ── M9: 사이드바 오브젝트 섹션 ────────────────────────────── */
 
 .schema-section {
@@ -2464,10 +2430,6 @@ select {
   padding: 10px 0;
   color: var(--faint);
   font-size: 12px;
-}
-
-.home-empty.err {
-  color: var(--error);
 }
 
 .home-cards {
@@ -3123,12 +3085,6 @@ td.user-actions {
 
 .job-meta {
   font-size: 10px;
-}
-
-.job-error {
-  font-size: 11px;
-  color: var(--error);
-  word-break: break-all;
 }
 
 /* ── M14: 에디터 고도화 ─────────────────────────────────────── */
@@ -5684,11 +5640,6 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
-.data-notice.error {
-  background: color-mix(in srgb, var(--error) 10%, var(--panel));
-  color: var(--error);
-}
-
 .settings-language {
   display: inline-flex;
   gap: 2px;
@@ -6582,11 +6533,6 @@ textarea:focus-visible {
   opacity: 0.72;
 }
 
-.home-empty.err {
-  border-color: color-mix(in srgb, var(--error) 42%, var(--line));
-  background: color-mix(in srgb, var(--error) 7%, transparent);
-}
-
 .home-cards {
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 14px;
@@ -6969,39 +6915,6 @@ button.pending-apply {
 }
 
 /* Errors that are not already shown inline (the footer used to carry them) */
-.error-toast {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 40;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  max-width: min(520px, calc(100vw - 32px));
-  padding: 9px 8px 9px 12px;
-  border: 1px solid color-mix(in srgb, var(--error) 55%, var(--line));
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--error) 14%, var(--panel));
-  color: var(--ink);
-  font-size: 12px;
-  line-height: 1.45;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
-}
-
-.error-toast-text {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.error-toast .icon-button {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  justify-content: center;
-}
-
 /* Home: saved connections as cards */
 .home-saved-group .home-cards {
   display: grid;
@@ -8190,4 +8103,189 @@ button.tabbar-side {
 
 .tabbar-actions button.tabbar-side {
   margin: 0 2px;
+}
+
+/* Explained errors: what happened, why, what to try */
+.error-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--error) 40%, var(--line-soft));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--error) 8%, var(--panel));
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.error-notice-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.error-notice-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--error);
+}
+
+.error-notice-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.error-notice-message {
+  flex: 1;
+  min-width: 0;
+  color: var(--error);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+button.error-notice-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: -2px -4px 0 0;
+  padding: 0;
+  justify-content: center;
+}
+
+.error-notice-cause,
+.error-notice-fixes,
+.error-notice-actions,
+.error-notice-raw {
+  margin: 0;
+  padding-left: 21px;
+}
+
+.error-notice-cause {
+  color: var(--muted);
+}
+
+.error-notice-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.error-notice-fixes ul {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--muted);
+}
+
+.error-notice-fixes li + li {
+  margin-top: 2px;
+}
+
+.error-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.error-notice-actions button {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 11.5px;
+}
+
+.error-notice-raw {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.error-notice-raw summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.error-notice-raw-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.error-notice-raw pre {
+  flex: 1;
+  min-width: 0;
+  max-height: 120px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.error-notice.compact {
+  gap: 4px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+}
+
+.error-notice.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  width: min(460px, calc(100vw - 32px));
+  max-height: min(60vh, 440px);
+  overflow: auto;
+  background: color-mix(in srgb, var(--error) 10%, var(--panel));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.message-pane > .error-notice {
+  max-width: 760px;
+}
+
+.data-error-slot {
+  flex: none;
+  padding: 8px 10px 0;
+}
+
+.panel-error-slot {
+  margin: 8px 0;
+}
+
+.cm-error-slot {
+  flex: none;
+  max-height: 42vh;
+  overflow: auto;
+  padding: 0 16px 12px;
+}
+
+.schema-error-slot {
+  padding: 8px;
+}
+
+.fs-error-slot {
+  padding: 10px;
+}
+
+.palette-error-slot {
+  margin: 4px;
+}
+
+.menu-error-slot {
+  flex: none;
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px;
 }

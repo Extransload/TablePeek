@@ -14,6 +14,7 @@ import { store, type ObjectList, type TableSchema } from "../store";
 import type { DefinitionKind } from "../sqlTools";
 import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { ErrorNotice } from "./ErrorNotice";
 import { Spinner } from "./Spinner";
 import {
   ChevronIcon,
@@ -568,7 +569,9 @@ export function SchemaSidebar({
       </div>
       <div className="schema-list" ref={listRef}>
         {error ? (
-          <div className="schema-error">{error}</div>
+          <div className="schema-error-slot">
+            <ErrorNotice message={error} variant="compact" />
+          </div>
         ) : orderedTables === null ? (
           <div className="schema-empty">
             <Spinner size={14} label={t("스키마를 불러오는 중…")} />

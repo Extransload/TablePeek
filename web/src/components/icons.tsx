@@ -45,6 +45,16 @@ export function CheckIcon({ size = 12, className }: IconProps) {
   );
 }
 
+export function AlertIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.8v3.8" />
+      <circle cx="8" cy="11.1" r="0.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

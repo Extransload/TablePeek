@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { store, type FsListing } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import { FileIcon, FolderIcon, UpIcon } from "./icons";
 
 interface FsModalProps {
@@ -69,7 +70,9 @@ export function FsModal({ onClose, onOpenDb }: FsModalProps) {
           {loading ? (
             <div className="fs-empty">불러오는 중…</div>
           ) : error ? (
-            <div className="fs-error">{error}</div>
+            <div className="fs-error-slot">
+              <ErrorNotice message={error} variant="compact" />
+            </div>
           ) : listing ? (
             <>
               {parent && (

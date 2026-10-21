@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes, humanizeElapsed } from "../format";
 import { store, type ServerInfo, type ServerSession } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
@@ -120,7 +121,7 @@ export function ServerInfoPanel({ conn }: { conn: string }) {
         </button>
       </div>
       <div className="panel-body">
-        {error ? <div className="panel-error">{error}</div> : null}
+        {error ? <ErrorNotice message={error} /> : null}
         {info === null ? (
           error ? null : (
             <div className="panel-empty">불러오는 중…</div>

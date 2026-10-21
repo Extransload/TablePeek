@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { clearFinishedJobs, subscribeJobs, type Job } from "../jobs";
+import { ErrorNotice } from "./ErrorNotice";
 
 interface JobsModalProps {
   onClose(): void;
@@ -80,7 +81,7 @@ export function JobsModal({ onClose }: JobsModalProps) {
                       ? "진행 중…"
                       : ""}
                 </div>
-                {job.error ? <div className="job-error">{job.error}</div> : null}
+                {job.error ? <ErrorNotice message={job.error} variant="compact" /> : null}
               </div>
             ))
           )}

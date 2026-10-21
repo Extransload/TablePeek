@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatBytes, formatRowEstimate } from "../format";
 import { store, type EngineMeta, type TableDetail, type TableSchema } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon, SearchIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
@@ -155,7 +156,7 @@ export function OverviewPanel({
         />
       </div>
       <div className="panel-body">
-        {error ? <div className="panel-error">{error}</div> : null}
+        {error ? <ErrorNotice message={error} /> : null}
         {schemas === null ? (
           error ? null : <div className="panel-empty">불러오는 중…</div>
         ) : rows.length === 0 ? (

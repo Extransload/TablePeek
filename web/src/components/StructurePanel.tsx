@@ -6,6 +6,7 @@ import { formatBytes, formatRowEstimate } from "../format";
 import { store, type TableDetail } from "../store";
 import { ColumnsEditor, DdlPreview, FksEditor, IndexesEditor } from "./DraftEditors";
 import { t } from "../i18n";
+import { ErrorNotice } from "./ErrorNotice";
 import {
   ColumnsIcon,
   CopyIcon,
@@ -232,8 +233,8 @@ export function StructurePanel({
         )}
       </div>
       <div className="panel-body structure-body">
-        {error ? <div className="panel-error">{error}</div> : null}
-        {saveError ? <div className="panel-error">{saveError}</div> : null}
+        {error ? <ErrorNotice message={error} /> : null}
+        {saveError ? <ErrorNotice message={saveError} /> : null}
         {detail === null ? (
           error ? null : (
             <div className="panel-empty">
