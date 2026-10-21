@@ -875,6 +875,52 @@ async function createConnection(
   return body.id;
 }
 
+export interface ExportConnectionsRequest {
+  ids: string[];
+  // Color, tags and group name per saved id (the page keeps these, not the server).
+  meta: Record<string, { color: string; tags: string[]; group: string }>;
+  groups: { name: string; color: string }[];
+  include_passwords: boolean;
+  passphrase: string;
+}
+
+export interface ImportedConnection {
+  id: string;
+  name: string;
+  color: string;
+  tags: string[];
+  // Group name, or "" for none.
+  group: string;
+}
+
+export interface ImportConnectionsResult {
+  groups: { name: string; color: string }[];
+  connections: ImportedConnection[];
+}
+
+export interface ExportConnectionsResult {
+  // The sealed ".tablepeek" file's text.
+  file: string;
+  count: number;
+  // How many connections carried a password into the file.
+  secrets: number;
+}
+
+async function exportConnections(request: ExportConnectionsRequest): Promise<ExportConnectionsResult> {
+  return api<ExportConnectionsResult>("/api/connections/export", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+// label: the word put after a clashing name ("가져옴" → "name (가져옴)").
+async function importConnections(file: string, passphrase: string, label: string): Promise<ImportConnectionsResult> {
+  return api<ImportConnectionsResult>("/api/connections/import", {
+    method: "POST",
+    body: JSON.stringify({ file, passphrase, label }),
+  });
+}
+
 async function updateConnection(
   id: string,
   name: string,
@@ -1092,6 +1138,8 @@ export const store = {
   closeConn,
   listConnections,
   createConnection,
+  exportConnections,
+  importConnections,
   updateConnection,
   testConnection,
   deleteConnection,

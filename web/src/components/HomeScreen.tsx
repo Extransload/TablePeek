@@ -11,13 +11,21 @@ import {
   type ConnGroup,
 } from "../connGroups";
 import { listConnMeta, setConnGroup, setConnMeta, subscribeConnMeta } from "../connMeta";
-import { buildConnectionsFile, downloadJson, importName, parseConnectionsFile } from "../connectionsFile";
+import {
+  CONNECTIONS_FILE_ACCEPT,
+  CONNECTIONS_FILE_NAME,
+  MAX_IMPORT_BYTES,
+  downloadText,
+  exportRequest,
+  importErrorText,
+} from "../connectionsFile";
 import { t } from "../i18n";
 import { inputFromSaved } from "../savedInput";
-import { store, type ConnSummary, type Driver, type SavedConnection } from "../store";
+import { ApiRequestError, store, type ConnSummary, type Driver, type SavedConnection } from "../store";
 import { BrandMark } from "./BrandLogo";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
+import { ExportConnectionsModal } from "./ExportConnectionsModal";
 import { HomeConnectionList, type ListTarget, type RowAction } from "./HomeConnectionList";
 import { HomeWelcome } from "./HomeWelcome";
 import { CloseIcon, DownloadIcon, PlusIcon, SearchIcon, UploadIcon } from "./icons";
@@ -27,12 +35,12 @@ import { Spinner } from "./Spinner";
 // Names for GROUP_COLORS, in the same order.
 const COLOR_NAMES = ["주황", "파랑", "초록", "보라", "빨강", "청록", "분홍", "회색"];
 
-const EXPORT_FILE = "tablepeek-connections.json";
 
 type Prompt =
   | { kind: "newGroup" }
   | { kind: "rename"; group: ConnGroup }
-  | { kind: "url"; group: string };
+  | { kind: "url"; group: string }
+  | { kind: "filePassword"; file: string; fileName: string };
 
 function errorText(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
@@ -87,6 +95,8 @@ export function HomeScreen({
   const [menu, setMenu] = useState<{ x: number; y: number; target: ListTarget | null } | null>(null);
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  // Connections (and groups) chosen for an export, waiting for the file password.
+  const [exporting, setExporting] = useState<{ title: string; ids: string[]; groups: ConnGroup[] } | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [version, setVersion] = useState(0);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -221,66 +231,75 @@ export function HomeScreen({
     }
   }
 
-  function exportScope(connections: SavedConnection[], scopeGroups: ConnGroup[]): void {
-    downloadJson(EXPORT_FILE, buildConnectionsFile(connections, metaById, scopeGroups));
+  function exportScope(title: string, connections: SavedConnection[], scopeGroups: ConnGroup[]): void {
+    setNotice(null);
+    setExporting({ title, ids: connections.map((connection) => connection.id), groups: scopeGroups });
   }
 
-  async function importFile(file: File): Promise<void> {
-    setNotice(null);
-    // Name clashes are checked against the saved list, so it has to be there.
-    if (saved === null || failed) {
-      setNotice({ kind: "error", text: t("저장된 연결 목록을 불러오지 못해 가져올 수 없습니다. 목록을 다시 불러온 뒤 가져오세요.") });
-      return;
+  async function runExport(passphrase: string, includePasswords: boolean): Promise<string | null> {
+    if (exporting === null) {
+      return null;
     }
-    let parsed;
     try {
-      parsed = parseConnectionsFile(await file.text());
+      const result = await store.exportConnections(
+        exportRequest(exporting.ids, metaById, exporting.groups, includePasswords, passphrase),
+      );
+      downloadText(CONNECTIONS_FILE_NAME, result.file);
+      // Say plainly when "include passwords" found none to include.
+      const text = !includePasswords
+        ? t("연결 {count}개를 내보냈습니다", { count: result.count })
+        : result.secrets > 0
+          ? t("연결 {count}개를 내보냈습니다 (비밀번호 포함 {secrets}개)", { count: result.count, secrets: result.secrets })
+          : t("연결 {count}개를 내보냈습니다. 저장된 비밀번호가 있는 연결이 없어 비밀번호는 들어가지 않았습니다.", {
+              count: result.count,
+            });
+      setNotice({ kind: "ok", text });
+      return null;
     } catch (err) {
-      setNotice({ kind: "error", text: errorText(err, t("연결 파일을 읽을 수 없습니다. JSON 형식이 아닙니다.")) });
+      return t(errorText(err, t("내보내지 못했습니다")));
+    }
+  }
+
+  async function pickImportFile(file: File): Promise<void> {
+    setNotice(null);
+    if (file.size > MAX_IMPORT_BYTES) {
+      setNotice({ kind: "error", text: t("연결 파일이 너무 큽니다") });
       return;
     }
-    // Groups merge by name; connections are added, renamed when a name is taken.
-    const createdGroups: string[] = [];
-    const groupIdFor = (name: string, color?: string): string => {
-      if (name === "") {
-        return "";
-      }
-      const found = findGroupByName(name);
-      if (found !== undefined) {
-        return found.id;
-      }
-      const group = createGroup(name, color);
-      createdGroups.push(group.id);
-      return group.id;
-    };
-    for (const group of parsed.groups) {
+    try {
+      setPrompt({ kind: "filePassword", file: await file.text(), fileName: file.name });
+    } catch (err) {
+      setNotice({ kind: "error", text: errorText(err, t("파일을 읽지 못했습니다")) });
+    }
+  }
+
+  // The server opens the file and saves every connection or none; groups,
+  // colors and tags (kept here) are applied after it succeeds.
+  async function runImport(file: string, passphrase: string): Promise<string | null> {
+    let result;
+    try {
+      result = await store.importConnections(file, passphrase, t("가져옴"));
+    } catch (err) {
+      return importErrorText(
+        err instanceof ApiRequestError ? err.code : null,
+        errorText(err, t("연결을 가져오지 못했습니다")),
+      );
+    }
+    const groupIdFor = (name: string, color?: string): string =>
+      name === "" ? "" : (findGroupByName(name) ?? createGroup(name, color)).id;
+    for (const group of result.groups) {
       groupIdFor(group.name, group.color || undefined);
     }
-    const names = new Set(saved.map((connection) => connection.name));
-    const createdIds: string[] = [];
-    try {
-      for (const connection of parsed.connections) {
-        const name = importName(connection.name, names);
-        names.add(name);
-        const id = await store.createConnection(name, connection.connect, false);
-        createdIds.push(id);
-        setConnMeta(id, { group: groupIdFor(connection.group), color: connection.color, tags: connection.tags });
-      }
-    } catch (err) {
-      // All or nothing: take back what this import already added.
-      await Promise.all(createdIds.map((id) => store.deleteConnection(id).catch(() => undefined)));
-      createdGroups.forEach((id) => deleteGroup(id));
-      await loadSaved();
-      setNotice({
-        kind: "error",
-        text: t("연결을 가져오지 못해 아무것도 추가하지 않았습니다: {error}", {
-          error: errorText(err, t("저장하지 못했습니다")),
-        }),
+    for (const connection of result.connections) {
+      setConnMeta(connection.id, {
+        group: groupIdFor(connection.group),
+        color: connection.color,
+        tags: connection.tags,
       });
-      return;
     }
     await loadSaved();
-    setNotice({ kind: "ok", text: t("연결 {count}개를 가져왔습니다", { count: createdIds.length }) });
+    setNotice({ kind: "ok", text: t("연결 {count}개를 가져왔습니다", { count: result.connections.length }) });
+    return null;
   }
 
   function importItems(groupId: string): ContextMenuItem[] {
@@ -308,14 +327,19 @@ export function HomeScreen({
       {
         label: t("전체 내보내기…"),
         disabled: all.length === 0 && groups.length === 0,
-        onSelect: () => exportScope(all, groups),
+        onSelect: () => exportScope(t("전체 내보내기"), all, groups),
       },
     ];
     if (group !== null) {
       items.push({
         label: t("이 그룹 내보내기…"),
         separatorBefore: true,
-        onSelect: () => exportScope(all.filter((item) => metaById[item.id]?.group === group.id), [group]),
+        onSelect: () =>
+          exportScope(
+            t("‘{name}’ 그룹 내보내기", { name: group.name }),
+            all.filter((item) => metaById[item.id]?.group === group.id),
+            [group],
+          ),
       });
     }
     if (connection !== null) {
@@ -323,7 +347,8 @@ export function HomeScreen({
       items.push({
         label: t("이 연결 내보내기…"),
         separatorBefore: group === null,
-        onSelect: () => exportScope([connection], own === undefined ? [] : [own]),
+        onSelect: () =>
+          exportScope(t("‘{name}’ 내보내기", { name: connection.name }), [connection], own === undefined ? [] : [own]),
       });
     }
     return { label: t("내보내기"), submenu: items };
@@ -539,16 +564,24 @@ export function HomeScreen({
       <input
         ref={fileRef}
         type="file"
-        accept=".json,application/json"
+        accept={CONNECTIONS_FILE_ACCEPT}
         hidden
         onChange={(event) => {
           const file = event.target.files?.[0];
           event.target.value = "";
           if (file !== undefined) {
-            void importFile(file);
+            void pickImportFile(file);
           }
         }}
       />
+      {exporting !== null ? (
+        <ExportConnectionsModal
+          title={exporting.title}
+          count={exporting.ids.length}
+          onExport={runExport}
+          onClose={() => setExporting(null)}
+        />
+      ) : null}
       {menu !== null ? (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.target)} onClose={() => setMenu(null)} />
       ) : null}
@@ -558,7 +591,9 @@ export function HomeScreen({
           label={t("그룹 이름")}
           confirmLabel={t("만들기")}
           validate={(name) => (isGroupNameTaken(name) ? t("같은 이름의 그룹이 이미 있습니다") : null)}
-          onSubmit={(name) => createGroup(name)}
+          onSubmit={(name) => {
+            createGroup(name);
+          }}
           onClose={() => setPrompt(null)}
         />
       ) : prompt?.kind === "rename" ? (
@@ -569,6 +604,15 @@ export function HomeScreen({
           confirmLabel={t("바꾸기")}
           validate={(name) => (isGroupNameTaken(name, prompt.group.id) ? t("같은 이름의 그룹이 이미 있습니다") : null)}
           onSubmit={(name) => updateGroup(prompt.group.id, { name })}
+          onClose={() => setPrompt(null)}
+        />
+      ) : prompt?.kind === "filePassword" ? (
+        <PromptModal
+          title={t("연결 가져오기")}
+          label={t("‘{name}’의 파일 암호", { name: prompt.fileName })}
+          confirmLabel={t("가져오기")}
+          secret
+          onSubmit={(passphrase) => runImport(prompt.file, passphrase)}
           onClose={() => setPrompt(null)}
         />
       ) : prompt?.kind === "url" ? (

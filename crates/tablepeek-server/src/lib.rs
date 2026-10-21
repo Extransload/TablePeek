@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -23,6 +23,7 @@ use tablepeek_types::{
 };
 
 pub mod store;
+pub mod transfer;
 pub mod tunnel;
 
 #[derive(RustEmbed)]
@@ -332,6 +333,8 @@ pub fn app(state: AppState) -> Router {
             get(connections_list).post(connections_create),
         )
         .route("/api/connections/test", post(connections_test))
+        .route("/api/connections/export", post(connections_export))
+        .route("/api/connections/import", post(connections_import))
         .route(
             "/api/connections/{id}",
             delete(connections_delete).put(connections_update),
@@ -1109,6 +1112,14 @@ async fn connections_list(
 }
 
 fn validate_connect_request(connect: &ConnectRequest) -> Result<(), (StatusCode, Json<ApiError>)> {
+    match connect_problem(connect) {
+        Some((code, message)) => Err(bad_request(code, message)),
+        None => Ok(()),
+    }
+}
+
+// What keeps a connect request from being saved or opened: (error code, message).
+fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, &'static str)> {
     let missing = match connect.driver.as_str() {
         "postgres" => connect.postgres.is_none().then_some("PostgreSQL 접속 정보가 없습니다"),
         "cockroach" => connect
@@ -1117,15 +1128,10 @@ fn validate_connect_request(connect: &ConnectRequest) -> Result<(), (StatusCode,
             .then_some("CockroachDB 접속 정보가 없습니다"),
         "mysql" => connect.mysql.is_none().then_some("MySQL 접속 정보가 없습니다"),
         "mssql" => connect.mssql.is_none().then_some("SQL Server 접속 정보가 없습니다"),
-        _ => {
-            return Err(bad_request(
-                "unsupported_driver",
-                "지원하지 않는 드라이버입니다",
-            ))
-        }
+        _ => return Some(("unsupported_driver", "지원하지 않는 드라이버입니다")),
     };
     if let Some(message) = missing {
-        return Err(bad_request("invalid_request", message));
+        return Some(("invalid_request", message));
     }
     let host = match connect.driver.as_str() {
         "mysql" => connect.mysql.as_ref().map(|c| c.host.as_str()),
@@ -1140,12 +1146,12 @@ fn validate_connect_request(connect: &ConnectRequest) -> Result<(), (StatusCode,
             .chars()
             .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '@' | '?'))
     {
-        return Err(bad_request(
+        return Some((
             "invalid_request",
             "호스트에는 주소만 입력하세요 (URL·계정 정보 제외)",
         ));
     }
-    Ok(())
+    None
 }
 
 fn request_db_password(connect: &ConnectRequest) -> Option<&str> {
@@ -1368,6 +1374,220 @@ async fn connections_update(
     };
     save_connection(&state, &id, req, Some(&previous)).await?;
     Ok(Json(json!({ "id": id })))
+}
+
+#[derive(Deserialize)]
+struct ExportConnectionsRequest {
+    ids: Vec<String>,
+    // Color, tags and group name per saved id: the page keeps these, not the store.
+    #[serde(default)]
+    meta: HashMap<String, transfer::ExportMeta>,
+    #[serde(default)]
+    groups: Vec<transfer::BundleGroup>,
+    #[serde(default)]
+    include_passwords: bool,
+    passphrase: String,
+}
+
+// Seals the chosen profiles into a ".tablepeek" file. Passwords come from the
+// keychain only when asked for, so they never pass through the page.
+async fn connections_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ExportConnectionsRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    if req.passphrase.chars().count() < transfer::MIN_PASSPHRASE_CHARS {
+        return Err(bad_request("weak_passphrase", "파일 암호는 8자 이상이어야 합니다"));
+    }
+    // Each profile once, in the order asked.
+    let mut seen = HashSet::new();
+    let ids: Vec<String> = req.ids.into_iter().filter(|id| seen.insert(id.clone())).collect();
+    let saved = {
+        let store = state.store.lock().await;
+        ids.iter()
+            .map(|id| store.find_connection(id).cloned())
+            .collect::<Option<Vec<_>>>()
+    };
+    let Some(saved) = saved else {
+        return Err(not_found("연결을 찾을 수 없습니다"));
+    };
+    let ExportConnectionsRequest {
+        meta,
+        groups,
+        include_passwords,
+        passphrase,
+        ..
+    } = req;
+    // Keychain reads and the key derivation both block, so neither runs on the async workers.
+    let sealed = tokio::task::spawn_blocking(move || {
+        let color = |value: &str| {
+            if transfer::is_hex_color(value) {
+                value.to_string()
+            } else {
+                String::new()
+            }
+        };
+        let mut secrets = 0;
+        let connections = saved
+            .iter()
+            .map(|connection| {
+                let meta = meta.get(&connection.id).cloned().unwrap_or_default();
+                let with_secrets = include_passwords && connection.persist_password;
+                let carried = std::cell::Cell::new(false);
+                let connect = transfer::export_connect(connection, |kind| {
+                    let secret = with_secrets
+                        .then(|| store::get_password(&store::connection_account(&connection.id, kind)))
+                        .flatten()
+                        .filter(|secret| !secret.is_empty());
+                    carried.set(carried.get() || secret.is_some());
+                    secret
+                });
+                if carried.get() {
+                    secrets += 1;
+                }
+                transfer::BundleConnection {
+                    name: connection.name.clone(),
+                    connect,
+                    color: color(&meta.color),
+                    tags: meta.tags,
+                    group: meta.group,
+                }
+            })
+            .collect::<Vec<_>>();
+        let groups = groups
+            .iter()
+            .map(|group| transfer::BundleGroup {
+                name: group.name.clone(),
+                color: color(&group.color),
+            })
+            .collect();
+        let count = connections.len();
+        let plaintext = serde_json::to_vec(&transfer::Bundle { groups, connections })
+            .map_err(|err| err.to_string())?;
+        let file = transfer::seal(&plaintext, &passphrase, transfer::DEFAULT_KDF)?;
+        Ok::<_, String>((file, count, secrets))
+    })
+    .await
+    .map_err(|err| internal_error(err.to_string()))?;
+    let (file, count, secrets) = sealed.map_err(internal_error)?;
+    // secrets: how many profiles carried a password into the file.
+    Ok(Json(json!({ "file": file, "count": count, "secrets": secrets })))
+}
+
+#[derive(Deserialize)]
+struct ImportConnectionsRequest {
+    file: String,
+    passphrase: String,
+    // The word put after a clashing name, in the page's language ("가져옴").
+    #[serde(default)]
+    label: Option<String>,
+}
+
+// Opens a ".tablepeek" file and saves every connection in it, or none: one bad
+// entry or a failed save leaves the store as it was.
+async fn connections_import(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ImportConnectionsRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let ImportConnectionsRequest {
+        file,
+        passphrase,
+        label,
+    } = req;
+    let plaintext = tokio::task::spawn_blocking(move || transfer::open(&file, &passphrase))
+        .await
+        .map_err(|err| internal_error(err.to_string()))?
+        .map_err(|err| match err {
+            transfer::OpenError::NotConnectionsFile => bad_request(
+                "not_connections_file",
+                "TablePeek 연결 파일(.tablepeek)이 아닙니다",
+            ),
+            transfer::OpenError::Unsupported(message) => bad_request("unsupported_file", message),
+            transfer::OpenError::WrongPassphraseOrDamaged => bad_request(
+                "wrong_passphrase",
+                "파일 암호가 맞지 않거나 파일이 손상되었습니다",
+            ),
+        })?;
+    let bundle: transfer::Bundle = serde_json::from_slice(&plaintext)
+        .map_err(|_| bad_request("invalid_file", "연결 파일의 내용을 읽을 수 없습니다"))?;
+    let taken: HashSet<String> = {
+        let store = state.store.lock().await;
+        store
+            .data()
+            .connections
+            .iter()
+            .map(|connection| connection.name.clone())
+            .collect()
+    };
+    let label = label
+        .map(|label| label.trim().to_string())
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| "가져옴".to_string());
+    let items = transfer::prepare_import(bundle.connections, &taken, &label)
+        .map_err(|message| bad_request("invalid_file", message))?;
+
+    let mut saved: Vec<(String, bool)> = Vec::new();
+    let mut created = Vec::new();
+    for item in items {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let request = NewConnectionRequest {
+            name: item.name.clone(),
+            connect: item.connect,
+            persist_password: item.persist_password,
+        };
+        if let Err(err) = save_connection(&state, &id, request, None).await {
+            // Take back what this import already saved; the keychain outside the store lock.
+            {
+                let mut store = state.store.lock().await;
+                for (id, _) in &saved {
+                    let _ = store.remove_connection(id);
+                }
+            }
+            for (id, persisted) in &saved {
+                if *persisted {
+                    delete_connection_passwords(id);
+                }
+            }
+            if err.1.code == "keyring_error" {
+                return Err((
+                    err.0,
+                    Json(ApiError {
+                        code: "import_keyring_error".into(),
+                        message: "파일에 든 비밀번호를 이 컴퓨터의 키체인에 저장하지 못해 아무것도 가져오지 않았습니다. 비밀번호를 빼고 내보낸 파일로 다시 가져오세요.".into(),
+                    }),
+                ));
+            }
+            return Err(err);
+        }
+        saved.push((id.clone(), item.persist_password));
+        created.push(json!({
+            "id": id,
+            "name": item.name,
+            "color": item.color,
+            "tags": item.tags,
+            "group": item.group,
+        }));
+    }
+    let groups: Vec<transfer::BundleGroup> = bundle
+        .groups
+        .into_iter()
+        .map(|group| transfer::BundleGroup {
+            color: if transfer::is_hex_color(&group.color) {
+                group.color
+            } else {
+                String::new()
+            },
+            name: group.name,
+        })
+        .collect();
+    Ok(Json(json!({ "groups": groups, "connections": created })))
 }
 
 #[derive(Deserialize)]
@@ -3037,6 +3257,162 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn export_request(ids: Vec<String>, passphrase: &str) -> ExportConnectionsRequest {
+        ExportConnectionsRequest {
+            ids,
+            meta: HashMap::new(),
+            groups: Vec::new(),
+            include_passwords: false,
+            passphrase: passphrase.into(),
+        }
+    }
+
+    fn import_request(file: &str, passphrase: &str) -> ImportConnectionsRequest {
+        ImportConnectionsRequest {
+            file: file.into(),
+            passphrase: passphrase.into(),
+            label: Some("가져옴".into()),
+        }
+    }
+
+    async fn create_test_connection(state: &AppState, name: &str, connect: ConnectRequest) -> String {
+        let created = connections_create(
+            State(state.clone()),
+            test_headers(),
+            Json(NewConnectionRequest {
+                name: name.into(),
+                connect,
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap();
+        created.0["id"].as_str().unwrap().to_string()
+    }
+
+    fn ssh_mysql_connect() -> ConnectRequest {
+        serde_json::from_value(json!({
+            "driver": "mysql",
+            "mysql": { "host": "db.internal", "port": 3306, "user": "app", "password": "typed-pw", "database": "mc", "ssl_mode": "require" },
+            "ssh": { "host": "bastion", "port": 22, "user": "deploy", "private_key_path": "/k/id" }
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn connections_export_then_import_moves_profiles_and_meta() {
+        let source = test_state(&temp_dir("export-source"));
+        let pg = create_test_connection(&source, "분석 DB", test_connect_request("postgres")).await;
+        let my = create_test_connection(&source, "prod", ssh_mysql_connect()).await;
+        let mut request = export_request(vec![pg.clone(), my.clone()], "correct horse");
+        request.meta.insert(
+            my.clone(),
+            transfer::ExportMeta { color: "#22c55e".into(), tags: vec!["production".into()], group: "CiteWell".into() },
+        );
+        request.groups = vec![transfer::BundleGroup { name: "CiteWell".into(), color: "#f59e0b".into() }];
+        request.include_passwords = true; // nothing is in the keychain for these profiles
+        let exported = connections_export(State(source.clone()), test_headers(), Json(request))
+            .await
+            .unwrap();
+        assert_eq!(exported.0["count"], json!(2));
+        assert_eq!(exported.0["secrets"], json!(0), "asked for passwords, but none was stored");
+        let file = exported.0["file"].as_str().unwrap().to_string();
+        for hidden in ["분석 DB", "db.internal", "bastion", "CiteWell", "password"] {
+            assert!(!file.contains(hidden), "{hidden} visible in the file");
+        }
+        let inside: Value = serde_json::from_slice(&transfer::open(&file, "correct horse").unwrap()).unwrap();
+        assert!(!inside.to_string().contains("password"), "no secret was stored, so none is exported");
+
+        let target = test_state(&temp_dir("import-target"));
+        let imported = connections_import(State(target.clone()), test_headers(), Json(import_request(&file, "correct horse")))
+            .await
+            .unwrap();
+        let created = imported.0["connections"].as_array().unwrap();
+        assert_eq!(created.len(), 2);
+        assert_eq!(created[1]["name"], json!("prod"));
+        assert_eq!(created[1]["color"], json!("#22c55e"));
+        assert_eq!(created[1]["tags"], json!(["production"]));
+        assert_eq!(created[1]["group"], json!("CiteWell"));
+        assert_eq!(imported.0["groups"], json!([{ "name": "CiteWell", "color": "#f59e0b" }]));
+        let store = target.store.lock().await;
+        let saved = store.find_connection(created[1]["id"].as_str().unwrap()).unwrap();
+        assert_eq!(saved.mysql.as_ref().unwrap().host, "db.internal");
+        assert_eq!(saved.ssh.as_ref().unwrap().private_key_path.as_deref(), Some("/k/id"));
+        assert!(!saved.persist_password);
+        drop(store);
+
+        // A second import names the copies apart.
+        let again = connections_import(State(target.clone()), test_headers(), Json(import_request(&file, "correct horse")))
+            .await
+            .unwrap();
+        assert_eq!(again.0["connections"][1]["name"], json!("prod (가져옴)"));
+    }
+
+    #[tokio::test]
+    async fn connections_export_counts_each_profile_once() {
+        let state = test_state(&temp_dir("export-dedupe"));
+        let id = create_test_connection(&state, "a", test_connect_request("postgres")).await;
+        let exported = connections_export(State(state.clone()), test_headers(), Json(export_request(vec![id.clone(), id], "correct horse")))
+            .await
+            .unwrap();
+        assert_eq!(exported.0["count"], json!(1));
+        let inside: Value = serde_json::from_slice(&transfer::open(exported.0["file"].as_str().unwrap(), "correct horse").unwrap()).unwrap();
+        assert_eq!(inside["connections"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn connections_export_rejects_short_passphrase_and_unknown_ids() {
+        let state = test_state(&temp_dir("export-checks"));
+        let id = create_test_connection(&state, "a", test_connect_request("postgres")).await;
+        let short = connections_export(State(state.clone()), test_headers(), Json(export_request(vec![id.clone()], "seven77")))
+            .await
+            .unwrap_err();
+        assert_eq!(short.0, StatusCode::BAD_REQUEST);
+        assert_eq!(short.1.code, "weak_passphrase");
+        let missing = connections_export(State(state.clone()), test_headers(), Json(export_request(vec!["nope".into()], "correct horse")))
+            .await
+            .unwrap_err();
+        assert_eq!(missing.0, StatusCode::NOT_FOUND);
+        let unauthorized = connections_export(State(state.clone()), HeaderMap::new(), Json(export_request(vec![id], "correct horse")))
+            .await
+            .unwrap_err();
+        assert_eq!(unauthorized.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn connections_import_tells_wrong_passphrase_from_other_files() {
+        let state = test_state(&temp_dir("import-errors"));
+        let file = transfer::seal(b"{}", "correct horse", transfer::DEFAULT_KDF).unwrap();
+        let wrong = connections_import(State(state.clone()), test_headers(), Json(import_request(&file, "wrong horse")))
+            .await
+            .unwrap_err();
+        assert_eq!(wrong.1.code, "wrong_passphrase");
+        let other = connections_import(State(state.clone()), test_headers(), Json(import_request("{\"a\":1}", "correct horse")))
+            .await
+            .unwrap_err();
+        assert_eq!(other.1.code, "not_connections_file");
+    }
+
+    #[tokio::test]
+    async fn connections_import_is_all_or_nothing() {
+        let state = test_state(&temp_dir("import-atomic"));
+        let good = json!({ "driver": "postgres", "postgres": { "host": "h", "port": 5432, "user": "u", "database": "d" } });
+        let bundle = json!({
+            "groups": [],
+            "connections": [
+                { "name": "first", "connect": good },
+                { "name": "second", "connect": { "driver": "postgres", "postgres": { "host": "db/prod", "port": 5432, "user": "u", "database": "d" } } }
+            ]
+        });
+        let file = transfer::seal(bundle.to_string().as_bytes(), "correct horse", transfer::DEFAULT_KDF).unwrap();
+        let error = connections_import(State(state.clone()), test_headers(), Json(import_request(&file, "correct horse")))
+            .await
+            .unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.message.starts_with("2번째 연결"), "{}", error.1.message);
+        assert!(state.store.lock().await.data().connections.is_empty(), "nothing saved");
     }
 
     #[tokio::test]
