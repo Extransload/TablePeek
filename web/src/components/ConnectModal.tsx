@@ -494,7 +494,10 @@ export function ConnectModal({
 }: ConnectModalProps) {
   // The group isn't edited here (the home list owns it); the form only carries
   // it so saving keeps an existing group or files a new connection into one.
-  const urlPatch = editing === null && initialUrl !== null ? parseConnectionUrl(initialUrl) : null;
+  // Parsed once: only the initial form and status read it.
+  const [urlPatch] = useState(() =>
+    editing === null && initialUrl !== null ? parseConnectionUrl(initialUrl) : null,
+  );
   const [form, setForm] = useState<ConnectForm>(() => {
     if (editing !== null) {
       return formFromSaved(editing);

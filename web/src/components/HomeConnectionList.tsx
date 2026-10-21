@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { ConnGroup } from "../connGroups";
 import type { ConnMeta } from "../connMeta";
 import { t } from "../i18n";
@@ -172,6 +172,13 @@ export function HomeConnectionList({
   const [dropZone, setDropZone] = useState<string | null>(null);
   const needle = query.trim().toLowerCase();
   const searching = needle !== "";
+  // Groups folded during the current search only; the saved state returns when it clears.
+  const [searchFolded, setSearchFolded] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (!searching) {
+      setSearchFolded(new Set());
+    }
+  }, [searching]);
   const shown = filterConnections(saved, metaById, groups, query);
   const groupIds = new Set(groups.map((group) => group.id));
   const visibleOpen = unsaved.filter((conn) => openMatches(conn, needle));
@@ -182,6 +189,20 @@ export function HomeConnectionList({
     group,
     members: saved.filter((connection) => metaById[connection.id]?.group === group.id).sort(byLastUsed),
   }));
+
+  function toggleGroup(group: ConnGroup): void {
+    if (!searching) {
+      onToggleGroup(group);
+      return;
+    }
+    setSearchFolded((current) => {
+      const next = new Set(current);
+      if (!next.delete(group.id)) {
+        next.add(group.id);
+      }
+      return next;
+    });
+  }
 
   function menuAt(event: MouseEvent, target: ListTarget | null): void {
     event.preventDefault();
@@ -380,7 +401,7 @@ export function HomeConnectionList({
       if (searching && visible.length === 0) {
         return null;
       }
-      const expanded = searching || !group.collapsed;
+      const expanded = searching ? !searchFolded.has(group.id) : !group.collapsed;
       const target: ListTarget = { kind: "group", group };
       return (
         <div
@@ -395,8 +416,8 @@ export function HomeConnectionList({
             tabIndex={0}
             data-nav=""
             aria-expanded={expanded}
-            onClick={() => onToggleGroup(group)}
-            onKeyDown={(event) => activateKeys(event, () => onToggleGroup(group))}
+            onClick={() => toggleGroup(group)}
+            onKeyDown={(event) => activateKeys(event, () => toggleGroup(group))}
             onContextMenu={(event) => menuAt(event, target)}
           >
             <span className={`launcher-chevron${expanded ? " open" : ""}`} aria-hidden="true">

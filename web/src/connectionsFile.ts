@@ -1,4 +1,4 @@
-import type { ConnGroup } from "./connGroups";
+import { isHexColor, type ConnGroup } from "./connGroups";
 import type { ConnMeta } from "./connMeta";
 import { t } from "./i18n";
 import { inputFromSaved } from "./savedInput";
@@ -181,15 +181,28 @@ export function parseConnectionsFile(text: string): ConnectionsFile {
     version: CONNECTIONS_FILE_VERSION,
     groups: groups
       .filter((group): group is Record<string, unknown> => isRecord(group) && typeof group.name === "string")
-      .map((group) => ({ name: group.name as string, color: typeof group.color === "string" ? group.color : "" })),
+      .map((group) => ({ name: group.name as string, color: isHexColor(group.color) ? group.color : "" })),
     connections: (data.connections as Record<string, unknown>[]).map((connection) => ({
       name: connection.name as string,
       connect: connection.connect as ConnectInput,
-      color: typeof connection.color === "string" ? connection.color : "",
+      color: isHexColor(connection.color) ? connection.color : "",
       tags: (connection.tags as string[] | undefined) ?? [],
       group: typeof connection.group === "string" ? connection.group : "",
     })),
   };
+}
+
+// The name an imported connection gets when its own is taken:
+// "name (가져옴)", then "name (가져옴 2)", "name (가져옴 3)", …
+export function importName(name: string, taken: Set<string>): string {
+  if (!taken.has(name)) {
+    return name;
+  }
+  let candidate = `${name} ${t("(가져옴)")}`;
+  for (let n = 2; taken.has(candidate); n += 1) {
+    candidate = `${name} ${t("(가져옴 {n})", { n })}`;
+  }
+  return candidate;
 }
 
 export function downloadJson(filename: string, data: unknown): void {

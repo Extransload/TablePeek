@@ -4,13 +4,14 @@ import {
   deleteGroup,
   findGroupByName,
   GROUP_COLORS,
+  isGroupNameTaken,
   listGroups,
   subscribeGroups,
   updateGroup,
   type ConnGroup,
 } from "../connGroups";
 import { listConnMeta, setConnGroup, setConnMeta, subscribeConnMeta } from "../connMeta";
-import { buildConnectionsFile, downloadJson, parseConnectionsFile } from "../connectionsFile";
+import { buildConnectionsFile, downloadJson, importName, parseConnectionsFile } from "../connectionsFile";
 import { t } from "../i18n";
 import { inputFromSaved } from "../savedInput";
 import { store, type ConnSummary, type Driver, type SavedConnection } from "../store";
@@ -226,6 +227,11 @@ export function HomeScreen({
 
   async function importFile(file: File): Promise<void> {
     setNotice(null);
+    // Name clashes are checked against the saved list, so it has to be there.
+    if (saved === null || failed) {
+      setNotice({ kind: "error", text: t("저장된 연결 목록을 불러오지 못해 가져올 수 없습니다. 목록을 다시 불러온 뒤 가져오세요.") });
+      return;
+    }
     let parsed;
     try {
       parsed = parseConnectionsFile(await file.text());
@@ -250,14 +256,11 @@ export function HomeScreen({
     for (const group of parsed.groups) {
       groupIdFor(group.name, group.color || undefined);
     }
-    const names = new Set((saved ?? []).map((connection) => connection.name));
+    const names = new Set(saved.map((connection) => connection.name));
     const createdIds: string[] = [];
     try {
       for (const connection of parsed.connections) {
-        let name = connection.name;
-        while (names.has(name)) {
-          name = `${name} ${t("(가져옴)")}`;
-        }
+        const name = importName(connection.name, names);
         names.add(name);
         const id = await store.createConnection(name, connection.connect, false);
         createdIds.push(id);
@@ -554,6 +557,7 @@ export function HomeScreen({
           title={t("새 그룹")}
           label={t("그룹 이름")}
           confirmLabel={t("만들기")}
+          validate={(name) => (isGroupNameTaken(name) ? t("같은 이름의 그룹이 이미 있습니다") : null)}
           onSubmit={(name) => createGroup(name)}
           onClose={() => setPrompt(null)}
         />
@@ -563,6 +567,7 @@ export function HomeScreen({
           label={t("그룹 이름")}
           initial={prompt.group.name}
           confirmLabel={t("바꾸기")}
+          validate={(name) => (isGroupNameTaken(name, prompt.group.id) ? t("같은 이름의 그룹이 이미 있습니다") : null)}
           onSubmit={(name) => updateGroup(prompt.group.id, { name })}
           onClose={() => setPrompt(null)}
         />

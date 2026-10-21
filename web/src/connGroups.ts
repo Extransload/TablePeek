@@ -27,7 +27,18 @@ export const GROUP_COLORS = [
 const STORAGE_KEY = "tablepeek.conn-groups";
 const listeners = new Set<() => void>();
 
-function normalizeGroup(value: unknown): ConnGroup | null {
+// The ids createGroup hands out, so an id left behind is never read as a name.
+const GROUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function paletteColor(index: number): string {
+  return GROUP_COLORS[index % GROUP_COLORS.length];
+}
+
+function normalizeGroup(value: unknown, index: number): ConnGroup | null {
   if (value === null || typeof value !== "object") {
     return null;
   }
@@ -38,7 +49,7 @@ function normalizeGroup(value: unknown): ConnGroup | null {
   return {
     id: group.id,
     name: group.name,
-    color: typeof group.color === "string" ? group.color : GROUP_COLORS[0],
+    color: isHexColor(group.color) ? group.color : paletteColor(index),
     collapsed: group.collapsed === true,
   };
 }
@@ -73,7 +84,7 @@ export function createGroup(name: string, color?: string): ConnGroup {
   const group: ConnGroup = {
     id: crypto.randomUUID(),
     name: name.trim() || t("새 그룹"),
-    color: color ?? GROUP_COLORS[groups.length % GROUP_COLORS.length],
+    color: isHexColor(color) ? color : paletteColor(groups.length),
     collapsed: false,
   };
   writeAll([...groups, group]);
@@ -84,6 +95,10 @@ export function updateGroup(
   id: string,
   patch: Partial<Pick<ConnGroup, "name" | "color" | "collapsed">>,
 ): void {
+  if (patch.color !== undefined && !isHexColor(patch.color)) {
+    const { color: _ignored, ...rest } = patch;
+    patch = rest;
+  }
   writeAll(
     readAll().map((group) =>
       group.id === id
@@ -112,17 +127,27 @@ export function findGroupByName(name: string): ConnGroup | undefined {
   return readAll().find((group) => group.name.toLowerCase() === wanted);
 }
 
+export function isGroupNameTaken(name: string, exceptId?: string): boolean {
+  const found = findGroupByName(name);
+  return found !== undefined && found.id !== exceptId;
+}
+
 export function subscribeGroups(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
 // Earlier versions kept a group name on each connection; turn each name into
-// a group and point the connection at its id. Safe to run on every start.
+// a group and point the connection at its id; an id whose group is gone is
+// cleared. Safe to run on every start.
 export function migrateGroupNames(): void {
   const known = new Set(readAll().map((group) => group.id));
   for (const [connId, meta] of Object.entries(listConnMeta())) {
     if (meta.group === "" || known.has(meta.group)) {
+      continue;
+    }
+    if (GROUP_ID.test(meta.group)) {
+      setConnMeta(connId, { ...meta, group: "" });
       continue;
     }
     const group = findGroupByName(meta.group) ?? createGroup(meta.group);

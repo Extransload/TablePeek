@@ -26,6 +26,7 @@ interface ContextMenuProps {
 
 const EDGE = 4;
 
+// The next enabled item after `from`, wrapping around; -1 when none is enabled.
 function nextEnabled(items: ContextMenuItem[], from: number, step: 1 | -1): number {
   for (let offset = 1; offset <= items.length; offset += 1) {
     const index = (from + step * offset + items.length * offset) % items.length;
@@ -33,7 +34,7 @@ function nextEnabled(items: ContextMenuItem[], from: number, step: 1 | -1): numb
       return index;
     }
   }
-  return from;
+  return -1;
 }
 
 export function ContextMenu({ x, y, items, anchor, onClose }: ContextMenuProps) {
@@ -106,75 +107,91 @@ export function ContextMenu({ x, y, items, anchor, onClose }: ContextMenuProps) 
     }
     if (item.submenu !== undefined) {
       openSubmenu(level, index);
-      setActive({ level: level + 1, index: nextEnabled(item.submenu, -1, 1) });
+      // A submenu with nothing to pick keeps the highlight on its parent.
+      const first = nextEnabled(item.submenu, -1, 1);
+      setActive(first >= 0 ? { level: level + 1, index: first } : { level, index });
       return;
     }
     onClose();
     item.onSelect?.();
   }
 
-  useEffect(() => {
-    function onPointerDown(event: PointerEvent): void {
-      const layer = layerRef.current;
-      const target = event.target as Node;
-      if (layer && !layer.contains(target) && !anchor?.contains(target)) {
-        onClose();
-      }
+  function onPointerDown(event: PointerEvent): void {
+    const layer = layerRef.current;
+    const target = event.target as Node;
+    if (layer && !layer.contains(target) && !anchor?.contains(target)) {
+      onClose();
     }
-    function onKeyDown(event: KeyboardEvent): void {
-      const level = active?.level ?? levels.length - 1;
-      const list = levels[level];
-      switch (event.key) {
-        case "Escape":
-          // One level at a time, then the whole menu.
-          if (path.length > 0) {
-            setActive({ level: path.length - 1, index: path[path.length - 1] });
-            setPath(path.slice(0, -1));
-          } else {
-            onClose();
-          }
-          break;
-        case "ArrowDown":
-        case "ArrowUp": {
-          const from = active?.level === level ? active.index : event.key === "ArrowDown" ? -1 : list.length;
-          setActive({ level, index: nextEnabled(list, from, event.key === "ArrowDown" ? 1 : -1) });
-          setPath(path.slice(0, level));
-          break;
+  }
+
+  function onKeyDown(event: KeyboardEvent): void {
+    const level = active?.level ?? levels.length - 1;
+    const list = levels[level] ?? [];
+    switch (event.key) {
+      case "Escape":
+        // One level at a time, then the whole menu.
+        if (path.length > 0) {
+          setActive({ level: path.length - 1, index: path[path.length - 1] });
+          setPath(path.slice(0, -1));
+        } else {
+          onClose();
         }
-        case "ArrowRight":
-          if (active !== null && list[active.index]?.submenu !== undefined && !list[active.index].disabled) {
-            choose(list[active.index], level, active.index);
-          }
-          break;
-        case "ArrowLeft":
-          if (level > 0) {
-            setActive({ level: level - 1, index: path[level - 1] });
-            setPath(path.slice(0, level - 1));
-          }
-          break;
-        case "Enter":
-          if (active === null) {
-            return;
-          }
-          choose(list[active.index], level, active.index);
-          break;
-        default:
-          return;
+        break;
+      case "ArrowDown":
+      case "ArrowUp": {
+        const from = active?.level === level ? active.index : event.key === "ArrowDown" ? -1 : list.length;
+        const next = nextEnabled(list, from, event.key === "ArrowDown" ? 1 : -1);
+        if (next >= 0) {
+          setActive({ level, index: next });
+          setPath(path.slice(0, level));
+        }
+        break;
       }
-      event.preventDefault();
-      setUsingKeys(true);
+      case "ArrowRight":
+        if (active !== null && list[active.index]?.submenu !== undefined && !list[active.index].disabled) {
+          choose(list[active.index], level, active.index);
+        }
+        break;
+      case "ArrowLeft":
+        if (level > 0) {
+          setActive({ level: level - 1, index: path[level - 1] });
+          setPath(path.slice(0, level - 1));
+        }
+        break;
+      case "Enter":
+        if (active !== null && list[active.index] !== undefined) {
+          choose(list[active.index], level, active.index);
+        }
+        break;
+      default:
+        return;
     }
-    document.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("blur", onClose);
-    window.addEventListener("resize", onClose);
+    // The menu owns these keys while it is open: the focused row or field behind it must not act on them too.
+    event.preventDefault();
+    event.stopPropagation();
+    setUsingKeys(true);
+  }
+
+  // Bound once; the handlers read the latest state through this ref.
+  const handlersRef = useRef({ onPointerDown, onKeyDown, onClose });
+  handlersRef.current = { onPointerDown, onKeyDown, onClose };
+
+  useEffect(() => {
+    const pointerDown = (event: PointerEvent) => handlersRef.current.onPointerDown(event);
+    const keyDown = (event: KeyboardEvent) => handlersRef.current.onKeyDown(event);
+    const close = () => handlersRef.current.onClose();
+    document.addEventListener("pointerdown", pointerDown, true);
+    // Capture phase, so the menu sees its keys before anything under it.
+    window.addEventListener("keydown", keyDown, true);
+    window.addEventListener("blur", close);
+    window.addEventListener("resize", close);
     return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("blur", onClose);
-      window.removeEventListener("resize", onClose);
+      document.removeEventListener("pointerdown", pointerDown, true);
+      window.removeEventListener("keydown", keyDown, true);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("resize", close);
     };
-  });
+  }, []);
 
   return (
     <div ref={layerRef} className="context-layer" onContextMenu={(event) => event.preventDefault()}>
