@@ -21,9 +21,10 @@ import {
   truncateTableSql,
 } from "./ddl";
 import { listDrafts, removeDraft, saveDraft } from "./drafts";
-import { getConnMeta, subscribeConnMeta } from "./connMeta";
+import { subscribeConnMeta } from "./connMeta";
 import { DefinitionPanel } from "./components/DefinitionPanel";
 import { ExplainPlanPanel } from "./components/ExplainPlanPanel";
+import { ConnectionPickerModal, type PickTarget } from "./components/ConnectionPickerModal";
 import { DumpModal } from "./components/DumpModal";
 import { EmptyWorkspace } from "./components/EmptyWorkspace";
 import { ErrorNotice } from "./components/ErrorNotice";
@@ -32,7 +33,7 @@ import { FilterBar } from "./components/FilterBar";
 import { FavoritesMenu, HistoryMenu } from "./components/Dropdowns";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
-import { HomeScreen } from "./components/HomeScreen";
+import { HomeScreen, type NewConnectionOptions } from "./components/HomeScreen";
 import { HoverTooltip } from "./components/HoverTooltip";
 import { t, tTableCount } from "./i18n";
 import { ImportModal } from "./components/ImportModal";
@@ -114,7 +115,6 @@ import {
   missingSecretOf,
   store,
   type ConnSummary,
-  type Driver,
   type EngineMeta,
   type Favorite,
   type GridResult,
@@ -375,8 +375,8 @@ export default function App() {
     notice: string | null;
     missingSecret: MissingSecret | null;
   } | null>(null);
-  // Driver chosen on the home screen for a new connection.
-  const [newConnDriver, setNewConnDriver] = useState<Driver | null>(null);
+  // What the home screen picked for a new connection (driver, group, URL).
+  const [newConnOptions, setNewConnOptions] = useState<NewConnectionOptions | null>(null);
   const [savedVersion, setSavedVersion] = useState(0);
   const [schemaOpen, setSchemaOpen] = useState(true);
   const [resultView, setResultView] = useState<"grid" | "message" | "plan">("grid");
@@ -410,6 +410,11 @@ export default function App() {
   const [dbMenu, setDbMenu] = useState<DbMenuState | null>(null);
   const [importTarget, setImportTarget] = useState<{ kind: string; table: string } | null>(null);
   const [dumpTab, setDumpTab] = useState<"backup" | "restore" | null>(null);
+  // Home's backup/restore: choosing which connection, then waiting for it to open.
+  const [dumpPicker, setDumpPicker] = useState<{ kind: "backup" | "restore"; saved: SavedConnection[] } | null>(
+    null,
+  );
+  const pendingDumpRef = useRef<{ target: PickTarget; kind: "backup" | "restore" } | null>(null);
   const [jobsOpen, setJobsOpen] = useState(false);
   const [jobsRunning, setJobsRunning] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(() => getSettings());
@@ -442,8 +447,6 @@ export default function App() {
   const [splitSide, setSplitSide] = useState<"bottom" | "right">(() =>
     window.localStorage.getItem("tablepeek.split-side") === "right" ? "right" : "bottom",
   );
-  const activeConnSummary = conns.find((conn) => conn.id === activeConnId) ?? null;
-  const activeConnMeta = getConnMeta(activeConnSummary?.saved_id);
   const favoriteSnippets = useMemo(
     () =>
       favorites
@@ -599,6 +602,20 @@ export default function App() {
       alive = false;
     };
   }, [activeConnId, schemaKey]);
+
+  // The connection picked for backup/restore is now active with its schema: open the dump window.
+  useEffect(() => {
+    const pending = pendingDumpRef.current;
+    if (pending === null || activeConnId === null || meta === null) {
+      return;
+    }
+    const active = conns.find((conn) => conn.id === activeConnId);
+    const { connId, savedId } = pending.target;
+    if (connId === activeConnId || (savedId !== undefined && active?.saved_id === savedId)) {
+      pendingDumpRef.current = null;
+      setDumpTab(pending.kind);
+    }
+  }, [activeConnId, meta, conns]);
 
   const serverConn =
     meta !== null && ["postgres", "cockroach", "mysql", "mssql"].includes(meta.kind);
@@ -2038,10 +2055,11 @@ export default function App() {
     setActiveConnId(live.conn);
   }
 
-  async function enterConn(id: string): Promise<void> {
+  // Resolves false when the connection could not be entered.
+  async function enterConn(id: string): Promise<boolean> {
     if (workspacesRef.current[id] !== undefined) {
       setActiveConnId(id);
-      return;
+      return true;
     }
     try {
       const nextMeta = await store.refreshMeta(id);
@@ -2053,11 +2071,13 @@ export default function App() {
       };
       commitWorkspaces({ ...workspacesRef.current, [id]: ws });
       setActiveConnId(id);
+      return true;
     } catch (err) {
       store.setError(errorOf(err, "연결에 들어가지 못했습니다"));
       try {
         setConns(await store.listConns());
       } catch {}
+      return false;
     }
   }
 
@@ -2097,16 +2117,17 @@ export default function App() {
     }
   }
 
-  async function connectSavedById(id: string): Promise<void> {
+  // "asking": a secret isn't stored and the connection dialog now asks for it.
+  async function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
     const existing = conns.find((conn) => conn.saved_id === id);
     if (existing !== undefined) {
-      await enterConn(existing.id);
-      return;
+      return (await enterConn(existing.id)) ? "entered" : "failed";
     }
     setBusySaved(id);
     try {
       const live = await store.connectSaved(id);
       await afterOpen(live);
+      return "entered";
     } catch (err) {
       // A secret isn't stored: ask for it in the connection dialog instead of failing.
       const missing = missingSecretOf(err);
@@ -2116,9 +2137,10 @@ export default function App() {
           : undefined;
       if (missing !== null && saved !== undefined) {
         openConnectionEditor(saved, errorOf(err, t("비밀번호를 입력하세요")), missing);
-      } else {
-        store.setError(errorOf(err, "연결에 실패했습니다"));
+        return "asking";
       }
+      store.setError(errorOf(err, "연결에 실패했습니다"));
+      return "failed";
     } finally {
       setBusySaved(null);
     }
@@ -2130,14 +2152,42 @@ export default function App() {
     missingSecret: MissingSecret | null = null,
   ): void {
     setConnectEditing(saved === null ? null : { saved, notice, missingSecret });
-    setNewConnDriver(null);
+    setNewConnOptions(null);
     setConnectOpen(true);
   }
 
-  function openNewConnection(driver?: Driver): void {
+  function openNewConnection(options?: NewConnectionOptions): void {
     setConnectEditing(null);
-    setNewConnDriver(driver ?? null);
+    setNewConnOptions(options ?? null);
     setConnectOpen(true);
+  }
+
+  // Backup/restore from home: pick a connection, open it, then the dump window
+  // opens once its workspace is ready (see the pendingDump effect).
+  async function startBackupOrRestore(kind: "backup" | "restore"): Promise<void> {
+    const saved = await store.listConnections().catch(() => []);
+    setDumpPicker({ kind, saved });
+  }
+
+  async function pickForDump(target: PickTarget): Promise<void> {
+    if (dumpPicker === null) {
+      return;
+    }
+    const kind = dumpPicker.kind;
+    setDumpPicker(null);
+    pendingDumpRef.current = { target, kind };
+    const outcome =
+      target.connId !== undefined
+        ? (await enterConn(target.connId))
+          ? "entered"
+          : "failed"
+        : target.savedId !== undefined
+          ? await connectSavedById(target.savedId)
+          : "failed";
+    // A failed open must not leave the dump window waiting for a later visit.
+    if (outcome === "failed" && pendingDumpRef.current?.target === target) {
+      pendingDumpRef.current = null;
+    }
   }
 
   function closeConnectionDialog(): void {
@@ -3049,6 +3099,7 @@ export default function App() {
           onCloseConn={(id) => void closeConn(id)}
           onOpenFile={() => setFsOpen(true)}
           onNewConnection={openNewConnection}
+          onBackupOrRestore={(kind) => void startBackupOrRestore(kind)}
           onConnectSaved={(id) => void connectSavedById(id)}
           onEditConnection={(saved) => openConnectionEditor(saved)}
           savedVersion={savedVersion}
@@ -3275,7 +3326,6 @@ export default function App() {
               <SchemaSidebar
                 key={activeConnId}
                 conn={activeConnId}
-                environment={activeConnMeta?.environment ?? ""}
                 kind={meta?.kind ?? ""}
                 refreshKey={schemaKey}
                 pinned={pinnedTables[activeConnId] ?? EMPTY_TABLES}
@@ -3859,9 +3909,14 @@ export default function App() {
       )}
       {connectOpen && (
         <ConnectModal
-          key={connectEditing?.saved.id ?? `new:${newConnDriver ?? ""}`}
+          key={
+            connectEditing?.saved.id ??
+            `new:${newConnOptions?.driver ?? ""}:${newConnOptions?.group ?? ""}:${newConnOptions?.url ?? ""}`
+          }
           editing={connectEditing?.saved ?? null}
-          initialDriver={newConnDriver}
+          initialDriver={newConnOptions?.driver ?? null}
+          initialGroup={newConnOptions?.group ?? null}
+          initialUrl={newConnOptions?.url ?? null}
           notice={connectEditing?.notice ?? null}
           missingSecret={connectEditing?.missingSecret ?? null}
           openConnId={
@@ -3869,16 +3924,36 @@ export default function App() {
               ? (conns.find((conn) => conn.saved_id === connectEditing.saved.id)?.id ?? null)
               : null
           }
-          onClose={closeConnectionDialog}
+          onClose={() => {
+            // Closed without connecting: a pending backup/restore is dropped.
+            pendingDumpRef.current = null;
+            closeConnectionDialog();
+          }}
           onSaved={() => setSavedVersion((value) => value + 1)}
           onSwitch={(connId) => {
+            if (pendingDumpRef.current !== null) {
+              pendingDumpRef.current = { ...pendingDumpRef.current, target: { connId } };
+            }
             closeConnectionDialog();
             void enterConn(connId);
           }}
           onConnected={(live) => {
+            // Connected from the dialog (e.g. after typing a password): the dump waits for this one.
+            if (pendingDumpRef.current !== null) {
+              pendingDumpRef.current = { ...pendingDumpRef.current, target: { connId: live.conn } };
+            }
             closeConnectionDialog();
             void afterOpen(live);
           }}
+        />
+      )}
+      {dumpPicker !== null && (
+        <ConnectionPickerModal
+          title={dumpPicker.kind === "backup" ? t("백업할 연결 선택") : t("복원할 연결 선택")}
+          conns={conns}
+          saved={dumpPicker.saved}
+          onPick={(target) => void pickForDump(target)}
+          onClose={() => setDumpPicker(null)}
         />
       )}
       {exportTarget !== null && (

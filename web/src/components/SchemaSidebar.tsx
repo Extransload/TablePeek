@@ -7,7 +7,6 @@ import {
   useState,
   type ReactElement,
 } from "react";
-import type { ConnectionEnvironment } from "../connMeta";
 import { t } from "../i18n";
 import { loadObjects, loadSchema, peekObjects, peekSchema } from "../schemaCache";
 import { store, type ObjectList, type TableSchema } from "../store";
@@ -46,7 +45,6 @@ export type TableAction =
 
 interface SchemaSidebarProps {
   conn: string;
-  environment: ConnectionEnvironment;
   kind: string;
   refreshKey: string;
   pinned: string[];
@@ -137,7 +135,6 @@ function fuzzyScore(name: string, query: string): number {
 
 export function SchemaSidebar({
   conn,
-  environment,
   kind,
   refreshKey,
   pinned,
@@ -509,7 +506,6 @@ export function SchemaSidebar({
   return (
     <div
       className="schema-sidebar"
-      data-environment={environment === "" ? undefined : environment}
     >
       <div className="sidebar-head">
         <span className="sidebar-title">{t("스키마")}</span>

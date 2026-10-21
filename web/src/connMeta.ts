@@ -1,84 +1,34 @@
-export type ConnectionEnvironment =
-  | ""
-  | "local"
-  | "development"
-  | "staging"
-  | "production";
-
 export interface ConnMeta {
   group: string;
   color: string;
   tags: string[];
-  environment: ConnectionEnvironment;
 }
-
-export const ENVIRONMENT_LABELS: Record<Exclude<ConnectionEnvironment, "">, string> = {
-  local: "LOCAL",
-  development: "DEV",
-  staging: "STAGE",
-  production: "PROD",
-};
-
-export const ENVIRONMENT_OPTIONS: {
-  value: ConnectionEnvironment;
-  label: string;
-}[] = [
-  { value: "", label: "지정 안 함" },
-  { value: "local", label: "로컬" },
-  { value: "development", label: "개발" },
-  { value: "staging", label: "스테이징" },
-  { value: "production", label: "운영" },
-];
 
 const STORAGE_KEY = "tablepeek.conn-meta";
 const listeners = new Set<() => void>();
 
-export function environmentLabel(environment: ConnectionEnvironment): string {
-  return environment === "" ? "" : ENVIRONMENT_LABELS[environment];
+// Older versions stored an environment beside the tags; it lives on as a tag.
+const LEGACY_ENVIRONMENTS = new Set(["local", "development", "staging", "production"]);
+
+function uniqueTags(tags: string[]): string[] {
+  return [...new Set(tags.map((tag) => tag.trim()).filter((tag) => tag !== ""))];
 }
 
-function normalizeEnvironment(value: unknown): ConnectionEnvironment {
-  return value === "local" ||
-    value === "development" ||
-    value === "staging" ||
-    value === "production"
-    ? value
-    : "";
-}
-
-function inferEnvironment(group: string): ConnectionEnvironment {
-  const text = group.toLowerCase();
-  if (/(prod|production|운영|상용)/.test(text)) {
-    return "production";
-  }
-  if (/(stage|staging|스테이징)/.test(text)) {
-    return "staging";
-  }
-  if (/(dev|development|개발)/.test(text)) {
-    return "development";
-  }
-  if (/(local|로컬)/.test(text)) {
-    return "local";
-  }
-  return "";
-}
-
-function normalizeMeta(value: unknown): ConnMeta | null {
+export function normalizeMeta(value: unknown): ConnMeta | null {
   if (value === null || typeof value !== "object") {
     return null;
   }
-  const meta = value as Partial<ConnMeta>;
-  const group = typeof meta.group === "string" ? meta.group : "";
+  const meta = value as Partial<ConnMeta> & { environment?: unknown };
+  const tags = Array.isArray(meta.tags)
+    ? meta.tags.filter((tag): tag is string => typeof tag === "string")
+    : [];
+  if (typeof meta.environment === "string" && LEGACY_ENVIRONMENTS.has(meta.environment)) {
+    tags.push(meta.environment);
+  }
   return {
-    group,
+    group: typeof meta.group === "string" ? meta.group : "",
     color: typeof meta.color === "string" ? meta.color : "",
-    tags: Array.isArray(meta.tags)
-      ? meta.tags.filter((tag): tag is string => typeof tag === "string")
-      : [],
-    environment:
-      meta.environment === undefined
-        ? inferEnvironment(group)
-        : normalizeEnvironment(meta.environment),
+    tags: uniqueTags(tags),
   };
 }
 
@@ -126,20 +76,20 @@ export function setConnMeta(id: string, meta: ConnMeta): void {
   const next: ConnMeta = {
     group: meta.group.trim(),
     color: meta.color.trim(),
-    tags: [...new Set(meta.tags.map((tag) => tag.trim()).filter((tag) => tag !== ""))],
-    environment: normalizeEnvironment(meta.environment),
+    tags: uniqueTags(meta.tags),
   };
-  if (
-    next.group === "" &&
-    next.color === "" &&
-    next.tags.length === 0 &&
-    next.environment === ""
-  ) {
+  if (next.group === "" && next.color === "" && next.tags.length === 0) {
     delete all[id];
   } else {
     all[id] = next;
   }
   writeAll(all);
+}
+
+// Moves a connection into a group ("" for none), keeping its color and tags.
+export function setConnGroup(connId: string, groupId: string): void {
+  const meta = readAll()[connId] ?? { group: "", color: "", tags: [] };
+  setConnMeta(connId, { ...meta, group: groupId });
 }
 
 export function listConnMeta(): Record<string, ConnMeta> {

@@ -1,17 +1,49 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  listConnMeta,
-  setConnMeta,
-  subscribeConnMeta,
-  type ConnMeta,
-} from "../connMeta";
-import { t, tTableCount } from "../i18n";
+  createGroup,
+  deleteGroup,
+  findGroupByName,
+  GROUP_COLORS,
+  listGroups,
+  subscribeGroups,
+  updateGroup,
+  type ConnGroup,
+} from "../connGroups";
+import { listConnMeta, setConnGroup, setConnMeta, subscribeConnMeta } from "../connMeta";
+import { buildConnectionsFile, downloadJson, parseConnectionsFile } from "../connectionsFile";
+import { t } from "../i18n";
+import { inputFromSaved } from "../savedInput";
 import { store, type ConnSummary, type Driver, type SavedConnection } from "../store";
 import { BrandMark } from "./BrandLogo";
-import { DriverIcon, driverName } from "./DriverIcon";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
-import { CloseIcon, ExternalIcon, FileIcon, PencilIcon, PlusIcon, TrashIcon } from "./icons";
+import { HomeConnectionList, type ListTarget, type RowAction } from "./HomeConnectionList";
+import { HomeWelcome } from "./HomeWelcome";
+import { CloseIcon, DownloadIcon, PlusIcon, SearchIcon, UploadIcon } from "./icons";
+import { PromptModal } from "./PromptModal";
 import { Spinner } from "./Spinner";
+
+// Names for GROUP_COLORS, in the same order.
+const COLOR_NAMES = ["주황", "파랑", "초록", "보라", "빨강", "청록", "분홍", "회색"];
+
+const EXPORT_FILE = "tablepeek-connections.json";
+
+type Prompt =
+  | { kind: "newGroup" }
+  | { kind: "rename"; group: ConnGroup }
+  | { kind: "url"; group: string };
+
+function errorText(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+export interface NewConnectionOptions {
+  driver?: Driver;
+  // Group id the new connection goes into.
+  group?: string;
+  // Connection URL to fill the dialog from.
+  url?: string;
+}
 
 interface HomeScreenProps {
   conns: ConnSummary[];
@@ -20,93 +52,15 @@ interface HomeScreenProps {
   onOpenNewWindow(id: string): void;
   onCloseConn(id: string): void;
   onOpenFile(): void;
-  // Opens the connection dialog, preset to `driver` when one was picked.
-  onNewConnection(driver?: Driver): void;
+  onNewConnection(options?: NewConnectionOptions): void;
   onConnectSaved(id: string): void;
   onEditConnection(connection: SavedConnection): void;
+  onBackupOrRestore(kind: "backup" | "restore"): void;
   // Bumped when the connection dialog saved a profile, so the list reloads.
   savedVersion: number;
   // The app's latest error, shown here instead of in a corner toast.
   appError: string | null;
   onDismissAppError(): void;
-}
-
-// What the "new connection" card offers; SQLite opens a file instead.
-const ADD_CHOICES: (Driver | "sqlite")[] = ["postgres", "mysql", "mssql", "cockroach", "sqlite"];
-
-function relativeTime(at: number | undefined): string | null {
-  if (at === undefined || at <= 0) {
-    return null;
-  }
-  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - at);
-  if (seconds < 60) {
-    return t("방금 전");
-  }
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return t("{count}분 전", { count: minutes });
-  }
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return t("{count}시간 전", { count: hours });
-  }
-  const days = Math.floor(hours / 24);
-  return t("{count}일 전", { count: days });
-}
-
-function savedTarget(connection: SavedConnection) {
-  return connection.postgres ?? connection.cockroach ?? connection.mysql ?? connection.mssql ?? null;
-}
-
-// "host : database", as TablePlus lists connections.
-function savedAddress(connection: SavedConnection): string {
-  const db = savedTarget(connection);
-  if (db === null) {
-    return t("설정 없음");
-  }
-  return db.database ? `${db.host} : ${db.database}` : db.host;
-}
-
-function savedDetail(connection: SavedConnection): string {
-  const db = savedTarget(connection);
-  if (db === null) {
-    return connection.name;
-  }
-  const ssh = connection.ssh ? ` · SSH ${connection.ssh.user}@${connection.ssh.host}` : "";
-  return `${db.user}@${db.host}:${db.port}/${db.database}${ssh}`;
-}
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).pop() || path;
-}
-
-// Environment and tags as pills; the connection's color goes into them.
-function tagPills(meta: ConnMeta | undefined): ReactNode {
-  if (meta === undefined) {
-    return null;
-  }
-  const pills: { text: string; environment: string }[] = [];
-  if (meta.environment !== "") {
-    pills.push({ text: meta.environment, environment: meta.environment });
-  }
-  for (const tag of meta.tags) {
-    pills.push({ text: tag, environment: "" });
-  }
-  if (pills.length === 0) {
-    return meta.color ? (
-      <span className="home-color-dot" style={{ background: meta.color }} aria-hidden="true" />
-    ) : null;
-  }
-  const style = meta.color ? ({ "--tag-color": meta.color } as CSSProperties) : undefined;
-  return pills.map((pill) => (
-    <span
-      key={`${pill.environment}:${pill.text}`}
-      className={`home-tag${pill.environment ? ` env-${pill.environment}` : ""}${meta.color || pill.environment ? " colored" : ""}`}
-      style={style}
-    >
-      {pill.text}
-    </span>
-  ));
 }
 
 export function HomeScreen({
@@ -119,14 +73,23 @@ export function HomeScreen({
   onNewConnection,
   onConnectSaved,
   onEditConnection,
+  onBackupOrRestore,
   savedVersion,
   appError,
   onDismissAppError,
 }: HomeScreenProps) {
   const [saved, setSaved] = useState<SavedConnection[] | null>(null);
   const [savedError, setSavedError] = useState<string | null>(null);
-  const [metaVersion, setMetaVersion] = useState(0);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [plusMenu, setPlusMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; target: ListTarget | null } | null>(null);
+  const [prompt, setPrompt] = useState<Prompt | null>(null);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [version, setVersion] = useState(0);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const loadSaved = useCallback(async (): Promise<void> => {
     try {
@@ -142,6 +105,16 @@ export function HomeScreen({
     void loadSaved();
   }, [loadSaved, savedVersion]);
 
+  useEffect(() => {
+    const bump = () => setVersion((value) => value + 1);
+    const offMeta = subscribeConnMeta(bump);
+    const offGroups = subscribeGroups(bump);
+    return () => {
+      offMeta();
+      offGroups();
+    };
+  }, []);
+
   async function deleteSaved(connection: SavedConnection): Promise<void> {
     if (
       !window.confirm(
@@ -156,364 +129,462 @@ export function HomeScreen({
     setSavedError(null);
     try {
       await store.deleteConnection(connection.id);
-      setConnMeta(connection.id, {
-        group: "",
-        color: "",
-        tags: [],
-        environment: "",
-      });
+      setConnMeta(connection.id, { group: "", color: "", tags: [] });
       setSaved((current) =>
-        current === null
-          ? current
-          : current.filter((item) => item.id !== connection.id),
+        current === null ? current : current.filter((item) => item.id !== connection.id),
       );
     } catch (err) {
       setSavedError(
-        err instanceof Error && err.message
-          ? err.message
-          : t("저장된 연결을 삭제하지 못했습니다"),
+        err instanceof Error && err.message ? err.message : t("저장된 연결을 삭제하지 못했습니다"),
       );
     } finally {
       setDeleting(null);
     }
   }
 
-  useEffect(() => subscribeConnMeta(() => setMetaVersion((value) => value + 1)), []);
-
+  void version;
+  const groups = listGroups();
+  const metaById = listConnMeta();
+  const failed = savedError !== null;
+  const savedIds = new Set((saved ?? []).map((connection) => connection.id));
   const openBySaved = new Map<string, ConnSummary>();
   for (const conn of conns) {
-    if (conn.saved_id !== undefined) {
+    if (conn.saved_id !== undefined && savedIds.has(conn.saved_id)) {
       openBySaved.set(conn.saved_id, conn);
     }
   }
-  // Files and the demo are open without a saved profile; they list first.
-  const unsaved = conns.filter((conn) => conn.saved_id === undefined);
-  const sortedSaved = (saved ?? [])
-    .slice()
-    .sort((a, b) => (b.last_used ?? 0) - (a.last_used ?? 0));
-  const metaById = listConnMeta();
-  void metaVersion;
-  const groups = new Map<string, SavedConnection[]>([["", []]]);
-  for (const connection of sortedSaved) {
-    const group = metaById[connection.id]?.group ?? "";
-    const list = groups.get(group) ?? [];
-    list.push(connection);
-    groups.set(group, list);
-  }
+  // Open without a profile: files, the demo, and profiles deleted (or failing
+  // to load) while their connection is still open.
+  const listKnown = saved !== null || failed;
+  const unsaved = conns.filter(
+    (conn) => conn.saved_id === undefined || (listKnown && !savedIds.has(conn.saved_id)),
+  );
+  const empty = saved !== null && saved.length === 0 && unsaved.length === 0 && groups.length === 0;
 
-  function cardShell(
-    key: string,
-    open: boolean,
-    activate: () => void,
-    title: string,
-    content: ReactNode,
-  ): ReactNode {
-    return (
-      <div
-        key={key}
-        className={`home-card${open ? " is-open" : ""}`}
-        role="button"
-        tabIndex={0}
-        title={title}
-        onClick={activate}
-        onKeyDown={(event) => {
-          // Keys on an inner button belong to that button, not the card.
-          if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) {
-            event.preventDefault();
-            activate();
-          }
-        }}
-      >
-        {content}
-      </div>
-    );
-  }
-
-  function openActions(open: ConnSummary): ReactNode {
-    return (
-      <>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenNewWindow(open.id);
-          }}
-          title={t("새 창에서 열기")}
-          aria-label={t("새 창에서 열기")}
-        >
-          <ExternalIcon size={11} />
-        </button>
-        {open.is_default ? null : (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCloseConn(open.id);
-            }}
-            title={t("연결 끊기")}
-            aria-label={t("연결 끊기")}
-          >
-            <CloseIcon size={10} />
-          </button>
-        )}
-      </>
-    );
-  }
-
-  function connectedState(open: ConnSummary): ReactNode {
-    return (
-      <span className="home-card-state">
-        <span className="home-card-state-dot" aria-hidden="true" />
-        {tTableCount(open.table_count)}
-      </span>
-    );
-  }
-
-  function renderSaved(connection: SavedConnection): ReactNode {
+  function activateSaved(connection: SavedConnection): void {
     const open = openBySaved.get(connection.id);
-    const busy = busySaved === connection.id;
-    const recent = relativeTime(connection.last_used);
-    const activate = (): void => {
-      if (open !== undefined) {
-        onOpenConn(open.id);
-      } else if (busySaved === null) {
-        onConnectSaved(connection.id);
+    if (open !== undefined) {
+      onOpenConn(open.id);
+    } else if (busySaved === null) {
+      onConnectSaved(connection.id);
+    }
+  }
+
+  function rowAction(action: RowAction, target: ListTarget): void {
+    const open =
+      target.kind === "open" ? target.conn : target.kind === "saved" ? openBySaved.get(target.saved.id) : undefined;
+    if (action === "newWindow" && open !== undefined) {
+      onOpenNewWindow(open.id);
+    } else if (action === "disconnect" && open !== undefined) {
+      onCloseConn(open.id);
+    } else if (action === "edit" && target.kind === "saved") {
+      onEditConnection(target.saved);
+    } else if (action === "delete" && target.kind === "saved") {
+      void deleteSaved(target.saved);
+    }
+  }
+
+  function moveToGroup(savedId: string, groupId: string): void {
+    // Dropping a connection where it already is changes nothing.
+    if ((metaById[savedId]?.group ?? "") !== groupId) {
+      setConnGroup(savedId, groupId);
+    }
+  }
+
+  function removeGroup(group: ConnGroup): void {
+    if (
+      window.confirm(
+        t("‘{name}’ 그룹을 삭제할까요? 안의 연결은 그룹 밖으로 옮겨집니다.", { name: group.name }),
+      )
+    ) {
+      deleteGroup(group.id);
+    }
+  }
+
+  async function duplicate(connection: SavedConnection): Promise<void> {
+    setNotice(null);
+    try {
+      // The keychain secret stays with the original; the copy asks on first connect.
+      const id = await store.createConnection(
+        t("{name} 복사본", { name: connection.name }),
+        inputFromSaved(connection),
+        false,
+      );
+      const meta = metaById[connection.id];
+      if (meta !== undefined) {
+        setConnMeta(id, { ...meta });
       }
+      await loadSaved();
+    } catch (err) {
+      setNotice({ kind: "error", text: errorText(err, t("연결을 복제하지 못했습니다")) });
+    }
+  }
+
+  function exportScope(connections: SavedConnection[], scopeGroups: ConnGroup[]): void {
+    downloadJson(EXPORT_FILE, buildConnectionsFile(connections, metaById, scopeGroups));
+  }
+
+  async function importFile(file: File): Promise<void> {
+    setNotice(null);
+    let parsed;
+    try {
+      parsed = parseConnectionsFile(await file.text());
+    } catch (err) {
+      setNotice({ kind: "error", text: errorText(err, t("연결 파일을 읽을 수 없습니다. JSON 형식이 아닙니다.")) });
+      return;
+    }
+    // Groups merge by name; connections are added, renamed when a name is taken.
+    const createdGroups: string[] = [];
+    const groupIdFor = (name: string, color?: string): string => {
+      if (name === "") {
+        return "";
+      }
+      const found = findGroupByName(name);
+      if (found !== undefined) {
+        return found.id;
+      }
+      const group = createGroup(name, color);
+      createdGroups.push(group.id);
+      return group.id;
     };
-    return cardShell(
-      connection.id,
-      open !== undefined,
-      activate,
-      `${connection.name} — ${savedDetail(connection)}`,
-      <>
-        <DriverIcon kind={connection.driver} size={34} className="home-card-logo" />
-        <div className="home-card-body">
-          <div className="home-card-title">
-            <span className="home-card-name">{connection.name}</span>
-            {tagPills(metaById[connection.id])}
-          </div>
-          <div className="home-card-sub">
-            <span className="home-card-address">{savedAddress(connection)}</span>
-            {connection.ssh ? <span className="home-card-ssh">SSH</span> : null}
-          </div>
-        </div>
-        <div className="home-card-side">
-          <div className="home-card-actions">
-            {open !== undefined ? openActions(open) : null}
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onEditConnection(connection);
-              }}
-              title={t("연결 편집")}
-              aria-label={t("연결 편집")}
-            >
-              <PencilIcon size={11} />
-            </button>
-            <button
-              type="button"
-              className="danger"
-              disabled={deleting !== null}
-              onClick={(event) => {
-                event.stopPropagation();
-                void deleteSaved(connection);
-              }}
-              title={t("저장된 연결 삭제")}
-              aria-label={t("저장된 연결 삭제")}
-            >
-              {deleting === connection.id ? <Spinner size={10} /> : <TrashIcon size={11} />}
-            </button>
-          </div>
-          {busy ? (
-            <span className="home-card-state idle">
-              <Spinner size={10} />
-              {t("연결 중…")}
-            </span>
-          ) : open !== undefined ? (
-            connectedState(open)
-          ) : recent !== null ? (
-            <span className="home-card-state idle">{recent}</span>
-          ) : null}
-        </div>
-      </>,
-    );
+    for (const group of parsed.groups) {
+      groupIdFor(group.name, group.color || undefined);
+    }
+    const names = new Set((saved ?? []).map((connection) => connection.name));
+    const createdIds: string[] = [];
+    try {
+      for (const connection of parsed.connections) {
+        let name = connection.name;
+        while (names.has(name)) {
+          name = `${name} ${t("(가져옴)")}`;
+        }
+        names.add(name);
+        const id = await store.createConnection(name, connection.connect, false);
+        createdIds.push(id);
+        setConnMeta(id, { group: groupIdFor(connection.group), color: connection.color, tags: connection.tags });
+      }
+    } catch (err) {
+      // All or nothing: take back what this import already added.
+      await Promise.all(createdIds.map((id) => store.deleteConnection(id).catch(() => undefined)));
+      createdGroups.forEach((id) => deleteGroup(id));
+      await loadSaved();
+      setNotice({
+        kind: "error",
+        text: t("연결을 가져오지 못해 아무것도 추가하지 않았습니다: {error}", {
+          error: errorText(err, t("저장하지 못했습니다")),
+        }),
+      });
+      return;
+    }
+    await loadSaved();
+    setNotice({ kind: "ok", text: t("연결 {count}개를 가져왔습니다", { count: createdIds.length }) });
   }
 
-  function renderUnsaved(conn: ConnSummary): ReactNode {
-    const name = conn.demo ? t("데모 데이터베이스") : conn.path ? basename(conn.path) : conn.label;
-    const address = conn.demo ? t("인메모리 데모") : (conn.path ?? conn.label);
-    return cardShell(
-      conn.id,
-      true,
-      () => onOpenConn(conn.id),
-      `${name} — ${address}`,
-      <>
-        <DriverIcon kind={conn.kind} size={34} className="home-card-logo" />
-        <div className="home-card-body">
-          <div className="home-card-title">
-            <span className="home-card-name">{name}</span>
-          </div>
-          <div className="home-card-sub">
-            <span className="home-card-address">{address}</span>
-          </div>
-        </div>
-        <div className="home-card-side">
-          <div className="home-card-actions">{openActions(conn)}</div>
-          {connectedState(conn)}
-        </div>
-      </>,
-    );
+  function importItems(groupId: string): ContextMenuItem[] {
+    return [
+      { label: t("URL에서…"), onSelect: () => setPrompt({ kind: "url", group: groupId }) },
+      { label: t("파일에서…"), onSelect: () => fileRef.current?.click() },
+    ];
   }
 
-  const addCard = (
-    <div className="home-add" key="__add">
-      <button type="button" className="home-add-main" onClick={() => onNewConnection()}>
-        <span className="home-add-plus" aria-hidden="true">
-          <PlusIcon size={13} />
-        </span>
-        <span className="home-add-text">
-          <span className="home-add-title">{t("새 연결")}</span>
-          <span className="home-add-sub">{t("추가할 데이터베이스를 고르세요")}</span>
-        </span>
-      </button>
-      <div className="home-add-drivers">
-        {ADD_CHOICES.map((choice) => {
-          const label =
-            choice === "sqlite"
-              ? t("SQLite 파일 열기")
-              : t("{driver} 연결 추가", { driver: driverName(choice) });
-          return (
-            <button
-              type="button"
-              key={choice}
-              onClick={() => (choice === "sqlite" ? onOpenFile() : onNewConnection(choice))}
-              title={label}
-              aria-label={label}
-            >
-              <DriverIcon kind={choice} size={24} />
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-
-  const failed = savedError !== null;
-  const empty = saved !== null && sortedSaved.length === 0 && unsaved.length === 0;
-  const sections = [...groups.entries()].filter(
-    ([group, list]) => list.length > 0 || (group === "" && unsaved.length > 0),
-  );
-  // Even with nothing to list (say, the saved list failed to load), the add
-  // card stays reachable.
-  if (sections.length === 0) {
-    sections.push(["", []]);
+  // "New ›": a connection made inside a group goes into that group.
+  function newSubmenu(groupId: string): ContextMenuItem {
+    return {
+      label: t("새로 만들기"),
+      submenu: [
+        { label: t("그룹…"), onSelect: () => setPrompt({ kind: "newGroup" }) },
+        { label: t("연결…"), onSelect: () => onNewConnection(groupId === "" ? undefined : { group: groupId }) },
+        { label: t("연결 가져오기"), submenu: importItems(groupId) },
+      ],
+    };
   }
 
-  let body: ReactNode;
+  function exportSubmenu(group: ConnGroup | null, connection: SavedConnection | null): ContextMenuItem {
+    const all = saved ?? [];
+    const items: ContextMenuItem[] = [
+      {
+        label: t("전체 내보내기…"),
+        disabled: all.length === 0 && groups.length === 0,
+        onSelect: () => exportScope(all, groups),
+      },
+    ];
+    if (group !== null) {
+      items.push({
+        label: t("이 그룹 내보내기…"),
+        separatorBefore: true,
+        onSelect: () => exportScope(all.filter((item) => metaById[item.id]?.group === group.id), [group]),
+      });
+    }
+    if (connection !== null) {
+      const own = groups.find((item) => item.id === metaById[connection.id]?.group);
+      items.push({
+        label: t("이 연결 내보내기…"),
+        separatorBefore: group === null,
+        onSelect: () => exportScope([connection], own === undefined ? [] : [own]),
+      });
+    }
+    return { label: t("내보내기"), submenu: items };
+  }
+
+  function menuItems(target: ListTarget | null): ContextMenuItem[] {
+    if (target === null) {
+      return [newSubmenu(""), exportSubmenu(null, null)];
+    }
+    if (target.kind === "group") {
+      const group = target.group;
+      return [
+        { label: t("이름 바꾸기…"), onSelect: () => setPrompt({ kind: "rename", group }) },
+        {
+          label: t("색 바꾸기"),
+          submenu: GROUP_COLORS.map((color, index) => ({
+            label: t(COLOR_NAMES[index]),
+            checked: group.color === color,
+            onSelect: () => updateGroup(group.id, { color }),
+          })),
+        },
+        { label: t("그룹 삭제"), danger: true, onSelect: () => removeGroup(group) },
+        { ...newSubmenu(group.id), separatorBefore: true },
+        exportSubmenu(group, null),
+      ];
+    }
+    if (target.kind === "open") {
+      const conn = target.conn;
+      return [
+        { label: t("열기"), onSelect: () => onOpenConn(conn.id) },
+        { label: t("새 창에서 열기"), onSelect: () => onOpenNewWindow(conn.id) },
+        ...(conn.is_default ? [] : [{ label: t("연결 끊기"), onSelect: () => onCloseConn(conn.id) }]),
+        { ...newSubmenu(""), separatorBefore: true },
+        exportSubmenu(null, null),
+      ];
+    }
+    const connection = target.saved;
+    const open = openBySaved.get(connection.id);
+    const group = groups.find((item) => item.id === target.groupId) ?? null;
+    return [
+      { label: t("열기"), onSelect: () => activateSaved(connection) },
+      ...(open !== undefined ? [{ label: t("새 창에서 열기"), onSelect: () => onOpenNewWindow(open.id) }] : []),
+      { label: t("편집…"), onSelect: () => onEditConnection(connection) },
+      { label: t("복제"), onSelect: () => void duplicate(connection) },
+      {
+        label: t("그룹으로 이동"),
+        submenu: [
+          ...groups.map((item) => ({
+            label: item.name,
+            checked: item.id === target.groupId,
+            onSelect: () => moveToGroup(connection.id, item.id),
+          })),
+          {
+            label: t("그룹 없음"),
+            checked: target.groupId === "",
+            separatorBefore: groups.length > 0,
+            onSelect: () => moveToGroup(connection.id, ""),
+          },
+        ],
+      },
+      { ...newSubmenu(target.groupId), separatorBefore: true },
+      exportSubmenu(group, connection),
+      { label: t("삭제"), danger: true, separatorBefore: true, onSelect: () => void deleteSaved(connection) },
+    ];
+  }
+
+  function plusItems(): ContextMenuItem[] {
+    return [
+      { label: t("새 연결…"), onSelect: () => onNewConnection() },
+      { label: t("새 그룹…"), onSelect: () => setPrompt({ kind: "newGroup" }) },
+      { label: t("SQLite 파일 열기…"), onSelect: onOpenFile },
+      { label: t("연결 가져오기"), separatorBefore: true, submenu: importItems("") },
+    ];
+  }
+
+  let listArea;
   if (saved === null && !failed) {
-    body = (
-      <div className="home-loading">
+    listArea = (
+      <div className="launcher-loading">
         <Spinner size={12} />
         <span>{t("불러오는 중…")}</span>
       </div>
     );
   } else if (empty && !failed) {
-    body = <HomeWelcome onNewConnection={onNewConnection} onOpenFile={onOpenFile} />;
+    listArea = (
+      <HomeWelcome
+        onNewConnection={onNewConnection}
+        onOpenFile={onOpenFile}
+        onImportFile={() => fileRef.current?.click()}
+      />
+    );
   } else {
-    body = (
-      <>
-        {failed ? (
-          <div className="home-load-error">
-            <ErrorNotice message={savedError} />
-            <button type="button" onClick={() => void loadSaved()}>
-              {t("다시 시도")}
-            </button>
-          </div>
-        ) : null}
-        {sections.map(([group, list], index) => (
-          <section className="home-group" key={group === "" ? "__none" : group}>
-            {group !== "" ? <h2 className="home-group-title">{group}</h2> : null}
-            <div className="home-grid">
-              {group === "" ? unsaved.map(renderUnsaved) : null}
-              {list.map(renderSaved)}
-              {index === sections.length - 1 ? addCard : null}
-            </div>
-          </section>
-        ))}
-      </>
+    listArea = (
+      <HomeConnectionList
+        unsaved={unsaved}
+        saved={saved ?? []}
+        openBySaved={openBySaved}
+        groups={groups}
+        metaById={metaById}
+        query={query}
+        busySaved={busySaved}
+        deleting={deleting}
+        containerRef={listRef}
+        onExitTop={() => searchRef.current?.focus()}
+        onActivateSaved={activateSaved}
+        onActivateOpen={(conn) => onOpenConn(conn.id)}
+        onToggleGroup={(group) => updateGroup(group.id, { collapsed: !group.collapsed })}
+        onRowAction={rowAction}
+        onContextMenu={(target, x, y) => setMenu({ x, y, target })}
+        onMoveToGroup={moveToGroup}
+      />
     );
   }
 
   return (
     <div className="home">
-      <div className="home-inner">
-        {appError !== null && appError !== savedError ? (
+      {appError !== null && appError !== savedError ? (
+        <div className="home-notice">
           <ErrorNotice message={appError} onClose={onDismissAppError} />
-        ) : null}
-        {body}
+        </div>
+      ) : null}
+      <div className="launcher">
+        <aside className="launcher-side">
+          <BrandMark size={64} className="launcher-mark" />
+          <div className="launcher-word" aria-hidden="true">
+            Table<span className="brand-word-peek">Peek</span>
+          </div>
+          <div className="launcher-tagline">{t("로컬 DB 클라이언트")}</div>
+          <div className="launcher-actions">
+            <button type="button" className="launcher-action" onClick={() => onNewConnection()}>
+              <span className="launcher-action-icon" aria-hidden="true">
+                <PlusIcon size={11} />
+              </span>
+              {t("새 연결 만들기…")}
+            </button>
+            <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("backup")}>
+              <span className="launcher-action-icon" aria-hidden="true">
+                <DownloadIcon size={11} />
+              </span>
+              {t("데이터베이스 백업…")}
+            </button>
+            <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("restore")}>
+              <span className="launcher-action-icon" aria-hidden="true">
+                <UploadIcon size={11} />
+              </span>
+              {t("데이터베이스 복원…")}
+            </button>
+          </div>
+        </aside>
+        <section className="launcher-main">
+          <div className="launcher-top">
+            <button
+              type="button"
+              className={`launcher-plus${plusMenu !== null ? " active" : ""}`}
+              title={t("새로 만들기")}
+              aria-label={t("새로 만들기")}
+              onClick={(event) => {
+                const anchor = event.currentTarget;
+                const rect = anchor.getBoundingClientRect();
+                setPlusMenu(plusMenu !== null ? null : { x: rect.left, y: rect.bottom + 4, anchor });
+              }}
+            >
+              <PlusIcon size={11} />
+            </button>
+            <label className="launcher-search">
+              <SearchIcon size={10} className="launcher-search-icon" />
+              <input
+                ref={searchRef}
+                value={query}
+                placeholder={t("연결 검색 (이름·호스트·태그)")}
+                spellCheck={false}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown") {
+                    const first = listRef.current?.querySelector<HTMLElement>("[data-nav]");
+                    if (first) {
+                      event.preventDefault();
+                      first.focus();
+                    }
+                  } else if (event.key === "Escape" && query !== "") {
+                    event.stopPropagation();
+                    setQuery("");
+                  }
+                }}
+              />
+            </label>
+          </div>
+          {notice !== null ? (
+            <div className="launcher-notice">
+              {notice.kind === "error" ? (
+                <ErrorNotice message={notice.text} variant="compact" onClose={() => setNotice(null)} />
+              ) : (
+                <div className="launcher-notice-ok" role="status">
+                  <span>{notice.text}</span>
+                  <button type="button" className="icon-button" onClick={() => setNotice(null)} title={t("닫기")}>
+                    <CloseIcon size={9} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+          {failed ? (
+            <div className="launcher-load-error">
+              <ErrorNotice message={savedError} variant="compact" />
+              <button type="button" onClick={() => void loadSaved()}>
+                {t("다시 시도")}
+              </button>
+            </div>
+          ) : null}
+          {listArea}
+        </section>
       </div>
-    </div>
-  );
-}
-
-interface HomeWelcomeProps {
-  onNewConnection(driver?: Driver): void;
-  onOpenFile(): void;
-}
-
-// First run: nothing saved and nothing open yet.
-function HomeWelcome({ onNewConnection, onOpenFile }: HomeWelcomeProps) {
-  return (
-    <div className="home-welcome">
-      <div className="home-welcome-brand" aria-hidden="true">
-        <BrandMark size={60} />
-        <span className="home-welcome-word">
-          Table<span className="brand-word-peek">Peek</span>
-        </span>
-      </div>
-      <h1 className="home-welcome-title">{t("첫 데이터베이스를 연결해 보세요")}</h1>
-      <p className="home-welcome-lead">
-        {t("테이블을 둘러보고, 쿼리를 실행하고, 데이터를 바로 고칠 수 있습니다.")}
-      </p>
-      <div className="home-welcome-drivers">
-        {ADD_CHOICES.map((choice) => (
-          <button
-            type="button"
-            key={choice}
-            onClick={() => (choice === "sqlite" ? onOpenFile() : onNewConnection(choice))}
-          >
-            <DriverIcon kind={choice} size={20} />
-            <span>{driverName(choice)}</span>
-          </button>
-        ))}
-      </div>
-      <div className="home-welcome-info">
-        <div className="home-welcome-label">{t("연결할 때 필요한 정보")}</div>
-        <ul>
-          <li>{t("호스트와 포트 (예: 127.0.0.1 : 5432)")}</li>
-          <li>{t("사용자 이름과 비밀번호")}</li>
-          <li>{t("데이터베이스 이름")}</li>
-          <li>{t("필요하면 SSH 터널이나 SSL 인증서")}</li>
-        </ul>
-        <p>{t("postgres://… 같은 연결 URL을 호스트 칸에 붙여 넣으면 나머지가 자동으로 채워집니다.")}</p>
-      </div>
-      <div className="home-welcome-actions">
-        <button type="button" className="primary" onClick={() => onNewConnection()}>
-          <PlusIcon size={12} />
-          {t("시작하기")}
-        </button>
-        <button type="button" onClick={onOpenFile}>
-          <FileIcon size={11} />
-          {t("SQLite 파일 열기")}
-        </button>
-      </div>
-      <p className="home-welcome-note">
-        {t("연결 정보는 이 컴퓨터(~/.tablepeek)에만 저장됩니다. 비밀번호는 저장을 고른 경우에만 OS 키체인에 보관됩니다.")}
-      </p>
-      <p className="home-welcome-note">
-        {t("데모 데이터로 먼저 둘러보려면 make run DEMO=1 로 실행하세요.")}
-      </p>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".json,application/json"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file !== undefined) {
+            void importFile(file);
+          }
+        }}
+      />
+      {menu !== null ? (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.target)} onClose={() => setMenu(null)} />
+      ) : null}
+      {prompt?.kind === "newGroup" ? (
+        <PromptModal
+          title={t("새 그룹")}
+          label={t("그룹 이름")}
+          confirmLabel={t("만들기")}
+          onSubmit={(name) => createGroup(name)}
+          onClose={() => setPrompt(null)}
+        />
+      ) : prompt?.kind === "rename" ? (
+        <PromptModal
+          title={t("그룹 이름 바꾸기")}
+          label={t("그룹 이름")}
+          initial={prompt.group.name}
+          confirmLabel={t("바꾸기")}
+          onSubmit={(name) => updateGroup(prompt.group.id, { name })}
+          onClose={() => setPrompt(null)}
+        />
+      ) : prompt?.kind === "url" ? (
+        <PromptModal
+          title={t("URL에서 연결 가져오기")}
+          label={t("연결 URL")}
+          placeholder="postgres://user@host:5432/database"
+          confirmLabel={t("열기")}
+          onSubmit={(url) => onNewConnection({ url, group: prompt.group === "" ? undefined : prompt.group })}
+          onClose={() => setPrompt(null)}
+        />
+      ) : null}
+      {plusMenu !== null ? (
+        <ContextMenu
+          x={plusMenu.x}
+          y={plusMenu.y}
+          anchor={plusMenu.anchor}
+          items={plusItems()}
+          onClose={() => setPlusMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }

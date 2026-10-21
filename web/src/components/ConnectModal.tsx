@@ -1,11 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import {
-  ENVIRONMENT_OPTIONS,
-  environmentLabel,
-  getConnMeta,
-  setConnMeta,
-  type ConnectionEnvironment,
-} from "../connMeta";
+import { getConnMeta, setConnMeta } from "../connMeta";
 import { explainError, type ErrorHelp } from "../errorHelp";
 import { t } from "../i18n";
 import {
@@ -43,8 +37,11 @@ interface ConnectModalProps {
   notice?: string | null;
   // Secret the dialog was opened to ask for (focused and highlighted).
   missingSecret?: MissingSecret | null;
-  // Driver picked before opening a new connection (home's "new connection" card).
+  // Picked on the home screen before opening a new connection: a driver, the
+  // group to save into (its id), or a connection URL to fill the form from.
   initialDriver?: Driver | null;
+  initialGroup?: string | null;
+  initialUrl?: string | null;
   onClose(): void;
   onConnected(result: LiveConn): void;
   onSaved(): void;
@@ -75,7 +72,6 @@ interface ConnectForm {
   driver: Driver;
   name: string;
   color: string;
-  environment: ConnectionEnvironment;
   group: string;
   tags: string;
   host: string;
@@ -164,7 +160,6 @@ const EMPTY_FORM: ConnectForm = {
   driver: "postgres",
   name: "",
   color: "",
-  environment: "",
   group: "",
   tags: "",
   host: "127.0.0.1",
@@ -207,7 +202,6 @@ function formFromSaved(saved: SavedConnection): ConnectForm {
     driver,
     name: saved.name,
     color: meta?.color ?? "",
-    environment: meta?.environment ?? "",
     group: meta?.group ?? "",
     tags: (meta?.tags ?? []).join(", "),
     host: db?.host ?? "",
@@ -491,18 +485,25 @@ export function ConnectModal({
   notice = null,
   missingSecret = null,
   initialDriver = null,
+  initialGroup = null,
+  initialUrl = null,
   onClose,
   onConnected,
   onSaved,
   onSwitch,
 }: ConnectModalProps) {
-  const [form, setForm] = useState<ConnectForm>(() =>
-    editing !== null
-      ? formFromSaved(editing)
-      : initialDriver
-        ? { ...EMPTY_FORM, driver: initialDriver, port: DEFAULT_PORT[initialDriver] }
-        : EMPTY_FORM,
-  );
+  // The group isn't edited here (the home list owns it); the form only carries
+  // it so saving keeps an existing group or files a new connection into one.
+  const urlPatch = editing === null && initialUrl !== null ? parseConnectionUrl(initialUrl) : null;
+  const [form, setForm] = useState<ConnectForm>(() => {
+    if (editing !== null) {
+      return formFromSaved(editing);
+    }
+    const base = initialDriver
+      ? { ...EMPTY_FORM, driver: initialDriver, port: DEFAULT_PORT[initialDriver] }
+      : EMPTY_FORM;
+    return { ...base, ...(urlPatch ?? {}), group: initialGroup ?? "" };
+  });
   const [savedId, setSavedId] = useState<string | null>(editing?.id ?? null);
   const [storedSecrets, setStoredSecrets] = useState(editing?.persist_password ?? false);
   const [problems, setProblems] = useState<Problem[]>(() =>
@@ -510,9 +511,17 @@ export function ConnectModal({
       ? [{ field: SECRET_FIELD[missingSecret], message: notice }]
       : [],
   );
-  const [status, setStatus] = useState<Status | null>(
-    notice !== null ? { kind: "info", text: notice } : null,
-  );
+  const [status, setStatus] = useState<Status | null>(() => {
+    if (notice !== null) {
+      return { kind: "info", text: notice };
+    }
+    if (initialUrl === null || editing !== null) {
+      return null;
+    }
+    return urlPatch === null
+      ? { kind: "error", text: t("연결 URL을 인식하지 못했습니다") }
+      : { kind: "ok", text: t("URL에서 접속 정보를 채웠습니다") };
+  });
   const [busy, setBusy] = useState<"save" | "test" | "connect" | null>(null);
   // Set by an error's fix button: test again once the changed form renders.
   const [retest, setRetest] = useState(false);
@@ -659,7 +668,6 @@ export function ConnectModal({
       group: form.group,
       color: form.color,
       tags: form.tags.split(","),
-      environment: form.environment,
     });
     const typedSecret =
       form.password !== "" || form.sshPassword !== "" || form.httpPassword !== "";
@@ -830,9 +838,6 @@ export function ConnectModal({
             <div className="cm-title">{title}</div>
             <div className="cm-subtitle">{form.name.trim() || autoName(form)}</div>
           </div>
-          {form.environment !== "" ? (
-            <span className={`env-badge env-${form.environment}`}>{environmentLabel(form.environment)}</span>
-          ) : null}
           <button type="button" className="icon-button cm-close" onClick={requestClose} title={t("닫기")}>
             <CloseIcon size={11} />
           </button>
@@ -914,37 +919,13 @@ export function ConnectModal({
                 </label>
               </div>
             </Row>
-            <Row label={t("환경")}>
-              <div className="cm-chips" role="radiogroup" aria-label={t("환경")}>
-                {ENVIRONMENT_OPTIONS.map((option) => (
-                  <button
-                    key={option.value || "none"}
-                    type="button"
-                    role="radio"
-                    aria-checked={form.environment === option.value}
-                    className={`cm-chip${form.environment === option.value ? " active" : ""}${option.value ? ` env-${option.value}` : ""}`}
-                    onClick={() => update({ environment: option.value })}
-                  >
-                    {t(option.label)}
-                  </button>
-                ))}
-              </div>
-            </Row>
-            <Row label={t("그룹")} htmlFor="cm-group">
-              <div className="cm-pair">
-                <input
-                  id="cm-group"
-                  value={form.group}
-                  placeholder={t("예: 운영 서버")}
-                  onChange={(event) => update({ group: event.target.value })}
-                />
-                <span className="cm-inline-label">{t("태그")}</span>
-                <input
-                  value={form.tags}
-                  placeholder={t("쉼표로 구분")}
-                  onChange={(event) => update({ tags: event.target.value })}
-                />
-              </div>
+            <Row label={t("태그")} htmlFor="cm-tags">
+              <input
+                id="cm-tags"
+                value={form.tags}
+                placeholder={t("쉼표로 구분")}
+                onChange={(event) => update({ tags: event.target.value })}
+              />
             </Row>
           </section>
 

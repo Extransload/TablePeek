@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { environmentLabel, getConnMeta, subscribeConnMeta } from "../connMeta";
+import { getConnMeta, subscribeConnMeta } from "../connMeta";
 import { t } from "../i18n";
 import type { ConnSummary, Connection } from "../store";
 import { DriverIcon, driverName } from "./DriverIcon";
@@ -64,11 +64,6 @@ export function ConnSwitcher({
                   <DriverIcon kind={conn.kind} />
                 </span>
                 <span className="conn-tab-label">{conn.label}</span>
-                {meta?.environment ? (
-                  <span className={`env-badge env-${meta.environment}`}>
-                    {environmentLabel(meta.environment)}
-                  </span>
-                ) : null}
               </button>
               {conn.is_default ? null : (
                 <button

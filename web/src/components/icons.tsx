@@ -3,8 +3,8 @@ interface IconProps {
   className?: string;
 }
 
-// Call sites pass compact nominal sizes; render every icon about a third larger.
-const ICON_SCALE = 1.3;
+// Call sites pass compact nominal sizes; render every icon about half again larger.
+const ICON_SCALE = 1.5;
 
 function px(size: number): number {
   return Math.round(size * ICON_SCALE);
@@ -180,6 +180,15 @@ export function DownloadIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>
       <path d="M8 2.6v7.4M4.8 7.4 8 10.6l3.2-3.2" />
+      <path d="M2.8 12.4h10.4" />
+    </svg>
+  );
+}
+
+export function UploadIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M8 10.6V3.2M4.8 6.4 8 3.2l3.2 3.2" />
       <path d="M2.8 12.4h10.4" />
     </svg>
   );

@@ -1784,6 +1784,49 @@ select {
   background: var(--hover-fill);
 }
 
+/* Submenus sit beside their item as sibling panels of the same layer. */
+.context-layer {
+  display: contents;
+}
+
+.context-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.context-item.active,
+.context-item.open {
+  background: var(--hover-fill);
+}
+
+.context-item.danger {
+  color: var(--error);
+}
+
+.context-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.context-check {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 14px;
+  color: var(--accent);
+}
+
+.context-arrow {
+  flex: none;
+  margin-left: 12px;
+  color: var(--faint);
+  font-size: 14px;
+  line-height: 1;
+}
+
 .export-modal {
   width: min(430px, 92vw);
 }
@@ -4558,63 +4601,12 @@ input[type="color"]::-webkit-color-swatch {
   }
 }
 
-:root {
-  --env-local: #7d8798;
-  --env-development: #3b82f6;
-  --env-staging: #d97706;
-  --env-production: #dc2626;
-}
-
-:root[data-mode="dark"] {
-  --env-local: #9aa4b5;
-  --env-development: #74a9ff;
-  --env-staging: #f0b45f;
-  --env-production: #ff8f87;
-}
-
-.env-badge {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  height: 16px;
-  padding: 0 5px;
-  border: 1px solid color-mix(in srgb, var(--env-color, var(--faint)) 45%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--env-color, var(--faint)) 14%, transparent);
-  color: var(--env-color, var(--faint));
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  line-height: 1;
-}
-
-.env-local {
-  --env-color: var(--env-local);
-}
-
-.env-development {
-  --env-color: var(--env-development);
-}
-
-.env-staging {
-  --env-color: var(--env-staging);
-}
-
-.env-production {
-  --env-color: var(--env-production);
-}
-
 .conn-meta-dot {
   width: 5px;
   height: 5px;
   flex: none;
   border-radius: 50%;
   background: var(--faint);
-}
-
-.schema-sidebar[data-environment] .sidebar-head {
-  box-shadow: inset 2px 0 0 var(--env-color);
 }
 
 .schema-conn {
@@ -5363,7 +5355,6 @@ textarea:focus-visible {
   font-size: 11px;
 }
 
-.sidebar-connection .env-badge,
 .sidebar-connection .driver-badge {
   flex: none;
 }
@@ -5957,7 +5948,6 @@ textarea:focus-visible {
   font-weight: 500;
 }
 
-.conn-tab .env-badge,
 .conn-tab .driver-badge {
   flex: none;
 }
@@ -6330,9 +6320,6 @@ button.pending-apply {
   max-height: none;
 }
 
-/* Errors that are not already shown inline (the footer used to carry them) */
-/* Home: saved connections as cards */
-
 /* Header connection tab close button */
 .conn-tab-wrap {
   position: relative;
@@ -6644,13 +6631,6 @@ button.cm-eye:hover {
 }
 
 .cm-swatches,
-.cm-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 7px;
-}
-
 .cm-swatch {
   position: relative;
   width: 24px;
@@ -6692,42 +6672,6 @@ button.cm-swatch.none {
   height: 100%;
   opacity: 0;
   cursor: pointer;
-}
-
-button.cm-chip {
-  height: 26px;
-  padding: 0 11px;
-  border: 1px solid var(--line-soft);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11.5px;
-}
-
-button.cm-chip:hover {
-  background: var(--hover-fill);
-  color: var(--ink);
-}
-
-button.cm-chip.active {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-button.cm-chip.env-local.active {
-  border-color: color-mix(in srgb, var(--ok) 50%, var(--line));
-  background: color-mix(in srgb, var(--ok) 15%, transparent);
-}
-
-button.cm-chip.env-staging.active {
-  border-color: color-mix(in srgb, var(--warn) 50%, var(--line));
-  background: color-mix(in srgb, var(--warn) 15%, transparent);
-}
-
-button.cm-chip.env-production.active {
-  border-color: color-mix(in srgb, var(--error) 55%, var(--line));
-  background: color-mix(in srgb, var(--error) 15%, transparent);
 }
 
 .cm-segmented {
@@ -7039,8 +6983,6 @@ button.cm-tunnel.active {
 button.cm-driver:not(.active) .driver-badge-icon {
   opacity: 0.85;
 }
-
-/* Home cards: the DB logo leads; the connection color becomes a top stripe */
 
 /* Header-level actions (settings is reachable from home too) */
 .appbar button.appbar-icon {
@@ -7634,107 +7576,301 @@ button.error-notice-close {
   padding: 6px;
 }
 
-/* Home: saved and open connections, plus a card to add one */
+/* Home: a floating start window — actions on the left, connections on the right */
 .home {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
   min-height: 0;
+  padding: 24px 16px;
   overflow: auto;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%),
+    var(--bg);
 }
 
-.home-inner {
+.home-notice {
+  width: min(760px, 100%);
+}
+
+.launcher {
+  display: flex;
+  flex: none;
+  width: min(760px, 100%);
+  height: min(480px, 100%);
+  min-height: 320px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+}
+
+.launcher-side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  width: 250px;
+  padding: 30px 16px 16px;
+  border-right: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+}
+
+.launcher-mark {
+  opacity: 0.55;
+}
+
+.launcher-word {
+  margin-top: 10px;
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  opacity: 0.6;
+}
+
+.launcher-tagline {
+  margin: 2px 0 22px;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.launcher-actions {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 28px 24px 48px;
+  gap: 2px;
+  width: 100%;
 }
 
-.home-loading {
+button.launcher-action {
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  height: 38px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+button.launcher-action:hover {
+  background: var(--hover-fill);
+}
+
+.launcher-action-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.launcher-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.launcher-top {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  padding: 12px 12px 8px;
+}
+
+button.launcher-plus {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+}
+
+button.launcher-plus:hover,
+button.launcher-plus.active {
+  border-color: var(--accent-line, var(--accent));
+  color: var(--ink);
+}
+
+/* The input is the box (it takes the app's input styling); the icon sits on it. */
+.launcher-search {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.launcher-search-icon {
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  color: var(--faint);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.launcher-search input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px 0 32px;
+  font-size: 12.5px;
+}
+
+.launcher-load-error {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+
+.launcher-load-error > .error-notice {
+  align-self: stretch;
+}
+
+.launcher-loading,
+.launcher-empty {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 48px 0;
+  padding: 40px 0;
   color: var(--faint);
   font-size: 12px;
 }
 
-.home-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.launcher-list {
+  flex: 1;
+  min-height: 0;
+  padding: 2px 8px 12px;
+  overflow: auto;
 }
 
-.home-group-title {
-  margin: 0;
-  padding: 0 2px;
-  color: var(--faint);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.home-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 8px;
-}
-
-.home-card,
-.home-add {
+.launcher-group-head {
   display: flex;
   align-items: center;
-  min-width: 0;
-  height: 62px;
-  border-radius: 10px;
-}
-
-.home-card {
-  gap: 12px;
-  padding: 0 10px 0 12px;
-  border: 1px solid var(--line-soft);
-  background: var(--panel);
+  gap: 8px;
+  height: 34px;
+  margin-top: 4px;
+  padding: 0 8px 0 4px;
+  border-radius: 8px;
+  color: var(--ink);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  user-select: none;
 }
 
-.home-card:hover {
-  border-color: var(--line);
-  background: color-mix(in srgb, var(--panel) 92%, var(--ink));
+.launcher-group-head:hover {
+  background: var(--hover-fill);
 }
 
-.home-card:focus-visible {
+.launcher-group-head:focus-visible,
+.launcher-row:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
 
-.home-card.is-open {
-  border-color: color-mix(in srgb, var(--ok) 32%, var(--line-soft));
+.launcher-chevron {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  justify-content: center;
+  color: var(--faint);
 }
 
-.home-card-logo {
+.launcher-chevron svg {
+  transition: transform 0.12s ease;
+}
+
+.launcher-chevron.open svg {
+  transform: rotate(90deg);
+}
+
+.launcher-group-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1.5px solid var(--group-color, var(--faint));
+  border-radius: 50%;
+  color: var(--group-color, var(--faint));
+}
+
+.launcher-group-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launcher-group-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--hover-fill);
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 17px;
+}
+
+.launcher-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 52px;
+  padding: 0 8px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.launcher-row.in-group {
+  padding-left: 30px;
+}
+
+.launcher-row:hover {
+  background: var(--hover-fill);
+}
+
+.launcher-logo {
   flex: none;
   border-radius: 9px;
 }
 
-.home-card-body {
+.launcher-row-body {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
 }
 
-.home-card-title {
+.launcher-row-title {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
-.home-card-name {
+.launcher-row-name {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -7745,7 +7881,7 @@ button.error-notice-close {
   white-space: nowrap;
 }
 
-.home-card-sub {
+.launcher-row-sub {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -7753,7 +7889,7 @@ button.error-notice-close {
   color: var(--muted);
 }
 
-.home-card-address {
+.launcher-row-address {
   min-width: 0;
   overflow: hidden;
   font-family: var(--mono);
@@ -7762,7 +7898,7 @@ button.error-notice-close {
   white-space: nowrap;
 }
 
-.home-card-ssh {
+.launcher-ssh {
   flex: none;
   padding: 0 4px;
   border: 1px solid var(--line);
@@ -7773,47 +7909,44 @@ button.error-notice-close {
   line-height: 14px;
 }
 
-/* The connection's color lives in its tags, as in TablePlus. */
-.home-tag {
+/* The connection's color goes into its tags, as in TablePlus. */
+.launcher-tag {
   display: inline-block;
-  /* Tags give way before the name does. */
   flex: 0 4 auto;
   min-width: 22px;
   max-width: 140px;
   height: 18px;
   padding: 0 7px;
-  line-height: 18px;
   overflow: hidden;
   border-radius: 6px;
   background: color-mix(in srgb, var(--faint) 16%, transparent);
   color: var(--muted);
   font-size: 11px;
   font-weight: 500;
+  line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.home-tag.colored {
-  --tag-ink: var(--tag-color, var(--env-color, var(--faint)));
-  background: color-mix(in srgb, var(--tag-ink) 20%, transparent);
-  color: color-mix(in srgb, var(--tag-ink) 78%, var(--ink));
+.launcher-tag.colored {
+  background: color-mix(in srgb, var(--tag-color) 20%, transparent);
+  color: color-mix(in srgb, var(--tag-color) 78%, var(--ink));
 }
 
-.home-color-dot {
+.launcher-color-dot {
   flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
 }
 
-.home-card-side {
+.launcher-row-side {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
 }
 
-.home-card-state {
+.launcher-state {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -7822,11 +7955,11 @@ button.error-notice-close {
   white-space: nowrap;
 }
 
-.home-card-state.idle {
+.launcher-state.idle {
   color: var(--faint);
 }
 
-.home-card-state-dot {
+.launcher-state-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -7835,25 +7968,25 @@ button.error-notice-close {
 }
 
 /* Actions take the state's place on hover, so they reserve no width. */
-.home-card-actions {
+.launcher-row-actions {
   display: none;
   align-items: center;
   gap: 2px;
 }
 
-.home-card:hover .home-card-actions,
-.home-card:focus-within .home-card-actions {
+.launcher-row:hover .launcher-row-actions,
+.launcher-row:focus-within .launcher-row-actions {
   display: flex;
 }
 
-.home-card:hover .home-card-state,
-.home-card:focus-within .home-card-state {
+.launcher-row:hover .launcher-state,
+.launcher-row:focus-within .launcher-state {
   display: none;
 }
 
-.home-card-actions button {
-  width: 26px;
-  height: 26px;
+.launcher-row-actions button {
+  width: 28px;
+  height: 28px;
   padding: 0;
   justify-content: center;
   border: none;
@@ -7862,244 +7995,258 @@ button.error-notice-close {
   color: var(--muted);
 }
 
-.home-card-actions button:hover:not(:disabled) {
+.launcher-row-actions button:hover:not(:disabled) {
   background: var(--hover-fill);
   color: var(--ink);
 }
 
-.home-card-actions button.danger:hover:not(:disabled) {
+.launcher-row-actions button.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--error) 12%, transparent);
   color: var(--error);
 }
 
-.home-add {
-  gap: 8px;
-  padding: 0 8px 0 12px;
-  border: 1px dashed var(--line);
-  transition: border-color 0.12s ease, background 0.12s ease;
-}
-
-.home-add:hover {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
-  background: color-mix(in srgb, var(--accent) 5%, transparent);
-}
-
-button.home-add-main {
+/* First run, in the list's place */
+.launcher-welcome {
   display: flex;
   flex: 1;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-  min-width: 0;
-  height: 100%;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--ink);
-  text-align: left;
-}
-
-.home-add-plus {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-}
-
-.home-add-text {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.home-add-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.home-add-sub {
-  overflow: hidden;
-  color: var(--faint);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.home-add-drivers {
-  display: flex;
-  flex: none;
-  gap: 2px;
-}
-
-.home-add-drivers button {
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  justify-content: center;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  filter: grayscale(0.5);
-  opacity: 0.6;
-  transition: opacity 0.12s ease, filter 0.12s ease;
-}
-
-.home-add-drivers button:hover {
-  background: var(--hover-fill);
-  filter: none;
-  opacity: 1;
-}
-
-.home-add-drivers .driver-badge-icon {
-  border-radius: 6px;
-}
-
-/* Home, first run */
-.home-welcome {
-  display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
-  width: 100%;
-  max-width: 560px;
-  margin: 6vh auto 0;
+  gap: 11px;
+  min-height: 0;
+  padding: 10px 20px 18px;
+  overflow: auto;
   text-align: center;
 }
 
-.home-welcome-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 4px;
-  opacity: 0.3;
-  filter: saturate(0.75);
-}
-
-.home-welcome-word {
+.launcher-welcome-title {
+  margin: 6px 0 0;
   color: var(--ink);
-  font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
-  font-size: 36px;
-  font-weight: 750;
-  letter-spacing: -0.03em;
-}
-
-.home-welcome-title {
-  margin: 0;
-  color: var(--ink);
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 650;
 }
 
-.home-welcome-lead {
-  margin: -6px 0 0;
+.launcher-welcome-lead {
+  margin: -4px 0 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
-.home-welcome-drivers {
+.launcher-welcome-drivers {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 6px;
 }
 
-.home-welcome-drivers button {
+.launcher-welcome-drivers button {
   gap: 7px;
   height: 30px;
   padding: 0 10px 0 6px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--bg);
   color: var(--muted);
   font-size: 12px;
 }
 
-.home-welcome-drivers button:hover {
+.launcher-welcome-drivers button:hover {
   border-color: var(--line);
   color: var(--ink);
 }
 
-.home-welcome-drivers .driver-badge-icon {
-  border-radius: 5px;
-}
-
-.home-welcome-info {
+.launcher-welcome-info {
   width: 100%;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border: 1px solid var(--line-soft);
-  border-radius: 12px;
-  background: var(--panel);
+  border-radius: 10px;
+  background: var(--bg);
   color: var(--muted);
   font-size: 12px;
   text-align: left;
 }
 
-.home-welcome-label {
-  margin-bottom: 6px;
+.launcher-welcome-label {
+  margin-bottom: 4px;
   color: var(--ink);
-  font-size: 12px;
   font-weight: 600;
 }
 
-.home-welcome-info ul {
+.launcher-welcome-info ul {
   margin: 0;
   padding-left: 18px;
-  line-height: 1.75;
+  line-height: 1.7;
 }
 
-.home-welcome-info p {
-  margin: 8px 0 0;
+.launcher-welcome-info p {
+  margin: 6px 0 0;
   color: var(--faint);
   font-size: 11.5px;
 }
 
-.home-welcome-actions {
+.launcher-welcome-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
-  margin-top: 2px;
 }
 
-.home-welcome-actions button {
+.launcher-welcome-actions button {
   gap: 6px;
-  height: 34px;
-  padding: 0 16px;
+  height: 32px;
+  padding: 0 14px;
   border-radius: 9px;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
-.home-welcome-note {
+.launcher-welcome-note {
   margin: 0;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
-@media (max-width: 560px) {
-  .home-inner {
-    padding: 20px 16px 40px;
+@media (max-width: 640px) {
+  .launcher {
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
   }
 
-  .home-grid {
-    grid-template-columns: minmax(0, 1fr);
+  .launcher-side {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+    padding: 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--line-soft);
   }
 
-  .home-add-sub {
+  .launcher-side .launcher-mark,
+  .launcher-word,
+  .launcher-tagline {
     display: none;
   }
+
+  .launcher-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  button.launcher-action {
+    width: auto;
+  }
+
+  .launcher-list {
+    max-height: 60vh;
+  }
 }
 
-.home-load-error {
+.prompt-modal {
+  width: min(420px, calc(100vw - 32px));
+}
+
+.prompt-body {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
+  padding: 14px 16px;
 }
 
-.home-load-error > .error-notice {
-  align-self: stretch;
+.prompt-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-body input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+/* Home's backup/restore: which connection. */
+.picker-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(600px, 84vh);
+}
+
+.picker-search {
+  display: flex;
+  padding: 12px 14px 4px;
+}
+
+.picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px 10px;
+}
+
+button.picker-row {
+  flex: none;
+  width: 100%;
+  height: 48px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  text-align: left;
+}
+
+button.picker-row:hover,
+button.picker-row:focus-visible {
+  background: var(--hover-fill);
+  box-shadow: none;
+}
+
+.picker-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+/* Drag a saved connection onto a group (or the top, for none). */
+.launcher-ungrouped,
+.launcher-group {
+  border: 1px dashed transparent;
+  border-radius: 10px;
+}
+
+.launcher-ungrouped.drop-target,
+.launcher-group.drop-target {
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.launcher-drop-hint {
+  padding: 10px 12px;
+  color: var(--faint);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.launcher-notice {
+  flex: none;
+  padding: 0 12px 8px;
+}
+
+.launcher-notice-ok {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line-soft));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ok) 10%, var(--panel));
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.launcher-notice-ok span {
+  flex: 1;
 }
