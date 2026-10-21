@@ -5388,12 +5388,7 @@ textarea:focus-visible {
   user-select: none;
 }
 
-.empty-workspace-logo {
-  opacity: 0.55;
-}
-
 .empty-workspace-word {
-  margin-top: 10px;
   color: var(--ink);
   font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
   font-size: 21px;
@@ -7591,18 +7586,106 @@ button.error-notice-close {
 
 /* Home: a floating start window — actions on the left, connections on the right */
 .home {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 14px;
   min-height: 0;
   padding: 24px 16px;
   overflow: auto;
   background:
     radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%),
     var(--bg);
+}
+
+/* Home's welcome page: settings in the corner, a short intro above the start
+   window and tips below it. */
+button.home-settings {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  color: var(--faint);
+}
+
+button.home-settings:hover {
+  color: var(--ink);
+}
+
+.home-intro {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  user-select: none;
+}
+
+.home-word {
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
+  font-size: 34px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  opacity: 0.6;
+}
+
+.home-tagline {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.home-specs {
+  margin: 0;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.home-tips {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 20px;
+  margin: 0;
+  padding: 0;
+  color: var(--faint);
+  font-size: 11.5px;
+  list-style: none;
+}
+
+.home-tips kbd {
+  margin-right: 7px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.home-loading {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* Short windows keep the start window whole: the extras go first. */
+@media (max-height: 700px) {
+  .home-specs,
+  .home-tips {
+    display: none;
+  }
 }
 
 .home-notice {
@@ -7628,29 +7711,9 @@ button.error-notice-close {
   flex-direction: column;
   align-items: center;
   width: 250px;
-  padding: 30px 16px 16px;
+  padding: 12px;
   border-right: 1px solid var(--line-soft);
   background: color-mix(in srgb, var(--panel) 88%, var(--bg));
-}
-
-.launcher-mark {
-  opacity: 0.55;
-}
-
-.launcher-word {
-  margin-top: 10px;
-  color: var(--ink);
-  font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
-  font-size: 21px;
-  font-weight: 750;
-  letter-spacing: -0.025em;
-  opacity: 0.6;
-}
-
-.launcher-tagline {
-  margin: 2px 0 22px;
-  color: var(--faint);
-  font-size: 11.5px;
 }
 
 .launcher-actions {
@@ -7992,8 +8055,8 @@ button.launcher-plus.active {
   display: flex;
 }
 
-.launcher-row:hover .launcher-state,
-.launcher-row:focus-within .launcher-state {
+.launcher-row.has-actions:hover .launcher-state,
+.launcher-row.has-actions:focus-within .launcher-state {
   display: none;
 }
 
@@ -8013,10 +8076,6 @@ button.launcher-plus.active {
   color: var(--ink);
 }
 
-.launcher-row-actions button.danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 12%, transparent);
-  color: var(--error);
-}
 
 /* First run, in the list's place */
 .launcher-welcome {
@@ -8133,12 +8192,6 @@ button.launcher-plus.active {
     border-bottom: 1px solid var(--line-soft);
   }
 
-  .launcher-side .launcher-mark,
-  .launcher-word,
-  .launcher-tagline {
-    display: none;
-  }
-
   .launcher-actions {
     flex-direction: row;
     flex-wrap: wrap;
@@ -8150,6 +8203,20 @@ button.launcher-plus.active {
 
   .launcher-list {
     max-height: 60vh;
+  }
+
+  /* Room for the corner settings button above the content. */
+  .home {
+    padding-top: 52px;
+  }
+
+  .home-word {
+    font-size: 26px;
+  }
+
+  .home-specs,
+  .home-tips {
+    display: none;
   }
 }
 

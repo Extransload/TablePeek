@@ -22,13 +22,12 @@ import {
 import { t } from "../i18n";
 import { inputFromSaved } from "../savedInput";
 import { ApiRequestError, store, type ConnSummary, type Driver, type SavedConnection } from "../store";
-import { BrandMark } from "./BrandLogo";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
 import { ExportConnectionsModal } from "./ExportConnectionsModal";
 import { HomeConnectionList, type ListTarget, type RowAction } from "./HomeConnectionList";
 import { HomeWelcome } from "./HomeWelcome";
-import { CloseIcon, DownloadIcon, PlusIcon, SearchIcon, UploadIcon } from "./icons";
+import { CloseIcon, DownloadIcon, PlusIcon, SearchIcon, SettingsIcon, UploadIcon } from "./icons";
 import { PromptModal } from "./PromptModal";
 import { Spinner } from "./Spinner";
 
@@ -65,6 +64,11 @@ interface HomeScreenProps {
   onConnectSaved(id: string): void;
   onEditConnection(connection: SavedConnection): void;
   onBackupOrRestore(kind: "backup" | "restore"): void;
+  // Home has no app bar, so settings open from its corner.
+  onOpenSettings(): void;
+  // Current shortcuts, for the tips and tooltips.
+  paletteHint: string;
+  settingsHint: string;
   // Bumped when the connection dialog saved a profile, so the list reloads.
   savedVersion: number;
   // The app's latest error, shown here instead of in a corner toast.
@@ -83,13 +87,15 @@ export function HomeScreen({
   onConnectSaved,
   onEditConnection,
   onBackupOrRestore,
+  onOpenSettings,
+  paletteHint,
+  settingsHint,
   savedVersion,
   appError,
   onDismissAppError,
 }: HomeScreenProps) {
   const [saved, setSaved] = useState<SavedConnection[] | null>(null);
   const [savedError, setSavedError] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [plusMenu, setPlusMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; target: ListTarget | null } | null>(null);
@@ -136,7 +142,6 @@ export function HomeScreen({
     ) {
       return;
     }
-    setDeleting(connection.id);
     setSavedError(null);
     try {
       await store.deleteConnection(connection.id);
@@ -148,8 +153,6 @@ export function HomeScreen({
       setSavedError(
         err instanceof Error && err.message ? err.message : t("저장된 연결을 삭제하지 못했습니다"),
       );
-    } finally {
-      setDeleting(null);
     }
   }
 
@@ -188,10 +191,6 @@ export function HomeScreen({
       onOpenNewWindow(open.id);
     } else if (action === "disconnect" && open !== undefined) {
       onCloseConn(open.id);
-    } else if (action === "edit" && target.kind === "saved") {
-      onEditConnection(target.saved);
-    } else if (action === "delete" && target.kind === "saved") {
-      void deleteSaved(target.saved);
     }
   }
 
@@ -435,7 +434,6 @@ export function HomeScreen({
         metaById={metaById}
         query={query}
         busySaved={busySaved}
-        deleting={deleting}
         containerRef={listRef}
         onExitTop={() => searchRef.current?.focus()}
         onActivateSaved={activateSaved}
@@ -450,18 +448,31 @@ export function HomeScreen({
 
   return (
     <div className="home">
+      <button
+        type="button"
+        className="icon-button home-settings"
+        onClick={onOpenSettings}
+        title={settingsHint !== "" ? `${t("설정")} (${settingsHint})` : t("설정")}
+        aria-label={t("설정")}
+      >
+        <SettingsIcon size={14} />
+      </button>
+      {/* The welcome page the start window floats on. */}
+      <div className="home-intro">
+        <div className="home-word" aria-hidden="true">
+          Table<span className="brand-word-peek">Peek</span>
+        </div>
+        <p className="home-tagline">{t("빠르고 정확한 전문가용 데이터베이스 클라이언트")}</p>
+        <p className="home-specs">{t("Rust 엔진 · Arrow 스트리밍 · 캔버스 그리드")}</p>
+      </div>
       {appError !== null && appError !== savedError ? (
         <div className="home-notice">
           <ErrorNotice message={appError} onClose={onDismissAppError} />
         </div>
       ) : null}
       <div className="launcher">
+        {/* The brand sits on the welcome page above; this side holds the actions only. */}
         <aside className="launcher-side">
-          <BrandMark size={64} className="launcher-mark" />
-          <div className="launcher-word" aria-hidden="true">
-            Table<span className="brand-word-peek">Peek</span>
-          </div>
-          <div className="launcher-tagline">{t("로컬 DB 클라이언트")}</div>
           <div className="launcher-actions">
             <button type="button" className="launcher-action" onClick={() => onNewConnection()}>
               <span className="launcher-action-icon" aria-hidden="true">
@@ -546,6 +557,22 @@ export function HomeScreen({
           {listArea}
         </section>
       </div>
+      <ul className="home-tips">
+        {paletteHint !== "" ? (
+          <li>
+            <kbd>{paletteHint}</kbd>
+            {t("명령 팔레트")}
+          </li>
+        ) : null}
+        <li>
+          <kbd>{t("오른쪽 클릭")}</kbd>
+          {t("그룹·가져오기·내보내기")}
+        </li>
+        <li>
+          <kbd>{t("끌어 놓기")}</kbd>
+          {t("그룹으로 옮기기")}
+        </li>
+      </ul>
       <input
         ref={fileRef}
         type="file"

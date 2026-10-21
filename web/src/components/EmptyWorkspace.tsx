@@ -1,5 +1,4 @@
 import { t } from "../i18n";
-import { BrandMark } from "./BrandLogo";
 import { DatabaseIcon, HomeIcon, PlusIcon } from "./icons";
 
 interface EmptyWorkspaceProps {
@@ -10,9 +9,8 @@ interface EmptyWorkspaceProps {
 export function EmptyWorkspace({ onNewQuery, onHome }: EmptyWorkspaceProps) {
   return (
     <div className="empty-workspace">
-      {/* The same faded brand as the home's start window. */}
+      {/* The home's faded wordmark, without the icon. */}
       <div className="empty-workspace-brand" aria-hidden="true">
-        <BrandMark size={56} className="empty-workspace-logo" />
         <div className="empty-workspace-word">
           Table<span className="brand-word-peek">Peek</span>
         </div>

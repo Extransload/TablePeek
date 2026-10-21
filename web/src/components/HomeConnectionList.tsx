@@ -4,7 +4,7 @@ import type { ConnMeta } from "../connMeta";
 import { t } from "../i18n";
 import type { ConnSummary, SavedConnection } from "../store";
 import { DriverIcon } from "./DriverIcon";
-import { ChevronIcon, CloseIcon, ExternalIcon, FolderIcon, PencilIcon, TrashIcon } from "./icons";
+import { ChevronIcon, CloseIcon, ExternalIcon, FolderIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
 export type ListTarget =
@@ -12,7 +12,8 @@ export type ListTarget =
   | { kind: "open"; conn: ConnSummary }
   | { kind: "group"; group: ConnGroup };
 
-export type RowAction = "newWindow" | "disconnect" | "edit" | "delete";
+// Buttons an open row shows on hover; editing and deleting live in the context menu.
+export type RowAction = "newWindow" | "disconnect";
 
 interface HomeConnectionListProps {
   // Open connections with no saved profile (the demo, SQLite files, or a
@@ -24,7 +25,6 @@ interface HomeConnectionListProps {
   metaById: Record<string, ConnMeta>;
   query: string;
   busySaved: string | null;
-  deleting: string | null;
   containerRef: RefObject<HTMLDivElement | null>;
   // ↑ on the first row: back to the search box.
   onExitTop(): void;
@@ -156,7 +156,6 @@ export function HomeConnectionList({
   metaById,
   query,
   busySaved,
-  deleting,
   containerRef,
   onExitTop,
   onActivateSaved,
@@ -240,40 +239,46 @@ export function HomeConnectionList({
     setDropZone(null);
   }
 
-  // Props that make an element a drop zone for one group ("" = no group).
-  function dropZoneProps(zone: string) {
-    return {
-      onDragOver(event: DragEvent<HTMLElement>) {
-        if (dragId === null) {
-          return;
-        }
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        if (dropZone !== zone) {
-          setDropZone(zone);
-        }
-      },
-      onDragLeave(event: DragEvent<HTMLElement>) {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          setDropZone((current) => (current === zone ? null : current));
-        }
-      },
-      onDrop(event: DragEvent<HTMLElement>) {
-        event.preventDefault();
-        if (dragId !== null) {
-          onMoveToGroup(dragId, zone);
-        }
-        endDrag();
-      },
-    };
+  // Where a drop lands: the group under the pointer, or "" (no group) anywhere else in the list.
+  function zoneAt(target: EventTarget | null): string {
+    const element = target instanceof Element ? target.closest<HTMLElement>("[data-group-id]") : null;
+    return element?.dataset.groupId ?? "";
   }
 
+  const dropHandlers = {
+    onDragOver(event: DragEvent<HTMLElement>) {
+      if (dragId === null) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const zone = zoneAt(event.target);
+      if (dropZone !== zone) {
+        setDropZone(zone);
+      }
+    },
+    onDragLeave(event: DragEvent<HTMLElement>) {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+        setDropZone(null);
+      }
+    },
+    onDrop(event: DragEvent<HTMLElement>) {
+      event.preventDefault();
+      if (dragId !== null) {
+        onMoveToGroup(dragId, zoneAt(event.target));
+      }
+      endDrag();
+    },
+  };
+
+  // Open connections only: a saved one that isn't open keeps its state on hover.
   function rowActions(target: ListTarget, open: ConnSummary | undefined): ReactNode {
-    const button = (action: RowAction, label: string, icon: ReactNode, danger = false) => (
+    if (open === undefined) {
+      return null;
+    }
+    const button = (action: RowAction, label: string, icon: ReactNode) => (
       <button
         type="button"
-        className={danger ? "danger" : undefined}
-        disabled={action === "delete" && deleting !== null}
         onClick={(event) => {
           event.stopPropagation();
           onRowAction(action, target);
@@ -286,17 +291,8 @@ export function HomeConnectionList({
     );
     return (
       <div className="launcher-row-actions">
-        {open !== undefined ? button("newWindow", t("새 창에서 열기"), <ExternalIcon size={11} />) : null}
-        {open !== undefined && !open.is_default ? button("disconnect", t("연결 끊기"), <CloseIcon size={10} />) : null}
-        {target.kind === "saved" ? button("edit", t("연결 편집"), <PencilIcon size={11} />) : null}
-        {target.kind === "saved"
-          ? button(
-              "delete",
-              t("저장된 연결 삭제"),
-              deleting === target.saved.id ? <Spinner size={10} /> : <TrashIcon size={11} />,
-              true,
-            )
-          : null}
+        {button("newWindow", t("새 창에서 열기"), <ExternalIcon size={11} />)}
+        {!open.is_default ? button("disconnect", t("연결 끊기"), <CloseIcon size={10} />) : null}
       </div>
     );
   }
@@ -315,7 +311,7 @@ export function HomeConnectionList({
     return (
       <div
         key={`open:${conn.id}`}
-        className="launcher-row is-open"
+        className="launcher-row is-open has-actions"
         role="button"
         tabIndex={0}
         data-nav=""
@@ -349,7 +345,7 @@ export function HomeConnectionList({
     return (
       <div
         key={`saved:${connection.id}`}
-        className={`launcher-row${open !== undefined ? " is-open" : ""}${groupId !== "" ? " in-group" : ""}`}
+        className={`launcher-row${open !== undefined ? " is-open has-actions" : ""}${groupId !== "" ? " in-group" : ""}`}
         role="button"
         tabIndex={0}
         data-nav=""
@@ -358,7 +354,9 @@ export function HomeConnectionList({
         onDragStart={(event) => {
           event.dataTransfer.setData("text/plain", connection.id);
           event.dataTransfer.effectAllowed = "move";
-          setDragId(connection.id);
+          // Chrome drops a drag whose page changes during dragstart, so the drop
+          // zones show up a tick later.
+          window.setTimeout(() => setDragId(connection.id), 0);
         }}
         onDragEnd={endDrag}
         title={`${connection.name} — ${savedDetail(connection)}`}
@@ -408,7 +406,6 @@ export function HomeConnectionList({
           className={`launcher-group${dropZone === group.id ? " drop-target" : ""}`}
           key={`group:${group.id}`}
           data-group-id={group.id}
-          {...dropZoneProps(group.id)}
         >
           <div
             className="launcher-group-head"
@@ -446,22 +443,25 @@ export function HomeConnectionList({
       ref={containerRef}
       onKeyDown={onListKeyDown}
       onContextMenu={(event) => menuAt(event, null)}
+      {...dropHandlers}
     >
       {nothing && searching ? <div className="launcher-empty">{t("검색 결과가 없습니다")}</div> : null}
-      {visibleOpen.length > 0 || ungrouped.length > 0 || dragId !== null ? (
-        <div
-          className={`launcher-ungrouped${dropZone === "" ? " drop-target" : ""}`}
-          data-group-id=""
-          {...dropZoneProps("")}
-        >
+      {visibleOpen.length > 0 || ungrouped.length > 0 ? (
+        <div className={`launcher-ungrouped${dropZone === "" ? " drop-target" : ""}`} data-group-id="">
           {visibleOpen.map(renderOpen)}
           {ungrouped.map((connection) => renderSaved(connection, ""))}
-          {dragId !== null && ungrouped.length === 0 ? (
-            <div className="launcher-drop-hint">{t("여기에 놓으면 그룹에서 빠집니다")}</div>
-          ) : null}
         </div>
       ) : null}
       {groupSections}
+      {/* Below everything, so showing it never moves the row being dragged. */}
+      {dragId !== null && ungrouped.length === 0 ? (
+        <div
+          className={`launcher-ungrouped launcher-drop-hint${dropZone === "" ? " drop-target" : ""}`}
+          data-group-id=""
+        >
+          {t("여기에 놓으면 그룹에서 빠집니다")}
+        </div>
+      ) : null}
     </div>
   );
 }

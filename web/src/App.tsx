@@ -3032,14 +3032,8 @@ export default function App() {
   if (booting) {
     return (
       <div className="app">
-        <header className="appbar">
-          <BrandLogo />
-          <span className="spacer" />
-        </header>
         <div className="home">
-          <div className="home-inner">
-            <div className="home-loading">{t("불러오는 중…")}</div>
-          </div>
+          <div className="home-loading">{t("불러오는 중…")}</div>
         </div>
       </div>
     );
@@ -3048,42 +3042,45 @@ export default function App() {
   return (
     <>
     <div className="app">
-      <header className="appbar">
-        <BrandLogo onClick={goHome} />
-        <ConnSwitcher
-          conns={conns}
-          activeId={activeConnId}
-          connection={state.connection}
-          activeDetail={
-            meta !== null
-              ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${tTableCount(meta.tables.length)}`
-              : null
-          }
-          onSwitch={(id) => void enterConn(id)}
-          onNewConnection={() => openConnectionEditor(null)}
-          onClose={(id) => void closeConn(id)}
-        />
-        <span className="spacer" />
-        {!home ? (
+      {/* Home is its own welcome page; the bar belongs to the workspace. */}
+      {!home ? (
+        <header className="appbar">
+          <BrandLogo onClick={goHome} />
+          <ConnSwitcher
+            conns={conns}
+            activeId={activeConnId}
+            connection={state.connection}
+            activeDetail={
+              meta !== null
+                ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${tTableCount(meta.tables.length)}`
+                : null
+            }
+            onSwitch={(id) => void enterConn(id)}
+            onNewConnection={() => openConnectionEditor(null)}
+            onClose={(id) => void closeConn(id)}
+          />
+          <span className="spacer" />
+          {!home ? (
+            <button
+              type="button"
+              className="icon-button appbar-icon"
+              onClick={() => void refreshActiveMeta()}
+              title={`${t("새로고침")} (${shortcutHint(settings.keymap, "refresh")})`}
+            >
+              <RefreshIcon size={12} />
+            </button>
+          ) : null}
           <button
             type="button"
             className="icon-button appbar-icon"
-            onClick={() => void refreshActiveMeta()}
-            title={`${t("새로고침")} (${shortcutHint(settings.keymap, "refresh")})`}
+            onClick={() => setSettingsOpen(true)}
+            title={t("설정")}
           >
-            <RefreshIcon size={12} />
+            <SettingsIcon size={13} />
+            <span className="sr-only">{t("설정")}</span>
           </button>
-        ) : null}
-        <button
-          type="button"
-          className="icon-button appbar-icon"
-          onClick={() => setSettingsOpen(true)}
-          title={t("설정")}
-        >
-          <SettingsIcon size={13} />
-          <span className="sr-only">{t("설정")}</span>
-        </button>
-      </header>
+        </header>
+      ) : null}
       {home ? (
         <HomeScreen
           conns={conns}
@@ -3094,6 +3091,9 @@ export default function App() {
           onOpenFile={() => setFsOpen(true)}
           onNewConnection={openNewConnection}
           onBackupOrRestore={(kind) => void startBackupOrRestore(kind)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          paletteHint={shortcutHint(settings.keymap, "palette")}
+          settingsHint={shortcutHint(settings.keymap, "openSettings")}
           onConnectSaved={(id) => void connectSavedById(id)}
           onEditConnection={(saved) => openConnectionEditor(saved)}
           savedVersion={savedVersion}
