@@ -1,14 +1,34 @@
 import { useEffect, useState } from "react";
-import { subscribeQueryLog, type QueryLogEntry } from "../consoleLog";
+import { t } from "../i18n";
+import { store, type HistoryEntry } from "../store";
+import { ErrorNotice } from "./ErrorNotice";
 
 interface MetricsModalProps {
+  conn: string;
   onClose(): void;
 }
 
-export function MetricsModal({ onClose }: MetricsModalProps) {
-  const [entries, setEntries] = useState<QueryLogEntry[]>([]);
+// Figures for the statements run on one connection, read from its history.
+export function MetricsModal({ conn, onClose }: MetricsModalProps) {
+  const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => subscribeQueryLog(setEntries), []);
+  useEffect(() => {
+    let alive = true;
+    store
+      .fetchHistory(conn, 200)
+      // History arrives newest first; the chart reads left to right in time.
+      .then((history) => alive && setEntries(history.slice().reverse()))
+      .catch((err: unknown) => {
+        if (alive) {
+          setEntries([]);
+          setError(err instanceof Error && err.message ? err.message : t("기록을 불러오지 못했습니다"));
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [conn]);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
@@ -69,7 +89,7 @@ export function MetricsModal({ onClose }: MetricsModalProps) {
                   const height = Math.max(2, Math.round((entry.ms / peak) * 96));
                   return (
                     <rect
-                      key={entry.id}
+                      key={`${entry.at}-${index}`}
                       x={index * 12 + 1}
                       y={100 - height}
                       width={9}
@@ -84,7 +104,8 @@ export function MetricsModal({ onClose }: MetricsModalProps) {
               </svg>
             )}
           </div>
-          <p className="helper">최근 30개 쿼리의 실행 시간입니다. 로그는 이 기기에만 저장됩니다.</p>
+          {error !== null ? <ErrorNotice message={error} variant="compact" /> : null}
+          <p className="helper">{t("이 연결에서 최근 실행한 쿼리 30개의 실행 시간입니다.")}</p>
         </div>
         <div className="modal-foot">
           <span className="spacer" />

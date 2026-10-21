@@ -4,6 +4,8 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { CommandPalette, type PaletteAction, type PaletteSource } from "./components/CommandPalette";
@@ -30,7 +32,7 @@ import { EmptyWorkspace } from "./components/EmptyWorkspace";
 import { ErrorNotice } from "./components/ErrorNotice";
 import { ExportModal } from "./components/ExportModal";
 import { FilterBar } from "./components/FilterBar";
-import { FavoritesMenu, HistoryMenu } from "./components/Dropdowns";
+import { FavoritesMenu } from "./components/Dropdowns";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
 import { HomeScreen, type NewConnectionOptions } from "./components/HomeScreen";
@@ -42,13 +44,13 @@ import { ParamModal } from "./components/ParamModal";
 import { ReviewModal } from "./components/ReviewModal";
 import { SAFE_MODE_LABELS, SafeModeMenu } from "./components/SafeModeMenu";
 import { SettingsModal } from "./components/SettingsModal";
-import { ConsoleLogModal } from "./components/ConsoleLogModal";
+import { ConsolePanel } from "./components/ConsolePanel";
 import { ActivityModal } from "./components/ActivityModal";
 import { BrandLogo } from "./components/BrandLogo";
 import { MetricsModal } from "./components/MetricsModal";
 import { LockScreen } from "./components/LockScreen";
 import { OverviewPanel } from "./components/OverviewPanel";
-import { CellQuickLook } from "./components/CellQuickLook";
+import { CellInspector, type CellAnchor } from "./components/CellInspector";
 import { RowDetailPanel } from "./components/RowDetailPanel";
 import { Spinner } from "./components/Spinner";
 import { SchemaSidebar, type TableAction } from "./components/SchemaSidebar";
@@ -62,9 +64,9 @@ import {
   DatabaseIcon,
   JobsIcon,
   MoreIcon,
-  LogIcon,
   PanelIcon,
   PanelLeftIcon,
+  PanelBottomIcon,
   PlayIcon,
   PlusIcon,
   RefreshIcon,
@@ -83,7 +85,6 @@ import {
 } from "./dataQuery";
 import { buildUpdateSql, toSqlInserts } from "./export";
 import { subscribeJobs } from "./jobs";
-import { addQueryLog } from "./consoleLog";
 import {
   getPasscodeHash,
   getSettings,
@@ -152,6 +153,98 @@ import {
 
 const EMPTY_TABLES: string[] = [];
 const MAX_ROWS_LIMIT = 500000;
+const CONSOLE_HEIGHT_KEY = "tablepeek.console-height";
+const CONSOLE_DEFAULT = 180;
+const CONSOLE_MIN = 90;
+const SIDEBAR_WIDTH_KEY = "tablepeek.sidebar-width";
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 560;
+
+const DETAIL_WIDTH_KEY = "tablepeek.detail-width";
+const DETAIL_MIN = 260;
+const DETAIL_MAX = 720;
+
+// Keeps the schema sidebar wide enough to read and the editor wide enough to use.
+function clampSidebar(width: number): number {
+  const max = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, window.innerWidth - 420));
+  return Math.round(Math.min(Math.max(width, SIDEBAR_MIN), max));
+}
+
+// Same for the row detail panel on the right, which leaves the grid room.
+function clampDetail(width: number): number {
+  const max = Math.max(DETAIL_MIN, Math.min(DETAIL_MAX, window.innerWidth - 480));
+  return Math.round(Math.min(Math.max(width, DETAIL_MIN), max));
+}
+
+function storedWidth(key: string, clamp: (width: number) => number): number | null {
+  const saved = Number(window.localStorage.getItem(key));
+  return Number.isFinite(saved) && saved > 0 ? clamp(saved) : null;
+}
+
+function storeWidth(key: string, width: number | null): void {
+  try {
+    if (width === null) {
+      window.localStorage.removeItem(key);
+    } else {
+      window.localStorage.setItem(key, String(width));
+    }
+  } catch {}
+}
+
+// Drags a side panel's edge. `grow` is 1 when moving right widens the panel
+// (left sidebar) and -1 when moving left does (right panel).
+function dragPanelEdge(
+  event: ReactPointerEvent<HTMLDivElement>,
+  panel: Element | null,
+  grow: 1 | -1,
+  clamp: (width: number) => number,
+  onMove: (width: number) => void,
+  onDone: (width: number) => void,
+): void {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  const handle = event.currentTarget;
+  const startX = event.clientX;
+  const startWidth = panel instanceof HTMLElement ? panel.getBoundingClientRect().width : 0;
+  let width = startWidth;
+  handle.classList.add("dragging");
+  document.body.classList.add("col-resizing");
+  const move = (next: PointerEvent): void => {
+    width = clamp(startWidth + grow * (next.clientX - startX));
+    onMove(width);
+  };
+  const up = (): void => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    handle.classList.remove("dragging");
+    document.body.classList.remove("col-resizing");
+    onDone(width);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+// Arrow keys resize a focused panel edge (Shift for bigger steps); Home or
+// Enter returns it to its default width.
+function keyPanelEdge(
+  event: ReactKeyboardEvent<HTMLDivElement>,
+  panel: Element | null,
+  grow: 1 | -1,
+  clamp: (width: number) => number,
+  save: (width: number | null) => void,
+): void {
+  const current = panel instanceof HTMLElement ? panel.getBoundingClientRect().width : 0;
+  const step = event.shiftKey ? 64 : 16;
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    event.preventDefault();
+    save(clamp(current + grow * (event.key === "ArrowLeft" ? -step : step)));
+  } else if (event.key === "Home" || event.key === "Enter") {
+    event.preventDefault();
+    save(null);
+  }
+}
 const WORKSPACES_KEY = "tablepeek.workspaces";
 const PINNED_KEY = "tablepeek.pinned-tables";
 const PERSIST_DROP_KEYS = new Set(["source", "data", "detail"]);
@@ -383,20 +476,37 @@ export default function App() {
   const [runningTabId, setRunningTabId] = useState<string | null>(null);
   const [editorHeight, setEditorHeight] = useState<number | null>(null);
   const [filterOpen, setFilterOpen] = useState<Record<string, boolean>>({});
+  // The row detail panel stays open or closed per connection, across its
+  // tables; detailRow is the row it shows (null until one is picked).
+  const [detailPanels, setDetailPanels] = useState<Record<string, boolean>>({});
   const [detailRow, setDetailRow] = useState<number | null>(null);
   const [rowDetailInfo, setRowDetailInfo] = useState<TableDetail | null>(null);
   const [rowDetailLoading, setRowDetailLoading] = useState(false);
-  const [cellQuickLook, setCellQuickLook] = useState<{ row: number; col: number } | null>(null);
+  const [cellQuickLook, setCellQuickLook] = useState<{ row: number; col: number; anchor: CellAnchor | null } | null>(
+    null,
+  );
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [alertMode, setAlertMode] = useState<SafeMode>(() => {
+  // Safe mode belongs to each connection (kept by the server). One that never
+  // chose its own follows the single app-wide setting older versions kept.
+  const [defaultSafeMode] = useState<SafeMode>(() => {
     const raw = window.localStorage.getItem("tablepeek.alert-mode");
     if (raw === "0" || raw === "1" || raw === "2") {
-      return Number(raw) as 0 | 1 | 2;
+      return Number(raw) as SafeMode;
     }
     return window.localStorage.getItem("tablepeek.safe-mode") === "0" ? 0 : 1;
   });
+  // Choices made in this window win over connection lists fetched before the
+  // server stored them; a failed save rolls its choice back.
+  const [safeModeChoices, setSafeModeChoices] = useState<Record<string, SafeMode>>({});
+  const safeModeSeqRef = useRef<Record<string, number>>({});
+  const ownSafeMode =
+    activeConnId === null
+      ? undefined
+      : (safeModeChoices[activeConnId] ?? conns.find((conn) => conn.id === activeConnId)?.safe_mode);
+  const alertMode: SafeMode =
+    ownSafeMode === 0 || ownSafeMode === 1 || ownSafeMode === 2 ? ownSafeMode : defaultSafeMode;
   const [snippetMenu, setSnippetMenu] = useState<{ x: number; y: number } | null>(null);
   const [moreMenu, setMoreMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
   const [metaNonce, setMetaNonce] = useState(0);
@@ -422,7 +532,14 @@ export default function App() {
   const [applying, setApplying] = useState(false);
   const [, setPendingVersion] = useState(0);
   const [locked, setLocked] = useState<boolean>(() => getPasscodeHash() !== null);
-  const [logOpen, setLogOpen] = useState(false);
+  // The bottom console stays open or closed per connection, like the row
+  // detail panel. historyVersion bumps after each editor run so it refetches.
+  const [consolePanels, setConsolePanels] = useState<Record<string, boolean>>({});
+  const [consoleHeight, setConsoleHeight] = useState<number>(() => {
+    const saved = Number(window.localStorage.getItem(CONSOLE_HEIGHT_KEY));
+    return Number.isFinite(saved) && saved >= CONSOLE_MIN ? saved : CONSOLE_DEFAULT;
+  });
+  const [historyVersion, setHistoryVersion] = useState(0);
   const [activityOpen, setActivityOpen] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [paramPrompt, setParamPrompt] = useState<{
@@ -444,6 +561,13 @@ export default function App() {
   } | null>(null);
   const [schemaMap, setSchemaMap] = useState<Record<string, string[]>>({});
   const [favorites, setFavorites] = useState<Favorite[]>([]);
+  // null keeps the stylesheet's default width.
+  const [sidebarWidth, setSidebarWidth] = useState<number | null>(() =>
+    storedWidth(SIDEBAR_WIDTH_KEY, clampSidebar),
+  );
+  const [detailWidth, setDetailWidth] = useState<number | null>(() =>
+    storedWidth(DETAIL_WIDTH_KEY, clampDetail),
+  );
   const [splitSide, setSplitSide] = useState<"bottom" | "right">(() =>
     window.localStorage.getItem("tablepeek.split-side") === "right" ? "right" : "bottom",
   );
@@ -483,11 +607,14 @@ export default function App() {
       store.warmSocket();
     }
   }, [activeConnId]);
+  useEffect(() => {
+    // The console log used to live in this browser; history is on the server now.
+    try {
+      window.localStorage.removeItem("tablepeek.query-log");
+    } catch {}
+  }, []);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
-  useEffect(() => {
-    window.localStorage.setItem("tablepeek.alert-mode", String(alertMode));
-  }, [alertMode]);
   useEffect(() => {
     window.localStorage.setItem("tablepeek.split-side", splitSide);
   }, [splitSide]);
@@ -523,7 +650,7 @@ export default function App() {
   const pendingEditorSqlRef = useRef<string | null>(null);
   const connectOpenRef = useRef(connectOpen);
   const fsOpenRef = useRef(fsOpen);
-  const detailRowRef = useRef(detailRow);
+  const detailPanelOpenRef = useRef(false);
   const cellQuickLookRef = useRef(cellQuickLook);
   const menuRef = useRef(menu);
   const exportTargetRef = useRef(exportTarget);
@@ -537,7 +664,7 @@ export default function App() {
   const paletteOpenRef = useRef(paletteOpen);
   const settingsOpenRef = useRef(settingsOpen);
   const lockedRef = useRef(locked);
-  const logOpenRef = useRef(logOpen);
+  const stackRef = useRef<HTMLDivElement | null>(null);
   const activityOpenRef = useRef(activityOpen);
   const metricsOpenRef = useRef(metricsOpen);
   const detailCacheRef = useRef(new Map<string, TableDetail>());
@@ -553,7 +680,7 @@ export default function App() {
   runningTabRef.current = runningTabId;
   connectOpenRef.current = connectOpen;
   fsOpenRef.current = fsOpen;
-  detailRowRef.current = detailRow;
+  detailPanelOpenRef.current = activeConnId !== null && detailPanels[activeConnId] === true;
   cellQuickLookRef.current = cellQuickLook;
   menuRef.current = menu;
   exportTargetRef.current = exportTarget;
@@ -565,7 +692,6 @@ export default function App() {
   paletteOpenRef.current = paletteOpen;
   settingsOpenRef.current = settingsOpen;
   lockedRef.current = locked;
-  logOpenRef.current = logOpen;
   activityOpenRef.current = activityOpen;
   metricsOpenRef.current = metricsOpen;
 
@@ -913,19 +1039,7 @@ export default function App() {
           await store.beginTx();
         }
         for (const statement of statements) {
-          const started = performance.now();
-          const outcome = await store.runQuery(conn, statement, maxRows, tabId);
-          const elapsed = performance.now() - started;
-          addQueryLog(
-            conn,
-            statement,
-            elapsed,
-            outcome.kind === "ok"
-              ? { ok: true, rows: outcome.result.meta.rowCount }
-              : outcome.kind === "error"
-                ? { ok: false, rows: 0, error: outcome.error }
-                : { ok: false, rows: 0, error: "취소됨" },
-          );
+          const outcome = await store.runQuery(conn, statement, maxRows, tabId, true);
           outcomes.push(outcome);
           if (outcome.kind !== "ok") {
             break;
@@ -933,10 +1047,12 @@ export default function App() {
         }
       } catch (err) {
         setRunningTabId(null);
+        setHistoryVersion((value) => value + 1);
         store.setError(errorOf(err, "쿼리를 실행하지 못했습니다"));
         return;
       }
       setRunningTabId(null);
+      setHistoryVersion((value) => value + 1);
       const last = outcomes[outcomes.length - 1];
       if (last !== undefined) {
         handleOutcome(conn, tabId, last);
@@ -1015,8 +1131,35 @@ export default function App() {
     executeStatements(review.conn, review.tabId, splitSqlStatements(review.sql), wrapTx);
   }
 
+  function setAlertMode(mode: SafeMode): void {
+    const conn = activeConnIdRef.current;
+    if (conn === null) {
+      return;
+    }
+    const previous = safeModeChoices[conn];
+    const seq = (safeModeSeqRef.current[conn] ?? 0) + 1;
+    safeModeSeqRef.current[conn] = seq;
+    setSafeModeChoices((prev) => ({ ...prev, [conn]: mode }));
+    store.setSafeMode(conn, mode).catch((err: unknown) => {
+      // A newer choice already replaced this one; leave it be.
+      if (safeModeSeqRef.current[conn] !== seq) {
+        return;
+      }
+      setSafeModeChoices((prev) => {
+        const next = { ...prev };
+        if (previous === undefined) {
+          delete next[conn];
+        } else {
+          next[conn] = previous;
+        }
+        return next;
+      });
+      store.setError(errorOf(err, t("안전 모드를 저장하지 못했습니다")));
+    });
+  }
+
   function cycleAlertMode(): void {
-    setAlertMode((value) => ((value + 1) % 3) as 0 | 1 | 2);
+    setAlertMode(((alertMode + 1) % 3) as SafeMode);
   }
 
   function formatCurrent(mode: "beautify" | "minify"): void {
@@ -1558,11 +1701,21 @@ export default function App() {
     activate(next.id);
   }
 
+  function setDetailPanelOpen(open: boolean): void {
+    const conn = activeConnIdRef.current;
+    if (conn === null) {
+      return;
+    }
+    setDetailPanels((prev) => (prev[conn] === open ? prev : { ...prev, [conn]: open }));
+  }
+
+  // The panel opens on any tab; with no grid row to show it says so.
   function toggleDetailPanel(): void {
-    if (detailRowRef.current !== null) {
-      setDetailRow(null);
-    } else if (store.getState().result !== null && resultView === "grid") {
-      openRowDetail(lastSelectedRowRef.current ?? 0);
+    if (detailPanelOpenRef.current) {
+      setDetailPanelOpen(false);
+    } else {
+      setDetailRow(lastSelectedRowRef.current ?? 0);
+      setDetailPanelOpen(true);
     }
   }
 
@@ -1615,6 +1768,11 @@ export default function App() {
         return;
       case "toggleDetail":
         toggleDetailPanel();
+        return;
+      case "toggleConsole":
+        if (inWorkspace) {
+          setConsoleOpen(!consoleOpen);
+        }
         return;
       case "dbSwitch":
         if (serverConnRef.current) {
@@ -2266,6 +2424,7 @@ export default function App() {
         id: "alert-mode",
         label: t("안전 모드 바꾸기 (끔 → 위험만 → 모든 변경)"),
         hint: t(SAFE_MODE_LABELS[alertMode].title),
+        disabled: activeConnIdRef.current === null,
         run: cycleAlertMode,
       },
       {
@@ -2334,9 +2493,21 @@ export default function App() {
         run: () => setUserMgrOpen(true),
       },
       { id: "settings", label: t("설정"), run: () => setSettingsOpen(true) },
-      { id: "console-log", label: t("콘솔 로그"), hint: t("쿼리 실행 기록"), run: () => setLogOpen(true) },
+      {
+        id: "console",
+        label: t("콘솔 열기"),
+        hint: t("이 연결에서 실행한 쿼리"),
+        disabled: activeConnIdRef.current === null,
+        run: () => setConsoleOpen(true),
+      },
       { id: "activity", label: "Activity", hint: t("작업 로그"), run: () => setActivityOpen(true) },
-      { id: "metrics", label: "Metrics", hint: t("쿼리 지표"), run: () => setMetricsOpen(true) },
+      {
+        id: "metrics",
+        label: "Metrics",
+        hint: t("쿼리 지표"),
+        disabled: activeConnIdRef.current === null,
+        run: () => setMetricsOpen(true),
+      },
       ...(getPasscodeHash() !== null
         ? [{ id: "lock", label: t("지금 잠금"), run: () => setLocked(true) }]
         : []),
@@ -2395,11 +2566,16 @@ export default function App() {
         id: "history",
         title: t("기록"),
         load: async () => {
-          const history = await store.fetchHistory(50);
-          return history.map((entry) => ({
-            label: entry.sql,
-            run: () => pickSql(entry.sql),
-          }));
+          const history = await store.fetchHistory(conn, 200);
+          // The window keeps every run; picking only needs each statement once.
+          const seen = new Set<string>();
+          return history
+            .filter((entry) => !seen.has(entry.sql) && seen.add(entry.sql))
+            .slice(0, 50)
+            .map((entry) => ({
+              label: entry.sql,
+              run: () => pickSql(entry.sql),
+            }));
         },
       },
       {
@@ -2450,21 +2626,22 @@ export default function App() {
   }
 
   function openCellQuickLook(row: number, col: number): void {
-    setDetailRow(null);
-    setCellQuickLook({ row, col });
+    setCellQuickLook({ row, col, anchor: gridHostRef.current?.cellRect(row, col) ?? null });
   }
 
   function openRowDetail(row: number): void {
     setCellQuickLook(null);
     setDetailRow(row);
+    setDetailPanelOpen(true);
   }
 
   function handleSelectionChange(row: number | null): void {
     if (row !== null) {
       lastSelectedRowRef.current = row;
-    }
-    if (row !== null && detailRowRef.current !== null) {
-      setDetailRow(row);
+      // Only an open panel follows the selection; opening it reads the ref.
+      if (detailPanelOpenRef.current) {
+        setDetailRow(row);
+      }
     }
   }
 
@@ -2634,6 +2811,59 @@ export default function App() {
       result,
       dataTab: activeDataTab,
     });
+  }
+
+  function saveSidebarWidth(width: number | null): void {
+    setSidebarWidth(width);
+    storeWidth(SIDEBAR_WIDTH_KEY, width);
+  }
+
+  function saveDetailWidth(width: number | null): void {
+    setDetailWidth(width);
+    storeWidth(DETAIL_WIDTH_KEY, width);
+  }
+
+  const consoleOpen = activeConnId !== null && consolePanels[activeConnId] === true;
+
+  function setConsoleOpen(open: boolean): void {
+    const conn = activeConnIdRef.current;
+    if (conn === null) {
+      return;
+    }
+    setConsolePanels((prev) => (prev[conn] === open ? prev : { ...prev, [conn]: open }));
+  }
+
+  function saveConsoleHeight(height: number): void {
+    setConsoleHeight(height);
+    try {
+      window.localStorage.setItem(CONSOLE_HEIGHT_KEY, String(height));
+    } catch {}
+  }
+
+  function onConsoleSplitterDown(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const stack = stackRef.current;
+    const startY = event.clientY;
+    const startHeight = consoleHeight;
+    // The panes above keep at least 160px.
+    const max = Math.max(CONSOLE_MIN, (stack?.clientHeight ?? 600) - 160);
+    let height = startHeight;
+    document.body.classList.add("row-resizing");
+    const onMove = (move: PointerEvent): void => {
+      height = Math.round(Math.min(Math.max(startHeight - (move.clientY - startY), CONSOLE_MIN), max));
+      setConsoleHeight(height);
+    };
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("row-resizing");
+      saveConsoleHeight(height);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   }
 
   function onSplitterDown(event: ReactPointerEvent<HTMLDivElement>): void {
@@ -2862,10 +3092,10 @@ export default function App() {
         dumpTabRef.current !== null ||
         jobsOpenRef.current ||
         settingsOpenRef.current ||
-        logOpenRef.current ||
         activityOpenRef.current ||
         metricsOpenRef.current ||
         paletteOpenRef.current ||
+        cellQuickLookRef.current !== null ||
         lockedRef.current ||
         document.querySelector(".modal-backdrop") !== null
       );
@@ -2881,10 +3111,9 @@ export default function App() {
         ) {
           return;
         }
-        if (cellQuickLookRef.current !== null) {
-          setCellQuickLook(null);
-        } else if (detailRowRef.current !== null) {
-          setDetailRow(null);
+        // The cell popover counts as a dialog and closes itself.
+        if (detailPanelOpenRef.current) {
+          setDetailPanelOpen(false);
         }
         return;
       }
@@ -2919,13 +3148,8 @@ export default function App() {
         }
         return;
       }
-      // In the grid ⌘↩ opens Quick Look or commits the cell being edited, and
-      // in Quick Look it saves the value.
-      if (
-        action === "run" &&
-        event.key === "Enter" &&
-        target?.closest(".grid-host, [data-cell-quicklook]") != null
-      ) {
+      // In the grid ⌘↩ opens the cell popover or commits the cell being edited.
+      if (action === "run" && event.key === "Enter" && target?.closest(".grid-host") != null) {
         return;
       }
       // Runs in the capture phase: an app shortcut wins over the browser's
@@ -2974,7 +3198,12 @@ export default function App() {
 
   const messageAvailable = state.error !== null || state.info !== null;
   const planAvailable = state.result !== null && isExplainSql(state.result.sql);
-  const detailOpen = resultView === "grid" && detailRow !== null && state.result !== null;
+  const detailPanelOpen = activeConnId !== null && detailPanels[activeConnId] === true;
+  // The grid row the panel can describe, if the current tab shows a grid.
+  const gridTab =
+    activeTab !== null && (activeTab.kind === "query" || (activeTab.kind === "data" && dataView));
+  const detailResult = gridTab && resultView === "grid" ? state.result : null;
+  const detailOpen = detailPanelOpen && detailResult !== null;
   const detailTable =
     activeDataTab !== null ? activeDataTab.table : state.result?.meta.sourceTable ?? null;
 
@@ -3002,6 +3231,12 @@ export default function App() {
     };
   }, [detailOpen, activeConnId, detailTable]);
 
+  // The cell popover belongs to the grid result it was opened on.
+  useEffect(() => {
+    setCellQuickLook(null);
+  }, [state.result, resultView]);
+
+  // A new table keeps the panel as it was but has no row picked yet.
   useEffect(() => {
     setCellQuickLook(null);
     setDetailRow(null);
@@ -3192,15 +3427,6 @@ export default function App() {
                 <JobsIcon size={12} />
                 {jobsRunning > 0 ? <span className="toolbar-badge">{jobsRunning}</span> : null}
               </button>
-              <button
-                type="button"
-                className="icon-button toolbar-icon"
-                title={t("콘솔 로그 (쿼리 실행 기록)")}
-                onClick={() => setLogOpen(true)}
-              >
-                <LogIcon size={12} />
-                <span className="sr-only">{t("로그")}</span>
-              </button>
               <label className="max-rows" title={t("최대 행")}>
                 {t("최대 행")}
                 <input
@@ -3211,7 +3437,6 @@ export default function App() {
                   onChange={(event) => setMaxRows(clampRows(Number(event.target.value)))}
                 />
               </label>
-              <HistoryMenu onPickSql={pickSql} />
               <FavoritesMenu onPickSql={pickSql} getSql={() => editorRef.current?.getSql() ?? ""} />
               <SafeModeMenu mode={alertMode} onChange={setAlertMode} />
               {pendingSummary !== null && pendingSummary.total > 0 ? (
@@ -3324,464 +3549,558 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className={`icon-button tabbar-side${detailRow !== null ? " active" : ""}`}
-                disabled={state.result === null || resultView !== "grid"}
+                className={`icon-button tabbar-side${consoleOpen ? " active" : ""}`}
+                onClick={() => setConsoleOpen(!consoleOpen)}
+                title={`${consoleOpen ? t("아래 콘솔 닫기") : t("아래 콘솔 열기")} (${shortcutHint(settings.keymap, "toggleConsole")})`}
+              >
+                <PanelBottomIcon size={13} />
+              </button>
+              <button
+                type="button"
+                className={`icon-button tabbar-side${detailPanelOpen ? " active" : ""}`}
                 onClick={toggleDetailPanel}
-                title={`${detailRow !== null ? t("행 상세 패널 닫기") : t("행 상세 패널 열기")} (${shortcutHint(settings.keymap, "toggleDetail")})`}
+                title={`${detailPanelOpen ? t("행 상세 패널 닫기") : t("행 상세 패널 열기")} (${shortcutHint(settings.keymap, "toggleDetail")})`}
               >
                 <PanelIcon size={13} />
               </button>
             </div>
           </div>
-          <div className="workbench">
+          <div
+            className="workbench"
+            style={
+              {
+                ...(sidebarWidth === null ? {} : { "--sidebar-w": `${sidebarWidth}px` }),
+                ...(detailWidth === null ? {} : { "--detail-w": `${detailWidth}px` }),
+              } as CSSProperties
+            }
+          >
             {schemaOpen && activeConnId !== null ? (
-              <SchemaSidebar
-                key={activeConnId}
-                conn={activeConnId}
-                kind={meta?.kind ?? ""}
-                refreshKey={schemaKey}
-                pinned={pinnedTables[activeConnId] ?? EMPTY_TABLES}
-                onOpenData={(table) => openDataTab(table)}
-                onOpenDataNewTab={(table) => openDataTab(table, { newTab: true })}
-                onOpenInEditor={pickTable}
-                onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
-                onOpenDdl={(table) => openDataTab(table, { view: "ddl" })}
-                onOpenOverview={openOverviewTab}
-                onOpenServer={openServerTab}
-                onOpenDefinition={openDefinitionTab}
-                onTogglePin={togglePin}
-                onTableAction={(action, table) => void tableAction(action, table)}
-                onOpenCreateTable={() => setCreateTableOpen(true)}
-                onOpenSql={openSqlTab}
-                onOpenUsers={() => setUserMgrOpen(true)}
-              />
+              <>
+                <SchemaSidebar
+                  key={activeConnId}
+                  conn={activeConnId}
+                  kind={meta?.kind ?? ""}
+                  refreshKey={schemaKey}
+                  pinned={pinnedTables[activeConnId] ?? EMPTY_TABLES}
+                  activeTable={
+                    activeTab !== null && (activeTab.kind === "data" || activeTab.kind === "structure")
+                      ? activeTab.table
+                      : null
+                  }
+                  onOpenData={(table) => openDataTab(table)}
+                  onOpenDataNewTab={(table) => openDataTab(table, { newTab: true })}
+                  onOpenInEditor={pickTable}
+                  onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
+                  onOpenDdl={(table) => openDataTab(table, { view: "ddl" })}
+                  onOpenOverview={openOverviewTab}
+                  onOpenServer={openServerTab}
+                  onOpenDefinition={openDefinitionTab}
+                  onTogglePin={togglePin}
+                  onTableAction={(action, table) => void tableAction(action, table)}
+                  onOpenCreateTable={() => setCreateTableOpen(true)}
+                  onOpenSql={openSqlTab}
+                  onOpenUsers={() => setUserMgrOpen(true)}
+                />
+                <div
+                  className="sidebar-splitter"
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label={t("스키마 패널 너비")}
+                  aria-valuemin={SIDEBAR_MIN}
+                  aria-valuemax={SIDEBAR_MAX}
+                  aria-valuenow={sidebarWidth ?? undefined}
+                  tabIndex={0}
+                  title={t("끌어서 너비 조절 · 두 번 누르면 원래대로")}
+                  onPointerDown={(event) =>
+                    dragPanelEdge(
+                      event,
+                      event.currentTarget.previousElementSibling,
+                      1,
+                      clampSidebar,
+                      setSidebarWidth,
+                      saveSidebarWidth,
+                    )
+                  }
+                  onDoubleClick={() => saveSidebarWidth(null)}
+                  onKeyDown={(event) =>
+                    keyPanelEdge(event, event.currentTarget.previousElementSibling, 1, clampSidebar, saveSidebarWidth)
+                  }
+                />
+              </>
             ) : null}
-            <div
-              className={`workbench-main${splitSide === "right" ? " right" : ""}`}
-              ref={mainRef}
-            >
-              {activeTab?.kind === "query" ? (
-                <>
-                  <div
-                    className="editor-pane"
-                    style={editorHeight === null ? undefined : { flexBasis: `${editorHeight}px` }}
-                  >
-                    <SqlEditor
-                      ref={editorRef}
-                      tabId={tabs !== null ? tabs.activeId : "none"}
-                      tabIds={tabIds}
-                      initialSql={activeTab.sql}
-                      onRun={run}
-                      onSqlChange={handleSqlChange}
-                      schema={schemaMap}
-                      favorites={favoriteSnippets}
-                      runKey={settings.keymap.run[0]?.replaceAll("+", "-") ?? null}
-                    />
-                  </div>
-                  <div
-                    className={splitSide === "right" ? "v-splitter" : "h-splitter"}
-                    role="separator"
-                    aria-orientation={splitSide === "right" ? "vertical" : "horizontal"}
-                    onPointerDown={onSplitterDown}
-                  />
-                </>
-              ) : null}
-              <div className="result-pane">
-                {activeTab === null ? (
-                  <EmptyWorkspace onNewQuery={createNewTab} onHome={goHome} />
-                ) : activeTab.kind === "structure" && activeConnId !== null ? (
-                  <StructurePanel
-                    key={`${activeConnId}:${activeTab.id}`}
-                    conn={activeConnId}
-                    kind={meta?.kind ?? ""}
-                    table={activeTab.table}
-                    data={activeTab.data}
-                    exactRows={meta?.kind === "sqlite"}
-                    onData={(detail) =>
-                      updateActiveTabs((current) => patchTab(current, activeTab.id, { data: detail }))
-                    }
-                    onChanged={() => {
-                      void refreshActiveMeta();
-                    }}
-                  />
-                ) : activeTab?.kind === "overview" && activeConnId !== null && meta !== null ? (
-                  <OverviewPanel
-                    key={`${activeConnId}:${activeTab.id}`}
-                    conn={activeConnId}
-                    meta={meta}
-                    refreshKey={schemaKey}
-                    onOpenData={(table) => openDataTab(table)}
-                    onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
-                  />
-                ) : activeTab?.kind === "server" && activeConnId !== null ? (
-                  <ServerInfoPanel key={`${activeConnId}:${activeTab.id}`} conn={activeConnId} />
-                ) : activeTab?.kind === "definition" && activeConnId !== null ? (
-                  <DefinitionPanel
-                    key={`${activeConnId}:${activeTab.id}`}
-                    conn={activeConnId}
-                    tab={activeTab}
-                    onDetail={(definition) =>
-                      updateActiveTabs((current) =>
-                        patchTab(current, activeTab.id, { definition }),
-                      )
-                    }
-                  />
-                ) : (
+            <div className="workbench-stack" ref={stackRef}>
+              <div
+                className={`workbench-main${splitSide === "right" ? " right" : ""}`}
+                ref={mainRef}
+              >
+                {activeTab?.kind === "query" ? (
                   <>
-                    {activeDataTab && activeConnId !== null ? (
-                      <div className="data-toolbar">
-                        <div className="view-tabs">
-                          <button
-                            type="button"
-                            className={(activeDataTab.view ?? "data") === "data" ? "active" : ""}
-                            onClick={() => setTableView("data")}
-                            title={`${t("데이터")} (⌘⌃[ / ⌘⌃])`}
-                          >
-                            {t("데이터")}
-                          </button>
-                          <button
-                            type="button"
-                            className={activeDataTab.view === "structure" ? "active" : ""}
-                            onClick={() => setTableView("structure")}
-                            title={`${t("구조")} (⌘⌃[ / ⌘⌃])`}
-                          >
-                            {t("구조")}
-                          </button>
-                          <button
-                            type="button"
-                            className={activeDataTab.view === "ddl" ? "active" : ""}
-                            onClick={() => setTableView("ddl")}
-                            title={`DDL (⌘⌃[ / ⌘⌃])`}
-                          >
-                            DDL
-                          </button>
-                        </div>
-                        {(activeDataTab.view ?? "data") === "data" ? (
-                          <>
-                            <DataTabToolbar
-                              tab={activeDataTab}
-                              running={connRunning}
-                              counting={countingTabId === activeDataTab.id}
-                              filterOpen={filterVisible}
-                              columnsOpen={columnsPickOpen}
-                              onRefresh={() =>
-                                runDataWith(
-                                  activeConnId,
-                                  activeDataTab,
-                                  dataSpecOf(
-                                    activeDataTab,
-                                    activeDataTab.offset,
-                                    activeDataTab.pageSize,
-                                  ),
-                                )
-                              }
-                              onToggleFilter={() =>
-                                setFilterOpen((prev) => ({
-                                  ...prev,
-                                  [activeDataTab.id]: !(prev[activeDataTab.id] ?? false),
-                                }))
-                              }
-                              onToggleColumns={() => setColumnsPickOpen((value) => !value)}
-                              onInsertRow={insertDefaultRow}
-                              onLimit={(limit) =>
-                                runDataWith(
-                                  activeConnId,
-                                  activeDataTab,
-                                  dataSpecOf(activeDataTab, activeDataTab.offset, limit),
-                                )
-                              }
-                              onOffset={(offset) =>
-                                runDataWith(
-                                  activeConnId,
-                                  activeDataTab,
-                                  dataSpecOf(activeDataTab, offset, activeDataTab.pageSize),
-                                )
-                              }
-                              onCount={() => void refreshCount(activeConnId, activeDataTab.id)}
-                              onFirst={() =>
-                                runDataWith(
-                                  activeConnId,
-                                  activeDataTab,
-                                  dataSpecOf(activeDataTab, 0, activeDataTab.pageSize),
-                                )
-                              }
-                              onPrev={() =>
-                                runDataWith(
-                                  activeConnId,
-                                  activeDataTab,
-                                  dataSpecOf(
-                                    activeDataTab,
-                                    Math.max(0, activeDataTab.offset - activeDataTab.pageSize),
-                                    activeDataTab.pageSize,
-                                  ),
-                                )
-                              }
-                              onNext={() =>
-                                runDataWith(
-                                  activeConnId,
-                                  activeDataTab,
-                                  dataSpecOf(
-                                    activeDataTab,
-                                    activeDataTab.offset + activeDataTab.pageSize,
-                                    activeDataTab.pageSize,
-                                  ),
-                                )
-                              }
-                            />
-                            {columnsPickOpen ? (
-                              <ColumnPicker
-                                columns={columnEntries}
-                                onToggle={toggleColumn}
-                                onMove={moveColumn}
-                                onAll={resetColumns}
-                                onReset={resetColumns}
-                                onClose={() => setColumnsPickOpen(false)}
-                              />
-                            ) : null}
-                          </>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {activeDataTab && activeConnId !== null && activeDataTab.view === "structure" ? (
-                      <StructurePanel
-                        key={`${activeConnId}:${activeDataTab.id}:structure`}
-                        conn={activeConnId}
-                        kind={meta?.kind ?? ""}
-                        table={activeDataTab.table}
-                        data={activeDataTab.detail}
-                        exactRows={meta?.kind === "sqlite"}
-                        onData={(detail) =>
-                          updateActiveTabs((current) =>
-                            patchTab(current, activeDataTab.id, { detail }),
-                          )
-                        }
-                        onChanged={() => {
-                          void refreshActiveMeta();
-                        }}
+                    <div
+                      className="editor-pane"
+                      style={editorHeight === null ? undefined : { flexBasis: `${editorHeight}px` }}
+                    >
+                      <SqlEditor
+                        ref={editorRef}
+                        tabId={tabs !== null ? tabs.activeId : "none"}
+                        tabIds={tabIds}
+                        initialSql={activeTab.sql}
+                        onRun={run}
+                        onSqlChange={handleSqlChange}
+                        schema={schemaMap}
+                        favorites={favoriteSnippets}
+                        runKey={settings.keymap.run[0]?.replaceAll("+", "-") ?? null}
                       />
-                    ) : activeDataTab && activeConnId !== null && activeDataTab.view === "ddl" ? (
-                      <div className="panel">
-                        <div className="panel-head">
-                          <span className="panel-title">{`DDL: ${activeDataTab.table}`}</span>
-                          <span className="spacer" />
+                    </div>
+                    <div
+                      className={splitSide === "right" ? "v-splitter" : "h-splitter"}
+                      role="separator"
+                      aria-orientation={splitSide === "right" ? "vertical" : "horizontal"}
+                      onPointerDown={onSplitterDown}
+                    />
+                  </>
+                ) : null}
+                <div className="result-pane">
+                  {activeTab === null ? (
+                    <EmptyWorkspace onNewQuery={createNewTab} onHome={goHome} />
+                  ) : activeTab.kind === "structure" && activeConnId !== null ? (
+                    <StructurePanel
+                      key={`${activeConnId}:${activeTab.id}`}
+                      conn={activeConnId}
+                      kind={meta?.kind ?? ""}
+                      table={activeTab.table}
+                      data={activeTab.data}
+                      exactRows={meta?.kind === "sqlite"}
+                      onData={(detail) =>
+                        updateActiveTabs((current) => patchTab(current, activeTab.id, { data: detail }))
+                      }
+                      onChanged={() => {
+                        void refreshActiveMeta();
+                      }}
+                    />
+                  ) : activeTab?.kind === "overview" && activeConnId !== null && meta !== null ? (
+                    <OverviewPanel
+                      key={`${activeConnId}:${activeTab.id}`}
+                      conn={activeConnId}
+                      meta={meta}
+                      refreshKey={schemaKey}
+                      onOpenData={(table) => openDataTab(table)}
+                      onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
+                    />
+                  ) : activeTab?.kind === "server" && activeConnId !== null ? (
+                    <ServerInfoPanel key={`${activeConnId}:${activeTab.id}`} conn={activeConnId} />
+                  ) : activeTab?.kind === "definition" && activeConnId !== null ? (
+                    <DefinitionPanel
+                      key={`${activeConnId}:${activeTab.id}`}
+                      conn={activeConnId}
+                      tab={activeTab}
+                      onDetail={(definition) =>
+                        updateActiveTabs((current) =>
+                          patchTab(current, activeTab.id, { definition }),
+                        )
+                      }
+                    />
+                  ) : (
+                    <>
+                      {activeDataTab && activeConnId !== null ? (
+                        <div className="data-toolbar">
+                          <div className="view-tabs">
+                            <button
+                              type="button"
+                              className={(activeDataTab.view ?? "data") === "data" ? "active" : ""}
+                              onClick={() => setTableView("data")}
+                              title={`${t("데이터")} (⌘⌃[ / ⌘⌃])`}
+                            >
+                              {t("데이터")}
+                            </button>
+                            <button
+                              type="button"
+                              className={activeDataTab.view === "structure" ? "active" : ""}
+                              onClick={() => setTableView("structure")}
+                              title={`${t("구조")} (⌘⌃[ / ⌘⌃])`}
+                            >
+                              {t("구조")}
+                            </button>
+                            <button
+                              type="button"
+                              className={activeDataTab.view === "ddl" ? "active" : ""}
+                              onClick={() => setTableView("ddl")}
+                              title={`DDL (⌘⌃[ / ⌘⌃])`}
+                            >
+                              DDL
+                            </button>
+                          </div>
+                          {(activeDataTab.view ?? "data") === "data" ? (
+                            <>
+                              <DataTabToolbar
+                                tab={activeDataTab}
+                                running={connRunning}
+                                counting={countingTabId === activeDataTab.id}
+                                filterOpen={filterVisible}
+                                columnsOpen={columnsPickOpen}
+                                onRefresh={() =>
+                                  runDataWith(
+                                    activeConnId,
+                                    activeDataTab,
+                                    dataSpecOf(
+                                      activeDataTab,
+                                      activeDataTab.offset,
+                                      activeDataTab.pageSize,
+                                    ),
+                                  )
+                                }
+                                onToggleFilter={() =>
+                                  setFilterOpen((prev) => ({
+                                    ...prev,
+                                    [activeDataTab.id]: !(prev[activeDataTab.id] ?? false),
+                                  }))
+                                }
+                                onToggleColumns={() => setColumnsPickOpen((value) => !value)}
+                                onInsertRow={insertDefaultRow}
+                                onLimit={(limit) =>
+                                  runDataWith(
+                                    activeConnId,
+                                    activeDataTab,
+                                    dataSpecOf(activeDataTab, activeDataTab.offset, limit),
+                                  )
+                                }
+                                onOffset={(offset) =>
+                                  runDataWith(
+                                    activeConnId,
+                                    activeDataTab,
+                                    dataSpecOf(activeDataTab, offset, activeDataTab.pageSize),
+                                  )
+                                }
+                                onCount={() => void refreshCount(activeConnId, activeDataTab.id)}
+                                onFirst={() =>
+                                  runDataWith(
+                                    activeConnId,
+                                    activeDataTab,
+                                    dataSpecOf(activeDataTab, 0, activeDataTab.pageSize),
+                                  )
+                                }
+                                onPrev={() =>
+                                  runDataWith(
+                                    activeConnId,
+                                    activeDataTab,
+                                    dataSpecOf(
+                                      activeDataTab,
+                                      Math.max(0, activeDataTab.offset - activeDataTab.pageSize),
+                                      activeDataTab.pageSize,
+                                    ),
+                                  )
+                                }
+                                onNext={() =>
+                                  runDataWith(
+                                    activeConnId,
+                                    activeDataTab,
+                                    dataSpecOf(
+                                      activeDataTab,
+                                      activeDataTab.offset + activeDataTab.pageSize,
+                                      activeDataTab.pageSize,
+                                    ),
+                                  )
+                                }
+                              />
+                              {columnsPickOpen ? (
+                                <ColumnPicker
+                                  columns={columnEntries}
+                                  onToggle={toggleColumn}
+                                  onMove={moveColumn}
+                                  onAll={resetColumns}
+                                  onReset={resetColumns}
+                                  onClose={() => setColumnsPickOpen(false)}
+                                />
+                              ) : null}
+                            </>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {activeDataTab && activeConnId !== null && activeDataTab.view === "structure" ? (
+                        <StructurePanel
+                          key={`${activeConnId}:${activeDataTab.id}:structure`}
+                          conn={activeConnId}
+                          kind={meta?.kind ?? ""}
+                          table={activeDataTab.table}
+                          data={activeDataTab.detail}
+                          exactRows={meta?.kind === "sqlite"}
+                          onData={(detail) =>
+                            updateActiveTabs((current) =>
+                              patchTab(current, activeDataTab.id, { detail }),
+                            )
+                          }
+                          onChanged={() => {
+                            void refreshActiveMeta();
+                          }}
+                        />
+                      ) : activeDataTab && activeConnId !== null && activeDataTab.view === "ddl" ? (
+                        <div className="panel">
+                          <div className="panel-head">
+                            <span className="panel-title">{`DDL: ${activeDataTab.table}`}</span>
+                            <span className="spacer" />
+                            <button
+                              type="button"
+                              className="icon-text-button"
+                              disabled={activeDataTab.detail?.ddl == null}
+                              onClick={() => {
+                                const ddl = activeDataTab.detail?.ddl;
+                                if (ddl) {
+                                  void writeClipboard(ddl);
+                                }
+                              }}
+                              title={t("복사")}
+                            >
+                              {t("복사")}
+                            </button>
+                          </div>
+                          <div className="panel-body">
+                            {activeDataTab.detail?.ddl == null ? (
+                              <div className="panel-empty">DDL을 가져오는 중…</div>
+                            ) : (
+                              <div className="panel-code">
+                                <pre className="panel-pre">{activeDataTab.detail.ddl}</pre>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                      {activeDataTab && activeConnId !== null && filterVisible ? (
+                        <FilterBar
+                          columns={dataMeta?.columns ?? EMPTY_TABLES}
+                          filter={activeDataTab.filter ?? EMPTY_FILTER}
+                          running={connRunning}
+                          onApply={(next) =>
+                            runDataWith(activeConnId, activeDataTab, {
+                              offset: 0,
+                              pageSize: activeDataTab.pageSize,
+                              filter: next,
+                              sorts: activeDataTab.sorts ?? null,
+                            })
+                          }
+                          onReset={() =>
+                            runDataWith(activeConnId, activeDataTab, {
+                              offset: 0,
+                              pageSize: activeDataTab.pageSize,
+                              filter: null,
+                              sorts: activeDataTab.sorts ?? null,
+                            })
+                          }
+                        />
+                      ) : null}
+                      {dataView ? null : (
+                      <div className="result-tabs">
+                        <button
+                          type="button"
+                          className={`result-tab${resultView === "grid" ? " active" : ""}`}
+                          onClick={() => setResultView("grid")}
+                        >
+                          {t("그리드")}
+                        </button>
+                        <button
+                          type="button"
+                          className={`result-tab${resultView === "message" ? " active" : ""}`}
+                          onClick={() => setResultView("message")}
+                        >
+                          {t("메시지")}
+                          {messageAvailable ? <span className="dot" aria-hidden="true" /> : null}
+                        </button>
+                        {planAvailable ? (
                           <button
                             type="button"
-                            className="icon-text-button"
-                            disabled={activeDataTab.detail?.ddl == null}
-                            onClick={() => {
-                              const ddl = activeDataTab.detail?.ddl;
-                              if (ddl) {
-                                void writeClipboard(ddl);
-                              }
-                            }}
-                            title={t("복사")}
+                            className={`result-tab${resultView === "plan" ? " active" : ""}`}
+                            onClick={() => setResultView("plan")}
                           >
-                            {t("복사")}
+                            {t("계획")}
                           </button>
+                        ) : null}
+                        {resultChips !== null &&
+                        resultChips.conn === activeConnId &&
+                        resultChips.tabId === activeTab?.id
+                          ? resultChips.entries.map((entry) => (
+                              <button
+                                type="button"
+                                className="result-tab chip"
+                                key={entry.label}
+                                title={
+                                  entry.outcome.kind === "ok"
+                                    ? `${entry.outcome.result.meta.rowCount.toLocaleString()}행`
+                                    : entry.outcome.kind === "error"
+                                      ? entry.outcome.error
+                                      : "취소됨"
+                                }
+                                onClick={() => showResultChip(entry)}
+                              >
+                                {entry.label}
+                              </button>
+                            ))
+                          : null}
+                      </div>
+                      )}
+                      {dataView && state.error ? (
+                        <div className="data-error-slot">
+                          <ErrorNotice
+                            message={state.error}
+                            variant="compact"
+                            onClose={() => store.setError(null)}
+                          />
                         </div>
-                        <div className="panel-body">
-                          {activeDataTab.detail?.ddl == null ? (
-                            <div className="panel-empty">DDL을 가져오는 중…</div>
-                          ) : (
-                            <div className="panel-code">
-                              <pre className="panel-pre">{activeDataTab.detail.ddl}</pre>
+                      ) : null}
+                      {dataView && state.info && state.status !== "running" ? (
+                        <div className="data-notice info">{state.info}</div>
+                      ) : null}
+                      <div className="result-body">
+                        <div className={`result-layer${resultView === "grid" ? "" : " hidden"}`}>
+                          <GridHost
+                            ref={gridHostRef}
+                            result={state.result}
+                            sortColumns={sortIndicators}
+                            onHeaderClick={activeDataTab ? handleHeaderClick : undefined}
+                            onSelectionChange={handleSelectionChange}
+                            onCellContextMenu={handleCellContextMenu}
+                            onDeleteRows={deleteRows}
+                            onQuickLook={(row) => openRowDetail(row)}
+                            onCellQuickLook={(row, col) => openCellQuickLook(row, col)}
+                            themeKey={`${settings.theme}:${settings.accent}:${settings.rowAlt}`}
+                          />
+                          {!state.result && (
+                            <div className="grid-empty">
+                              {meta
+                                ? t("쿼리를 실행하세요 ({key})", { key: shortcutHint(settings.keymap, "run") })
+                                : t("연결 또는 파일 열기로 시작하세요")}
                             </div>
                           )}
                         </div>
-                      </div>
-                    ) : (
-                      <>
-                    {activeDataTab && activeConnId !== null && filterVisible ? (
-                      <FilterBar
-                        columns={dataMeta?.columns ?? EMPTY_TABLES}
-                        filter={activeDataTab.filter ?? EMPTY_FILTER}
-                        running={connRunning}
-                        onApply={(next) =>
-                          runDataWith(activeConnId, activeDataTab, {
-                            offset: 0,
-                            pageSize: activeDataTab.pageSize,
-                            filter: next,
-                            sorts: activeDataTab.sorts ?? null,
-                          })
-                        }
-                        onReset={() =>
-                          runDataWith(activeConnId, activeDataTab, {
-                            offset: 0,
-                            pageSize: activeDataTab.pageSize,
-                            filter: null,
-                            sorts: activeDataTab.sorts ?? null,
-                          })
-                        }
-                      />
-                    ) : null}
-                    {dataView ? null : (
-                    <div className="result-tabs">
-                      <button
-                        type="button"
-                        className={`result-tab${resultView === "grid" ? " active" : ""}`}
-                        onClick={() => setResultView("grid")}
-                      >
-                        {t("그리드")}
-                      </button>
-                      <button
-                        type="button"
-                        className={`result-tab${resultView === "message" ? " active" : ""}`}
-                        onClick={() => setResultView("message")}
-                      >
-                        {t("메시지")}
-                        {messageAvailable ? <span className="dot" aria-hidden="true" /> : null}
-                      </button>
-                      {planAvailable ? (
-                        <button
-                          type="button"
-                          className={`result-tab${resultView === "plan" ? " active" : ""}`}
-                          onClick={() => setResultView("plan")}
-                        >
-                          {t("계획")}
-                        </button>
-                      ) : null}
-                      {resultChips !== null &&
-                      resultChips.conn === activeConnId &&
-                      resultChips.tabId === activeTab?.id
-                        ? resultChips.entries.map((entry) => (
-                            <button
-                              type="button"
-                              className="result-tab chip"
-                              key={entry.label}
-                              title={
-                                entry.outcome.kind === "ok"
-                                  ? `${entry.outcome.result.meta.rowCount.toLocaleString()}행`
-                                  : entry.outcome.kind === "error"
-                                    ? entry.outcome.error
-                                    : "취소됨"
-                              }
-                              onClick={() => showResultChip(entry)}
-                            >
-                              {entry.label}
-                            </button>
-                          ))
-                        : null}
-                    </div>
-                    )}
-                    {dataView && state.error ? (
-                      <div className="data-error-slot">
-                        <ErrorNotice
-                          message={state.error}
-                          variant="compact"
-                          onClose={() => store.setError(null)}
-                        />
-                      </div>
-                    ) : null}
-                    {dataView && state.info && state.status !== "running" ? (
-                      <div className="data-notice info">{state.info}</div>
-                    ) : null}
-                    <div
-                      className={`result-body${detailOpen ? " with-detail" : ""}${cellQuickLook !== null ? " with-quicklook" : ""}`}
-                    >
-                      <div className={`result-layer${resultView === "grid" ? "" : " hidden"}`}>
-                        <GridHost
-                          ref={gridHostRef}
-                          result={state.result}
-                          sortColumns={sortIndicators}
-                          onHeaderClick={activeDataTab ? handleHeaderClick : undefined}
-                          onSelectionChange={handleSelectionChange}
-                          onCellContextMenu={handleCellContextMenu}
-                          onDeleteRows={deleteRows}
-                          onQuickLook={(row) => openRowDetail(row)}
-                          onCellQuickLook={(row, col) => openCellQuickLook(row, col)}
-                          themeKey={`${settings.theme}:${settings.accent}:${settings.rowAlt}`}
-                        />
-                        {!state.result && (
-                          <div className="grid-empty">
-                            {meta
-                              ? t("쿼리를 실행하세요 ({key})", { key: shortcutHint(settings.keymap, "run") })
-                              : t("연결 또는 파일 열기로 시작하세요")}
+                        {planAvailable ? (
+                          <div
+                            className={`result-layer plan-layer${resultView === "plan" ? "" : " hidden"}`}
+                          >
+                            <ExplainPlanPanel result={state.result!} kind={meta?.kind ?? ""} />
+                          </div>
+                        ) : null}
+                        {cellQuickLook && state.result && resultView === "grid" ? (
+                          <CellInspector
+                            result={state.result}
+                            row={cellQuickLook.row}
+                            col={cellQuickLook.col}
+                            anchor={cellQuickLook.anchor}
+                            table={activeDataTab ? activeDataTab.table : state.result.meta.sourceTable}
+                            onClose={() => {
+                              setCellQuickLook(null);
+                              gridHostRef.current?.focus();
+                            }}
+                          />
+                        ) : null}
+                        {resultView === "message" && (
+                          <div className="message-pane">
+                            {state.error ? (
+                              <ErrorNotice message={state.error} />
+                            ) : state.info ? (
+                              <div className="message-info">{state.info}</div>
+                            ) : (
+                              <div className="message-empty">{t("메시지가 없습니다")}</div>
+                            )}
                           </div>
                         )}
+                        {state.status === "running" ? (
+                          <div className="result-loading" role="status">
+                            <Spinner size={12} />
+                            {t("실행 중…")}
+                          </div>
+                        ) : null}
                       </div>
-                      {planAvailable ? (
-                        <div
-                          className={`result-layer plan-layer${resultView === "plan" ? "" : " hidden"}`}
-                        >
-                          <ExplainPlanPanel result={state.result!} kind={meta?.kind ?? ""} />
-                        </div>
-                      ) : null}
-                      {cellQuickLook && state.result && resultView === "grid" ? (
-                        <CellQuickLook
-                          result={state.result}
-                          row={cellQuickLook.row}
-                          col={cellQuickLook.col}
-                          table={activeDataTab ? activeDataTab.table : state.result.meta.sourceTable}
-                          onClose={() => setCellQuickLook(null)}
-                        />
-                      ) : null}
-                      {detailOpen && state.result ? (
-                        <RowDetailPanel
-                          result={state.result}
-                          row={detailRow}
-                          table={activeDataTab ? activeDataTab.table : state.result.meta.sourceTable}
-                          kind={meta?.kind ?? "postgres"}
-                          detail={rowDetailInfo}
-                          detailLoading={rowDetailLoading}
-                          onOpenReference={(row, col) => void fkJump(row, col)}
-                          onClose={() => setDetailRow(null)}
-                        />
-                      ) : null}
-                      {resultView === "message" && (
-                        <div className="message-pane">
-                          {state.error ? (
-                            <ErrorNotice message={state.error} />
-                          ) : state.info ? (
-                            <div className="message-info">{state.info}</div>
-                          ) : (
-                            <div className="message-empty">{t("메시지가 없습니다")}</div>
-                          )}
-                        </div>
-                      )}
-                      {state.status === "running" ? (
-                        <div className="result-loading" role="status">
-                          <Spinner size={12} />
-                          {t("실행 중…")}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="result-statusline">
-                      <span>
-                        {state.status === "running"
-                          ? t("실행 중…")
-                          : state.result
-                            ? `${t("총 {count}행", { count: state.result.meta.rowCount.toLocaleString() })} · ${state.result.meta.elapsedMs.toFixed(1)}ms`
-                            : t("준비됨")}
-                      </span>
-                      {state.result?.meta.truncated ? <span className="warn">{t("잘림")}</span> : null}
-                      {activeDataTab && pageInfo ? (
-                        <span className="dim">
-                          {pageInfo.rows === null
-                            ? t("{page} 페이지+", { page: pageInfo.page })
-                            : pageInfo.exact
-                              ? t("{page} / {pages} 페이지 · 총 {count}행", {
-                                  page: pageInfo.page,
-                                  pages: pageInfo.pages ?? 1,
-                                  count: pageInfo.rows.toLocaleString(),
-                                })
-                              : t("{page} 페이지+ · {count}+행", {
-                                  page: pageInfo.page,
-                                  count: pageInfo.rows.toLocaleString(),
-                                })}
+                      <div className="result-statusline">
+                        <span>
+                          {state.status === "running"
+                            ? t("실행 중…")
+                            : state.result
+                              ? `${t("총 {count}행", { count: state.result.meta.rowCount.toLocaleString() })} · ${state.result.meta.elapsedMs.toFixed(1)}ms`
+                              : t("준비됨")}
                         </span>
-                      ) : null}
-                      {state.info && state.status !== "running" ? (
-                        <span className="dim ellipsis">{state.info}</span>
-                      ) : null}
-                      <span className="spacer" />
-                      {activeTab ? <span className="dim">{activeTab.title}</span> : null}
-                    </div>
-                      </>
-                    )}
-                  </>
-                )}
+                        {state.result?.meta.truncated ? <span className="warn">{t("잘림")}</span> : null}
+                        {activeDataTab && pageInfo ? (
+                          <span className="dim">
+                            {pageInfo.rows === null
+                              ? t("{page} 페이지+", { page: pageInfo.page })
+                              : pageInfo.exact
+                                ? t("{page} / {pages} 페이지 · 총 {count}행", {
+                                    page: pageInfo.page,
+                                    pages: pageInfo.pages ?? 1,
+                                    count: pageInfo.rows.toLocaleString(),
+                                  })
+                                : t("{page} 페이지+ · {count}+행", {
+                                    page: pageInfo.page,
+                                    count: pageInfo.rows.toLocaleString(),
+                                  })}
+                          </span>
+                        ) : null}
+                        {state.info && state.status !== "running" ? (
+                          <span className="dim ellipsis">{state.info}</span>
+                        ) : null}
+                        <span className="spacer" />
+                        {activeTab ? <span className="dim">{activeTab.title}</span> : null}
+                      </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
+              {consoleOpen && activeConnId !== null ? (
+                <>
+                  <div
+                    className="console-splitter"
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label={t("콘솔 높이")}
+                    onPointerDown={onConsoleSplitterDown}
+                    onDoubleClick={() => saveConsoleHeight(CONSOLE_DEFAULT)}
+                  />
+                  <ConsolePanel
+                    conn={activeConnId}
+                    version={historyVersion}
+                    height={consoleHeight}
+                    onOpenSql={(sqlText) => openInQueryEditor(sqlText)}
+                    onClose={() => setConsoleOpen(false)}
+                  />
+                </>
+              ) : null}
             </div>
+            {detailPanelOpen ? (
+              <>
+                <div
+                  className="detail-splitter"
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label={t("행 상세 패널 너비")}
+                  tabIndex={0}
+                  title={t("끌어서 너비 조절 · 두 번 누르면 원래대로")}
+                  onPointerDown={(event) =>
+                    dragPanelEdge(
+                      event,
+                      event.currentTarget.nextElementSibling,
+                      -1,
+                      clampDetail,
+                      setDetailWidth,
+                      saveDetailWidth,
+                    )
+                  }
+                  onDoubleClick={() => saveDetailWidth(null)}
+                  onKeyDown={(event) =>
+                    keyPanelEdge(event, event.currentTarget.nextElementSibling, -1, clampDetail, saveDetailWidth)
+                  }
+                />
+                <RowDetailPanel
+                  result={detailResult}
+                  row={detailRow}
+                  table={activeDataTab ? activeDataTab.table : (detailResult?.meta.sourceTable ?? null)}
+                  kind={meta?.kind ?? "postgres"}
+                  detail={rowDetailInfo}
+                  detailLoading={rowDetailLoading}
+                  onOpenReference={(row, col) => void fkJump(row, col)}
+                  onClose={() => setDetailPanelOpen(false)}
+                />
+              </>
+            ) : null}
           </div>
         </>
       )}
@@ -4017,16 +4336,10 @@ export default function App() {
           onClose={() => setReviewPrompt(null)}
         />
       )}
-      {logOpen && (
-        <ConsoleLogModal
-          onOpenSql={(sqlText) => {
-            openInQueryEditor(sqlText);
-          }}
-          onClose={() => setLogOpen(false)}
-        />
-      )}
       {activityOpen && <ActivityModal onClose={() => setActivityOpen(false)} />}
-      {metricsOpen && <MetricsModal onClose={() => setMetricsOpen(false)} />}
+      {metricsOpen && activeConnId !== null && (
+        <MetricsModal conn={activeConnId} onClose={() => setMetricsOpen(false)} />
+      )}
       {settingsOpen && (
         <SettingsModal
           settings={settings}

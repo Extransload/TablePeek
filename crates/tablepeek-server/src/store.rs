@@ -1,9 +1,16 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tablepeek_types::{HttpTunnelConfig, MssqlConfig, MySqlConfig, PostgresConfig, SshConfig};
 
-pub const HISTORY_CAP: usize = 100;
+/// Runs kept per connection; the oldest fall off first.
+pub const HISTORY_CAP: usize = 200;
+/// Runs kept across all connections, so forgotten files and sessions stay bounded.
+const HISTORY_TOTAL_CAP: usize = 2_000;
+/// Longer statements are kept clipped, with a trailing "…".
+const HISTORY_SQL_CAP: usize = 10_000;
+const HISTORY_FILE: &str = "history.json";
 const KEYRING_SERVICE: &str = "tablepeek";
 const LEGACY_KEYRING_SERVICES: [&str; 2] = ["wrendb", "prodb"];
 const STORE_FILE: &str = "store.json";
@@ -90,10 +97,26 @@ pub struct SavedConnection {
     pub last_used: u64,
 }
 
+/// One statement run from the editor. `scope` names the connection it ran on
+/// (see `saved_scope`), so each connection keeps its own history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
+    pub scope: String,
     pub sql: String,
     pub at: u64,
+    pub ms: u64,
+    pub ok: bool,
+    pub rows: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub const SESSION_PREFIX: &str = "session:";
+const SAVED_PREFIX: &str = "saved:";
+
+/// The history and safe-mode scope of a saved connection profile.
+pub fn saved_scope(id: &str) -> String {
+    format!("{SAVED_PREFIX}{id}")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,25 +133,37 @@ pub struct StoreData {
     #[serde(default)]
     pub connections: Vec<SavedConnection>,
     #[serde(default)]
-    pub history: Vec<HistoryEntry>,
-    #[serde(default)]
     pub favorites: Vec<FavoriteEntry>,
+    /// Safe mode (0 off, 1 risky only, 2 every change) chosen per connection scope.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub safe_modes: BTreeMap<String, u8>,
 }
 
 pub struct StoreFile {
     dir: PathBuf,
     data: StoreData,
+    // Newest first. Kept in its own file so a query never rewrites store.json.
+    history: Vec<HistoryEntry>,
 }
 
 impl StoreFile {
     pub fn load(dir: &Path) -> Self {
-        let data = std::fs::read(dir.join(STORE_FILE))
+        let mut data = std::fs::read(dir.join(STORE_FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<StoreData>(&bytes).ok())
             .unwrap_or_default();
+        let mut history = std::fs::read(dir.join(HISTORY_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<HistoryEntry>>(&bytes).ok())
+            .unwrap_or_default();
+        // An unsaved connection's slot dies with the server that opened it, so
+        // its history and safe mode can never be reached again.
+        history.retain(|entry| !entry.scope.starts_with(SESSION_PREFIX));
+        data.safe_modes.retain(|scope, _| !scope.starts_with(SESSION_PREFIX));
         Self {
             dir: dir.to_path_buf(),
             data,
+            history,
         }
     }
 
@@ -187,7 +222,14 @@ impl StoreFile {
         if self.data.connections.len() == before {
             return Ok(false);
         }
+        let scope = saved_scope(id);
+        self.data.safe_modes.remove(&scope);
         self.persist()?;
+        // The profile is gone either way; a history file that can't be
+        // rewritten must not fail the delete (and skip its keychain cleanup).
+        if self.history.iter().any(|entry| entry.scope == scope) {
+            let _ = self.clear_history(&scope);
+        }
         Ok(true)
     }
 
@@ -198,34 +240,62 @@ impl StoreFile {
             .find(|connection| connection.id == id)
     }
 
-    pub fn record_history(&mut self, sql: &str, at: u64) -> Result<(), String> {
-        let sql = sql.trim();
+    pub fn record_history(&mut self, mut entry: HistoryEntry) -> Result<(), String> {
+        let sql = entry.sql.trim();
         if sql.is_empty() {
             return Ok(());
         }
-        if let Some(newest) = self.data.history.first_mut() {
-            if newest.sql == sql {
-                newest.at = at;
-                return self.persist();
+        entry.sql = match sql.char_indices().nth(HISTORY_SQL_CAP) {
+            Some((cut, _)) => format!("{}…", &sql[..cut]),
+            None => sql.to_string(),
+        };
+        let scope = entry.scope.clone();
+        self.history.insert(0, entry);
+        let mut kept = 0;
+        self.history.retain(|existing| {
+            if existing.scope != scope {
+                return true;
             }
+            kept += 1;
+            kept <= HISTORY_CAP
+        });
+        self.history.truncate(HISTORY_TOTAL_CAP);
+        self.persist_history()
+    }
+
+    pub fn history(&self, scope: &str, limit: usize) -> Vec<HistoryEntry> {
+        self.history
+            .iter()
+            .filter(|entry| entry.scope == scope)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    pub fn clear_history(&mut self, scope: &str) -> Result<(), String> {
+        self.history.retain(|entry| entry.scope != scope);
+        self.persist_history()
+    }
+
+    /// False for a saved profile that was deleted while its connection stayed
+    /// open; writing under its scope would leave entries nothing can remove.
+    pub fn scope_exists(&self, scope: &str) -> bool {
+        match scope.strip_prefix(SAVED_PREFIX) {
+            Some(id) => self.find_connection(id).is_some(),
+            None => true,
         }
-        self.data.history.insert(
-            0,
-            HistoryEntry {
-                sql: sql.to_string(),
-                at,
-            },
-        );
-        self.data.history.truncate(HISTORY_CAP);
-        self.persist()
     }
 
-    pub fn history(&self, limit: usize) -> Vec<HistoryEntry> {
-        self.data.history.iter().take(limit).cloned().collect()
+    pub fn safe_mode(&self, scope: &str) -> Option<u8> {
+        self.data.safe_modes.get(scope).copied()
     }
 
-    pub fn clear_history(&mut self) -> Result<(), String> {
-        self.data.history.clear();
+    /// Stores a connection's safe mode; None returns it to the app-wide default.
+    pub fn set_safe_mode(&mut self, scope: &str, mode: Option<u8>) -> Result<(), String> {
+        match mode {
+            Some(mode) => self.data.safe_modes.insert(scope.to_string(), mode),
+            None => self.data.safe_modes.remove(scope),
+        };
         self.persist()
     }
 
@@ -257,6 +327,25 @@ impl StoreFile {
         std::fs::write(&temp, json).map_err(|err| format!("저장 파일을 쓸 수 없습니다: {err}"))?;
         std::fs::rename(&temp, self.dir.join(STORE_FILE))
             .map_err(|err| format!("저장 파일을 교체할 수 없습니다: {err}"))?;
+        Ok(())
+    }
+
+    fn persist_history(&self) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|err| format!("저장 폴더를 만들 수 없습니다: {err}"))?;
+        let json = serde_json::to_vec(&self.history)
+            .map_err(|err| format!("실행 기록을 직렬화할 수 없습니다: {err}"))?;
+        let temp = self.dir.join(format!("{HISTORY_FILE}.tmp"));
+        std::fs::write(&temp, json).map_err(|err| format!("기록 파일을 쓸 수 없습니다: {err}"))?;
+        // Statements can carry literals worth keeping private (passwords in
+        // CREATE USER, personal data in WHERE clauses).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&temp, self.dir.join(HISTORY_FILE))
+            .map_err(|err| format!("기록 파일을 교체할 수 없습니다: {err}"))?;
         Ok(())
     }
 }
@@ -623,9 +712,9 @@ mod tests {
         store
             .add_connection(sample_mssql_connection("ms-1"))
             .unwrap();
-        store.record_history("SELECT 1", 100).unwrap();
+        store.record_history(run("saved:abc", "SELECT 1", 100)).unwrap();
         store
-            .record_history("SELECT * FROM users WHERE name = '홍길동'", 200)
+            .record_history(run("saved:abc", "SELECT * FROM users WHERE name = '홍길동'", 200))
             .unwrap();
         store
             .add_favorite(FavoriteEntry {
@@ -706,9 +795,9 @@ mod tests {
         assert!(!mssql.encrypt);
         assert!(reloaded.data().connections[3].mysql.is_none());
 
-        assert_eq!(reloaded.history(10).len(), 2);
+        assert_eq!(reloaded.history("saved:abc", 10).len(), 2);
         assert_eq!(
-            reloaded.history(1)[0].sql,
+            reloaded.history("saved:abc", 1)[0].sql,
             "SELECT * FROM users WHERE name = '홍길동'"
         );
         assert_eq!(reloaded.favorites().len(), 1);
@@ -716,34 +805,196 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn run(scope: &str, sql: &str, at: u64) -> HistoryEntry {
+        HistoryEntry {
+            scope: scope.into(),
+            sql: sql.into(),
+            at,
+            ms: 12,
+            ok: true,
+            rows: 3,
+            error: None,
+        }
+    }
+
     #[test]
-    fn history_dedupes_consecutive_and_caps() {
-        let dir = temp_dir("history");
+    fn history_is_kept_per_scope() {
+        let dir = temp_dir("history-scope");
         let mut store = StoreFile::load(&dir);
-        for index in 0..(HISTORY_CAP + 20) {
+        store.record_history(run("saved:a", "SELECT 1", 10)).unwrap();
+        store.record_history(run("file:/tmp/b.db", "SELECT 2", 20)).unwrap();
+        store
+            .record_history(HistoryEntry {
+                ok: false,
+                rows: 0,
+                error: Some("no such table: nope".into()),
+                ..run("saved:a", "SELECT * FROM nope", 30)
+            })
+            .unwrap();
+
+        let a = store.history("saved:a", 50);
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].sql, "SELECT * FROM nope");
+        assert!(!a[0].ok);
+        assert_eq!(a[0].error.as_deref(), Some("no such table: nope"));
+        assert_eq!(a[1].sql, "SELECT 1");
+        assert_eq!(a[1].ms, 12);
+        assert_eq!(a[1].rows, 3);
+        assert_eq!(store.history("file:/tmp/b.db", 50).len(), 1);
+        assert!(store.history("demo", 50).is_empty());
+
+        // History lives beside store.json, not inside it.
+        let raw = std::fs::read_to_string(dir.join(STORE_FILE)).unwrap_or_default();
+        assert!(!raw.contains("SELECT"));
+        let reloaded = StoreFile::load(&dir);
+        assert_eq!(reloaded.history("saved:a", 50).len(), 2);
+        assert_eq!(reloaded.history("saved:a", 1)[0].sql, "SELECT * FROM nope");
+
+        let mut store = reloaded;
+        store.clear_history("saved:a").unwrap();
+        assert!(store.history("saved:a", 50).is_empty());
+        assert_eq!(store.history("file:/tmp/b.db", 50).len(), 1);
+        assert!(StoreFile::load(&dir).history("saved:a", 50).is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn history_caps_each_scope_and_skips_blank_sql() {
+        let dir = temp_dir("history-cap");
+        let mut store = StoreFile::load(&dir);
+        for index in 0..(HISTORY_CAP + 5) {
             store
-                .record_history(&format!("SELECT {index}"), index as u64)
+                .record_history(run("saved:busy", &format!("SELECT {index}"), index as u64))
                 .unwrap();
         }
-        assert_eq!(store.history(HISTORY_CAP * 2).len(), HISTORY_CAP);
-        let newest = HISTORY_CAP + 19;
-        assert_eq!(store.history(2)[0].sql, format!("SELECT {newest}"));
+        store.record_history(run("saved:quiet", "SELECT 'q'", 1)).unwrap();
+        let busy = store.history("saved:busy", HISTORY_CAP * 2);
+        assert_eq!(busy.len(), HISTORY_CAP);
+        assert_eq!(busy[0].sql, format!("SELECT {}", HISTORY_CAP + 4));
+        assert_eq!(busy[HISTORY_CAP - 1].sql, "SELECT 5");
+        // A busy connection never pushes out another connection's history.
+        assert_eq!(store.history("saved:quiet", 10).len(), 1);
 
-        store
-            .record_history(&format!("SELECT {newest}"), 999)
-            .unwrap();
-        assert_eq!(store.history(HISTORY_CAP * 2).len(), HISTORY_CAP);
-        assert_eq!(store.history(1)[0].at, 999);
+        // Running the same statement twice is two runs, both kept.
+        store.record_history(run("saved:quiet", "SELECT 'q'", 2)).unwrap();
+        assert_eq!(store.history("saved:quiet", 10).len(), 2);
 
-        store.record_history("   ", 1000).unwrap();
-        assert_eq!(store.history(1)[0].at, 999);
+        store.record_history(run("saved:quiet", "   ", 3)).unwrap();
+        store.record_history(run("saved:quiet", "  SELECT 9  ", 4)).unwrap();
+        let quiet = store.history("saved:quiet", 10);
+        assert_eq!(quiet.len(), 3);
+        assert_eq!(quiet[0].sql, "SELECT 9");
 
-        store.record_history("  SELECT 1  ", 1001).unwrap();
-        assert_eq!(store.history(1)[0].sql, "SELECT 1");
+        let long = "x".repeat(HISTORY_SQL_CAP + 50);
+        store.record_history(run("saved:quiet", &long, 5)).unwrap();
+        let clipped = &store.history("saved:quiet", 1)[0].sql;
+        assert_eq!(clipped.chars().count(), HISTORY_SQL_CAP + 1);
+        assert!(clipped.ends_with('…'));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn safe_mode_is_kept_per_scope() {
+        let dir = temp_dir("safe-mode");
+        let mut store = StoreFile::load(&dir);
+        assert_eq!(store.safe_mode("saved:prod"), None);
+        store.set_safe_mode("saved:prod", Some(2)).unwrap();
+        store.set_safe_mode("demo", Some(0)).unwrap();
+
+        let mut store = StoreFile::load(&dir);
+        assert_eq!(store.safe_mode("saved:prod"), Some(2));
+        assert_eq!(store.safe_mode("demo"), Some(0));
+        assert_eq!(store.safe_mode("saved:other"), None);
+
+        store.set_safe_mode("demo", None).unwrap();
+        assert_eq!(StoreFile::load(&dir).safe_mode("demo"), None);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_connection_forgets_its_history_and_safe_mode() {
+        let dir = temp_dir("forget-scope");
+        let mut store = StoreFile::load(&dir);
+        store.add_connection(sample_connection("gone")).unwrap();
+        store.add_connection(sample_connection("kept")).unwrap();
+        store.record_history(run(&saved_scope("gone"), "SELECT 1", 1)).unwrap();
+        store.record_history(run(&saved_scope("kept"), "SELECT 2", 2)).unwrap();
+        store.set_safe_mode(&saved_scope("gone"), Some(2)).unwrap();
+        store.set_safe_mode(&saved_scope("kept"), Some(0)).unwrap();
+
+        assert!(store.remove_connection("gone").unwrap());
 
         let reloaded = StoreFile::load(&dir);
-        assert_eq!(reloaded.history(1)[0].sql, "SELECT 1");
-        assert_eq!(reloaded.history(1)[0].at, 1001);
+        assert!(reloaded.history(&saved_scope("gone"), 10).is_empty());
+        assert_eq!(reloaded.safe_mode(&saved_scope("gone")), None);
+        assert_eq!(reloaded.history(&saved_scope("kept"), 10).len(), 1);
+        assert_eq!(reloaded.safe_mode(&saved_scope("kept")), Some(0));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn session_scopes_are_forgotten_on_load() {
+        let dir = temp_dir("session-scope");
+        let mut store = StoreFile::load(&dir);
+        store.record_history(run("session:abc", "SELECT 1", 1)).unwrap();
+        store.record_history(run("demo", "SELECT 2", 2)).unwrap();
+        store.set_safe_mode("session:abc", Some(0)).unwrap();
+        store.set_safe_mode("demo", Some(2)).unwrap();
+
+        // A new server never sees that session's slot again.
+        let reloaded = StoreFile::load(&dir);
+        assert!(reloaded.history("session:abc", 10).is_empty());
+        assert_eq!(reloaded.safe_mode("session:abc"), None);
+        assert_eq!(reloaded.history("demo", 10).len(), 1);
+        assert_eq!(reloaded.safe_mode("demo"), Some(2));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scope_exists_only_for_live_saved_profiles() {
+        let dir = temp_dir("scope-exists");
+        let mut store = StoreFile::load(&dir);
+        store.add_connection(sample_connection("kept")).unwrap();
+        assert!(store.scope_exists(&saved_scope("kept")));
+        assert!(!store.scope_exists(&saved_scope("gone")));
+        assert!(store.scope_exists("demo"));
+        assert!(store.scope_exists("file:/tmp/a.db"));
+        assert!(store.scope_exists("session:abc"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_file_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("history-mode");
+        let mut store = StoreFile::load(&dir);
+        store.record_history(run("demo", "SELECT 1", 1)).unwrap();
+        let mode = std::fs::metadata(dir.join(HISTORY_FILE)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_global_history_is_dropped_without_losing_connections() {
+        let dir = temp_dir("legacy-history");
+        std::fs::write(
+            dir.join(STORE_FILE),
+            r#"{"connections":[],"history":[{"sql":"SELECT 1","at":5}],"favorites":[]}"#,
+        )
+        .unwrap();
+        let mut store = StoreFile::load(&dir);
+        store.add_connection(sample_connection("one")).unwrap();
+        let raw = std::fs::read_to_string(dir.join(STORE_FILE)).unwrap();
+        assert!(!raw.contains("\"history\""));
+        assert_eq!(StoreFile::load(&dir).data().connections.len(), 1);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -772,8 +1023,6 @@ mod tests {
             .unwrap();
         assert!(store.remove_favorite("fav-1").unwrap());
         assert!(!store.remove_favorite("fav-1").unwrap());
-
-        store.clear_history().unwrap();
 
         store.touch_connection("one", 42).unwrap();
         assert_eq!(store.find_connection("one").unwrap().last_used, 42);

@@ -437,6 +437,15 @@ export function PanelLeftIcon({ size = 12, className }: IconProps) {
   );
 }
 
+export function PanelBottomIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <rect x="2.2" y="3" width="11.6" height="10" rx="1.2" />
+      <path d="M2.2 9.6h11.6" />
+    </svg>
+  );
+}
+
 export function MoreIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

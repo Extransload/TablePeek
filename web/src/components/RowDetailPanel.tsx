@@ -97,11 +97,7 @@ export function RowDetailPanel({
 
   let content;
   if (!valid) {
-    content = (
-      <div className="row-detail-empty">
-        {result ? "그리드에서 행을 선택하세요" : "표시할 결과가 없습니다"}
-      </div>
-    );
+    content = <div className="panel-empty">{t("선택된 행이 없습니다")}</div>;
   } else if (view === "fields") {
     content = (
       <div className="detail-fields">

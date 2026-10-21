@@ -306,7 +306,8 @@ export class TablePeekSocket {
   async query(
     conn: string,
     sql: string,
-    options: { maxRows: number; window: number },
+    // history: file the run under this connection's history (editor runs only).
+    options: { maxRows: number; window: number; history?: boolean },
   ): Promise<QueryResult> {
     await this.connect();
     const ws = this.ws;
@@ -325,6 +326,7 @@ export class TablePeekSocket {
           sql,
           max_rows: options.maxRows,
           window: options.window,
+          ...(options.history === true ? { history: true } : {}),
         }),
       );
     });

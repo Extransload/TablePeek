@@ -14,6 +14,7 @@ export type KeyAction =
   | "refresh"
   | "toggleSidebar"
   | "toggleDetail"
+  | "toggleConsole"
   | "palette"
   | "dbSwitch"
   | "openSettings";
@@ -30,6 +31,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "refresh",
   "toggleSidebar",
   "toggleDetail",
+  "toggleConsole",
   "palette",
   "dbSwitch",
   "openSettings",
@@ -47,6 +49,8 @@ export const DEFAULT_KEYMAP: Keymap = {
   refresh: ["F5"],
   toggleSidebar: ["Mod+b"],
   toggleDetail: ["Mod+i"],
+  // TablePlus uses ⇧⌘C, but Chrome keeps that for its element picker.
+  toggleConsole: ["Mod+j"],
   palette: ["Mod+p"],
   dbSwitch: ["Mod+k"],
   openSettings: ["Mod+,"],
@@ -62,6 +66,7 @@ export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
   refresh: "새로고침",
   toggleSidebar: "왼쪽 스키마 패널 열기/닫기",
   toggleDetail: "오른쪽 행 상세 패널 열기/닫기",
+  toggleConsole: "아래 콘솔 패널 열기/닫기",
   palette: "명령 팔레트",
   dbSwitch: "DB 전환",
   openSettings: "설정 열기",

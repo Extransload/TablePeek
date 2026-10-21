@@ -7,6 +7,7 @@ export interface GridHostHandle {
   focus(): void;
   keepViewOnNextResult(): void;
   selectCell(row: number, col: number): void;
+  cellRect(row: number, col: number): { left: number; top: number; right: number; bottom: number } | null;
 }
 
 interface GridHostProps {
@@ -155,6 +156,9 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
       },
       selectCell(row: number, col: number): void {
         gridRef.current?.selectCell(row, col);
+      },
+      cellRect(row: number, col: number) {
+        return gridRef.current?.cellRect(row, col) ?? null;
       },
     }),
     [],

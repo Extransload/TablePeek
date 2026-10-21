@@ -550,6 +550,15 @@ impl Engine {
             .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))
     }
 
+    /// The file behind a SQLite engine; None for the in-memory demo and for
+    /// server databases.
+    pub fn sqlite_file(&self) -> Option<PathBuf> {
+        match self.backend_snapshot() {
+            Ok(Backend::Sqlite { inner }) => inner.path.clone(),
+            _ => None,
+        }
+    }
+
     pub async fn swap_to_file(&self, path: &Path) -> Result<EngineMeta, EngineError> {
         let inner = open_file_inner(path)?;
         let meta = meta_sync(&inner, false)?;

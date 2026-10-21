@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { getLanguage, t } from "../i18n";
-import { store, type Favorite, type HistoryEntry } from "../store";
+import { t } from "../i18n";
+import { store, type Favorite } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { Spinner } from "./Spinner";
 
@@ -14,26 +14,6 @@ interface FavoritesMenuProps extends PickSqlProps {
 
 function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function formatRelative(at: number): string {
-  const date = new Date(at * 1000);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  if (diffMs < 60_000) {
-    return t("방금 전");
-  }
-  if (diffMs < 3_600_000) {
-    return t("{count}분 전", { count: Math.floor(diffMs / 60_000) });
-  }
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  if (date.getTime() >= startOfToday) {
-    return t("{count}시간 전", { count: Math.floor(diffMs / 3_600_000) });
-  }
-  if (date.getTime() >= startOfToday - 86_400_000) {
-    return t("어제");
-  }
-  return date.toLocaleDateString(getLanguage() === "en" ? "en-US" : "ko-KR");
 }
 
 export function useMenuDismiss(
@@ -63,97 +43,6 @@ export function useMenuDismiss(
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [open, rootRef, onDismiss]);
-}
-
-export function HistoryMenu({ onPickSql }: PickSqlProps) {
-  const [open, setOpen] = useState(false);
-  const [items, setItems] = useState<HistoryEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
-  const dismiss = useCallback(() => {
-    setOpen(false);
-  }, []);
-
-  useMenuDismiss(open, rootRef, dismiss);
-
-  const load = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await store.fetchHistory(50);
-      setItems(next);
-    } catch (err) {
-      setError(errorOf(err, t("기록을 불러오지 못했습니다")));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (open) {
-      void load();
-    }
-  }, [open, load]);
-
-  async function clearAll(): Promise<void> {
-    if (!window.confirm(t("기록을 모두 지울까요?"))) {
-      return;
-    }
-    try {
-      await store.clearHistory();
-      await load();
-    } catch (err) {
-      setError(errorOf(err, t("기록을 지우지 못했습니다")));
-    }
-  }
-
-  return (
-    <div className="menu" ref={rootRef}>
-      <button type="button" onClick={() => setOpen((value) => !value)}>
-        {t("기록")}
-      </button>
-      {open && (
-        <div className="menu-panel">
-          <div className="menu-list">
-            {error ? (
-              <div className="menu-error-slot">
-                <ErrorNotice message={error} variant="compact" />
-              </div>
-            ) : items === null ? (
-              <div className="menu-empty">
-                <Spinner size={11} /> {t("불러오는 중…")}
-              </div>
-            ) : items.length === 0 ? (
-              <div className="menu-empty">{t("기록이 없습니다")}</div>
-            ) : (
-              items.map((entry, index) => (
-                <button
-                  type="button"
-                  className="menu-row"
-                  key={`${entry.at}-${index}`}
-                  title={entry.sql}
-                  onClick={() => {
-                    onPickSql(entry.sql);
-                    setOpen(false);
-                  }}
-                >
-                  <span className="menu-sql">{entry.sql}</span>
-                  <span className="menu-time">{formatRelative(entry.at)}</span>
-                </button>
-              ))
-            )}
-          </div>
-          <div className="menu-foot">
-            <button type="button" disabled={loading} onClick={() => void clearAll()}>
-              {t("기록 지우기")}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 export function FavoritesMenu({ onPickSql, getSql }: FavoritesMenuProps) {

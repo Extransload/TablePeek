@@ -293,6 +293,25 @@ export class CanvasGrid {
     this.schedulePaint();
   }
 
+  /** The cell's box in client coordinates, clipped to the visible grid; null when scrolled out of view. */
+  cellRect(row: number, col: number): { left: number; top: number; right: number; bottom: number } | null {
+    const src = this.source;
+    if (!src || row < 0 || row >= src.rowCount || col < 0 || col >= this.widths.length) {
+      return null;
+    }
+    const rect = this.canvas.getBoundingClientRect();
+    const x = this.gutterW + this.offsets[col] - this.virtualScrollX();
+    const y = HEADER_H + row * ROW_H - this.virtualScrollY();
+    const left = Math.max(x, this.gutterW);
+    const right = Math.min(x + this.widths[col], rect.width);
+    const top = Math.max(y, HEADER_H);
+    const bottom = Math.min(y + ROW_H, rect.height);
+    if (right <= left || bottom <= top) {
+      return null;
+    }
+    return { left: rect.left + left, top: rect.top + top, right: rect.left + right, bottom: rect.top + bottom };
+  }
+
   focus(): void {
     this.canvas.focus();
   }

@@ -223,6 +223,8 @@ export interface ConnSummary {
   path?: string | null;
   demo: boolean;
   table_count: number;
+  // This connection's own safe mode; null when the app-wide default applies.
+  safe_mode?: number | null;
 }
 
 export interface LiveConn {
@@ -230,9 +232,14 @@ export interface LiveConn {
   meta: EngineMeta;
 }
 
+// One statement run from the editor on a connection; `at` is in seconds.
 export interface HistoryEntry {
   sql: string;
   at: number;
+  ms: number;
+  ok: boolean;
+  rows: number;
+  error?: string;
 }
 
 export interface Favorite {
@@ -491,6 +498,8 @@ async function runQuery(
   sql: string,
   maxRows: number,
   ownerId?: string,
+  // True for statements the user ran from the editor, which go into history.
+  record = false,
 ): Promise<QueryOutcome> {
   inflight.add(conn);
   if (state.connId === conn) {
@@ -502,6 +511,7 @@ async function runQuery(
     const { meta, source, queryId } = await ensureSocket().query(conn, sql, {
       maxRows,
       window: QUERY_WINDOW,
+      history: record,
     });
     const result: GridResult = { queryId, sql, meta, source, conn };
     resultCache.set(source, result);
@@ -1049,14 +1059,24 @@ async function killSession(conn: string, sessionId: string): Promise<void> {
   });
 }
 
-async function fetchHistory(limit?: number): Promise<HistoryEntry[]> {
-  const query = limit === undefined ? "" : `?limit=${limit}`;
-  const body = await api<{ history: HistoryEntry[] }>(`/api/history${query}`);
+async function fetchHistory(conn: string, limit?: number): Promise<HistoryEntry[]> {
+  const query = limit === undefined ? "" : `&limit=${limit}`;
+  const body = await api<{ history: HistoryEntry[] }>(
+    `/api/history?conn=${encodeURIComponent(conn)}${query}`,
+  );
   return body.history;
 }
 
-async function clearHistory(): Promise<void> {
-  await api<{ ok: boolean }>("/api/history", { method: "DELETE" });
+async function clearHistory(conn: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/history?conn=${encodeURIComponent(conn)}`, { method: "DELETE" });
+}
+
+// null returns the connection to the app-wide default.
+async function setSafeMode(conn: string, mode: number | null): Promise<void> {
+  await api<{ ok: boolean }>("/api/safe-mode", {
+    method: "PUT",
+    body: JSON.stringify({ conn, mode }),
+  });
 }
 
 async function fetchFavorites(): Promise<Favorite[]> {
@@ -1155,6 +1175,7 @@ export const store = {
   killSession,
   fetchHistory,
   clearHistory,
+  setSafeMode,
   fetchFavorites,
   createFavorite,
   deleteFavorite,

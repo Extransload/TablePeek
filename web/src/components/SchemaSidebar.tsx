@@ -26,7 +26,6 @@ import {
   RefreshIcon,
   SearchIcon,
   ServerIcon,
-  StructureIcon,
   TableIcon,
   UserIcon,
 } from "./icons";
@@ -48,6 +47,8 @@ interface SchemaSidebarProps {
   kind: string;
   refreshKey: string;
   pinned: string[];
+  // The table open in the current tab, marked in the list.
+  activeTable: string | null;
   onOpenData(table: string): void;
   onOpenDataNewTab(table: string): void;
   onOpenInEditor(table: string): void;
@@ -138,6 +139,7 @@ export function SchemaSidebar({
   kind,
   refreshKey,
   pinned,
+  activeTable,
   onOpenData,
   onOpenDataNewTab,
   onOpenInEditor,
@@ -318,6 +320,10 @@ export function SchemaSidebar({
       listRef.current.scrollTop = 0;
     }
   }, [chunkKey]);
+  // Keep the active table in sight when another tab brings a different one forward.
+  useEffect(() => {
+    listRef.current?.querySelector(".schema-table-row.active")?.scrollIntoView({ block: "nearest" });
+  }, [activeTable]);
   // State, not a ref: a spacer mounted again (after an error, say) needs observing.
   const [spacer, setSpacer] = useState<HTMLDivElement | null>(null);
   const hasMore = tablesOpen && tableCount > renderLimit;
@@ -394,7 +400,8 @@ export function SchemaSidebar({
     return (
       <div className="schema-table" key={`table:${table.name}`}>
         <div
-          className="schema-table-row"
+          className={`schema-table-row${table.name === activeTable ? " active" : ""}`}
+          aria-current={table.name === activeTable ? "true" : undefined}
           role="button"
           tabIndex={0}
           title={`${table.name} — ${t("데이터 열기")}`}
@@ -442,31 +449,6 @@ export function SchemaSidebar({
             {table.name}
           </span>
           {isPinned ? <PinIcon size={9} className="schema-pin" /> : null}
-          <button
-            type="button"
-            className="schema-row-action"
-            title={t("구조 보기")}
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenStructure(table.name);
-            }}
-            onDoubleClick={(event) => event.stopPropagation()}
-          >
-            <StructureIcon size={11} />
-          </button>
-          <button
-            type="button"
-            className="schema-row-action"
-            title={t("쿼리 편집기에서 열기")}
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenInEditor(table.name);
-            }}
-            onDoubleClick={(event) => event.stopPropagation()}
-          >
-            <CodeIcon size={11} />
-          </button>
-          <span className="schema-table-count">{table.columns.length}</span>
         </div>
         {isOpen && (
           <div className="schema-cols">

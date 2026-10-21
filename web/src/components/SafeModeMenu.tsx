@@ -52,7 +52,10 @@ export function SafeModeMenu({ mode, onChange }: SafeModeMenuProps) {
       </button>
       {open ? (
         <div className="menu-panel safe-mode-panel" role="menu" aria-label={t("안전 모드")}>
-          <div className="safe-mode-heading">{t("안전 모드")}</div>
+          <div className="safe-mode-heading">
+            {t("안전 모드")}
+            <span className="safe-mode-scope">{t("이 연결에만 적용")}</span>
+          </div>
           {LEVELS.map((level) => (
             <button
               key={level}

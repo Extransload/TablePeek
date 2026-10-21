@@ -9,7 +9,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use rust_embed::RustEmbed;
@@ -201,6 +201,27 @@ impl ConnSlot {
         }
     }
 
+    /// What this slot's history and safe mode are filed under: its saved
+    /// profile, its SQLite file, the demo, or, for a server connection that was
+    /// never saved, this session alone.
+    fn history_scope(&self) -> String {
+        if let Some(id) = &self.saved_id {
+            return store::saved_scope(id);
+        }
+        if self.origin.is_some() {
+            return format!("{}{}", store::SESSION_PREFIX, self.id);
+        }
+        match self.engine.sqlite_file() {
+            // One file, one scope, however its path was spelled (relative,
+            // through a symlink, with ".."), and never two files under one.
+            Some(path) => {
+                let path = std::fs::canonicalize(&path).unwrap_or(path);
+                format!("file:{}", path.display())
+            }
+            None => "demo".to_string(),
+        }
+    }
+
     fn cancel_if_inflight(&self) {
         if self.inflight.load(Ordering::SeqCst) > 0 {
             self.engine.cancel();
@@ -341,6 +362,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/connections/{id}/connect", post(connection_connect))
         .route("/api/history", get(history_list).delete(history_clear))
+        .route("/api/safe-mode", put(safe_mode_set))
         .route("/api/favorites", get(favorites_list).post(favorites_create))
         .route("/api/favorites/{id}", delete(favorites_delete))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
@@ -1690,6 +1712,8 @@ struct ConnSummary {
     path: Option<String>,
     demo: bool,
     table_count: usize,
+    // This connection's own safe mode; null means the app-wide default applies.
+    safe_mode: Option<u8>,
 }
 
 async fn conns_list(
@@ -1709,6 +1733,7 @@ async fn conns_list(
                 (meta.kind, meta.path, meta.demo, meta.tables.len())
             }
         };
+        let safe_mode = state.store.lock().await.safe_mode(&slot.history_scope());
         conns.push(ConnSummary {
             id: slot.id.clone(),
             label: slot.label.clone(),
@@ -1718,6 +1743,7 @@ async fn conns_list(
             path,
             demo,
             table_count,
+            safe_mode,
         });
     }
     Ok(Json(json!({ "conns": conns })))
@@ -1737,9 +1763,15 @@ async fn conns_delete(
             "기본 연결은 닫을 수 없습니다",
         ));
     }
-    let removed = state.registry.lock().await.remove(&id);
-    if removed.is_none() {
+    let Some(removed) = state.registry.lock().await.remove(&id) else {
         return Err(not_found("연결을 찾을 수 없습니다"));
+    };
+    // An unsaved connection's history has nowhere to come back to.
+    let scope = removed.history_scope();
+    if scope.starts_with(store::SESSION_PREFIX) {
+        let mut store = state.store.lock().await;
+        let _ = store.clear_history(&scope);
+        let _ = store.set_safe_mode(&scope, None);
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -1885,6 +1917,7 @@ async fn connection_connect(
 
 #[derive(Deserialize)]
 struct HistoryParams {
+    conn: Option<String>,
     limit: Option<usize>,
 }
 
@@ -1896,10 +1929,11 @@ async fn history_list(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
+    let scope = slot_for(&state, params.conn.as_deref()).await?.history_scope();
     let limit = params.limit.unwrap_or(50).clamp(1, store::HISTORY_CAP);
     let history = {
         let store = state.store.lock().await;
-        store.history(limit)
+        store.history(&scope, limit)
     };
     Ok(Json(json!({ "history": history })))
 }
@@ -1907,17 +1941,46 @@ async fn history_list(
 async fn history_clear(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HistoryParams>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
+    let scope = slot_for(&state, params.conn.as_deref()).await?.history_scope();
     state
         .store
         .lock()
         .await
-        .clear_history()
+        .clear_history(&scope)
         .map_err(store_error)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct SafeModeRequest {
+    conn: Option<String>,
+    // 0 off, 1 risky statements only, 2 every change; null returns to the default.
+    mode: Option<u8>,
+}
+
+async fn safe_mode_set(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SafeModeRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    if req.mode.is_some_and(|mode| mode > 2) {
+        return Err(bad_request("invalid_request", "안전 모드는 0, 1, 2 중 하나입니다"));
+    }
+    let scope = slot_for(&state, req.conn.as_deref()).await?.history_scope();
+    let mut store = state.store.lock().await;
+    // A profile deleted while still open keeps its mode for this session only.
+    if store.scope_exists(&scope) {
+        store.set_safe_mode(&scope, req.mode).map_err(store_error)?;
+    }
+    Ok(Json(json!({ "ok": true, "mode": req.mode })))
 }
 
 #[derive(Deserialize)]
@@ -2424,6 +2487,9 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
         .unwrap_or(10_000)
         .clamp(1, 500_000) as usize;
     let window = value["window"].as_u64().unwrap_or(1000).clamp(1, 100_000) as usize;
+    // Only statements the user ran from the editor go into history; table
+    // browsing and paging send their own SELECTs without this flag.
+    let record = value["history"].as_bool().unwrap_or(false);
     if id.is_empty() || sql.trim().is_empty() {
         sender
             .json(error_json(
@@ -2451,13 +2517,41 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
     let state = state.clone();
     let sender = sender.clone();
     let conn = conn.to_string();
+    let scope = record.then(|| slot.history_scope());
     tokio::spawn(async move {
         let _inflight = InflightGuard::new(slot.inflight.clone());
-        match slot.engine.query(&sql, max_rows).await {
+        let started = std::time::Instant::now();
+        let outcome = slot.engine.query(&sql, max_rows).await;
+        if let Some(scope) = scope {
+            let (ms, ok, rows, error) = match &outcome {
+                Ok(data) => (data.elapsed_ms.round() as u64, true, data.row_count as u64, None),
+                Err(err) => (
+                    started.elapsed().as_millis() as u64,
+                    false,
+                    0,
+                    Some(if err.is_interrupted() {
+                        "쿼리가 취소되었습니다".to_string()
+                    } else {
+                        err.to_string()
+                    }),
+                ),
+            };
+            let entry = store::HistoryEntry {
+                scope,
+                sql: sql.clone(),
+                at: unix_now(),
+                ms,
+                ok,
+                rows,
+                error,
+            };
+            let mut store = state.store.lock().await;
+            if store.scope_exists(&entry.scope) {
+                let _ = store.record_history(entry);
+            }
+        }
+        match outcome {
             Ok(data) => {
-                let mut store = state.store.lock().await;
-                let _ = store.record_history(&sql, unix_now());
-                drop(store);
                 let data = Arc::new(data);
                 let meta = json!({
                     "type": "meta",
@@ -3877,21 +3971,40 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn history_run(scope: &str, sql: &str, at: u64) -> store::HistoryEntry {
+        store::HistoryEntry {
+            scope: scope.into(),
+            sql: sql.into(),
+            at,
+            ms: 4,
+            ok: true,
+            rows: 1,
+            error: None,
+        }
+    }
+
     #[tokio::test]
-    async fn history_routes_list_and_clear() {
+    async fn history_routes_list_and_clear_one_connection() {
         let dir = temp_dir("history-routes");
         let state = test_state(&dir);
+        // The test state's default slot is the in-memory demo.
         {
             let mut store = state.store.lock().await;
-            store.record_history("SELECT 1", 10).unwrap();
-            store.record_history("SELECT 2", 20).unwrap();
+            store.record_history(history_run("demo", "SELECT 1", 10)).unwrap();
+            store.record_history(history_run("demo", "SELECT 2", 20)).unwrap();
+            store
+                .record_history(history_run("saved:other", "SELECT 3", 30))
+                .unwrap();
         }
         let headers = test_headers();
 
         let listed = history_list(
             State(state.clone()),
             headers.clone(),
-            Query(HistoryParams { limit: Some(1) }),
+            Query(HistoryParams {
+                conn: Some("main".into()),
+                limit: Some(1),
+            }),
         )
         .await
         .unwrap();
@@ -3899,18 +4012,145 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0]["sql"], json!("SELECT 2"));
         assert_eq!(history[0]["at"], json!(20));
+        assert_eq!(history[0]["ms"], json!(4));
+        assert_eq!(history[0]["ok"], json!(true));
 
-        let _ = history_clear(State(state.clone()), headers.clone())
-            .await
-            .unwrap();
+        let _ = history_clear(
+            State(state.clone()),
+            headers.clone(),
+            Query(HistoryParams {
+                conn: None,
+                limit: None,
+            }),
+        )
+        .await
+        .unwrap();
         let listed = history_list(
             State(state.clone()),
-            headers,
-            Query(HistoryParams { limit: None }),
+            headers.clone(),
+            Query(HistoryParams {
+                conn: None,
+                limit: None,
+            }),
         )
         .await
         .unwrap();
         assert!(listed.0["history"].as_array().unwrap().is_empty());
+        // Clearing one connection leaves the others alone.
+        assert_eq!(state.store.lock().await.history("saved:other", 10).len(), 1);
+
+        let missing = history_list(
+            State(state.clone()),
+            headers,
+            Query(HistoryParams {
+                conn: Some("nope".into()),
+                limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(missing.unwrap_err().0, StatusCode::NOT_FOUND);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn slot_history_scope_follows_what_the_slot_opened() {
+        let dir = temp_dir("slot-scope");
+        let file = dir.join("app.db");
+        // SQLite reads an empty file as an empty database.
+        std::fs::write(&file, b"").unwrap();
+        let saved = ConnSlot::new(
+            "s1".into(),
+            "운영".into(),
+            Some("abc".into()),
+            Some(serde_json::from_value(json!({ "driver": "postgres" })).unwrap()),
+            Engine::open_demo(1).unwrap(),
+        );
+        assert_eq!(saved.history_scope(), "saved:abc");
+
+        let unsaved = ConnSlot::new(
+            "s2".into(),
+            "임시".into(),
+            None,
+            Some(serde_json::from_value(json!({ "driver": "postgres" })).unwrap()),
+            Engine::open_demo(1).unwrap(),
+        );
+        assert_eq!(unsaved.history_scope(), "session:s2");
+
+        let demo = ConnSlot::new("s3".into(), "데모".into(), None, None, Engine::open_demo(1).unwrap());
+        assert_eq!(demo.history_scope(), "demo");
+
+        let sqlite = ConnSlot::new(
+            "s4".into(),
+            file.display().to_string(),
+            None,
+            None,
+            Engine::open_file(&file).unwrap(),
+        );
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        assert_eq!(sqlite.history_scope(), format!("file:{}", canonical.display()));
+
+        // The same file reached by another spelling of its path shares the scope.
+        let roundabout = dir.join("sub").join("..").join("app.db");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let again = ConnSlot::new(
+            "s5".into(),
+            roundabout.display().to_string(),
+            None,
+            None,
+            Engine::open_file(&roundabout).unwrap(),
+        );
+        assert_eq!(again.history_scope(), sqlite.history_scope());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn safe_mode_route_sets_one_connection() {
+        let dir = temp_dir("safe-mode-route");
+        let state = test_state(&dir);
+        let headers = test_headers();
+
+        let listed = conns_list(State(state.clone()), headers.clone()).await.unwrap();
+        assert_eq!(listed.0["conns"][0]["safe_mode"], Value::Null);
+
+        let set = safe_mode_set(
+            State(state.clone()),
+            headers.clone(),
+            Json(SafeModeRequest {
+                conn: Some("main".into()),
+                mode: Some(2),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(set.0["mode"], json!(2));
+        assert_eq!(state.store.lock().await.safe_mode("demo"), Some(2));
+        let listed = conns_list(State(state.clone()), headers.clone()).await.unwrap();
+        assert_eq!(listed.0["conns"][0]["safe_mode"], json!(2));
+
+        let bad = safe_mode_set(
+            State(state.clone()),
+            headers.clone(),
+            Json(SafeModeRequest {
+                conn: Some("main".into()),
+                mode: Some(3),
+            }),
+        )
+        .await;
+        assert_eq!(bad.unwrap_err().0, StatusCode::BAD_REQUEST);
+
+        let _ = safe_mode_set(
+            State(state.clone()),
+            headers,
+            Json(SafeModeRequest {
+                conn: None,
+                mode: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(state.store.lock().await.safe_mode("demo"), None);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
