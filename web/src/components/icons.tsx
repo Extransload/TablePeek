@@ -401,6 +401,14 @@ export function ChevronDownIcon({ size = 12, className }: IconProps) {
   );
 }
 
+export function UpDownIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="m5 6.2 3-3 3 3M5 9.8l3 3 3-3" />
+    </svg>
+  );
+}
+
 export function EyeIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

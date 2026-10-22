@@ -157,7 +157,7 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
   const syntax = { ...syntaxColors(settings.syntaxPreset, theme.mode) };
   if (settings.syntaxPreset === "tablepeek") {
-    Object.assign(syntax, {
+    Object.assign(syntax, theme.syntax ?? {
       keyword: palette.accent,
       string: palette.ok,
       number: palette.warn,

@@ -1,4 +1,6 @@
 import { t } from "./i18n";
+import type { SyntaxColors } from "./syntax";
+import { THEME_CATALOG, type ThemeSpec } from "./themeCatalog";
 
 export type ValueKind =
   | "string"
@@ -65,6 +67,9 @@ export interface Theme {
   mode: "dark" | "light";
   accent: string;
   palette: Palette;
+  // Editor colors for the "follow the theme" syntax preset; without them the
+  // preset derives keywords and literals from the accent and status colors.
+  syntax?: SyntaxColors;
   custom?: boolean;
 }
 
@@ -106,7 +111,40 @@ export function contrastInk(hex: string): string {
       : ((channel + 0.055) / 1.055) ** 2.4;
   });
   const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return luminance > 0.45 ? "#1f2230" : "#ffffff";
+  // White stays on saturated accents until it drops under 3:1 contrast,
+  // so pastel accents (Rosé Pine, Dracula) get dark text.
+  return luminance > 0.3 ? "#1f2230" : "#ffffff";
+}
+
+function withAlpha(hex: string, alpha: number): string {
+  const rgb = parseHex(hex) ?? [0, 0, 0];
+  return `rgba(${rgb.join(", ")}, ${alpha})`;
+}
+
+function themeFromSpec(spec: ThemeSpec): Theme {
+  const { colors, accent, mode } = spec;
+  const light = mode === "light";
+  return {
+    id: spec.id,
+    label: spec.label,
+    mode,
+    accent,
+    syntax: spec.syntax,
+    palette: makePalette(
+      {
+        ...colors,
+        rowAlt: colors.rowAlt ?? mixHex(colors.bg, colors.ink, 0.03),
+        hoverFill: withAlpha(colors.ink, light ? 0.05 : 0.06),
+        selFill: withAlpha(accent, light ? 0.13 : 0.2),
+        selFillFocus: withAlpha(accent, light ? 0.21 : 0.32),
+        selLine: accent,
+        nullInk: colors.faint,
+        typeInks: spec.typeInks,
+      },
+      accent,
+      mode,
+    ),
+  };
 }
 
 function parseHex(hex: string): [number, number, number] | null {
@@ -198,251 +236,6 @@ const tablepeekLight: Palette = makePalette(
   "light",
 );
 
-const latte: Palette = makePalette(
-  {
-    bg: "#eff1f5",
-    panel: "#ffffff",
-    head: "#e6e9ef",
-    line: "#ccd0da",
-    ink: "#4c4f69",
-    muted: "#6c6f85",
-    faint: "#9ca0b0",
-    error: "#d20f39",
-    ok: "#40a02b",
-    warn: "#df8e1d",
-    rowAlt: "#e9ebf2",
-    hoverFill: "rgba(76, 79, 105, 0.055)",
-    selFill: "rgba(136, 57, 239, 0.12)",
-    selFillFocus: "rgba(136, 57, 239, 0.2)",
-    selLine: "#8839ef",
-    nullInk: "#9ca0b0",
-    typeInks: {
-      string: "#2f7d22",
-      integer: "#1a5fe0",
-      float: "#0d7a72",
-      bigint: "#8a5a00",
-      boolean: "#d20f39",
-      json: "#8839ef",
-      list: "#c2410c",
-      date: "#5c5f77",
-    },
-    btn: "#dce0e8",
-    btnHover: "#ccd0da",
-  },
-  "#8839ef",
-  "light",
-);
-
-const frappe: Palette = makePalette(
-  {
-    bg: "#303446",
-    panel: "#292c3c",
-    head: "#414559",
-    line: "#51576d",
-    ink: "#c6d0f5",
-    muted: "#a5adce",
-    faint: "#838ba7",
-    error: "#e78284",
-    ok: "#a6d189",
-    warn: "#e5c890",
-    rowAlt: "#2c3040",
-    hoverFill: "rgba(198, 208, 245, 0.07)",
-    selFill: "rgba(202, 158, 230, 0.18)",
-    selFillFocus: "rgba(202, 158, 230, 0.28)",
-    selLine: "#ca9ee6",
-    nullInk: "#838ba7",
-    typeInks: {
-      string: "#a6d189",
-      integer: "#8caaee",
-      float: "#81c8be",
-      bigint: "#e5c890",
-      boolean: "#e78284",
-      json: "#ca9ee6",
-      list: "#ef9f76",
-      date: "#a5adce",
-    },
-    btn: "#414559",
-    btnHover: "#51576d",
-  },
-  "#ca9ee6",
-  "dark",
-);
-
-const macchiato: Palette = makePalette(
-  {
-    bg: "#24273a",
-    panel: "#1e2030",
-    head: "#363a4f",
-    line: "#494d64",
-    ink: "#cad3f5",
-    muted: "#a5adcb",
-    faint: "#8087a2",
-    error: "#ed8796",
-    ok: "#a6da95",
-    warn: "#eed49f",
-    rowAlt: "#292c3f",
-    hoverFill: "rgba(202, 211, 245, 0.07)",
-    selFill: "rgba(198, 160, 246, 0.18)",
-    selFillFocus: "rgba(198, 160, 246, 0.28)",
-    selLine: "#c6a0f6",
-    nullInk: "#8087a2",
-    typeInks: {
-      string: "#a6da95",
-      integer: "#8aadf4",
-      float: "#8bd5ca",
-      bigint: "#eed49f",
-      boolean: "#ed8796",
-      json: "#c6a0f6",
-      list: "#f5a97f",
-      date: "#a5adcb",
-    },
-    btn: "#363a4f",
-    btnHover: "#494d64",
-  },
-  "#c6a0f6",
-  "dark",
-);
-
-const mocha: Palette = makePalette(
-  {
-    bg: "#1e1e2e",
-    panel: "#181825",
-    head: "#313244",
-    line: "#45475a",
-    ink: "#cdd6f4",
-    muted: "#a6adc8",
-    faint: "#7f849c",
-    error: "#f38ba8",
-    ok: "#a6e3a1",
-    warn: "#f9e2af",
-    rowAlt: "#232334",
-    hoverFill: "rgba(205, 214, 244, 0.07)",
-    selFill: "rgba(203, 166, 247, 0.18)",
-    selFillFocus: "rgba(203, 166, 247, 0.3)",
-    selLine: "#cba6f7",
-    nullInk: "#7f849c",
-    typeInks: {
-      string: "#a6e3a1",
-      integer: "#89b4fa",
-      float: "#94e2d5",
-      bigint: "#f9e2af",
-      boolean: "#f38ba8",
-      json: "#cba6f7",
-      list: "#fab387",
-      date: "#a6adc8",
-    },
-    btn: "#313244",
-    btnHover: "#45475a",
-  },
-  "#cba6f7",
-  "dark",
-);
-
-const nord: Palette = makePalette(
-  {
-    bg: "#2e3440",
-    panel: "#343b48",
-    head: "#3b4252",
-    line: "#4c566a",
-    ink: "#eceff4",
-    muted: "#c2cbd9",
-    faint: "#8b95a7",
-    error: "#bf616a",
-    ok: "#a3be8c",
-    warn: "#ebcb8b",
-    rowAlt: "#323947",
-    hoverFill: "rgba(236, 239, 244, 0.06)",
-    selFill: "rgba(136, 192, 208, 0.18)",
-    selFillFocus: "rgba(136, 192, 208, 0.3)",
-    selLine: "#88c0d0",
-    nullInk: "#8b95a7",
-    typeInks: {
-      string: "#a3be8c",
-      integer: "#81a1c1",
-      float: "#8fbcbb",
-      bigint: "#ebcb8b",
-      boolean: "#e08a96",
-      json: "#c3a6bf",
-      list: "#e09a86",
-      date: "#9aa5b8",
-    },
-    btn: "#3b4252",
-    btnHover: "#4c566a",
-  },
-  "#88c0d0",
-  "dark",
-);
-
-const dracula: Palette = makePalette(
-  {
-    bg: "#282a36",
-    panel: "#21222c",
-    head: "#343746",
-    line: "#44475a",
-    ink: "#f8f8f2",
-    muted: "#bfc2d0",
-    faint: "#7f8296",
-    error: "#ff6e7a",
-    ok: "#69f0a0",
-    warn: "#f1fa8c",
-    rowAlt: "#2d2f3c",
-    hoverFill: "rgba(248, 248, 242, 0.06)",
-    selFill: "rgba(189, 147, 249, 0.2)",
-    selFillFocus: "rgba(189, 147, 249, 0.32)",
-    selLine: "#bd93f9",
-    nullInk: "#7f8296",
-    typeInks: {
-      string: "#50fa7b",
-      integer: "#8be9fd",
-      float: "#a4e8ff",
-      bigint: "#f1fa8c",
-      boolean: "#ff5555",
-      json: "#bd93f9",
-      list: "#ffb86c",
-      date: "#9296b4",
-    },
-    btn: "#343746",
-    btnHover: "#44475a",
-  },
-  "#bd93f9",
-  "dark",
-);
-
-const tokyo: Palette = makePalette(
-  {
-    bg: "#1a1b26",
-    panel: "#1f2335",
-    head: "#24283b",
-    line: "#414868",
-    ink: "#c0caf5",
-    muted: "#9aa5ce",
-    faint: "#6d789e",
-    error: "#f7768e",
-    ok: "#9ece6a",
-    warn: "#e0af68",
-    rowAlt: "#1e2030",
-    hoverFill: "rgba(192, 202, 245, 0.06)",
-    selFill: "rgba(122, 162, 247, 0.2)",
-    selFillFocus: "rgba(122, 162, 247, 0.32)",
-    selLine: "#7aa2f7",
-    nullInk: "#6d789e",
-    typeInks: {
-      string: "#9ece6a",
-      integer: "#7aa2f7",
-      float: "#7dcfff",
-      bigint: "#e0af68",
-      boolean: "#f7768e",
-      json: "#bb9af7",
-      list: "#ff9e64",
-      date: "#8b96c0",
-    },
-    btn: "#292e42",
-    btnHover: "#343b58",
-  },
-  "#7aa2f7",
-  "dark",
-);
-
 export const THEMES: Theme[] = [
   {
     id: "dark",
@@ -458,49 +251,9 @@ export const THEMES: Theme[] = [
     accent: "#3b82f6",
     palette: tablepeekLight,
   },
-  {
-    id: "catppuccin-latte",
-    label: "Catppuccin Latte",
-    mode: "light",
-    accent: "#8839ef",
-    palette: latte,
-  },
-  {
-    id: "catppuccin-frappe",
-    label: "Catppuccin Frappé",
-    mode: "dark",
-    accent: "#ca9ee6",
-    palette: frappe,
-  },
-  {
-    id: "catppuccin-macchiato",
-    label: "Catppuccin Macchiato",
-    mode: "dark",
-    accent: "#c6a0f6",
-    palette: macchiato,
-  },
-  {
-    id: "catppuccin-mocha",
-    label: "Catppuccin Mocha",
-    mode: "dark",
-    accent: "#cba6f7",
-    palette: mocha,
-  },
-  { id: "nord", label: "Nord", mode: "dark", accent: "#88c0d0", palette: nord },
-  {
-    id: "dracula",
-    label: "Dracula",
-    mode: "dark",
-    accent: "#bd93f9",
-    palette: dracula,
-  },
-  {
-    id: "tokyo-night",
-    label: "Tokyo Night",
-    mode: "dark",
-    accent: "#7aa2f7",
-    palette: tokyo,
-  },
+  ...THEME_CATALOG.map(themeFromSpec).sort((a, b) =>
+    a.label.localeCompare(b.label, "en"),
+  ),
 ];
 
 export const DARK_PALETTE: Palette = tablepeekDark;

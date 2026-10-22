@@ -32,8 +32,8 @@ export interface SyntaxPreset {
 export const SYNTAX_PRESETS: SyntaxPreset[] = [
   {
     id: "tablepeek",
-    label: "TablePeek",
-    description: "현재 테마의 강조 색과 상태 색을 따릅니다.",
+    label: "테마 기본",
+    description: "현재 테마의 구문 색상을 따릅니다.",
     dark: {
       keyword: "#7aa2ff",
       string: "#9bd7a0",

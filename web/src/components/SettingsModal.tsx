@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, VALUE_KINDS, palette, themeFromJson } from "../palette";
 import {
@@ -86,6 +86,26 @@ export function SettingsModal({
   const [themeMessage, setThemeMessage] = useState<string | null>(null);
   const [themeBusy, setThemeBusy] = useState(false);
   const [category, setCategory] = useState<SettingsCategory>("general");
+  const themeListRef = useRef<HTMLDivElement>(null);
+
+  // The theme list scrolls on its own; bring the theme in use into view when
+  // the pane opens or a Git import adds and selects one off-screen.
+  useEffect(() => {
+    if (category !== "appearance") {
+      return;
+    }
+    const list = themeListRef.current;
+    const card = list?.querySelector<HTMLElement>(".theme-card.active");
+    if (!list || !card) {
+      return;
+    }
+    const visible =
+      card.offsetTop >= list.scrollTop &&
+      card.offsetTop + card.offsetHeight <= list.scrollTop + list.clientHeight;
+    if (!visible) {
+      list.scrollTop = card.offsetTop - list.clientHeight / 2 + card.offsetHeight / 2;
+    }
+  }, [category, settings.theme]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -289,45 +309,52 @@ export function SettingsModal({
                 <>
                   <section className="settings-section">
                     <h4>{t("테마")}</h4>
-                    <div className="theme-grid">
-                      {THEMES.map((theme) => (
-                        <button
-                          key={theme.id}
-                          type="button"
-                          data-theme-id={theme.id}
-                          className={`theme-card${settings.theme === theme.id ? " active" : ""}`}
-                          onClick={() =>
-                            onChange({ theme: theme.id, accent: theme.accent })
-                          }
-                        >
-                          <span
-                            className="theme-preview"
-                            style={{
-                              background: theme.palette.bg,
-                              borderColor: theme.palette.line,
-                            }}
-                          >
-                            <span
-                              className="theme-preview-head"
-                              style={{ background: theme.palette.head }}
-                            />
-                            <span className="theme-preview-body">
-                              <span
-                                className="theme-preview-panel"
-                                style={{ background: theme.palette.panel }}
-                              />
-                              <span className="theme-preview-lines">
-                                <span style={{ background: theme.palette.ink }} />
-                                <span style={{ background: theme.palette.muted }} />
-                                <span style={{ background: theme.palette.accent }} />
-                              </span>
-                            </span>
-                          </span>
-                          <span className="theme-name">{t(theme.label)}</span>
-                          <span className="theme-mode">
-                            {theme.mode === "light" ? "Light" : "Dark"}
-                          </span>
-                        </button>
+                    <div className="theme-list" ref={themeListRef}>
+                      {(["dark", "light"] as const).map((mode) => (
+                        <div key={mode} className="theme-group">
+                          <div className="theme-group-title">
+                            {mode === "dark" ? t("다크") : t("라이트")}
+                          </div>
+                          <div className="theme-grid">
+                            {THEMES.filter((theme) => theme.mode === mode).map((theme) => (
+                              <button
+                                key={theme.id}
+                                type="button"
+                                data-theme-id={theme.id}
+                                className={`theme-card${settings.theme === theme.id ? " active" : ""}`}
+                                title={t(theme.label)}
+                                onClick={() =>
+                                  onChange({ theme: theme.id, accent: theme.accent })
+                                }
+                              >
+                                <span
+                                  className="theme-preview"
+                                  style={{
+                                    background: theme.palette.bg,
+                                    borderColor: theme.palette.line,
+                                  }}
+                                >
+                                  <span
+                                    className="theme-preview-head"
+                                    style={{ background: theme.palette.head }}
+                                  />
+                                  <span className="theme-preview-body">
+                                    <span
+                                      className="theme-preview-panel"
+                                      style={{ background: theme.palette.panel }}
+                                    />
+                                    <span className="theme-preview-lines">
+                                      <span style={{ background: theme.palette.ink }} />
+                                      <span style={{ background: theme.palette.muted }} />
+                                      <span style={{ background: theme.palette.accent }} />
+                                    </span>
+                                  </span>
+                                </span>
+                                <span className="theme-name">{t(theme.label)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       ))}
                     </div>
                     <div className="settings-row">
@@ -482,7 +509,7 @@ export function SettingsModal({
                     >
                       {SYNTAX_PRESETS.map((preset) => (
                         <option key={preset.id} value={preset.id}>
-                          {preset.label}
+                          {t(preset.label)}
                         </option>
                       ))}
                     </select>
@@ -707,9 +734,9 @@ export function SettingsModal({
                       onChange={(event) => setPasscodeConfirm(event.target.value)}
                     />
                   </div>
-                  <div className="settings-row">
+                  <div className="settings-row settings-row-indent">
                     <button type="button" onClick={() => void applyPasscode()}>
-                      {hasPasscode ? t("변경") : t("설정")}
+                      {hasPasscode ? t("변경") : t("저장")}
                     </button>
                     {hasPasscode ? (
                       <>

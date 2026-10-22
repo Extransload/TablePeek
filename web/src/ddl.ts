@@ -246,7 +246,11 @@ function rebuildSqlite(table: string, draft: StructureDraft): string[] {
     );
   }
   const copied = draft.columns.filter((column) => column.orig !== null);
+  // SQLite's documented way to rebuild a table: with foreign keys off, so
+  // dropping the original neither cascades into child tables nor fails on them.
   const statements = [
+    "PRAGMA foreign_keys = OFF",
+    `DROP TABLE IF EXISTS ${quoteIdent("sqlite", tmp)}`,
     `CREATE TABLE ${quoteIdent("sqlite", tmp)} (\n  ${columns.join(",\n  ")}\n)`,
   ];
   if (copied.length > 0) {
@@ -267,6 +271,7 @@ function rebuildSqlite(table: string, draft: StructureDraft): string[] {
       statements.push(indexSql("sqlite", table, index));
     }
   }
+  statements.push("PRAGMA foreign_keys = ON");
   return statements;
 }
 
@@ -316,11 +321,11 @@ export function diffStructure(
         ),
     );
     const added = next.columns.some((column) => column.orig === null);
-    const fkChanged = sig(orig.foreignKeys) !== sig(next.foreignKeys);
-    const indexChanged = sig(orig.indexes) !== sig(next.indexes);
-    if (fkChanged) {
-      errors.push(t("SQLite에서는 이 편집기로 외래 키를 변경할 수 없습니다"));
+    // SQLite cannot alter a foreign key; the rebuild writes the new ones.
+    if (sig(orig.foreignKeys) !== sig(next.foreignKeys)) {
+      needsRebuild = true;
     }
+    const indexChanged = sig(orig.indexes) !== sig(next.indexes);
     if (needsRebuild) {
       return {
         statements: errors.length === 0 ? rebuildSqlite(table, next) : [],

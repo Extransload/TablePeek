@@ -245,7 +245,7 @@ function keyPanelEdge(
 const WORKSPACES_KEY = "tablepeek.workspaces";
 const PINNED_KEY = "tablepeek.pinned-tables";
 const PERSIST_DROP_KEYS = new Set(["source", "data", "detail"]);
-const TABLE_VIEWS: TableView[] = ["data", "structure", "ddl"];
+const TABLE_VIEWS: TableView[] = ["data", "structure"];
 
 interface DataRunSpec {
   offset: number;
@@ -3115,7 +3115,10 @@ export default function App() {
         if (
           exportTargetRef.current !== null ||
           menuRef.current !== null ||
-          document.querySelector(".context-menu, .menu-panel") !== null ||
+          document.querySelector(".context-menu, .menu-panel, .structure-menu") !== null ||
+          // The structure grid uses Escape to leave a cell.
+          (document.activeElement instanceof Element &&
+            document.activeElement.closest(".structure-grid") !== null) ||
           modalOpen()
         ) {
           return;
@@ -3495,7 +3498,6 @@ export default function App() {
                   onOpenDataNewTab={(table) => openDataTab(table, { newTab: true })}
                   onOpenInEditor={pickTable}
                   onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
-                  onOpenDdl={(table) => openDataTab(table, { view: "ddl" })}
                   onOpenOverview={openOverviewTab}
                   onOpenServer={openServerTab}
                   onOpenDefinition={openDefinitionTab}
@@ -3702,14 +3704,6 @@ export default function App() {
                             >
                               {t("구조")}
                             </button>
-                            <button
-                              type="button"
-                              className={activeDataTab.view === "ddl" ? "active" : ""}
-                              onClick={() => setTableView("ddl")}
-                              title={`DDL (⌘⌃[ / ⌘⌃])`}
-                            >
-                              DDL
-                            </button>
                           </div>
                           {(activeDataTab.view ?? "data") === "data" ? (
                             <>
@@ -3814,36 +3808,6 @@ export default function App() {
                             void refreshActiveMeta();
                           }}
                         />
-                      ) : activeDataTab && activeConnId !== null && activeDataTab.view === "ddl" ? (
-                        <div className="panel">
-                          <div className="panel-head">
-                            <span className="panel-title">{`DDL: ${activeDataTab.table}`}</span>
-                            <span className="spacer" />
-                            <button
-                              type="button"
-                              className="icon-text-button"
-                              disabled={activeDataTab.detail?.ddl == null}
-                              onClick={() => {
-                                const ddl = activeDataTab.detail?.ddl;
-                                if (ddl) {
-                                  void writeClipboard(ddl);
-                                }
-                              }}
-                              title={t("복사")}
-                            >
-                              {t("복사")}
-                            </button>
-                          </div>
-                          <div className="panel-body">
-                            {activeDataTab.detail?.ddl == null ? (
-                              <div className="panel-empty">{t("DDL을 가져오는 중…")}</div>
-                            ) : (
-                              <div className="panel-code">
-                                <pre className="panel-pre">{activeDataTab.detail.ddl}</pre>
-                              </div>
-                            )}
-                          </div>
-                        </div>
                       ) : (
                         <>
                       {activeDataTab && activeConnId !== null && filterVisible ? (

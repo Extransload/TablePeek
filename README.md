@@ -15,7 +15,7 @@ TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or conn
 | **Transport** | HTTP + WebSocket, Arrow IPC streaming |
 | **Editing** | Primary-key cell edits, row insert/delete, transactions |
 | **Security** | Loopback-only, per-run token, OS keychain, TLS/mTLS, SSH tunnels |
-| **Themes** | 9 built-in themes + Base16/VS Code theme import |
+| **Themes** | 50 built-in themes + Base16/VS Code theme import |
 
 ## Why TablePeek
 
@@ -168,7 +168,7 @@ The server info tab shows engine version, database size, uptime, and sessions, w
 
 ### Settings and themes
 
-Nine built-in themes are included: TablePeek Dark, TablePeek Light, Catppuccin Latte, Catppuccin Frappé, Catppuccin Macchiato, Catppuccin Mocha, Nord, Dracula, and Tokyo Night. You can also import Base16, VS Code, or TablePeek theme JSON from a Git URL.
+Fifty built-in themes are included, grouped into dark and light: TablePeek Dark and Light plus Aura, Ayu, Catppuccin, Cobalt2, Dracula, Everforest, GitHub, Gruvbox, Horizon, Kanagawa, Material, Monokai, Night Owl, Nord, One Dark/Light, Panda, Pink Aura, Rosé Pine, Shades of Purple, Snazzy, Solarized, SynthWave '84, Tokyo Night, Tomorrow Night, and Xcode variants. The third-party themes also color the SQL editor while the syntax preset is left on "Theme default"; TablePeek Dark/Light and imported themes derive editor colors from their accent and status colors. You can also import Base16, VS Code, or TablePeek theme JSON from a Git URL.
 
 ![TablePeek appearance settings with themes and type-color preview](docs/images/settings.png)
 

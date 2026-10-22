@@ -801,6 +801,8 @@ select {
   gap: 1px;
   height: 24px;
   padding-right: 6px;
+  cursor: pointer;
+  user-select: none;
 }
 
 .schema-table-row:hover {
@@ -3595,9 +3597,29 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
-.theme-mode {
-  color: var(--faint);
+.theme-list {
+  position: relative;
+  max-height: 336px;
+  margin-bottom: 12px;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.theme-group + .theme-group {
+  margin-top: 10px;
+}
+
+.theme-group-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 2px 0 6px;
+  background: var(--panel);
+  color: var(--muted);
   font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .segmented {
@@ -4095,11 +4117,10 @@ input[type="color"]::-webkit-color-swatch {
   --kind-color: #4ade80;
 }
 
+/* Block, not flex: flex items drop the leading spaces that separate tokens. */
 .syntax-preview {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0;
+  display: block;
+  white-space: pre-wrap;
   padding: 8px 10px;
   border: 1px solid var(--line-soft);
   border-radius: var(--r-sm);
@@ -4435,6 +4456,11 @@ textarea:focus-visible {
   padding: 14px 16px 18px;
 }
 
+/* The body scrolls; its cards (overflow: hidden) must not shrink to fit it. */
+.structure-panel .panel-body > * {
+  flex: none;
+}
+
 .structure-head .panel-title {
   display: inline-flex;
   align-items: center;
@@ -4450,45 +4476,6 @@ textarea:focus-visible {
   font-family: var(--mono);
   font-size: 9px;
   text-transform: uppercase;
-}
-
-.structure-summary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.structure-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-  padding: 9px 11px;
-  border: 1px solid var(--line-soft);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--panel) 72%, var(--bg));
-}
-
-.structure-stat-label {
-  color: var(--faint);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-.structure-stat strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.structure-stat strong.mono {
-  font-size: 12px;
 }
 
 .structure-section {
@@ -4534,41 +4521,216 @@ textarea:focus-visible {
   font-size: 9px;
 }
 
+.structure-hint {
+  color: var(--faint);
+  font-size: 10px;
+}
+
 .structure-table-wrap {
   overflow: auto;
 }
 
+/* Laid out like a result grid, as TablePlus shows structure. */
 .structure-table {
   width: 100%;
   border-collapse: collapse;
+  font-family: var(--mono);
   font-size: 11px;
 }
 
+.structure-table:focus {
+  outline: none;
+}
+
 .structure-table th {
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--line-soft);
-  background: color-mix(in srgb, var(--panel) 76%, var(--bg));
-  color: var(--faint);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--head);
+  color: var(--muted);
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 500;
   text-align: left;
-  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .structure-table td {
-  padding: 7px 12px;
+  height: 26px;
+  padding: 0 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--line-soft) 68%, transparent);
-  color: var(--muted);
+  color: var(--ink);
   vertical-align: middle;
+  white-space: nowrap;
+}
+
+.structure-table th + th,
+.structure-table td + td {
+  border-left: 1px solid color-mix(in srgb, var(--line-soft) 68%, transparent);
+}
+
+.structure-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
 }
 
 .structure-table tbody tr:last-child td {
   border-bottom: 0;
 }
 
-.structure-table tbody tr:hover {
+.structure-table tbody tr:hover td {
   background: var(--hover-fill);
+}
+
+.structure-table tbody tr.new td {
+  background: color-mix(in srgb, var(--ok) 9%, transparent);
+}
+
+.structure-table tbody tr.deleted td {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+  text-decoration: line-through;
+}
+
+.structure-table tbody tr.deleted td * {
+  color: inherit;
+}
+
+/* Edited cells stay marked over the stripes and the hover until saved. */
+.structure-table tbody tr td.changed {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+
+.structure-grid:focus-within td.selected {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.structure-table td.readonly {
+  color: var(--muted);
+}
+
+.structure-table td input {
+  width: 100%;
+  min-width: 80px;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.structure-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.structure-cell-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The ⇕ that opens a cell's choices, as TablePlus shows on editable cells. */
+.structure-cell-menu {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  opacity: 0.55;
+}
+
+.structure-table tr:hover .structure-cell-menu,
+.structure-table td.selected .structure-cell-menu {
+  opacity: 1;
+}
+
+.structure-cell-menu:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.structure-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+
+.structure-menu button {
+  justify-content: flex-start;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.structure-menu button.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.structure-num {
+  width: 1%;
+  color: var(--faint);
+  text-align: right;
+}
+
+.structure-table td.structure-num {
+  color: var(--faint);
+}
+
+.structure-type {
+  color: var(--syntax-type);
+}
+
+.structure-table td.structure-type {
+  color: var(--syntax-type);
+}
+
+.structure-flag {
+  color: var(--muted);
+}
+
+.structure-flag.on {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.structure-null {
+  color: var(--faint);
+}
+
+.structure-default {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.structure-table td.structure-fk-target {
+  color: var(--accent);
 }
 
 .structure-column-name {
@@ -4584,172 +4746,11 @@ textarea:focus-visible {
   color: var(--accent);
 }
 
-.structure-type {
-  display: inline-flex;
-  padding: 2px 6px;
-  border: 1px solid var(--line-soft);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.structure-null {
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 0.03em;
-}
-
-.structure-null.nn {
-  color: var(--warn);
-}
-
-.structure-key-badge {
-  display: inline-flex;
-  align-items: center;
-  height: 16px;
-  padding: 0 5px;
-  border: 1px solid var(--accent-line);
-  border-radius: 4px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 8px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.structure-key-badge.unique {
-  border-color: var(--line);
-  background: var(--head);
-  color: var(--muted);
-}
-
-.structure-dash {
-  color: var(--faint);
-}
-
-.structure-default {
-  display: block;
-  max-width: 300px;
-  overflow: hidden;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.structure-relations {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-}
-
-.structure-relations .structure-section {
-  margin-bottom: 12px;
-}
-
-.structure-card-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 9px;
-}
-
-.structure-card {
-  padding: 8px 9px;
-  border: 1px solid var(--line-soft);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--panel) 70%, var(--bg));
-}
-
-.structure-card-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--faint);
-}
-
-.structure-card-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.structure-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 7px;
-}
-
-.structure-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 6px;
-  border: 1px solid var(--line-soft);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 9px;
-}
-
-.structure-fk-flow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  margin-top: 7px;
-}
-
-.structure-fk-flow .structure-chips {
-  margin-top: 0;
-}
-
-.structure-arrow {
-  flex: none;
-  color: var(--faint);
-}
-
-.structure-fk-target {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .structure-empty {
   padding: 18px 12px;
   color: var(--faint);
   font-size: 11px;
   text-align: center;
-}
-
-.structure-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.structure-editor .structure-section {
-  margin-bottom: 0;
-}
-
-.structure-editor .structure-section-head + .draft-table {
-  padding: 9px;
 }
 
 .structure-ddl {
@@ -4797,12 +4798,6 @@ textarea:focus-visible {
   border: 0;
   border-top: 1px solid var(--line-soft);
   border-radius: 0;
-}
-
-@media (max-width: 900px) {
-  .structure-relations {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .appbar {
@@ -5145,8 +5140,24 @@ body.col-resizing * {
   min-width: 110px;
 }
 
+/* Fields match the 24px buttons beside them. */
+.settings-pane input:is([type="text"], [type="number"], [type="password"], :not([type])),
+.settings-pane select {
+  height: var(--control-h-sm);
+  padding: 0 8px;
+}
+
+.settings-pane input[type="number"] {
+  width: 80px;
+}
+
+/* A row of actions under a labelled row starts at the field column. */
+.settings-pane .settings-row-indent {
+  margin-left: 118px;
+}
+
 .settings-pane .theme-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .settings-pane .theme-import-message {
@@ -7461,7 +7472,7 @@ button.picker-row:focus-visible {
 .cell-pop-tree:focus .cell-pop-row.selected {
   background: var(--accent);
   box-shadow: none;
-  color: #fff;
+  color: var(--accent-contrast, #fff);
 }
 
 .cell-pop-chevron,

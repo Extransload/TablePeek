@@ -17,7 +17,7 @@ export interface QueryTab {
   error?: string;
 }
 
-export type TableView = "data" | "structure" | "ddl";
+export type TableView = "data" | "structure";
 
 export interface DataTab {
   id: string;
@@ -208,9 +208,15 @@ export function dataPageInfo(tab: DataTab, exact?: number | null): DataPageInfo 
 
 export function migrateTabsState(state: TabsState): TabsState {
   let changed = false;
-  const tabs = state.tabs.map((tab) => {
-    if (tab.kind !== "data") {
-      return tab;
+  const tabs = state.tabs.map((saved) => {
+    if (saved.kind !== "data") {
+      return saved;
+    }
+    let tab = saved;
+    // The DDL view was folded into Structure, which ends with the DDL.
+    if ((tab.view as string | undefined) === "ddl") {
+      tab = { ...tab, view: "structure" };
+      changed = true;
     }
     const legacy = tab as DataTab & { page?: number };
     if (typeof legacy.offset === "number") {

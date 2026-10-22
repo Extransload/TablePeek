@@ -50,7 +50,6 @@ interface SchemaSidebarProps {
   onOpenDataNewTab(table: string): void;
   onOpenInEditor(table: string): void;
   onOpenStructure(table: string): void;
-  onOpenDdl(table: string): void;
   onOpenOverview(): void;
   onOpenServer(): void;
   onOpenDefinition(kind: DefinitionKind, name: string): void;
@@ -143,7 +142,6 @@ export function SchemaSidebar({
   onOpenDataNewTab,
   onOpenInEditor,
   onOpenStructure,
-  onOpenDdl,
   onOpenOverview,
   onOpenServer,
   onOpenDefinition,
@@ -360,7 +358,6 @@ export function SchemaSidebar({
     return [
       { label: t("데이터 열기"), onSelect: () => onOpenData(table) },
       { label: t("구조 보기"), onSelect: () => onOpenStructure(table) },
-      { label: t("DDL 보기"), onSelect: () => onOpenDdl(table) },
       { label: t("쿼리 편집기에서 열기"), onSelect: () => onOpenInEditor(table) },
       {
         label: pinnedSet.has(table) ? t("상단 고정 해제") : t("상단에 고정"),
