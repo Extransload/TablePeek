@@ -2,6 +2,9 @@ export interface QueryDraft {
   sql: string;
   title: string;
   at: number;
+  // A saved query's tab: its SQL lives in Queries, so a new tab doesn't bring
+  // it back, whatever its name.
+  favorite?: boolean;
 }
 
 type DraftMap = Record<string, Record<string, QueryDraft>>;
@@ -28,22 +31,37 @@ function write(map: DraftMap): void {
   } catch {}
 }
 
-export function saveDraft(conn: string, tabId: string, sql: string, title: string): void {
+// `conn` is the connection's stable key, so a closed tab's SQL outlives the
+// session it was written in. Typing saves after a pause; a closing tab saves
+// at once (delay 0), so a new tab opened right after finds it.
+export function saveDraft(
+  conn: string,
+  tabId: string,
+  sql: string,
+  title: string,
+  delay = 400,
+  favorite = false,
+): void {
   const key = `${conn}:${tabId}`;
   const pending = timers.get(key);
   if (pending !== undefined) {
     window.clearTimeout(pending);
+    timers.delete(key);
   }
   if (sql.trim() === "") {
     return;
   }
-  const timer = window.setTimeout(() => {
+  const store = (): void => {
     timers.delete(key);
     const map = read();
-    map[conn] = { ...(map[conn] ?? {}), [tabId]: { sql, title, at: Date.now() } };
+    map[conn] = { ...(map[conn] ?? {}), [tabId]: { sql, title, at: Date.now(), ...(favorite ? { favorite } : {}) } };
     write(map);
-  }, 400);
-  timers.set(key, timer);
+  };
+  if (delay <= 0) {
+    store();
+    return;
+  }
+  timers.set(key, window.setTimeout(store, delay));
 }
 
 export function removeDraft(conn: string, tabId: string): void {
@@ -62,6 +80,22 @@ export function removeDraft(conn: string, tabId: string): void {
   if (Object.keys(scoped).length === 0) {
     delete map[conn];
   }
+  write(map);
+}
+
+// Drafts kept under `from` (a session's id, as earlier versions keyed them)
+// move to `to`, the connection's stable key.
+export function adoptDrafts(from: string, to: string): void {
+  if (from === to) {
+    return;
+  }
+  const map = read();
+  const old = map[from];
+  if (old === undefined) {
+    return;
+  }
+  map[to] = { ...old, ...(map[to] ?? {}) };
+  delete map[from];
   write(map);
 }
 

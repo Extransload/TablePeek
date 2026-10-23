@@ -123,6 +123,24 @@ export function createQueryTab(seq: number, sql = ""): QueryTab {
   };
 }
 
+// The number in a query tab's default name ("쿼리 3", "Query 3"); null for a
+// name the user gave it.
+export function queryNumberOf(title: string): number | null {
+  const match = /^(?:쿼리|Query) (\d+)$/.exec(title);
+  return match === null ? null : Number.parseInt(match[1], 10);
+}
+
+// The smallest number none of `titles` uses: closing every query tab starts
+// again from 1.
+export function freeQueryNumber(titles: string[]): number {
+  const used = new Set(titles.map(queryNumberOf));
+  let number = 1;
+  while (used.has(number)) {
+    number += 1;
+  }
+  return number;
+}
+
 export function createDataTab(table: string, pageSize = DEFAULT_PAGE_SIZE, kind = "postgres"): DataTab {
   const tab: DataTab = {
     id: nextId(),

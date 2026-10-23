@@ -23,7 +23,7 @@ import {
   renameTableSql,
   truncateTableSql,
 } from "./ddl";
-import { listDrafts, removeDraft, saveDraft } from "./drafts";
+import { adoptDrafts, listDrafts, removeDraft, saveDraft, type QueryDraft } from "./drafts";
 import { subscribeConnMeta } from "./connMeta";
 import { DefinitionPanel } from "./components/DefinitionPanel";
 import { ExplainPlanPanel } from "./components/ExplainPlanPanel";
@@ -155,9 +155,11 @@ import {
   createOverviewTab,
   createQueryTab,
   createServerTab,
+  freeQueryNumber,
   migrateTabsState,
   patchFromOutcome,
   patchTab,
+  queryNumberOf,
   renameTab,
   seedSqlForMeta,
   snapshotOf,
@@ -708,7 +710,6 @@ export default function App() {
   const editorRef = useRef<SqlEditorHandle | null>(null);
   const gridHostRef = useRef<GridHostHandle | null>(null);
   const mainRef = useRef<HTMLDivElement | null>(null);
-  const seqRef = useRef(2);
   const workspacesRef = useRef(workspaces);
   const activeConnIdRef = useRef(activeConnId);
   const prevConnRef = useRef<string | null>(null);
@@ -779,7 +780,7 @@ export default function App() {
   // aren't another's), else its file, which outlive the id a session gets
   // each time it opens.
   function stableKeyOf(connId: string): string {
-    const conn = conns.find((entry) => entry.id === connId);
+    const conn = connsRef.current.find((entry) => entry.id === connId);
     if (conn?.saved_id) {
       const at = workspacesRef.current[connId]?.meta.path;
       return at ? `saved:${conn.saved_id}@${at}` : `saved:${conn.saved_id}`;
@@ -788,6 +789,22 @@ export default function App() {
       return "demo";
     }
     return conn?.path ? `file:${conn.path}` : connId;
+  }
+  const connsRef = useRef(conns);
+  connsRef.current = conns;
+
+  // A fetched connection list, seen at once by code that runs before the next
+  // render (entering a connection just opened).
+  function commitConns(list: ConnSummary[]): void {
+    connsRef.current = list;
+    setConns(list);
+  }
+
+  // Where a connection's query drafts are kept: its saved connection, any
+  // database on it (query tabs belong to the connection), else its stable key.
+  function draftKeyOf(connId: string): string {
+    const conn = connsRef.current.find((entry) => entry.id === connId);
+    return conn?.saved_id ? `saved:${conn.saved_id}` : stableKeyOf(connId);
   }
   const activeKey = activeConnId !== null ? stableKeyOf(activeConnId) : null;
 
@@ -1017,10 +1034,39 @@ export default function App() {
     return entries;
   })();
 
-  function nextSeq(): number {
-    const value = seqRef.current;
-    seqRef.current += 1;
-    return value;
+  // Closed query tabs this connection can bring back: SQL saved when they
+  // closed (or last typed), not open now.
+  function closedDrafts(conn: string): { tabId: string; draft: QueryDraft }[] {
+    const key = draftKeyOf(conn);
+    adoptDrafts(conn, key);
+    const open = new Set((tabsOf(conn)?.tabs ?? []).map((tab) => tab.id));
+    return listDrafts(key).filter((entry) => !open.has(entry.tabId));
+  }
+
+  // The closed numbered query tabs a new tab brings back, lowest number first;
+  // renamed tabs, plans and saved queries stay in the palette's drafts.
+  function reopenableDrafts(conn: string): { tabId: string; draft: QueryDraft }[] {
+    return closedDrafts(conn)
+      .filter((entry) => !entry.draft.favorite && queryNumberOf(entry.draft.title) !== null)
+      .sort((a, b) => (queryNumberOf(a.draft.title) ?? 0) - (queryNumberOf(b.draft.title) ?? 0));
+  }
+
+  // A new query tab's number: the smallest one neither an open tab nor a
+  // closed tab waiting to come back uses.
+  function nextQueryNumber(conn: string): number {
+    const open = (tabsOf(conn)?.tabs ?? []).filter((tab) => tab.kind === "query").map((tab) => tab.title);
+    return freeQueryNumber([...open, ...reopenableDrafts(conn).map((entry) => entry.draft.title)]);
+  }
+
+  // The tab a connection opens with: the first closed query tab, else a new
+  // one seeded with a query on its first table.
+  function firstTabOf(conn: string, meta: EngineMeta): WorkbenchTab {
+    const reopen = reopenableDrafts(conn)[0];
+    if (reopen === undefined) {
+      return createQueryTab(nextQueryNumber(conn), seedSqlForMeta(meta));
+    }
+    removeDraft(draftKeyOf(conn), reopen.tabId);
+    return { ...createQueryTab(1, reopen.draft.sql), title: reopen.draft.title };
   }
 
   function tabsOf(conn: string): TabsState | null {
@@ -1583,10 +1629,12 @@ export default function App() {
     if (current === null) {
       return;
     }
-    const tab = { ...createQueryTab(nextSeq(), sql), title };
+    // A number an open tab took meanwhile goes to the next free one.
+    const taken = queryNumberOf(title) !== null && current.tabs.some((tab) => tab.title === title);
+    const tab = taken ? createQueryTab(nextQueryNumber(conn), sql) : { ...createQueryTab(1, sql), title };
     setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
     store.showSnapshot(conn, snapshotOf(tab));
-    removeDraft(conn, tabId);
+    removeDraft(draftKeyOf(conn), tabId);
     focusRequestRef.current = true;
   }
 
@@ -1619,7 +1667,14 @@ export default function App() {
     if (current === null) {
       return;
     }
-    const next = addTab(current, nextSeq());
+    // As TablePlus does: the query tabs closed earlier come back first, lowest
+    // number first, with their SQL; a fresh one only when none is left.
+    const reopen = reopenableDrafts(conn)[0];
+    if (reopen !== undefined) {
+      openDraftTab(reopen.tabId, reopen.draft.sql, reopen.draft.title);
+      return;
+    }
+    const next = addTab(current, nextQueryNumber(conn));
     setTabsFor(conn, next);
     const tab = activeTabOf(next);
     if (tab) {
@@ -1654,9 +1709,9 @@ export default function App() {
     if (tab.kind === "query") {
       const sql = wasActive ? (editorRef.current?.getDoc() ?? tab.sql) : tab.sql;
       if (sql.trim() !== "") {
-        saveDraft(conn, id, sql, tab.title);
+        saveDraft(draftKeyOf(conn), id, sql, tab.title, 0, tab.favoriteId !== undefined);
       } else {
-        removeDraft(conn, id);
+        removeDraft(draftKeyOf(conn), id);
       }
     }
     const next = closeTab(current, id);
@@ -1775,7 +1830,7 @@ export default function App() {
     if (!tab || tab.kind !== "query" || tab.sql === sql) {
       return;
     }
-    saveDraft(conn, tabId, sql, tab.title);
+    saveDraft(draftKeyOf(conn), tabId, sql, tab.title, 400, tab.favoriteId !== undefined);
     setTabsFor(conn, patchTab(current, tabId, { sql }));
     if (tab.favoriteId !== undefined && loadAutoSave()) {
       queueSavedQueryWrite(conn, tabId, tab.favoriteId, sql);
@@ -1799,7 +1854,7 @@ export default function App() {
       target = queryTabs.length > 0 ? queryTabs[queryTabs.length - 1] : null;
     }
     if (target === null) {
-      const tab = createQueryTab(nextSeq(), sql);
+      const tab = createQueryTab(nextQueryNumber(conn), sql);
       setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
       focusRequestRef.current = true;
       return;
@@ -1843,7 +1898,7 @@ export default function App() {
     if (current === null) {
       return null;
     }
-    const created = createQueryTab(nextSeq(), sql);
+    const created = createQueryTab(nextQueryNumber(conn), sql);
     const tab: WorkbenchTab = {
       ...created,
       title: options?.title ?? created.title,
@@ -2009,7 +2064,7 @@ export default function App() {
         const untouched = sameSql(tab.sql, tab.favoriteSql) && !writing;
         if (!sameSql(saved.sql, tab.favoriteSql) && untouched) {
           tabsState = patchTab(tabsState, tab.id, { sql: saved.sql, favoriteSql: saved.sql });
-          saveDraft(conn, tab.id, saved.sql, saved.name);
+          saveDraft(draftKeyOf(conn), tab.id, saved.sql, saved.name, 400, true);
           if (conn === activeConn && tab.id === ws.tabs.activeId) {
             activeSql = saved.sql;
           } else {
@@ -2675,7 +2730,7 @@ export default function App() {
       return;
     }
     const planSql = prefix === null ? sqlText : planSqlFor(sqlText, prefix);
-    const planTab = { ...createQueryTab(nextSeq()), title: t("실행 계획 — {title}", { title: tab.title }), sql: planSql };
+    const planTab = { ...createQueryTab(1), title: t("실행 계획 — {title}", { title: tab.title }), sql: planSql };
     activateNewTab(conn, planTab);
     focusRequestRef.current = true;
     setRunningTabId(planTab.id);
@@ -3119,7 +3174,7 @@ export default function App() {
     const conn = activeConnIdRef.current;
     if (conn === null) {
       try {
-        setConns(await store.listConns());
+        commitConns(await store.listConns());
       } catch (err) {
         store.setError(errorOf(err, t("연결 목록을 불러오지 못했습니다")));
       }
@@ -3143,7 +3198,7 @@ export default function App() {
 
   async function afterOpen(live: LiveConn): Promise<void> {
     try {
-      setConns(await store.listConns());
+      commitConns(await store.listConns());
     } catch {
       setConns((prev) => prev);
     }
@@ -3152,7 +3207,7 @@ export default function App() {
 
   function enterFresh(live: LiveConn): void {
     if (workspacesRef.current[live.conn] === undefined) {
-      const fresh = createQueryTab(nextSeq(), seedSqlForMeta(live.meta));
+      const fresh = firstTabOf(live.conn, live.meta);
       const ws: Workspace = {
         tabs: { tabs: [fresh], activeId: fresh.id },
         meta: live.meta,
@@ -3171,7 +3226,7 @@ export default function App() {
     }
     try {
       const nextMeta = await store.refreshMeta(id);
-      const fresh = createQueryTab(nextSeq(), seedSqlForMeta(nextMeta));
+      const fresh = firstTabOf(id, nextMeta);
       const ws: Workspace = {
         tabs: { tabs: [fresh], activeId: fresh.id },
         meta: nextMeta,
@@ -3183,7 +3238,7 @@ export default function App() {
     } catch (err) {
       store.setError(errorOf(err, t("연결에 들어가지 못했습니다")));
       try {
-        setConns(await store.listConns());
+        commitConns(await store.listConns());
       } catch {}
       return false;
     }
@@ -3350,7 +3405,7 @@ export default function App() {
       store.setError(errorOf(err, t("연결을 닫지 못했습니다")));
     }
     try {
-      setConns(await store.listConns());
+      commitConns(await store.listConns());
     } catch {}
   }
 
@@ -3544,14 +3599,11 @@ export default function App() {
           if (conn === null) {
             return [];
           }
-          const open = new Set((tabsOf(conn)?.tabs ?? []).map((tab) => tab.id));
-          return listDrafts(conn)
-            .filter((entry) => !open.has(entry.tabId))
-            .map((entry) => ({
-              label: entry.draft.title,
-              hint: entry.draft.sql,
-              run: () => openDraftTab(entry.tabId, entry.draft.sql, entry.draft.title),
-            }));
+          return closedDrafts(conn).map((entry) => ({
+            label: entry.draft.title,
+            hint: entry.draft.sql,
+            run: () => openDraftTab(entry.tabId, entry.draft.sql, entry.draft.title),
+          }));
         },
       },
     ];
@@ -3848,21 +3900,11 @@ export default function App() {
           }
         }
         commitWorkspaces(entries);
-        let restoredSeq = 1;
-        for (const workspace of Object.values(entries)) {
-          for (const tab of workspace.tabs.tabs) {
-            const match = /^(?:쿼리|Query) (\d+)$/.exec(tab.title);
-            if (match !== null) {
-              restoredSeq = Math.max(restoredSeq, Number.parseInt(match[1], 10));
-            }
-          }
-        }
-        seqRef.current = Math.max(seqRef.current, restoredSeq + 1);
       }
       let list: ConnSummary[] = [];
       try {
         list = await store.listConns();
-        setConns(list);
+        commitConns(list);
       } catch (err) {
         store.setError(errorOf(err, t("연결 목록을 불러오지 못했습니다")));
       }
