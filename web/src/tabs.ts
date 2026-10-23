@@ -1,7 +1,7 @@
 import type { QueryMeta } from "./net/socket";
 import type { DefinitionDetail, EngineMeta, QueryOutcome, TabSnapshot, TableDetail } from "./store";
 import type { WindowedRowSource } from "./grid/windowSource";
-import { buildDataSql, type FilterState, type SortState } from "./dataQuery";
+import { buildDataSql, buildWhere, type FilterState, type SortState } from "./dataQuery";
 import { quoteIdent } from "./ddl";
 import { definitionTabTitle, type DefinitionKind } from "./sqlTools";
 import { t } from "./i18n";
@@ -11,13 +11,18 @@ export interface QueryTab {
   kind: "query";
   title: string;
   sql: string;
+  // A saved query opened in its own tab: edits are written back to it.
+  favoriteId?: string;
+  // The saved query's SQL as this tab last wrote or read it.
+  favoriteSql?: string;
   source?: WindowedRowSource;
   meta?: QueryMeta;
   info?: string;
   error?: string;
 }
 
-export type TableView = "data" | "structure";
+// TablePlus's Data | Structure | Index, one grid each.
+export type TableView = "data" | "structure" | "index";
 
 export interface DataTab {
   id: string;
@@ -37,7 +42,17 @@ export interface DataTab {
   view?: TableView;
   detail?: TableDetail;
   columns?: string[];
+  // The rows the filter keeps, and the WHERE they were counted under ("" for
+  // none), so a count is only shown for the filter it belongs to.
   count?: number;
+  countFilter?: string;
+  // TablePlus's temporary tab (italic): a single click opened it, and the next
+  // single click on another table reuses it. A double-click or a staged change
+  // keeps it.
+  preview?: boolean;
+  // The strip element of the temporary tab this one replaced, so the strip
+  // updates that element in place instead of animating a new one in.
+  slot?: string;
 }
 
 export interface StructureTab {
@@ -157,6 +172,12 @@ export function createDefinitionTab(obj: DefinitionKind, name: string): Definiti
   };
 }
 
+// The tab's count, only when it was taken under the filter it shows now.
+export function countFor(tab: DataTab, kind: string): number | null {
+  const key = buildWhere(tab.filter ?? null, kind) ?? "";
+  return tab.count !== undefined && (tab.countFilter ?? "") === key ? tab.count : null;
+}
+
 export interface DataPageInfo {
   offset: number;
   page: number;
@@ -208,7 +229,13 @@ export function dataPageInfo(tab: DataTab, exact?: number | null): DataPageInfo 
 
 export function migrateTabsState(state: TabsState): TabsState {
   let changed = false;
-  const tabs = state.tabs.map((saved) => {
+  const tabs = state.tabs.map((saved): WorkbenchTab => {
+    // A standalone structure tab from older versions becomes a table tab on
+    // its Structure view, which has the Data and Index views beside it.
+    if (saved.kind === "structure") {
+      changed = true;
+      return { ...createDataTab(saved.table), id: saved.id, view: "structure" };
+    }
     if (saved.kind !== "data") {
       return saved;
     }

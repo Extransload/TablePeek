@@ -9,12 +9,14 @@ import {
 } from "react";
 import { t } from "../i18n";
 import { loadObjects, loadSchema, peekObjects, peekSchema } from "../schemaCache";
-import { store, type ObjectList, type TableSchema } from "../store";
+import { store, type ObjectList, type TableDetail, type TableSchema } from "../store";
 import type { DefinitionKind } from "../sqlTools";
 import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
-import { Spinner } from "./Spinner";
+import { LoadingState, Spinner } from "./Spinner";
+import { TableInfoCard } from "./TableInfoCard";
+import { TABLE_COLORS, tableColorValue } from "../tableColors";
 import {
   ChevronIcon,
   CodeIcon,
@@ -46,7 +48,9 @@ interface SchemaSidebarProps {
   pinned: string[];
   // The table open in the current tab, marked in the list.
   activeTable: string | null;
+  // A click opens the temporary tab; a double-click keeps it.
   onOpenData(table: string): void;
+  onPinData(table: string): void;
   onOpenDataNewTab(table: string): void;
   onOpenInEditor(table: string): void;
   onOpenStructure(table: string): void;
@@ -54,12 +58,19 @@ interface SchemaSidebarProps {
   onOpenServer(): void;
   onOpenDefinition(kind: DefinitionKind, name: string): void;
   onTogglePin(table: string): void;
-  onTableAction(action: TableAction, table: string): void;
+  // Copies, truncates and drops take every picked table; the rest take one.
+  onTableAction(action: TableAction, tables: string[]): void;
   onOpenCreateTable(): void;
   onOpenSql(sql: string, title: string): void;
   onOpenUsers(): void;
   // Offered only for servers that hold several databases.
   onSwitchDatabase?(x: number, y: number): void;
+  // A table's detail (cached), for the card a hovered table shows.
+  loadTableDetail?(table: string): Promise<TableDetail | null>;
+  // Font colours picked for tables (table → colour id), set from the menu.
+  tableColors?: Record<string, string>;
+  onSetTableColor?(tables: string[], color: string | null): void;
+  onResetTableColors?(): void;
 }
 
 const EMPTY_OBJECTS: ObjectList = {
@@ -73,6 +84,8 @@ const EMPTY_OBJECTS: ObjectList = {
 // Large schemas render in chunks: the rest of the list is a spacer that pulls
 // in the next chunk as it nears the viewport.
 const TABLE_CHUNK = 200;
+// How long the pointer rests on a table before its card shows.
+const PEEK_DELAY_MS = 1000;
 const TABLE_ROW_HEIGHT = 28;
 const COLUMN_ROW_HEIGHT = 23;
 // Padding and bottom margin around an expanded table's column list.
@@ -109,6 +122,16 @@ function loadSystemMode(): boolean {
   }
 }
 
+interface Picked {
+  names: Set<string>;
+  // Where a ⇧-click run starts.
+  anchor: string | null;
+}
+
+function pickOnly(name: string | null): Picked {
+  return { names: new Set(name === null ? [] : [name]), anchor: name };
+}
+
 function fuzzyScore(name: string, query: string): number {
   const lower = name.toLowerCase();
   const index = lower.indexOf(query);
@@ -139,6 +162,7 @@ export function SchemaSidebar({
   pinned,
   activeTable,
   onOpenData,
+  onPinData,
   onOpenDataNewTab,
   onOpenInEditor,
   onOpenStructure,
@@ -151,6 +175,10 @@ export function SchemaSidebar({
   onOpenSql,
   onOpenUsers,
   onSwitchDatabase,
+  loadTableDetail,
+  tableColors,
+  onSetTableColor,
+  onResetTableColors,
 }: SchemaSidebarProps) {
   // Seeded from the cache so switching back to a connection paints at once.
   const [tables, setTables] = useState<TableSchema[] | null>(() =>
@@ -167,7 +195,26 @@ export function SchemaSidebar({
   const [nonce, setNonce] = useState(0);
   const forceRef = useRef(false);
   const [filter, setFilter] = useState("");
-  const [menu, setMenu] = useState<{ x: number; y: number; table: string } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; tables: string[] } | null>(null);
+  // Tables picked in the list, as in TablePlus: a click picks one (and opens
+  // it), ⇧-click the run from the anchor, ⌘-click adds or removes one.
+  const [picked, setPicked] = useState(() => pickOnly(activeTable));
+  useEffect(() => {
+    setPicked(pickOnly(activeTable));
+  }, [conn, activeTable]);
+  // Dropped tables leave the pick, so one made again later under the same
+  // name doesn't come back picked.
+  useEffect(() => {
+    if (tables === null) {
+      return;
+    }
+    const present = new Set(tables.map((table) => table.name));
+    setPicked((current) =>
+      [...current.names].every((name) => present.has(name))
+        ? current
+        : { ...current, names: new Set([...current.names].filter((name) => present.has(name))) },
+    );
+  }, [tables]);
   const [objectMenu, setObjectMenu] = useState<{
     x: number;
     y: number;
@@ -313,6 +360,119 @@ export function SchemaSidebar({
   }
   const renderLimit = chunks.key === chunkKey ? chunks.limit : TABLE_CHUNK;
   const listRef = useRef<HTMLDivElement | null>(null);
+  // The card of the table the pointer rests on, beside the sidebar.
+  const [peek, setPeek] = useState<{ table: TableSchema; top: number; left: number } | null>(null);
+  // Keyed by connection and table, so another connection's table of the same
+  // name never shows.
+  const [peekDetail, setPeekDetail] = useState<{ key: string; detail: TableDetail | null } | null>(null);
+  const peekTimerRef = useRef(0);
+  const detailTimerRef = useRef(0);
+  // The connection and table of the card on show, for its detail reply.
+  const peekKeyRef = useRef("");
+  // A card has shown since the pointer came into the panel: the next table
+  // shows at once, and the card stays until the pointer leaves the panel.
+  const warmRef = useRef(false);
+  const loadDetailRef = useRef(loadTableDetail);
+  loadDetailRef.current = loadTableDetail;
+
+  function showPeek(table: TableSchema, row: HTMLElement): void {
+    const box = row.getBoundingClientRect();
+    const sidebar = row.closest(".schema-sidebar")?.getBoundingClientRect() ?? box;
+    warmRef.current = true;
+    setPeek({ table, top: box.top - 6, left: sidebar.right + 8 });
+    // Sweeping down the list reads only the table the pointer stops on.
+    window.clearTimeout(detailTimerRef.current);
+    const key = `${conn}\u0000${table.name}`;
+    peekKeyRef.current = key;
+    detailTimerRef.current = window.setTimeout(() => {
+      void loadDetailRef.current?.(table.name).then((detail) => {
+        // A slower reply for a table the pointer has left must not replace it.
+        if (peekKeyRef.current === key) {
+          setPeekDetail({ key, detail });
+        }
+      });
+    }, 120);
+  }
+
+  // A table the pointer rests on shows its card after a moment, or at once
+  // while a card is up.
+  function startPeek(table: TableSchema, row: HTMLElement): void {
+    window.clearTimeout(peekTimerRef.current);
+    if (warmRef.current) {
+      showPeek(table, row);
+      return;
+    }
+    peekTimerRef.current = window.setTimeout(() => {
+      if (row.isConnected) {
+        showPeek(table, row);
+      }
+    }, PEEK_DELAY_MS);
+  }
+
+  // Off a table: a card still waiting doesn't come; one shown stays.
+  function leaveRow(): void {
+    if (!warmRef.current) {
+      window.clearTimeout(peekTimerRef.current);
+    }
+  }
+
+  function endPeek(): void {
+    window.clearTimeout(peekTimerRef.current);
+    window.clearTimeout(detailTimerRef.current);
+    warmRef.current = false;
+    setPeek(null);
+  }
+
+  // The card goes when the pointer leaves the panel, on a click outside it, a
+  // key, or the window losing focus. A scroll only hides it: the next table
+  // the pointer is over shows at once.
+  useEffect(() => {
+    const outside = (event: Event): boolean =>
+      !(event.target instanceof Element && event.target.closest(".schema-sidebar") !== null);
+    const onOver = (event: PointerEvent): void => {
+      if (warmRef.current && outside(event)) {
+        endPeek();
+      }
+    };
+    const onDown = (event: PointerEvent): void => {
+      if (outside(event)) {
+        endPeek();
+      }
+    };
+    // Out of the window altogether: nothing is under the pointer any more.
+    const onOut = (event: PointerEvent): void => {
+      if (event.relatedTarget === null) {
+        endPeek();
+      }
+    };
+    const onScroll = (event: Event): void => {
+      if (event.target instanceof Element && event.target.closest(".schema-sidebar") !== null) {
+        window.clearTimeout(peekTimerRef.current);
+        setPeek(null);
+      }
+    };
+    document.addEventListener("pointerover", onOver, true);
+    document.addEventListener("pointerout", onOut, true);
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", endPeek, true);
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("blur", endPeek);
+    return () => {
+      document.removeEventListener("pointerover", onOver, true);
+      document.removeEventListener("pointerout", onOut, true);
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", endPeek, true);
+      document.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("blur", endPeek);
+      window.clearTimeout(peekTimerRef.current);
+      window.clearTimeout(detailTimerRef.current);
+    };
+  }, []);
+  useEffect(() => {
+    endPeek();
+    setPeekDetail(null);
+  }, [conn]);
+
   // New search results (or another database) start from the top.
   useEffect(() => {
     if (listRef.current !== null) {
@@ -354,9 +514,102 @@ export function SchemaSidebar({
     return () => observer.disconnect();
   }, [spacer, renderLimit, chunkKey]);
 
-  function menuItems(table: string): ContextMenuItem[] {
+  function pickRange(name: string): void {
+    const order = orderedTables?.map((table) => table.name) ?? [];
+    const anchor = picked.anchor ?? name;
+    const from = order.indexOf(anchor);
+    const to = order.indexOf(name);
+    if (from < 0 || to < 0) {
+      setPicked(pickOnly(name));
+      return;
+    }
+    const names = order.slice(Math.min(from, to), Math.max(from, to) + 1);
+    setPicked({ names: new Set(names), anchor });
+  }
+
+  function pickToggle(name: string): void {
+    const names = new Set(picked.names);
+    if (!names.delete(name)) {
+      names.add(name);
+    }
+    setPicked({ names, anchor: name });
+  }
+
+  // A right-click inside a multiple pick acts on all of it; elsewhere it
+  // picks that one table first.
+  function openMenu(x: number, y: number, name: string): void {
+    const names = (orderedTables ?? [])
+      .map((table) => table.name)
+      .filter((entry) => picked.names.has(entry));
+    if (names.length > 1 && picked.names.has(name)) {
+      setMenu({ x, y, tables: names });
+      return;
+    }
+    setPicked(pickOnly(name));
+    setMenu({ x, y, tables: [name] });
+  }
+
+  // Colour for the picked tables, and a way to clear every table's at once.
+  function colorItems(tables: string[]): ContextMenuItem[] {
+    if (onSetTableColor === undefined) {
+      return [];
+    }
+    const colors = tableColors ?? {};
+    const shared = tables.every((name) => colors[name] === colors[tables[0]]) ? colors[tables[0]] : undefined;
+    return [
+      {
+        label: t("색상"),
+        separatorBefore: true,
+        swatch: tableColorValue(shared) ?? "transparent",
+        submenu: [
+          ...TABLE_COLORS.map((color) => ({
+            label: t(color.label),
+            swatch: color.value,
+            checked: tables.every((name) => colors[name] === color.id),
+            onSelect: () => onSetTableColor(tables, color.id),
+          })),
+          {
+            label: t("색상 없음"),
+            separatorBefore: true,
+            checked: tables.every((name) => colors[name] === undefined),
+            onSelect: () => onSetTableColor(tables, null),
+          },
+        ],
+      },
+      {
+        label: t("모든 테이블 색상 초기화"),
+        disabled: Object.keys(colors).length === 0,
+        onSelect: () => onResetTableColors?.(),
+      },
+    ];
+  }
+
+  function menuItems(tables: string[]): ContextMenuItem[] {
+    if (tables.length > 1) {
+      return [
+        { label: t("새 탭에서 열기"), onSelect: () => tables.forEach((name) => onOpenDataNewTab(name)) },
+        ...colorItems(tables),
+        {
+          label: t("CREATE 문 복사"),
+          separatorBefore: true,
+          onSelect: () => onTableAction("copyCreate", tables),
+        },
+        { label: t("SELECT 문 복사"), onSelect: () => onTableAction("copySelect", tables) },
+        { label: t("DROP 문 복사"), onSelect: () => onTableAction("copyDrop", tables) },
+        { label: t("TRUNCATE 문 복사"), onSelect: () => onTableAction("copyTruncate", tables) },
+        {
+          label: t("테이블 비우기 (TRUNCATE)"),
+          separatorBefore: true,
+          onSelect: () => onTableAction("truncate", tables),
+        },
+        { label: t("테이블 삭제"), onSelect: () => onTableAction("delete", tables) },
+      ];
+    }
+    const table = tables[0];
+    const act = (action: TableAction) => () => onTableAction(action, [table]);
     return [
       { label: t("데이터 열기"), onSelect: () => onOpenData(table) },
+      { label: t("새 탭에서 열기"), onSelect: () => onOpenDataNewTab(table) },
       { label: t("구조 보기"), onSelect: () => onOpenStructure(table) },
       { label: t("쿼리 편집기에서 열기"), onSelect: () => onOpenInEditor(table) },
       {
@@ -364,51 +617,72 @@ export function SchemaSidebar({
         separatorBefore: true,
         onSelect: () => onTogglePin(table),
       },
-      {
-        label: t("CREATE 문 복사"),
-        separatorBefore: true,
-        onSelect: () => onTableAction("copyCreate", table),
-      },
-      { label: t("SELECT 문 복사"), onSelect: () => onTableAction("copySelect", table) },
-      { label: t("DROP 문 복사"), onSelect: () => onTableAction("copyDrop", table) },
-      { label: t("TRUNCATE 문 복사"), onSelect: () => onTableAction("copyTruncate", table) },
-      { label: t("Laravel 스키마 복사"), onSelect: () => onTableAction("copyLaravel", table) },
-      {
-        label: t("이름 변경…"),
-        separatorBefore: true,
-        onSelect: () => onTableAction("rename", table),
-      },
-      {
-        label: t("테이블 복제…"),
-        onSelect: () => onTableAction("duplicate", table),
-      },
-      {
-        label: t("데이터 가져오기…"),
-        separatorBefore: true,
-        onSelect: () => onTableAction("import", table),
-      },
-      { label: t("테이블 비우기 (TRUNCATE)"), onSelect: () => onTableAction("truncate", table) },
-      { label: t("테이블 삭제"), onSelect: () => onTableAction("delete", table) },
+      ...colorItems([table]),
+      { label: t("CREATE 문 복사"), separatorBefore: true, onSelect: act("copyCreate") },
+      { label: t("SELECT 문 복사"), onSelect: act("copySelect") },
+      { label: t("DROP 문 복사"), onSelect: act("copyDrop") },
+      { label: t("TRUNCATE 문 복사"), onSelect: act("copyTruncate") },
+      { label: t("Laravel 스키마 복사"), onSelect: act("copyLaravel") },
+      { label: t("이름 변경…"), separatorBefore: true, onSelect: act("rename") },
+      { label: t("테이블 복제…"), onSelect: act("duplicate") },
+      { label: t("데이터 가져오기…"), separatorBefore: true, onSelect: act("import") },
+      { label: t("테이블 비우기 (TRUNCATE)"), onSelect: act("truncate") },
+      { label: t("테이블 삭제"), onSelect: act("delete") },
     ];
   }
 
-  function renderTableRow(table: TableSchema): ReactElement {
-    const isOpen = autoExpand || (expanded[table.name] ?? false);
+  function isTableOpen(name: string): boolean {
+    return autoExpand || (expanded[name] ?? false);
+  }
+
+  function isLit(table: TableSchema): boolean {
+    return table.name === activeTable || picked.names.has(table.name);
+  }
+
+  // Lit rows next to each other read as one box, as in TablePlus: each drops
+  // the corners it shares with a lit neighbour (its open columns break the run).
+  function renderTableRow(
+    table: TableSchema,
+    prev: TableSchema | undefined,
+    next: TableSchema | undefined,
+  ): ReactElement {
+    const isOpen = isTableOpen(table.name);
     const isPinned = pinnedSet.has(table.name);
+    const lit = isLit(table);
+    const joinUp = lit && prev !== undefined && isLit(prev) && !isTableOpen(prev.name);
+    const joinDown = lit && next !== undefined && isLit(next) && !isOpen;
     return (
       <div className="schema-table" key={`table:${table.name}`}>
         <div
-          className={`schema-table-row${table.name === activeTable ? " active" : ""}`}
+          className={`schema-table-row${table.name === activeTable ? " active" : ""}${
+            picked.names.has(table.name) ? " selected" : ""
+          }${joinUp ? " join-up" : ""}${joinDown ? " join-down" : ""}`}
           aria-current={table.name === activeTable ? "true" : undefined}
           role="button"
           tabIndex={0}
-          title={`${table.name} — ${t("데이터 열기")}`}
+          aria-label={`${table.name} — ${t("데이터 열기")}`}
+          onPointerEnter={(event) => {
+            if (event.pointerType !== "touch") {
+              startPeek(table, event.currentTarget);
+            }
+          }}
+          onPointerLeave={leaveRow}
           onClick={(event) => {
-            if (event.metaKey || event.ctrlKey) {
-              onOpenDataNewTab(table.name);
+            if (event.shiftKey) {
+              pickRange(table.name);
               return;
             }
+            if (event.metaKey || event.ctrlKey) {
+              pickToggle(table.name);
+              return;
+            }
+            setPicked(pickOnly(table.name));
             onOpenData(table.name);
+          }}
+          onDoubleClick={(event) => {
+            if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
+              onPinData(table.name);
+            }
           }}
           onAuxClick={(event) => {
             if (event.button === 1) {
@@ -418,12 +692,18 @@ export function SchemaSidebar({
           }}
           onContextMenu={(event) => {
             event.preventDefault();
-            setMenu({ x: event.clientX, y: event.clientY, table: table.name });
+            setPeek(null);
+            openMenu(event.clientX, event.clientY, table.name);
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              onOpenData(table.name);
+              // ⌘/Ctrl+Return keeps the tab, as a double-click does.
+              if (event.metaKey || event.ctrlKey) {
+                onPinData(table.name);
+              } else {
+                onOpenData(table.name);
+              }
             } else if (event.key === " ") {
               event.preventDefault();
               toggle(table.name);
@@ -443,7 +723,7 @@ export function SchemaSidebar({
             <ChevronIcon size={10} />
           </span>
           <TableIcon size={11} className="schema-table-icon" />
-          <span className="schema-table-name" title={table.name}>
+          <span className="schema-table-name" style={{ color: tableColorValue(tableColors?.[table.name]) }}>
             {table.name}
           </span>
           {isPinned ? <PinIcon size={9} className="schema-pin" /> : null}
@@ -484,9 +764,7 @@ export function SchemaSidebar({
   }
 
   return (
-    <div
-      className="schema-sidebar"
-    >
+    <div className="sidebar-pane">
       <div className="schema-search">
         <SearchIcon size={11} className="schema-search-icon" />
         <input
@@ -515,10 +793,7 @@ export function SchemaSidebar({
             <ErrorNotice message={error} variant="compact" />
           </div>
         ) : orderedTables === null ? (
-          <div className="schema-empty">
-            <Spinner size={14} label={t("스키마를 불러오는 중…")} />
-            <span>{t("스키마를 불러오는 중…")}</span>
-          </div>
+          <LoadingState variant="compact" label={t("스키마를 불러오는 중…")} />
         ) : (
           <>
             <div className="schema-section-head" onClick={() => toggleSection("tables", true)}>
@@ -535,7 +810,16 @@ export function SchemaSidebar({
                 </div>
               ) : (
                 <>
-                  {orderedTables.slice(0, renderLimit).map((table) => renderTableRow(table))}
+                  {orderedTables
+                    .slice(0, renderLimit)
+                    .map((table, index) =>
+                      renderTableRow(
+                        table,
+                        orderedTables[index - 1],
+                        // The next chunk isn't drawn yet: keep this run's bottom closed.
+                        index + 1 < renderLimit ? orderedTables[index + 1] : undefined,
+                      ),
+                    )}
                   {hasMore ? (
                     <div
                       ref={setSpacer}
@@ -593,6 +877,11 @@ export function SchemaSidebar({
                               onOpenDefinition(kind, name);
                             }
                           }}
+                          onDoubleClick={(event) => {
+                            if (kind === "view" && !event.metaKey && !event.ctrlKey) {
+                              onPinData(name);
+                            }
+                          }}
                           onAuxClick={(event) => {
                             if (event.button === 1 && kind === "view") {
                               event.preventDefault();
@@ -607,7 +896,12 @@ export function SchemaSidebar({
                             if (event.key === "Enter") {
                               event.preventDefault();
                               if (kind === "view") {
-                                onOpenData(name);
+                                // ⌘/Ctrl+Return keeps the tab, as on a table.
+                                if (event.metaKey || event.ctrlKey) {
+                                  onPinData(name);
+                                } else {
+                                  onOpenData(name);
+                                }
                               } else {
                                 onOpenDefinition(kind, name);
                               }
@@ -645,7 +939,7 @@ export function SchemaSidebar({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={menuItems(menu.table)}
+          items={menuItems(menu.tables)}
           onClose={() => setMenu(null)}
         />
       ) : null}
@@ -729,6 +1023,15 @@ export function SchemaSidebar({
             },
           ]}
           onClose={() => setSectionMenu(null)}
+        />
+      ) : null}
+      {peek !== null ? (
+        <TableInfoCard
+          table={peek.table}
+          detail={peekDetail?.key === `${conn}\u0000${peek.table.name}` ? peekDetail.detail : undefined}
+          kind={kind}
+          top={peek.top}
+          left={peek.left}
         />
       ) : null}
     </div>

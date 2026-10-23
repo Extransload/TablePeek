@@ -4,7 +4,7 @@ import { t } from "../i18n";
 import { store, type EngineMeta, type TableDetail, type TableSchema } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon, SearchIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { LoadingState, Spinner } from "./Spinner";
 
 interface OverviewPanelProps {
   conn: string;
@@ -133,11 +133,12 @@ export function OverviewPanel({
         </span>
         <span className="panel-stat">{t("컬럼 {count}개", { count: totalColumns })}</span>
         <span className="spacer" />
-        {loading ? (
-              <span className="panel-dim">
-                <Spinner size={10} /> {t("불러오는 중…")}
-              </span>
-            ) : null}
+        {/* A refresh of what's shown; a first load shows in the body. */}
+        {loading && schemas !== null ? (
+          <span className="panel-dim delayed-in">
+            <Spinner size={10} /> {t("불러오는 중…")}
+          </span>
+        ) : null}
         <button
           type="button"
           className="icon-text-button"
@@ -161,7 +162,7 @@ export function OverviewPanel({
       <div className="panel-body">
         {error ? <ErrorNotice message={error} /> : null}
         {schemas === null ? (
-          error ? null : <div className="panel-empty">{t("불러오는 중…")}</div>
+          error ? null : <LoadingState />
         ) : rows.length === 0 ? (
           <div className="panel-empty-inline">
             {search.trim() === "" ? t("테이블이 없습니다") : t("검색 결과가 없습니다")}

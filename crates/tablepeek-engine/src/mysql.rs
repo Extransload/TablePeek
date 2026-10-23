@@ -1,23 +1,30 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use futures_util::StreamExt;
 use mysql_async::consts::{ColumnFlags, ColumnType};
-use mysql_async::prelude::Queryable;
+use mysql_async::prelude::{FromRow, Queryable};
 use mysql_async::{
-    ClientIdentity, Column, Conn, DriverError, Error as MyError, Opts, OptsBuilder, Row, SslOpts,
-    Value as MyValue,
+    ClientIdentity, Column, Conn, DriverError, Error as MyError, Opts, OptsBuilder, QueryResult,
+    Row, SslOpts, TextProtocol, Value as MyValue,
 };
 use serde_json::Value;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MySqlConfig,
     ObjectDefinition, PkValue, ServerInfo, ServerSession, SslMode, TableDetail, TableSchema,
+    TriggerInfo,
 };
 
-use crate::sql_parse::{parse_single_table, trim_ident};
+use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
+use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
+use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
 use crate::{build_arrow, humanize_uptime_ko, EngineError, QueryData};
+
+/// A SELECT's table as information_schema names it (schema, table) and its
+/// primary key columns; None when information_schema has no such table.
+type Source = Option<(String, String, Vec<String>)>;
 
 pub struct MySqlInner {
     conn: Arc<tokio::sync::Mutex<Conn>>,
@@ -25,23 +32,174 @@ pub struct MySqlInner {
     connection_id: AtomicU64,
     label: String,
     in_tx: AtomicBool,
+    // The server rolled the open transaction back (a deadlock, say): the
+    // next COMMIT reports that rather than "no transaction".
+    tx_lost: AtomicBool,
+    // What SELECT DATABASE() last said, for reads; a statement that may
+    // change it (USE) forgets it, and writes ask again.
+    database: Mutex<Option<String>>,
+    // By (schema, table) as the SELECT named them, the current database
+    // standing in for a missing schema.
+    sources: SourceCache<(String, String), Source>,
+    log: SqlLog,
 }
+
+const SERVER_ROLLED_BACK: &str = "서버가 오류로 트랜잭션을 롤백했습니다";
 
 impl MySqlInner {
     pub(crate) fn in_tx(&self) -> bool {
         self.in_tx.load(Ordering::SeqCst)
     }
 
+    fn database(&self) -> MutexGuard<'_, Option<String>> {
+        self.database.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The server rolled the open transaction back.
+    fn lose_tx(&self) {
+        if self.in_tx.swap(false, Ordering::SeqCst) {
+            self.tx_lost.store(true, Ordering::SeqCst);
+            self.log.ended(false);
+        }
+    }
+
+    /// The open transaction ended (or one began) as the server reports.
+    fn set_open(&self, open: bool, committed: bool) {
+        let was_open = self.in_tx.swap(open, Ordering::SeqCst);
+        self.tx_lost.store(false, Ordering::SeqCst);
+        if was_open && !open {
+            self.log.ended(committed);
+        } else if open && !was_open {
+            self.log.settle(false);
+        }
+    }
+
+    async fn conn(&self) -> MyConn<'_> {
+        MyConn {
+            conn: self.conn.lock().await,
+            log: &self.log,
+        }
+    }
+
     pub(crate) fn cancel(&self) {
         let opts = self.opts.clone();
         let connection_id = self.connection_id.load(Ordering::SeqCst);
+        let log = self.log.clone();
         tokio::spawn(async move {
             if let Ok(mut conn) = Conn::new(opts).await {
                 let sql = format!("KILL QUERY {connection_id}");
+                log.record(&sql, Dialect::MySql);
                 let _ = conn.query_drop(sql).await;
                 let _ = conn.disconnect().await;
             }
         });
+    }
+}
+
+/// The locked connection; every method logs its statement before sending it.
+/// It deliberately has no way to reach the bare connection.
+struct MyConn<'a> {
+    conn: tokio::sync::MutexGuard<'a, Conn>,
+    log: &'a SqlLog,
+}
+
+impl MyConn<'_> {
+    fn shown(sql: &str, params: &[MyValue]) -> String {
+        let values: Vec<LogParam> = params.iter().map(log_param).collect();
+        inline_params(sql, &values, Dialect::MySql)
+    }
+
+    async fn query_iter<'q>(
+        &'q mut self,
+        sql: &'q str,
+    ) -> Result<QueryResult<'q, 'static, TextProtocol>, MyError> {
+        self.log.record(sql, Dialect::MySql);
+        self.conn.query_iter(sql).await
+    }
+
+    async fn query<T, Q>(&mut self, sql: Q) -> Result<Vec<T>, MyError>
+    where
+        T: FromRow + Send + 'static,
+        Q: AsRef<str>,
+    {
+        let sql = sql.as_ref();
+        self.log.record(sql, Dialect::MySql);
+        self.conn.query(sql).await
+    }
+
+    async fn query_first<T, Q>(&mut self, sql: Q) -> Result<Option<T>, MyError>
+    where
+        T: FromRow + Send + 'static,
+        Q: AsRef<str>,
+    {
+        let sql = sql.as_ref();
+        self.log.record(sql, Dialect::MySql);
+        self.conn.query_first(sql).await
+    }
+
+    async fn query_drop(&mut self, sql: &str) -> Result<(), MyError> {
+        self.log.record(sql, Dialect::MySql);
+        self.conn.query_drop(sql).await
+    }
+
+    async fn exec<T, Q>(&mut self, sql: Q, params: Vec<MyValue>) -> Result<Vec<T>, MyError>
+    where
+        T: FromRow + Send + 'static,
+        Q: AsRef<str>,
+    {
+        let sql = sql.as_ref();
+        self.log.record(&Self::shown(sql, &params), Dialect::MySql);
+        self.conn.exec(sql, params).await
+    }
+
+    async fn exec_first<T, Q>(&mut self, sql: Q, params: Vec<MyValue>) -> Result<Option<T>, MyError>
+    where
+        T: FromRow + Send + 'static,
+        Q: AsRef<str>,
+    {
+        let sql = sql.as_ref();
+        self.log.record(&Self::shown(sql, &params), Dialect::MySql);
+        self.conn.exec_first(sql, params).await
+    }
+
+    /// Runs a data change made from the GUI; one that changed rows goes to
+    /// History, at COMMIT when `in_tx`.
+    async fn change(
+        &mut self,
+        sql: &str,
+        params: Vec<MyValue>,
+        in_tx: bool,
+    ) -> Result<u64, MyError> {
+        let shown = Self::shown(sql, &params);
+        self.log.record(&shown, Dialect::MySql);
+        let started = Instant::now();
+        let result = self.conn.exec_iter(sql, params).await?;
+        let changed = result.affected_rows();
+        result.drop_result().await?;
+        if changed > 0 {
+            let change = Change {
+                sql: shown,
+                ms: started.elapsed().as_millis() as u64,
+                rows: changed,
+            };
+            self.log.changed(change, in_tx);
+        }
+        Ok(changed)
+    }
+}
+
+fn log_param(value: &MyValue) -> LogParam {
+    match value {
+        MyValue::NULL => LogParam::Null,
+        MyValue::Bytes(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => LogParam::Text(text.to_string()),
+            Err(_) => LogParam::Blob(bytes.clone()),
+        },
+        MyValue::Int(number) => LogParam::Int(*number),
+        MyValue::UInt(number) => LogParam::UInt(*number),
+        MyValue::Float(number) => LogParam::Float(f64::from(*number)),
+        MyValue::Double(number) => LogParam::Float(*number),
+        other => LogParam::Text(value_text(other)),
     }
 }
 
@@ -129,7 +287,10 @@ fn tls_fallback_allowed(err: &MyError) -> bool {
     }
 }
 
-pub(crate) async fn connect(config: &MySqlConfig) -> Result<Arc<MySqlInner>, EngineError> {
+pub(crate) async fn connect(
+    config: &MySqlConfig,
+    log: SqlLog,
+) -> Result<Arc<MySqlInner>, EngineError> {
     let opts = build_opts(config, true)?;
     let (mut conn, opts) = match Conn::new(opts.clone()).await {
         Ok(conn) => (conn, opts),
@@ -151,17 +312,20 @@ pub(crate) async fn connect(config: &MySqlConfig) -> Result<Arc<MySqlInner>, Eng
             return Err(EngineError::MySql(format!("{label}: {err}")));
         }
     };
+    // Not yet behind MyConn: logged by hand.
+    log.record("SELECT CONNECTION_ID()", Dialect::MySql);
     let connection_id = conn
         .query_first::<u64, _>("SELECT CONNECTION_ID()")
         .await
         .map_err(mysql_err)?
         .unwrap_or_default();
-    let database = conn
+    log.record("SELECT DATABASE()", Dialect::MySql);
+    let current = conn
         .query_first::<String, _>("SELECT DATABASE()")
         .await
         .map_err(mysql_err)?
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| config.database.clone());
+        .filter(|name| !name.is_empty());
+    let database = current.clone().unwrap_or_else(|| config.database.clone());
     Ok(Arc::new(MySqlInner {
         conn: Arc::new(tokio::sync::Mutex::new(conn)),
         opts,
@@ -171,6 +335,10 @@ pub(crate) async fn connect(config: &MySqlConfig) -> Result<Arc<MySqlInner>, Eng
             config.user, config.host, config.port, database
         ),
         in_tx: AtomicBool::new(false),
+        tx_lost: AtomicBool::new(false),
+        database: Mutex::new(current),
+        sources: SourceCache::default(),
+        log,
     }))
 }
 
@@ -223,7 +391,9 @@ pub(crate) async fn meta(
     inner: &MySqlInner,
     include_system: bool,
 ) -> Result<EngineMeta, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
+    // A reload picks up schema changes made elsewhere: so do the sources.
+    inner.sources.clear();
     let tables: Vec<String> = if include_system {
         let current: Option<String> = conn
             .query_first("SELECT DATABASE()")
@@ -255,7 +425,8 @@ pub(crate) async fn schema(
     inner: &MySqlInner,
     include_system: bool,
 ) -> Result<Vec<TableSchema>, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
+    inner.sources.clear();
     let mut entries: Vec<(Option<String>, String)> = Vec::new();
     let current: Option<String> = if include_system {
         conn.query_first("SELECT DATABASE()")
@@ -316,6 +487,7 @@ pub(crate) async fn schema(
                     .map(|value| value != 0)
                     .unwrap_or(false),
                 default: row.get::<Option<String>, _>(6).flatten(),
+                enum_values: None,
             });
     }
     let mut out = Vec::with_capacity(entries.len());
@@ -338,56 +510,180 @@ pub(crate) async fn query(
     max_rows: usize,
 ) -> Result<QueryData, EngineError> {
     let started = Instant::now();
-    let mut conn = inner.conn.lock().await;
-    let mut result = conn.query_iter(sql).await.map_err(mysql_err)?;
-    let columns_meta: Vec<Column> = result
-        .columns()
-        .map(|columns| columns.to_vec())
-        .unwrap_or_default();
-    let columns: Vec<String> = columns_meta
+    let controls = tx_controls(sql, Dialect::MySql);
+    let mut conn = inner.conn().await;
+    // USE, DDL and the like.
+    if inner.sources.before_statement(sql, Dialect::MySql) {
+        *inner.database() = None;
+    }
+    let read = first_result(&mut conn, sql, max_rows).await;
+    let read = match read {
+        Ok(read) => read,
+        Err(err) => {
+            // A batch that failed partway may have run some of it, a
+            // statement the classifier passed among it.
+            inner.sources.clear();
+            *inner.database() = None;
+            if inner.in_tx() || !controls.is_empty() {
+                after_failed_batch(inner, &mut conn, &err, &controls).await;
+            }
+            return Err(mysql_err(err));
+        }
+    };
+    let columns: Vec<String> = read
+        .columns
         .iter()
         .map(|column| column.name_str().to_string())
         .collect();
-    let col_count = columns.len();
-    let mut column_values: Vec<Vec<Value>> = vec![Vec::new(); col_count];
-    let mut count = 0usize;
-    let mut truncated = false;
+    // BEGIN, COMMIT and the like run from the editor move the transaction.
+    track(inner, &controls);
 
-    {
-        let mut stream = result.stream::<Row>().await.map_err(mysql_err)?;
-        if let Some(stream) = stream.as_mut() {
-            while let Some(row) = stream.next().await {
-                let row = row.map_err(mysql_err)?;
-                if count >= max_rows {
-                    truncated = true;
-                    break;
-                }
-                let values = row.unwrap();
-                for (index, value) in values.iter().enumerate() {
-                    if index < col_count {
-                        column_values[index].push(json_value(value, &columns_meta[index]));
-                    }
-                }
-                count += 1;
-            }
-        }
-    }
-    drop(result);
-
-    let (source_table, pk) = detect_source(&mut conn, sql, &columns).await;
-    let (schema, batches) = build_arrow(&columns, column_values, count)?;
+    let (source_table, pk) = detect_source(inner, &mut conn, sql, &read.columns, &columns).await;
+    // TINYINT(1), BOOLEAN's own type: 1 and 0 that mean true and false.
+    let column_kinds = read
+        .columns
+        .iter()
+        .map(|column| {
+            (column.column_type() == ColumnType::MYSQL_TYPE_TINY && column.column_length() == 1)
+                .then_some("boolean")
+        })
+        .collect();
+    let (schema, batches) = build_arrow(&columns, read.values, read.count)?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(QueryData {
         kind: "mysql",
         columns,
         schema,
         batches,
-        row_count: count,
+        row_count: read.count,
         elapsed_ms,
-        truncated,
+        truncated: read.truncated,
         source_table,
         pk,
+        column_kinds,
     })
+}
+
+/// The first result set of a query, up to `max_rows` rows.
+struct FirstResult {
+    columns: Vec<Column>,
+    /// One list per column.
+    values: Vec<Vec<Value>>,
+    count: usize,
+    truncated: bool,
+}
+
+async fn first_result(
+    conn: &mut MyConn<'_>,
+    sql: &str,
+    max_rows: usize,
+) -> Result<FirstResult, MyError> {
+    let mut result = conn.query_iter(sql).await?;
+    let columns: Vec<Column> = result
+        .columns()
+        .map(|columns| columns.to_vec())
+        .unwrap_or_default();
+    let mut values: Vec<Vec<Value>> = vec![Vec::new(); columns.len()];
+    let mut count = 0usize;
+    let mut truncated = false;
+    {
+        let mut stream = result.stream::<Row>().await?;
+        if let Some(stream) = stream.as_mut() {
+            while let Some(row) = stream.next().await {
+                let row = row?;
+                if count >= max_rows {
+                    truncated = true;
+                    break;
+                }
+                for (index, value) in row.unwrap().iter().enumerate() {
+                    if let Some(column) = columns.get(index) {
+                        values[index].push(json_value(value, column));
+                    }
+                }
+                count += 1;
+            }
+        }
+    }
+    // The rest of a multi-statement batch: a statement that failed there
+    // fails this query, not the next one.
+    result.drop_result().await?;
+    Ok(FirstResult {
+        columns,
+        values,
+        count,
+        truncated,
+    })
+}
+
+/// A query failed, maybe partway through a batch, so the controls it
+/// classified may not all have run: find out where the transaction stands.
+/// A deadlock rolls it back for sure; otherwise ask the server.
+async fn after_failed_batch(
+    inner: &MySqlInner,
+    conn: &mut MyConn<'_>,
+    err: &MyError,
+    controls: &[TxControl],
+) {
+    if inner.in_tx() && rolled_back_by_server(conn, err).await {
+        inner.lose_tx();
+        return;
+    }
+    let implicit = controls.contains(&TxControl::ImplicitCommit);
+    let Some(open) = server_in_tx(conn, implicit).await else {
+        return;
+    };
+    let committed = (implicit || controls.contains(&TxControl::Commit))
+        && !controls.contains(&TxControl::Rollback);
+    inner.set_open(open, committed);
+}
+
+/// Whether InnoDB rolled the whole transaction back over this error: a
+/// deadlock always does, a lock wait timeout only with
+/// innodb_rollback_on_timeout.
+async fn rolled_back_by_server(conn: &mut MyConn<'_>, err: &MyError) -> bool {
+    match err {
+        MyError::Server(server) if server.code == 1213 => true,
+        MyError::Server(server) if server.code == 1205 => {
+            conn.query_first::<i64, _>("SELECT @@innodb_rollback_on_timeout")
+                .await
+                .ok()
+                .flatten()
+                == Some(1)
+        }
+        _ => false,
+    }
+}
+
+/// A data change failed: a deadlock may have taken the transaction with it.
+async fn after_failed_change(inner: &MySqlInner, conn: &mut MyConn<'_>, err: &MyError) {
+    if inner.in_tx() && rolled_back_by_server(conn, err).await {
+        inner.lose_tx();
+    }
+}
+
+/// Whether the server has a transaction open; None when it cannot tell.
+/// MariaDB says outright. MySQL lists a transaction in InnoDB only once it
+/// has read or written: an unlisted one holding changes is over, and after
+/// a failed implicit commit (`implicit`) it is taken to be.
+async fn server_in_tx(conn: &mut MyConn<'_>, implicit: bool) -> Option<bool> {
+    if let Ok(Some(flag)) = conn.query_first::<i64, _>("SELECT @@in_transaction").await {
+        return Some(flag != 0);
+    }
+    let listed = conn
+        .query_first::<i64, _>(
+            "SELECT COUNT(*) FROM information_schema.INNODB_TRX \
+             WHERE trx_mysql_thread_id = CONNECTION_ID()",
+        )
+        .await
+        .ok()
+        .flatten()?;
+    if listed > 0 {
+        Some(true)
+    } else if implicit || conn.log.has_pending() {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64, EngineError> {
@@ -396,12 +692,13 @@ pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64,
             "기본 키가 없어 편집할 수 없습니다".into(),
         ));
     }
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let (schema_part, table) = split_display_table(&target.table);
     let schema = match schema_part {
         Some(schema) => schema,
-        None => current_schema(&mut conn).await?,
+        None => ask_database(inner, &mut conn).await?,
     };
+    check_key(inner, &mut conn, &schema, &table, &target.pk).await?;
     let table_ref = qualified(&schema, &table);
     let (data_type, column_type) =
         column_type_of(&mut conn, &schema, &table, &target.column).await?;
@@ -430,10 +727,11 @@ pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64,
         params.push(pk_value(&pk.value));
     }
 
-    let result = conn.exec_iter(sql, params).await.map_err(mysql_err)?;
-    let changed = result.affected_rows();
-    result.drop_result().await.map_err(mysql_err)?;
-    Ok(changed)
+    let result = conn.change(&sql, params, inner.in_tx()).await;
+    if let Err(err) = &result {
+        after_failed_change(inner, &mut conn, err).await;
+    }
+    result.map_err(mysql_err)
 }
 
 pub(crate) async fn insert_row(
@@ -441,11 +739,11 @@ pub(crate) async fn insert_row(
     table: &str,
     values: &[(String, Option<String>)],
 ) -> Result<u64, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let (schema_part, table_name) = split_display_table(table);
     let schema = match schema_part {
         Some(schema) => schema,
-        None => current_schema(&mut conn).await?,
+        None => ask_database(inner, &mut conn).await?,
     };
     let table_ref = qualified(&schema, &table_name);
     let sql = if values.is_empty() {
@@ -475,10 +773,11 @@ pub(crate) async fn insert_row(
             None => MyValue::NULL,
         })
         .collect();
-    let result = conn.exec_iter(sql, params).await.map_err(mysql_err)?;
-    let changed = result.affected_rows();
-    result.drop_result().await.map_err(mysql_err)?;
-    Ok(changed)
+    let result = conn.change(&sql, params, inner.in_tx()).await;
+    if let Err(err) = &result {
+        after_failed_change(inner, &mut conn, err).await;
+    }
+    result.map_err(mysql_err)
 }
 
 pub(crate) async fn delete_row(
@@ -489,12 +788,13 @@ pub(crate) async fn delete_row(
     if pk.is_empty() {
         return Err(EngineError::BadRequest("PK 조건이 필요합니다".into()));
     }
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let (schema_part, table_name) = split_display_table(table);
     let schema = match schema_part {
         Some(schema) => schema,
-        None => current_schema(&mut conn).await?,
+        None => ask_database(inner, &mut conn).await?,
     };
+    check_key(inner, &mut conn, &schema, &table_name, pk).await?;
     let table_ref = qualified(&schema, &table_name);
     let mut sql = format!("DELETE FROM {table_ref} WHERE ");
     let mut params: Vec<MyValue> = Vec::with_capacity(pk.len());
@@ -511,21 +811,25 @@ pub(crate) async fn delete_row(
         ));
         params.push(pk_value(&condition.value));
     }
-    let result = conn.exec_iter(sql, params).await.map_err(mysql_err)?;
-    let changed = result.affected_rows();
-    result.drop_result().await.map_err(mysql_err)?;
-    Ok(changed)
+    let result = conn.change(&sql, params, inner.in_tx()).await;
+    if let Err(err) = &result {
+        after_failed_change(inner, &mut conn, err).await;
+    }
+    result.map_err(mysql_err)
 }
 
 pub(crate) async fn table_detail(
     inner: &MySqlInner,
     name: &str,
 ) -> Result<TableDetail, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
+    // Opening a table's structure shows its key as it is now: so should the
+    // next SELECT.
+    inner.sources.clear();
     let (schema_part, table_name) = split_display_table(name);
     let schema = match schema_part.as_deref() {
         Some(schema) => schema.to_string(),
-        None => current_schema(&mut conn).await?,
+        None => current_schema(inner, &mut conn).await?,
     };
     let exists: Option<(String, String)> = conn
         .exec_first(
@@ -565,6 +869,7 @@ pub(crate) async fn table_detail(
                 .map(|value| value != 0)
                 .unwrap_or(false),
             default: row.get::<Option<String>, _>(4).flatten(),
+            enum_values: row.get::<String, _>(1).as_deref().and_then(enum_values),
         })
         .collect::<Vec<_>>();
 
@@ -627,7 +932,7 @@ pub(crate) async fn table_detail(
     }
 
     let (row_count_estimate, data_bytes, index_bytes, comment) = conn
-        .exec_first::<(Option<u64>, Option<u64>, Option<u64>, Option<String>), _, _>(
+        .exec_first::<(Option<u64>, Option<u64>, Option<u64>, Option<String>), _>(
             "SELECT TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, \
              CASE WHEN TABLE_TYPE = 'VIEW' THEN NULL ELSE TABLE_COMMENT END \
              FROM information_schema.TABLES \
@@ -653,6 +958,33 @@ pub(crate) async fn table_detail(
         .zip(index_bytes)
         .map(|(data, index)| data + index);
 
+    let trigger_rows: Vec<(String, String, String, String)> = conn
+        .exec(
+            "SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, ACTION_STATEMENT \
+             FROM information_schema.TRIGGERS \
+             WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? \
+             ORDER BY ACTION_ORDER, TRIGGER_NAME",
+            vec![
+                MyValue::from(canonical_schema.clone()),
+                MyValue::from(canonical_table.clone()),
+            ],
+        )
+        .await
+        .unwrap_or_default();
+    let triggers = trigger_rows
+        .into_iter()
+        .map(|(name, timing, event, statement)| TriggerInfo {
+            definition: Some(format!(
+                "CREATE TRIGGER {} {timing} {event} ON {} FOR EACH ROW {statement}",
+                quote_ident(&name),
+                quote_ident(&canonical_table),
+            )),
+            name,
+            timing: Some(timing),
+            event: Some(event),
+        })
+        .collect();
+
     let table_ref = qualified(&canonical_schema, &canonical_table);
     Ok(TableDetail {
         name: if schema_part.is_some() {
@@ -669,12 +1001,13 @@ pub(crate) async fn table_detail(
         columns,
         indexes,
         foreign_keys,
+        triggers,
         schema: Some(canonical_schema.clone()),
     })
 }
 
 pub(crate) async fn server_info(inner: &MySqlInner) -> Result<ServerInfo, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let version = conn
         .query_first::<String, _>("SELECT VERSION()")
         .await
@@ -747,7 +1080,7 @@ pub(crate) async fn objects(
     inner: &MySqlInner,
     include_system: bool,
 ) -> Result<DbObjects, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let current: Option<String> = conn
         .query_first("SELECT DATABASE()")
         .await
@@ -830,7 +1163,7 @@ pub(crate) async fn objects(
 }
 
 pub(crate) async fn table_count(inner: &MySqlInner, name: &str) -> Result<i64, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let qualified: Vec<String> = name.split('.').map(quote_ident).collect();
     let sql = format!("SELECT COUNT(*) FROM {}", qualified.join("."));
     conn.query_first::<i64, _>(sql)
@@ -840,7 +1173,7 @@ pub(crate) async fn table_count(inner: &MySqlInner, name: &str) -> Result<i64, E
 }
 
 pub(crate) async fn databases(inner: &MySqlInner) -> Result<Vec<String>, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let rows: Vec<String> = conn.query("SHOW DATABASES").await.map_err(mysql_err)?;
     Ok(rows)
 }
@@ -850,11 +1183,11 @@ pub(crate) async fn object_definition(
     kind: &str,
     name: &str,
 ) -> Result<Option<ObjectDefinition>, EngineError> {
-    let mut conn = inner.conn.lock().await;
+    let mut conn = inner.conn().await;
     let (schema_part, object_name) = split_display_table(name);
     let schema = match schema_part {
         Some(schema) => schema,
-        None => current_schema(&mut conn).await?,
+        None => current_schema(inner, &mut conn).await?,
     };
     let object_ref = qualified(&schema, &object_name);
     let ddl = match kind {
@@ -901,8 +1234,8 @@ pub(crate) async fn kill_session(inner: &MySqlInner, id: u64) -> Result<(), Engi
             "자신의 연결은 종료할 수 없습니다".into(),
         ));
     }
-    let mut conn = inner.conn.lock().await;
-    conn.query_drop(format!("KILL {id}"))
+    let mut conn = inner.conn().await;
+    conn.query_drop(&format!("KILL {id}"))
         .await
         .map_err(mysql_err)
 }
@@ -936,6 +1269,9 @@ fn build_create_table(table_ref: &str, columns: &[ColumnSchema]) -> String {
 }
 
 pub(crate) async fn tx(inner: &MySqlInner, statement: &str) -> Result<(), EngineError> {
+    // Everything below runs under the lock, so no change slips between the
+    // statement and the bookkeeping.
+    let mut conn = inner.conn().await;
     let active = inner.in_tx();
     match statement {
         "BEGIN" if active => {
@@ -944,33 +1280,119 @@ pub(crate) async fn tx(inner: &MySqlInner, statement: &str) -> Result<(), Engine
             ));
         }
         "COMMIT" | "ROLLBACK" if !active => {
+            if inner.tx_lost.swap(false, Ordering::SeqCst) {
+                // A ROLLBACK asks for what already happened.
+                return match statement {
+                    "COMMIT" => Err(EngineError::TxRolledBack(SERVER_ROLLED_BACK.into())),
+                    _ => Ok(()),
+                };
+            }
             return Err(EngineError::Internal(
                 "진행 중인 트랜잭션이 없습니다".into(),
             ));
         }
         _ => {}
     }
-    let mut conn = inner.conn.lock().await;
     conn.query_drop(statement).await.map_err(mysql_err)?;
+    inner.set_open(statement == "BEGIN", statement == "COMMIT");
     drop(conn);
-    inner.in_tx.store(statement == "BEGIN", Ordering::SeqCst);
     Ok(())
 }
 
-async fn current_schema(conn: &mut Conn) -> Result<String, EngineError> {
-    conn.query_first::<String, _>("SELECT DATABASE()")
+/// Follows transaction statements run from the editor, under the connection
+/// lock: History gets the changes they commit and loses those they roll back.
+fn track(inner: &MySqlInner, controls: &[TxControl]) {
+    for control in controls {
+        match control {
+            // BEGIN commits a transaction already open.
+            TxControl::Begin => {
+                if inner.in_tx() {
+                    inner.set_open(false, true);
+                }
+                inner.set_open(true, false);
+            }
+            TxControl::Commit => inner.set_open(false, true),
+            TxControl::Rollback => inner.set_open(false, false),
+            TxControl::ImplicitCommit => {
+                if inner.in_tx() {
+                    inner.set_open(false, true);
+                }
+            }
+            TxControl::RollbackToSavepoint => {}
+        }
+    }
+}
+
+/// The current database, for reads: asked for only when no answer is kept.
+async fn current_schema(inner: &MySqlInner, conn: &mut MyConn<'_>) -> Result<String, EngineError> {
+    let kept = inner.database().clone();
+    if let Some(database) = kept {
+        return Ok(database);
+    }
+    ask_database(inner, conn).await
+}
+
+/// The current database as the server says it now, for writes: a USE the
+/// classifier missed must not send a change to another database's table.
+async fn ask_database(inner: &MySqlInner, conn: &mut MyConn<'_>) -> Result<String, EngineError> {
+    let database = conn
+        .query_first::<String, _>("SELECT DATABASE()")
         .await
         .map_err(mysql_err)?
-        .ok_or_else(|| EngineError::Internal("데이터베이스가 선택되지 않았습니다".into()))
+        .ok_or_else(|| EngineError::Internal("데이터베이스가 선택되지 않았습니다".into()))?;
+    *inner.database() = Some(database.clone());
+    Ok(database)
+}
+
+/// Refuses a write keyed on columns that aren't the table's primary key now
+/// (see `key_unchanged`), and forgets the cached keys that said otherwise.
+async fn check_key(
+    inner: &MySqlInner,
+    conn: &mut MyConn<'_>,
+    schema: &str,
+    table: &str,
+    pk: &[PkValue],
+) -> Result<(), EngineError> {
+    let current: Vec<String> = conn
+        .exec(
+            PK_SQL,
+            vec![
+                MyValue::from(schema.to_string()),
+                MyValue::from(table.to_string()),
+            ],
+        )
+        .await
+        .map_err(mysql_err)?;
+    if key_unchanged(&current, pk, true) {
+        return Ok(());
+    }
+    inner.sources.clear();
+    if current.is_empty() {
+        // No key at all: dropped, or no such table in this database.
+        let found: Option<(String, String)> = conn
+            .exec_first(
+                TABLE_LOOKUP_SQL,
+                vec![
+                    MyValue::from(schema.to_string()),
+                    MyValue::from(table.to_string()),
+                ],
+            )
+            .await
+            .map_err(mysql_err)?;
+        if found.is_none() {
+            return Err(EngineError::TableNotFound);
+        }
+    }
+    Err(EngineError::NotEditable(KEY_CHANGED.into()))
 }
 
 async fn column_type_of(
-    conn: &mut Conn,
+    conn: &mut MyConn<'_>,
     schema: &str,
     table: &str,
     column: &str,
 ) -> Result<(String, String), EngineError> {
-    conn.exec_first::<(String, String), _, _>(
+    conn.exec_first::<(String, String), _>(
         COLUMN_TYPE_SQL,
         vec![
             MyValue::from(schema.to_string()),
@@ -981,6 +1403,41 @@ async fn column_type_of(
     .await
     .map_err(mysql_err)?
     .ok_or_else(|| EngineError::NotEditable(format!("컬럼을 찾을 수 없습니다: {column}")))
+}
+
+/// The values of an ENUM or SET column type (`enum('a','it''s')`), in order.
+fn enum_values(column_type: &str) -> Option<Vec<String>> {
+    let lower = column_type.to_ascii_lowercase();
+    let body = if lower.starts_with("enum(") {
+        &column_type[5..]
+    } else if lower.starts_with("set(") {
+        &column_type[4..]
+    } else {
+        return None;
+    };
+    let mut values = Vec::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                let mut value = String::new();
+                while let Some(c) = chars.next() {
+                    if c == '\'' {
+                        if chars.peek() == Some(&'\'') {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    value.push(c);
+                }
+                values.push(value);
+            }
+            ')' => break,
+            _ => {}
+        }
+    }
+    Some(values)
 }
 
 fn cast_type(data_type: &str, column_type: &str) -> &'static str {
@@ -1039,56 +1496,79 @@ fn pk_value(value: &Value) -> MyValue {
     }
 }
 
+/// The table a SELECT read and its primary key, when the result holds every
+/// key column. The lookups run on a table's first SELECT only; failed ones
+/// are not kept.
 async fn detect_source(
-    conn: &mut Conn,
+    inner: &MySqlInner,
+    conn: &mut MyConn<'_>,
     sql: &str,
+    result: &[Column],
     columns: &[String],
 ) -> (Option<String>, Option<Vec<String>>) {
     let Some((schema_part, table_part)) = parse_single_table(sql) else {
         return (None, None);
     };
-    let schema = match schema_part.as_ref() {
-        Some(schema) => schema.clone(),
-        None => match current_schema(conn).await {
+    let display = |schema: &str, table: &str| {
+        if schema_part.is_some() {
+            format!("{schema}.{table}")
+        } else {
+            table.to_string()
+        }
+    };
+    // The result's own columns say where the server found the table; the
+    // kept database is a guess a missed USE could make wrong.
+    let schema = schema_part
+        .clone()
+        .or_else(|| result_schema(result, &table_part))
+        .or_else(|| inner.database().clone());
+    let schema = match schema {
+        Some(schema) => schema,
+        None => match current_schema(inner, conn).await {
             Ok(schema) => schema,
             Err(_) => return (None, None),
         },
     };
 
-    let canonical: Option<(String, String)> = conn
-        .exec_first(
-            TABLE_LOOKUP_SQL,
-            vec![
-                MyValue::from(schema.clone()),
-                MyValue::from(table_part.clone()),
-            ],
-        )
-        .await
-        .ok()
-        .flatten();
-    let Some((canonical_schema, canonical_table)) = canonical else {
-        return (None, None);
+    let key = (schema, table_part);
+    let (canonical_schema, canonical_table, pk_rows) = match inner.sources.get(&key) {
+        Some(Some(source)) => source,
+        Some(None) => return (None, None),
+        None => {
+            let canonical: Option<(String, String)> = match conn
+                .exec_first(
+                    TABLE_LOOKUP_SQL,
+                    vec![MyValue::from(key.0.clone()), MyValue::from(key.1.clone())],
+                )
+                .await
+            {
+                Ok(canonical) => canonical,
+                Err(_) => return (None, None),
+            };
+            let Some((canonical_schema, canonical_table)) = canonical else {
+                inner.sources.put(key, None);
+                return (None, None);
+            };
+            let pk_rows: Vec<String> = match conn
+                .exec(
+                    PK_SQL,
+                    vec![
+                        MyValue::from(canonical_schema.clone()),
+                        MyValue::from(canonical_table.clone()),
+                    ],
+                )
+                .await
+            {
+                Ok(rows) => rows,
+                Err(_) => return (Some(display(&canonical_schema, &canonical_table)), None),
+            };
+            let source = (canonical_schema, canonical_table, pk_rows);
+            inner.sources.put(key, Some(source.clone()));
+            source
+        }
     };
 
-    let display = if schema_part.is_some() {
-        format!("{canonical_schema}.{canonical_table}")
-    } else {
-        canonical_table.clone()
-    };
-
-    let pk_rows: Vec<String> = match conn
-        .exec(
-            PK_SQL,
-            vec![
-                MyValue::from(canonical_schema),
-                MyValue::from(canonical_table),
-            ],
-        )
-        .await
-    {
-        Ok(rows) => rows,
-        Err(_) => return (Some(display), None),
-    };
+    let display = display(&canonical_schema, &canonical_table);
     if pk_rows.is_empty() {
         return (Some(display), None);
     }
@@ -1100,6 +1580,24 @@ async fn detect_source(
         return (Some(display), None);
     }
     (Some(display), Some(pk_rows))
+}
+
+/// The database every result column comes from, when each is a column of
+/// `table` itself (an expression has none): where the server found an
+/// unqualified table, so the current database, without asking for it.
+fn result_schema(result: &[Column], table: &str) -> Option<String> {
+    let schema = result.first()?.schema_ref();
+    let of_table = |column: &Column| {
+        !column.schema_ref().is_empty()
+            && column.schema_ref() == schema
+            && column
+                .org_table_ref()
+                .eq_ignore_ascii_case(table.as_bytes())
+    };
+    result
+        .iter()
+        .all(of_table)
+        .then(|| String::from_utf8_lossy(schema).into_owned())
 }
 
 fn json_value(value: &MyValue, column: &Column) -> Value {
@@ -1326,6 +1824,20 @@ mod tests {
     }
 
     #[test]
+    fn reads_enum_and_set_values_from_the_column_type() {
+        assert_eq!(
+            enum_values("enum('a','it''s','b,c')"),
+            Some(vec!["a".to_string(), "it's".into(), "b,c".into()])
+        );
+        assert_eq!(
+            enum_values("SET('x','y')"),
+            Some(vec!["x".to_string(), "y".into()])
+        );
+        assert_eq!(enum_values("enum('')"), Some(vec![String::new()]));
+        assert_eq!(enum_values("varchar(10)"), None);
+    }
+
+    #[test]
     fn prefer_falls_back_only_for_tls_failures() {
         assert!(tls_fallback_allowed(&server(2026)));
         assert!(tls_fallback_allowed(&server(3159)));
@@ -1349,5 +1861,26 @@ mod tests {
         assert!(!tls_fallback_allowed(&MyError::Io(mysql_async::IoError::Io(
             refused
         ))));
+    }
+
+    #[test]
+    fn the_result_names_the_database_only_when_every_column_is_the_tables() {
+        let column = |schema: &str, org_table: &str| {
+            Column::new(ColumnType::MYSQL_TYPE_LONG)
+                .with_schema(schema.as_bytes())
+                .with_org_table(org_table.as_bytes())
+        };
+        let shop = [column("shop", "users"), column("shop", "users")];
+        assert_eq!(result_schema(&shop, "users"), Some("shop".into()));
+        // lower_case_table_names lowers what the server reports.
+        assert_eq!(result_schema(&shop, "Users"), Some("shop".into()));
+        // An expression (COUNT(*), 1 + id) comes from no table.
+        let expression = [column("shop", "users"), column("", "")];
+        assert_eq!(result_schema(&expression, "users"), None);
+        // Columns of another table or database: not this one's to tell.
+        assert_eq!(result_schema(&shop, "orders"), None);
+        let mixed = [column("shop", "users"), column("audit", "users")];
+        assert_eq!(result_schema(&mixed, "users"), None);
+        assert_eq!(result_schema(&[], "users"), None);
     }
 }

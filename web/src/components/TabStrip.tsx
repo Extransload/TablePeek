@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { t } from "../i18n";
+import { formatBinding, withHint } from "../shortcuts";
 import type { WorkbenchTab } from "../tabs";
 import {
   CloseIcon,
@@ -11,6 +12,7 @@ import {
   TableIcon,
 } from "./icons";
 import { Spinner } from "./Spinner";
+import { tableColorValue } from "../tableColors";
 
 function tabIcon(tab: WorkbenchTab): ReactElement {
   const props = { size: 10, className: "tab-kind" };
@@ -54,6 +56,17 @@ interface TabStripProps {
   onActivate(id: string): void;
   onClose(id: string): void;
   onRename(id: string, title: string): void;
+  // A double-click on a temporary tab keeps it instead of renaming it.
+  onPin(id: string): void;
+  // Font colours picked for tables in the sidebar (table → colour id).
+  tableColors?: Record<string, string>;
+  // The close shortcut as the keymap has it, for the × button's tooltip.
+  closeHint?: string;
+}
+
+// The ⌥ digit that brings a tab forward: 1–8 by place, 9 for the last.
+function digitOf(index: number, count: number): number | null {
+  return index < 8 ? index + 1 : index === count - 1 ? 9 : null;
 }
 
 // Tabs keep the default name they were made with ("쿼리 3", "서버 정보",
@@ -92,6 +105,9 @@ export function TabStrip({
   onActivate,
   onClose,
   onRename,
+  onPin,
+  tableColors,
+  closeHint,
 }: TabStripProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -157,19 +173,25 @@ export function TabStrip({
         event.currentTarget.scrollLeft += event.deltaY;
       }}
     >
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const active = tab.id === activeId;
         const renaming = tab.id === renamingId;
         return (
           <div
-            key={tab.id}
+            // The temporary tab keeps its element when it shows another
+            // table, so it doesn't replay the opening animation.
+            key={tab.kind === "data" && tab.slot !== undefined ? tab.slot : tab.id}
             role="tab"
             aria-selected={active}
-            className={`tab tab-${tab.kind}${active ? " active" : ""}${(tab.kind === "query" || tab.kind === "data") && tab.error ? " has-error" : ""}`}
+            className={`tab tab-${tab.kind}${active ? " active" : ""}${(tab.kind === "query" || tab.kind === "data") && tab.error ? " has-error" : ""}${tab.kind === "data" && tab.preview ? " preview" : ""}`}
             data-kind={tab.kind}
-            title={`${tabKindLabel(tab)} · ${titleOf(tab)}`}
+            title={(() => {
+              const digit = digitOf(index, tabs.length);
+              const label = `${tabKindLabel(tab)} · ${titleOf(tab)}`;
+              return digit === null ? label : `${label} (${formatBinding(`Alt+${digit}`)})`;
+            })()}
             onClick={() => onActivate(tab.id)}
-            onDoubleClick={() => startRename(tab)}
+            onDoubleClick={() => (tab.kind === "data" && tab.preview ? onPin(tab.id) : startRename(tab))}
             onAuxClick={(event) => {
               if (event.button === 1) {
                 event.preventDefault();
@@ -177,8 +199,10 @@ export function TabStrip({
               }
             }}
           >
-            {tab.id === runningTabId ? <Spinner size={10} className="tab-running" label={t("실행 중…")} /> : null}
-            {tabIcon(tab)}
+            <span className="tab-icon">
+              {tabIcon(tab)}
+              {tab.id === runningTabId ? <Spinner size={10} className="tab-running" label={t("실행 중…")} /> : null}
+            </span>
             {renaming ? (
               <input
                 ref={inputRef}
@@ -200,12 +224,17 @@ export function TabStrip({
                 }}
               />
             ) : (
-              <span className="tab-label">{titleOf(tab)}</span>
+              <span
+                className="tab-label"
+                style={{ color: tab.kind === "data" ? tableColorValue(tableColors?.[tab.table]) : undefined }}
+              >
+                {titleOf(tab)}
+              </span>
             )}
             <button
               type="button"
               className="tab-close"
-              title={`${t("탭 닫기")} (⌘W)`}
+              title={withHint(t("탭 닫기"), closeHint)}
               onDoubleClick={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();

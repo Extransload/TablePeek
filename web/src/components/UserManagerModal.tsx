@@ -35,7 +35,7 @@ interface UserRow {
 
 export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps) {
   const kind = meta.kind;
-  const supported = kind === "postgres" || kind === "cockroachdb" || kind === "mysql" || kind === "mssql";
+  const supported = kind === "postgres" || kind === "cockroach" || kind === "mysql" || kind === "mssql";
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -88,12 +88,15 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
     void load();
   }, [load]);
 
-  async function runSql(statements: string[], info: string): Promise<void> {
+  // A statement carrying a password runs but stays out of History, which is
+  // kept on disk and offers its entries for copying and re-running.
+  async function runSql(statements: (string | { sql: string; secret: true })[], info: string): Promise<void> {
     setBusy(true);
     setError(null);
     try {
       for (const statement of statements) {
-        await store.exec(conn, statement);
+        const secret = typeof statement !== "string";
+        await store.exec(conn, secret ? statement.sql : statement, { history: !secret });
       }
       store.setInfo(info);
       await load();
@@ -112,22 +115,25 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
     }
     if (kind === "mysql") {
       const statements = [
-        `CREATE USER ${quoteLiteral(name)}@${quoteLiteral(newHost.trim() || "%")} IDENTIFIED BY ${quoteLiteral(newPassword)}`,
+        {
+          sql: `CREATE USER ${quoteLiteral(name)}@${quoteLiteral(newHost.trim() || "%")} IDENTIFIED BY ${quoteLiteral(newPassword)}`,
+          secret: true as const,
+        },
       ];
       void runSql(statements, t("사용자를 생성했습니다: {name}", { name }));
       return;
     }
     if (kind === "mssql") {
       void runSql(
-        [`CREATE LOGIN ${quoteName(kind, name)} WITH PASSWORD = ${quoteLiteral(newPassword)}`],
+        [{ sql: `CREATE LOGIN ${quoteName(kind, name)} WITH PASSWORD = ${quoteLiteral(newPassword)}`, secret: true }],
         t("로그인을 생성했습니다: {name}", { name }),
       );
       return;
     }
-    const statements = [
-      `CREATE ROLE ${quoteName(kind, name)} LOGIN PASSWORD ${quoteLiteral(newPassword)}`,
+    const statements: (string | { sql: string; secret: true })[] = [
+      { sql: `CREATE ROLE ${quoteName(kind, name)} LOGIN PASSWORD ${quoteLiteral(newPassword)}`, secret: true },
     ];
-    if (superUser) {
+    if (superUser && kind === "postgres") {
       statements.push(`ALTER ROLE ${quoteName(kind, name)} SUPERUSER`);
     }
     void runSql(statements, t("역할을 생성했습니다: {name}", { name }));
@@ -165,7 +171,10 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
     if (kind === "mysql") {
       void runSql(
         [
-          `ALTER USER ${quoteLiteral(row.name)}@${quoteLiteral(row.extra)} IDENTIFIED BY ${quoteLiteral(password)}`,
+          {
+            sql: `ALTER USER ${quoteLiteral(row.name)}@${quoteLiteral(row.extra)} IDENTIFIED BY ${quoteLiteral(password)}`,
+            secret: true,
+          },
         ],
         t("비밀번호를 변경했습니다: {name}", { name: row.name }),
       );
@@ -173,13 +182,13 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
     }
     if (kind === "mssql") {
       void runSql(
-        [`ALTER LOGIN ${quoteName(kind, row.name)} WITH PASSWORD = ${quoteLiteral(password)}`],
+        [{ sql: `ALTER LOGIN ${quoteName(kind, row.name)} WITH PASSWORD = ${quoteLiteral(password)}`, secret: true }],
         t("비밀번호를 변경했습니다: {name}", { name: row.name }),
       );
       return;
     }
     void runSql(
-      [`ALTER ROLE ${quoteName(kind, row.name)} WITH PASSWORD ${quoteLiteral(password)}`],
+      [{ sql: `ALTER ROLE ${quoteName(kind, row.name)} WITH PASSWORD ${quoteLiteral(password)}`, secret: true }],
       t("비밀번호를 변경했습니다: {name}", { name: row.name }),
     );
   }
@@ -281,7 +290,8 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                     onChange={(event) => setNewPassword(event.target.value)}
                   />
                 </label>
-                {kind === "postgres" || kind === "cockroachdb" ? (
+                {/* CockroachDB has no SUPERUSER role option. */}
+                {kind === "postgres" ? (
                   <label className="check-row inline">
                     <input
                       type="checkbox"

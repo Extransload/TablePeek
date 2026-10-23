@@ -3,7 +3,7 @@ import { t } from "../i18n";
 import { store, type FsListing } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { FileIcon, FolderIcon, UpIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { LoadingState } from "./Spinner";
 
 interface FilePickerModalProps {
   title: string;
@@ -118,9 +118,7 @@ export function FilePickerModal({ title, current, homeSubdir, onPick, onClose }:
         </form>
         <div className="fs-list">
           {loading && listing === null ? (
-            <div className="fs-empty">
-              <Spinner size={12} />
-            </div>
+            <LoadingState variant="compact" />
           ) : error ? (
             <div className="fs-error-slot">
               <ErrorNotice message={error} variant="compact" />

@@ -167,7 +167,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     try {
       const text = await file.text();
       setRestoreText(text);
-      const count = splitSqlStatements(text).length;
+      const count = splitSqlStatements(text, meta.kind).length;
       setInfo(t("{count}개 문장", { count: count.toLocaleString() }));
     } catch (err) {
       setError(errorOf(err, t("파일을 읽지 못했습니다")));
@@ -178,7 +178,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     if (restoreText === "" || busy) {
       return;
     }
-    const statements = splitSqlStatements(restoreText);
+    const statements = splitSqlStatements(restoreText, meta.kind);
     if (statements.length === 0) {
       return;
     }

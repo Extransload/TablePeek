@@ -1,5 +1,6 @@
 import { quoteIdent } from "./ddl";
 import { t } from "./i18n";
+import { escapeString, lexingFor } from "./sqlSplit";
 
 export type DefinitionKind = "view" | "function" | "procedure" | "trigger" | "sequence";
 
@@ -40,10 +41,13 @@ const SESSION_KEYWORDS = new Set([
 const DML = /\b(insert|update|delete|merge|replace)\b/i;
 
 // Comments and quoted text can't trigger or hide keywords.
-function scanText(sql: string): string {
+// # starts a comment only in MySQL (and when the engine isn't known); in
+// PostgreSQL it's an operator and in SQL Server a temporary table's name.
+function scanText(sql: string, dialect?: string): string {
+  const hashComments = dialect === undefined || dialect === "" || dialect === "mysql" || dialect === "mariadb";
   return sql
     .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/(--|#)[^\n]*/g, " ")
+    .replace(hashComments ? /(--|#)[^\n]*/g : /--[^\n]*/g, " ")
     .replace(/'(?:[^'\\]|\\.|'')*'/g, "''")
     .replace(/"(?:[^"]|"")*"/g, '""')
     .replace(/`[^`]*`/g, "``")
@@ -51,8 +55,8 @@ function scanText(sql: string): string {
     .replace(/^\(+\s*/, "");
 }
 
-export function classifyStatement(sql: string): ReviewItem | null {
-  const scan = scanText(sql);
+export function classifyStatement(sql: string, dialect?: string): ReviewItem | null {
+  const scan = scanText(sql, dialect);
   const keyword = (/^([a-z]+)/i.exec(scan)?.[1] ?? "").toLowerCase();
   if (keyword === "" || SESSION_KEYWORDS.has(keyword)) {
     return null;
@@ -99,12 +103,12 @@ export function classifyStatement(sql: string): ReviewItem | null {
   }
 }
 
-export function reviewStatements(statements: string[], mode: SafeMode): ReviewItem[] {
+export function reviewStatements(statements: string[], mode: SafeMode, dialect?: string): ReviewItem[] {
   if (mode === 0) {
     return [];
   }
   return statements
-    .map(classifyStatement)
+    .map((statement) => classifyStatement(statement, dialect))
     .filter(
       (item): item is ReviewItem => item !== null && (mode === 2 || item.severity === "danger"),
     );
@@ -127,8 +131,25 @@ export function explainPrefixFor(engineKind: string): string | null {
   return null;
 }
 
+// Leading comments ("-- why\nEXPLAIN …", MySQL's "# why") don't hide an
+// EXPLAIN; no statement starts with #, so it is skipped in any dialect. A
+// scan, not a regex: one over repeated comment lines can backtrack for seconds.
 export function isExplainSql(sql: string): boolean {
-  return /^\s*explain\b/i.test(sql);
+  let at = 0;
+  for (;;) {
+    while (at < sql.length && /\s/.test(sql[at])) {
+      at += 1;
+    }
+    if (sql.startsWith("--", at) || sql[at] === "#") {
+      const end = sql.indexOf("\n", at);
+      at = end < 0 ? sql.length : end + 1;
+    } else if (sql.startsWith("/*", at)) {
+      const end = sql.indexOf("*/", at + 2);
+      at = end < 0 ? sql.length : end + 2;
+    } else {
+      return /^explain\b/i.test(sql.slice(at, at + 8));
+    }
+  }
 }
 
 export function planSqlFor(sql: string, prefix: string): string {
@@ -177,6 +198,9 @@ const FORMAT_BREAK_BEFORE = [
   "DELETE FROM",
   "RETURNING",
   "ON CONFLICT",
+  "LEFT OUTER JOIN",
+  "RIGHT OUTER JOIN",
+  "FULL OUTER JOIN",
   "LEFT JOIN",
   "RIGHT JOIN",
   "INNER JOIN",
@@ -242,7 +266,11 @@ interface SqlChunk {
   text: string;
 }
 
-function chunkSql(sql: string): SqlChunk[] {
+// Text, string literals (quoted names too) and comments, so a rewrite (keywords
+// upper-cased, lines broken, parameters bound) touches only the text. What
+// counts as a quote or a comment is the dialect's, as when splitting statements.
+function chunkSql(sql: string, dialect?: string): SqlChunk[] {
+  const lex = lexingFor(dialect);
   const chunks: SqlChunk[] = [];
   let current = "";
   let index = 0;
@@ -256,7 +284,7 @@ function chunkSql(sql: string): SqlChunk[] {
   while (index < len) {
     const ch = sql[index];
     const next = index + 1 < len ? sql[index + 1] : "";
-    if (ch === "-" && next === "-") {
+    if ((ch === "-" && next === "-") || (ch === "#" && lex.hashComments)) {
       const end = sql.indexOf("\n", index);
       const stop = end < 0 ? len : end;
       flushText();
@@ -272,16 +300,36 @@ function chunkSql(sql: string): SqlChunk[] {
       index = stop;
       continue;
     }
+    if (ch === "[" && lex.bracketNames) {
+      const end = sql.indexOf("]", index + 1);
+      const stop = end < 0 ? len : end + 1;
+      flushText();
+      chunks.push({ kind: "string", text: sql.slice(index, stop) });
+      index = stop;
+      continue;
+    }
+    if (ch === "$" && lex.dollarQuotes) {
+      const tag = /^\$[A-Za-z0-9_]*\$/.exec(sql.slice(index, index + 64))?.[0];
+      if (tag !== undefined) {
+        const end = sql.indexOf(tag, index + tag.length);
+        const stop = end < 0 ? len : end + tag.length;
+        flushText();
+        chunks.push({ kind: "string", text: sql.slice(index, stop) });
+        index = stop;
+        continue;
+      }
+    }
     if (ch === "'" || ch === '"' || ch === "`") {
       const quote = ch;
+      const escapes = (lex.backslashEscapes && quote !== "`") || (lex.escapeStrings && escapeString(sql, index));
       let cursor = index + 1;
       while (cursor < len) {
-        if (sql[cursor] === "\\") {
+        if (sql[cursor] === "\\" && escapes) {
           cursor += 2;
           continue;
         }
         if (sql[cursor] === quote) {
-          if (quote === "'" && sql[cursor + 1] === "'") {
+          if (sql[cursor + 1] === quote) {
             cursor += 2;
             continue;
           }
@@ -302,72 +350,196 @@ function chunkSql(sql: string): SqlChunk[] {
   return chunks;
 }
 
-function uppercaseKeywords(text: string): string {
-  let result = text;
-  for (const keyword of FORMAT_KEYWORDS) {
-    const pattern = new RegExp(`\\b${keyword.replace(/ /g, "\\\\s+")}\\b`, "gi");
-    result = result.replace(pattern, keyword);
+interface SqlToken {
+  // name: a variable, parameter or column after a dot (@from, :limit, $1,
+  // .order), which is never a keyword however it's spelled.
+  kind: "word" | "name" | "space" | "punct" | "string" | "comment" | "line";
+  text: string;
+}
+
+const TOKEN = /\s+|::|@@?[A-Za-z_][A-Za-z0-9_$#@]*|:[A-Za-z_][A-Za-z0-9_]*|\$[A-Za-z0-9_]+|\.[A-Za-z_][A-Za-z0-9_$]*|[A-Za-z_][A-Za-z0-9_$]*|\d[\d.]*|[\s\S]/g;
+
+// The SQL as tokens: words, names, blanks and punctuation from its text, and
+// its strings and comments whole, never looked into.
+function tokenizeSql(sql: string, dialect?: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
+  for (const chunk of chunkSql(sql, dialect)) {
+    if (chunk.kind === "string") {
+      tokens.push({ kind: "string", text: chunk.text });
+      continue;
+    }
+    if (chunk.kind === "comment") {
+      tokens.push({ kind: chunk.text.startsWith("/*") ? "comment" : "line", text: chunk.text });
+      continue;
+    }
+    for (const match of chunk.text.matchAll(TOKEN)) {
+      const text = match[0];
+      tokens.push({
+        kind: /^\s/.test(text)
+          ? "space"
+          : /^[A-Za-z_\d]/.test(text)
+            ? "word"
+            : text.length > 1 && /^[@:$.]/.test(text) && text !== "::"
+              ? "name"
+              : "punct",
+        text,
+      });
+    }
   }
-  return result;
+  return tokens;
 }
 
-export function uppercaseSql(sql: string): string {
-  return chunkSql(sql)
-    .map((chunk) => (chunk.kind === "text" ? uppercaseKeywords(chunk.text) : chunk.text))
-    .join("");
-}
+const KEYWORD_SET = new Set([...FORMAT_KEYWORDS, ...FORMAT_INDENT_BEFORE].flatMap((keyword) => keyword.split(" ")));
+const BREAK_WORDS = FORMAT_BREAK_BEFORE.map((keyword) => keyword.split(" "));
+const INDENT_WORDS = new Set(FORMAT_INDENT_BEFORE);
 
-export function formatSql(sql: string, mode: "beautify" | "minify"): string {
-  const chunks = chunkSql(sql);
-  if (mode === "minify") {
-    return chunks
-      .map((chunk) => {
-        if (chunk.kind === "text") {
-          return chunk.text.replace(/\s+/g, " ");
+// How many tokens from `at` spell one of `phrases` (blanks between its words
+// allowed), longest phrase first; 0 for none.
+function phraseAt(tokens: SqlToken[], at: number, phrases: string[][]): number {
+  for (const words of [...phrases].sort((a, b) => b.length - a.length)) {
+    let cursor = at;
+    let matched = true;
+    for (let index = 0; index < words.length; index += 1) {
+      if (index > 0) {
+        if (tokens[cursor]?.kind !== "space") {
+          matched = false;
+          break;
         }
-        return chunk.text;
-      })
-      .join("")
-      .replace(/\s*,\s*/g, ", ")
-      .replace(/\(\s+/g, "(")
-      .replace(/\s+\)/g, ")")
-      .trim();
+        cursor += 1;
+      }
+      const token = tokens[cursor];
+      if (token?.kind !== "word" || token.text.toUpperCase() !== words[index]) {
+        matched = false;
+        break;
+      }
+      cursor += 1;
+    }
+    if (matched) {
+      return cursor - at;
+    }
   }
-  let text = chunks
-    .map((chunk) => (chunk.kind === "text" ? chunk.text : `\u0000${chunk.text}\u0000`))
+  return 0;
+}
+
+// Keywords upper-cased in the text alone; strings and comments as written.
+export function uppercaseSql(sql: string, dialect?: string): string {
+  return tokenizeSql(sql, dialect)
+    .map((token) => (token.kind === "word" && KEYWORD_SET.has(token.text.toUpperCase()) ? token.text.toUpperCase() : token.text))
     .join("");
-  text = text.replace(/\s+/g, " ").trim();
-  const pieces = text.split("\u0000");
+}
+
+// Beautify: each clause on its own line (AND/OR/ON indented under it), only
+// outside parentheses, blanks squeezed to one and keywords upper-cased.
+// Minify: one line, letter case as written (uppercaseSql is the caller's call). Neither changes a string literal or a comment; a -- or #
+// comment becomes /* … */ on one line, so the code after it isn't commented out.
+export function formatSql(sql: string, mode: "beautify" | "minify", dialect?: string): string {
+  const tokens = tokenizeSql(sql, dialect);
   const lines: string[] = [];
-  for (const piece of pieces) {
-    if (piece === "") {
+  let line = "";
+  let gap = false;
+  // The blank before this token held a line break, and the token before it
+  // was a string: 'a'\n'b' is one string in PostgreSQL, 'a' 'b' an error.
+  let brokenGap = false;
+  let previous: SqlToken["kind"] | null = null;
+  let depth = 0;
+  const breakLine = (indent = ""): void => {
+    if (line.trim() !== "") {
+      lines.push(line.trimEnd());
+    }
+    line = indent;
+    gap = false;
+  };
+  const put = (text: string, tight = false): void => {
+    if (gap && !tight && line.trim() !== "" && !/[(.]$/.test(line)) {
+      line += " ";
+    }
+    line += text;
+    gap = false;
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind === "space") {
+      gap = true;
+      brokenGap = brokenGap || token.text.includes("\n");
       continue;
     }
-    if (piece.length > 1 && (piece.startsWith("--") || piece.startsWith("/*"))) {
-      lines.push(piece.trim());
+    const afterString = previous === "string" && brokenGap;
+    previous = token.kind;
+    brokenGap = false;
+    if (token.kind === "line") {
+      if (mode === "minify") {
+        const body = token.text.replace(/^(--|#)\s?/, "").replaceAll("*/", "* /").replaceAll("/*", "/ *");
+        put(`/* ${body} */`);
+        continue;
+      }
+      put(token.text);
+      breakLine();
       continue;
     }
-    let segment = uppercaseKeywords(piece);
-    for (const keyword of FORMAT_BREAK_BEFORE) {
-      const pattern = new RegExp(`\\b${keyword.replace(/ /g, "\\\\s+")}\\b`, "gi");
-      segment = segment.replace(pattern, `\n${keyword}`);
+    if (token.kind === "string" && afterString) {
+      line += "\n";
+      put(token.text, true);
+      continue;
     }
-    for (const keyword of FORMAT_INDENT_BEFORE) {
-      const pattern = new RegExp(`\\b${keyword}\\b`, "gi");
-      segment = segment.replace(pattern, `\n  ${keyword}`);
+    if (token.kind === "comment" || token.kind === "string" || token.kind === "name") {
+      put(token.text);
+      continue;
     }
-    for (const raw of segment.split("\n")) {
-      const line = raw.trim().replace(/\s*,\s*/g, ", ");
-      if (line !== "") {
-        lines.push(line);
+    if (token.kind === "punct") {
+      if (token.text === ",") {
+        put(",", true);
+        gap = true;
+        continue;
+      }
+      if (token.text === "(") {
+        depth += 1;
+        put("(");
+        continue;
+      }
+      if (token.text === ")") {
+        depth = Math.max(0, depth - 1);
+        put(")", true);
+        continue;
+      }
+      if (token.text === ";") {
+        put(";", true);
+        if (mode === "beautify") {
+          breakLine();
+          lines.push("");
+        }
+        depth = 0;
+        continue;
+      }
+      if (token.text === ".") {
+        put(".", true);
+        continue;
+      }
+      put(token.text);
+      continue;
+    }
+    // A word.
+    if (mode === "beautify" && depth === 0) {
+      const span = phraseAt(tokens, index, BREAK_WORDS);
+      if (span > 0) {
+        breakLine();
+        put(tokens.slice(index, index + span).filter((part) => part.kind === "word").map((part) => part.text.toUpperCase()).join(" "));
+        index += span - 1;
+        continue;
+      }
+      if (INDENT_WORDS.has(token.text.toUpperCase())) {
+        breakLine("  ");
+        put(token.text.toUpperCase());
+        continue;
       }
     }
+    put(mode === "beautify" && KEYWORD_SET.has(token.text.toUpperCase()) ? token.text.toUpperCase() : token.text);
   }
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  breakLine();
+  return (mode === "minify" ? lines.join(" ") : lines.join("\n")).replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export function extractParams(sql: string): string[] {
-  const chunks = chunkSql(sql);
+export function extractParams(sql: string, dialect?: string): string[] {
+  const chunks = chunkSql(sql, dialect);
   const names: string[] = [];
   for (const chunk of chunks) {
     if (chunk.kind !== "text") {
@@ -385,8 +557,13 @@ export function extractParams(sql: string): string[] {
   return names;
 }
 
-export function bindParams(sql: string, values: Record<string, string>, literal: (value: string) => string): string {
-  const chunks = chunkSql(sql);
+export function bindParams(
+  sql: string,
+  values: Record<string, string>,
+  literal: (value: string) => string,
+  dialect?: string,
+): string {
+  const chunks = chunkSql(sql, dialect);
   return chunks
     .map((chunk) => {
       if (chunk.kind !== "text") {

@@ -14,7 +14,7 @@ import {
 } from "../export";
 import { t } from "../i18n";
 import { store, type GridResult } from "../store";
-import { dataPageInfo, type DataTab } from "../tabs";
+import { countFor, dataPageInfo, type DataTab } from "../tabs";
 import { getSettings } from "../settings";
 import type { WindowedRowSource } from "../grid/windowSource";
 import { ErrorNotice } from "./ErrorNotice";
@@ -24,6 +24,8 @@ interface ExportModalProps {
   title: string;
   result: GridResult;
   dataTab: DataTab | null;
+  // The tab's rows are loading (a new filter, say): what it shows is the last run's.
+  loading?: boolean;
   kind: string;
   onClose(): void;
 }
@@ -34,7 +36,7 @@ function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-export function ExportModal({ conn, title, result, dataTab, kind, onClose }: ExportModalProps) {
+export function ExportModal({ conn, title, result, dataTab, loading = false, kind, onClose }: ExportModalProps) {
   const [format, setFormat] = useState<ExportFormat>("csv");
   const [scope, setScope] = useState<Scope>("loaded");
   const [csvHeader, setCsvHeader] = useState(() => getSettings().csvHeader);
@@ -63,7 +65,12 @@ export function ExportModal({ conn, title, result, dataTab, kind, onClose }: Exp
     if (!dataTab) {
       return Math.min(Math.max(1, result.meta.rowCount), EXPORT_MAX_ROWS);
     }
-    const info = dataPageInfo(dataTab, dataTab.count ?? null);
+    // A count taken under another filter says nothing about this one, and the
+    // rows shown are this filter's only if its last run got through.
+    if (countFor(dataTab, kind) === null && (loading || dataTab.error !== undefined || dataTab.info !== undefined)) {
+      return EXPORT_MAX_ROWS;
+    }
+    const info = dataPageInfo(dataTab, countFor(dataTab, kind));
     if (info.rows !== null && !info.truncated) {
       return Math.min(Math.max(1, info.rows), EXPORT_MAX_ROWS);
     }

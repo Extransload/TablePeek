@@ -69,6 +69,10 @@ pub struct ColumnSchema {
     pub pk: bool,
     #[serde(default)]
     pub default: Option<String>,
+    /// The values an enum column takes, in order (PostgreSQL enum types,
+    /// MySQL ENUM and SET); filled by table detail only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
 }
 
 /// 테이블 스키마 (스키마 브라우저)
@@ -96,6 +100,20 @@ pub struct ForeignKeyInfo {
     pub ref_columns: Vec<String>,
 }
 
+/// 테이블에 걸린 트리거
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerInfo {
+    pub name: String,
+    /// BEFORE / AFTER / INSTEAD OF, when the driver says
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<String>,
+    /// INSERT / UPDATE / DELETE (several joined with " OR ")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// The full CREATE TRIGGER statement where the driver can give it
+    pub definition: Option<String>,
+}
+
 /// 테이블 구조 + 통계 (/api/table)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableDetail {
@@ -115,6 +133,8 @@ pub struct TableDetail {
     pub columns: Vec<ColumnSchema>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKeyInfo>,
+    #[serde(default)]
+    pub triggers: Vec<TriggerInfo>,
     pub ddl: Option<String>,
     #[serde(default)]
     pub schema: Option<String>,

@@ -6,7 +6,7 @@ import { DEFINITION_KIND_LABELS, type DefinitionKind } from "../sqlTools";
 import type { DefinitionTab } from "../tabs";
 import { ErrorNotice } from "./ErrorNotice";
 import { CopyIcon, RefreshIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { LoadingState, Spinner } from "./Spinner";
 
 interface DefinitionPanelProps {
   conn: string;
@@ -67,11 +67,12 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
         <span className="panel-title">{tab.name}</span>
         <span className="badge-kind">{label}</span>
         <span className="spacer" />
-        {loading ? (
-              <span className="panel-dim">
-                <Spinner size={10} /> {t("불러오는 중…")}
-              </span>
-            ) : null}
+        {/* A refresh of what's shown; a first load shows in the body. */}
+        {loading && detail !== null ? (
+          <span className="panel-dim delayed-in">
+            <Spinner size={10} /> {t("불러오는 중…")}
+          </span>
+        ) : null}
         <button
           type="button"
           className="icon-text-button"
@@ -86,7 +87,7 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
       <div className="panel-body">
         {error ? <ErrorNotice message={error} /> : null}
         {detail === null ? (
-          error ? null : <div className="panel-empty">{t("불러오는 중…")}</div>
+          error ? null : <LoadingState />
         ) : detail.ddl === null ? (
           <div className="panel-empty-inline">{t("정의를 가져올 수 없습니다")}</div>
         ) : (

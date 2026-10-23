@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useMenuDismiss } from "./Dropdowns";
-import { dataPageInfo, type DataTab } from "../tabs";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useMenuDismiss } from "./useMenuDismiss";
+import type { DataTab } from "../tabs";
 import { t } from "../i18n";
-import { ColumnsIcon, FilterIcon, PlusIcon, RefreshIcon } from "./icons";
+import { withHint } from "../shortcuts";
+import { ColumnsIcon, FilterIcon, ListIcon, PlusIcon, RefreshIcon } from "./icons";
+import { Spinner } from "./Spinner";
 
 interface NumBoxProps {
   value: number;
@@ -90,13 +92,14 @@ function PageSizeMenu({ tab, running, counting, hasMeta, onLimit, onOffset, onCo
     <div className="page-size-menu" ref={rootRef}>
       <button
         type="button"
-        className={open ? "page-size-button active" : "page-size-button"}
+        className={open ? "icon-button page-size-button active" : "icon-button page-size-button"}
         aria-haspopup="dialog"
         aria-expanded={open}
+        aria-label={t("가져올 행 수 (LIMIT)")}
         onClick={() => setOpen((value) => !value)}
-        title={t("가져올 행 수 (LIMIT)")}
+        title={`${t("가져올 행 수 (LIMIT)")} · ${t("{count}행씩", { count: tab.pageSize.toLocaleString() })}`}
       >
-        {t("{count}행씩", { count: tab.pageSize.toLocaleString() })}
+        <ListIcon size={13} />
       </button>
       {open ? (
         <div className="page-size-panel" role="dialog" aria-label={t("페이지 설정")}>
@@ -129,12 +132,28 @@ function PageSizeMenu({ tab, running, counting, hasMeta, onLimit, onOffset, onCo
   );
 }
 
+// The rows a table view holds in all, when known: counted (exact) or the
+// driver's estimate.
+export interface DataTotal {
+  rows: number;
+  exact: boolean;
+}
+
 interface DataTabToolbarProps {
   tab: DataTab;
+  // The Data | Structure | Index switch, which leads the footer.
+  viewTabs: ReactNode;
+  // The refresh shortcut as the keymap has it, for the tooltip.
+  refreshHint?: string;
+  total: DataTotal | null;
   running: boolean;
+  // The rows are on their way (a run, or an open about to start one).
+  loading: boolean;
   counting: boolean;
   filterOpen: boolean;
   columnsOpen: boolean;
+  // The column list, opened over its button.
+  columnsPicker?: ReactNode;
   onRefresh(): void;
   onToggleFilter(): void;
   onToggleColumns(): void;
@@ -142,19 +161,40 @@ interface DataTabToolbarProps {
   onLimit(limit: number): void;
   onOffset(offset: number): void;
   onCount(): void;
-  onFirst(): void;
   onPrev(): void;
   onNext(): void;
 }
 
 const MAX_LIMIT = 500000;
 
+// "1–300 / 1,126 rows": the rows on this page and how many there are.
+function rangeText(offset: number, shown: number, total: DataTotal | null): string {
+  if (shown === 0 && offset === 0) {
+    return t("행 없음");
+  }
+  const range = `${(offset + 1).toLocaleString()}–${(offset + shown).toLocaleString()}`;
+  if (total === null) {
+    return t("{range} / ?행", { range });
+  }
+  // `count` gives English its singular: "1–1 of 1 row".
+  const values = { range, total: total.rows.toLocaleString(), count: total.rows };
+  return total.exact ? t("{range} / {total}행", values) : t("{range} / ≈ {total}행", values);
+}
+
+// The Data view's footer, laid out as TablePlus's: the views and + Row on the
+// left, where the page sits among all the rows in the middle, and filters,
+// columns and paging on the right.
 export function DataTabToolbar({
   tab,
+  viewTabs,
+  refreshHint,
+  total,
   running,
+  loading,
   counting,
   filterOpen,
   columnsOpen,
+  columnsPicker,
   onRefresh,
   onToggleFilter,
   onToggleColumns,
@@ -162,105 +202,113 @@ export function DataTabToolbar({
   onLimit,
   onOffset,
   onCount,
-  onFirst,
   onPrev,
   onNext,
 }: DataTabToolbarProps) {
-  const info = dataPageInfo(tab, tab.count ?? null);
-  const hasMeta = tab.meta !== undefined;
-  const canInsert = hasMeta && tab.meta !== undefined && tab.meta.sourceTable !== null;
+  const meta = tab.meta;
+  const hasMeta = meta !== undefined;
+  const canInsert = hasMeta && meta.sourceTable !== null;
+  const size = Math.max(1, tab.pageSize);
+  const page = Math.floor(Math.max(0, tab.offset) / size) + 1;
+  const pages = total !== null ? Math.max(1, Math.ceil(total.rows / size)) : null;
+  const fullPage = hasMeta && (meta.rowCount >= size || meta.truncated);
   const nextEnabled =
-    hasMeta &&
-    !running &&
-    (info.truncated ||
-      (info.exact && info.pages !== null && info.page < info.pages));
+    hasMeta && !running && (total !== null && total.exact && pages !== null ? page < pages : fullPage);
   return (
     <>
-      <button
-        type="button"
-        className="icon-button"
-        disabled={running}
-        onClick={onRefresh}
-        title={t("데이터 새로고침")}
-      >
-        <RefreshIcon size={12} />
-      </button>
-      <button
-        type="button"
-        className="icon-button"
-        disabled={running || !canInsert}
-        onClick={onInsertRow}
-        title={t("새 행 추가 (변경사항 적용 시 저장)")}
-      >
-        <PlusIcon size={12} />
-      </button>
-      <button
-        type="button"
-        className={filterOpen ? "icon-button active" : "icon-button"}
-        onClick={onToggleFilter}
-        title={t("필터 표시/숨김")}
-      >
-        <FilterIcon size={12} />
-      </button>
-      <button
-        type="button"
-        className={columnsOpen ? "icon-button active" : "icon-button"}
-        onClick={onToggleColumns}
-        title={t("컬럼 표시/숨김·순서")}
-      >
-        <ColumnsIcon size={12} />
-      </button>
-      <span className="spacer" />
-      <PageSizeMenu
-        tab={tab}
-        running={running}
-        counting={counting}
-        hasMeta={hasMeta}
-        onLimit={onLimit}
-        onOffset={onOffset}
-        onCount={onCount}
-      />
-      <span className="page-nav">
+      <div className="footer-start">
+        {viewTabs}
         <button
           type="button"
-          disabled={running || !hasMeta || tab.offset === 0}
-          onClick={onFirst}
-          title={t("첫 페이지")}
-          aria-label={t("첫 페이지")}
+          className="footer-button"
+          disabled={running || !canInsert}
+          onClick={onInsertRow}
+          title={t("새 행 추가 (변경사항 적용 시 저장)")}
         >
-          «
+          <PlusIcon size={11} />
+          <span className="footer-label">{t("새 행")}</span>
         </button>
+      </div>
+      <div className="footer-middle">
+        {hasMeta ? (
+          <button
+            type="button"
+            className="row-range"
+            disabled={running || counting}
+            onClick={onCount}
+            title={t("정확한 행 수 세기")}
+          >
+            {rangeText(Math.max(0, tab.offset), meta.rowCount, total)}
+            {counting ? <Spinner size={10} className="delayed-in" /> : null}
+          </button>
+        ) : running || loading ? (
+          <span className="row-range delayed-in">{t("불러오는 중…")}</span>
+        ) : null}
+      </div>
+      <div className="footer-end">
         <button
           type="button"
-          disabled={running || !hasMeta || tab.offset === 0}
-          onClick={onPrev}
-          title={t("이전 페이지")}
-          aria-label={t("이전 페이지")}
+          className={filterOpen ? "footer-button active" : "footer-button"}
+          onClick={onToggleFilter}
+          title={t("필터 표시/숨김")}
         >
-          ‹
+          <FilterIcon size={11} />
+          <span className="footer-label">{t("필터")}</span>
         </button>
-        <span className="page-label">
-          {info.pages === null ? `${info.page}+` : `${info.page} / ${info.pages}`}
+        <span className="footer-anchor">
+          <button
+            type="button"
+            className={columnsOpen ? "footer-button active" : "footer-button"}
+            onClick={onToggleColumns}
+            title={t("컬럼 표시/숨김·순서")}
+          >
+            <ColumnsIcon size={11} />
+            <span className="footer-label">{t("컬럼")}</span>
+          </button>
+          {columnsPicker}
         </span>
         <button
           type="button"
-          disabled={!nextEnabled}
-          onClick={onNext}
-          title={t("다음 페이지")}
-          aria-label={t("다음 페이지")}
+          className="icon-button"
+          disabled={running}
+          onClick={onRefresh}
+          title={withHint(t("데이터 새로고침"), refreshHint)}
         >
-          ›
+          <RefreshIcon size={12} />
         </button>
-      </span>
-      <span className="row-count">
-        {info.rows === null
-          ? running
-            ? t("불러오는 중…")
-            : ""
-          : info.exact
-            ? t("{count}행", { count: info.rows.toLocaleString() })
-            : t("{count}+행", { count: info.rows.toLocaleString() })}
-      </span>
+        <PageSizeMenu
+          tab={tab}
+          running={running}
+          counting={counting}
+          hasMeta={hasMeta}
+          onLimit={onLimit}
+          onOffset={onOffset}
+          onCount={onCount}
+        />
+        <span className="page-nav">
+          <button
+            type="button"
+            disabled={running || !hasMeta || tab.offset === 0}
+            onClick={onPrev}
+            title={t("이전 페이지")}
+            aria-label={t("이전 페이지")}
+          >
+            ‹
+          </button>
+          <span className="page-label" title={t("페이지")}>
+            {pages === null ? page : total?.exact ? `${page} / ${pages}` : `${page} / ≈${pages}`}
+          </span>
+          <button
+            type="button"
+            disabled={!nextEnabled}
+            onClick={onNext}
+            title={t("다음 페이지")}
+            aria-label={t("다음 페이지")}
+          >
+            ›
+          </button>
+        </span>
+      </div>
     </>
   );
 }

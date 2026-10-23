@@ -1,23 +1,30 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use futures_util::StreamExt;
 use serde_json::Value;
 use tiberius::{
-    AuthMethod, Client, ColumnData, Config, EncryptionLevel, FromSqlOwned, QueryItem, ToSql,
+    AuthMethod, Client, ColumnData, Config, EncryptionLevel, ExecuteResult, FromSqlOwned,
+    QueryItem, QueryStream, ToSql,
 };
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MssqlConfig,
-    ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema,
+    ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema, TriggerInfo,
 };
 
-use crate::sql_parse::{parse_single_table, trim_ident};
+use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
+use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
+use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
 use crate::{build_arrow, humanize_uptime_ko, EngineError, QueryData};
 
 type MssqlClient = Client<Compat<TcpStream>>;
+
+/// A SELECT's table as its display name and primary key columns; None when
+/// INFORMATION_SCHEMA has no such table.
+type Source = Option<(String, Vec<String>)>;
 
 pub struct MssqlInner {
     client: tokio::sync::Mutex<Option<MssqlClient>>,
@@ -27,9 +34,19 @@ pub struct MssqlInner {
     spid: AtomicI32,
     label: String,
     in_tx: AtomicBool,
+    // A transaction was open when its session went (a cancel KILLs it): the
+    // next COMMIT reports the rollback rather than "no transaction".
+    tx_lost: Mutex<Option<&'static str>>,
     cancel_requested: AtomicBool,
     session_dead: AtomicBool,
+    // By (schema, table) as the SELECT named them, the default schema
+    // standing in for a missing one.
+    sources: SourceCache<(String, String), Source>,
+    log: SqlLog,
 }
+
+const CANCELLED: &str = "쿼리 취소로 세션이 끊겨 트랜잭션이 롤백되었습니다";
+const SERVER_ROLLED_BACK: &str = "서버가 오류로 트랜잭션을 롤백했습니다";
 
 impl MssqlInner {
     pub(crate) fn in_tx(&self) -> bool {
@@ -43,10 +60,18 @@ impl MssqlInner {
         }
         self.cancel_requested.store(true, Ordering::SeqCst);
         self.session_dead.store(true, Ordering::SeqCst);
+        // The KILL ends the session and rolls its transaction back: say so
+        // now, not at the next statement. This clears the sources without
+        // the client lock, so a query still holding it may put one more;
+        // session_dead has the next client() clear them again, under the
+        // lock, before anything reads them.
+        self.lose_tx(CANCELLED);
         let config = self.config.clone();
+        let log = self.log.clone();
         tokio::spawn(async move {
             if let Ok(mut client) = open_client(&config).await {
                 let sql = format!("KILL {spid}");
+                log.record(&sql, Dialect::Mssql);
                 let _ = client.execute(sql, &[]).await;
                 let _ = client.close().await;
             }
@@ -61,12 +86,33 @@ impl MssqlInner {
             *guard = None;
         }
         if guard.is_none() {
+            // A new session: whatever transaction the old one had is gone.
+            self.lose_tx(CANCELLED);
             let mut client = open_client(&self.config).await?;
             self.spid
-                .store(read_spid(&mut client).await?, Ordering::SeqCst);
+                .store(read_spid(&mut client, &self.log).await?, Ordering::SeqCst);
             *guard = Some(client);
         }
         Ok(guard)
+    }
+
+    /// Why the last transaction ended without a COMMIT or ROLLBACK of ours.
+    fn lost(&self) -> MutexGuard<'_, Option<&'static str>> {
+        self.tx_lost.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The session's transaction is gone (a KILL, or the server rolled it
+    /// back): the next COMMIT reports `reason`.
+    fn lose_tx(&self, reason: &'static str) {
+        // Its DDL went with it, and a new session starts back in the
+        // connection's database, whatever USE said.
+        self.sources.clear();
+        if self.in_tx.swap(false, Ordering::SeqCst) {
+            *self.lost() = Some(reason);
+            self.log.ended(false);
+        } else {
+            self.log.settle(false);
+        }
     }
 
     fn take_cancelled(&self) -> bool {
@@ -109,9 +155,23 @@ async fn open_client(config: &Config) -> Result<MssqlClient, EngineError> {
         .map_err(|err| EngineError::Mssql(format!("SQL Server 연결 실패: {err}")))
 }
 
-async fn read_spid(client: &mut MssqlClient) -> Result<i32, EngineError> {
+async fn trancount(client: &mut MsConn<'_>) -> Option<i64> {
     let row = client
-        .query("SELECT @@SPID", &[])
+        .query("SELECT @@TRANCOUNT", &[])
+        .await
+        .ok()?
+        .into_row()
+        .await
+        .ok()??;
+    let values: Vec<ColumnData<'static>> = row.into_iter().collect();
+    cd_i64(values.first())
+}
+
+async fn read_spid(client: &mut MssqlClient, log: &SqlLog) -> Result<i32, EngineError> {
+    const SPID_SQL: &str = "SELECT @@SPID";
+    log.record(SPID_SQL, Dialect::Mssql);
+    let row = client
+        .query(SPID_SQL, &[])
         .await
         .map_err(mssql_err)?
         .into_row()
@@ -125,10 +185,109 @@ async fn read_spid(client: &mut MssqlClient) -> Result<i32, EngineError> {
 
 fn take_client<'a>(
     guard: &'a mut tokio::sync::MutexGuard<'_, Option<MssqlClient>>,
-) -> Result<&'a mut MssqlClient, EngineError> {
-    guard
+    log: &'a SqlLog,
+) -> Result<MsConn<'a>, EngineError> {
+    let client = guard
         .as_mut()
-        .ok_or_else(|| EngineError::Internal("SQL Server 연결이 준비되지 않았습니다".into()))
+        .ok_or_else(|| EngineError::Internal("SQL Server 연결이 준비되지 않았습니다".into()))?;
+    Ok(MsConn { client, log })
+}
+
+/// The session's client; every method logs its statement before sending it.
+/// It deliberately has no way to reach the bare client.
+struct MsConn<'a> {
+    client: &'a mut MssqlClient,
+    log: &'a SqlLog,
+}
+
+impl MsConn<'_> {
+    fn shown(sql: &str, params: &[&dyn ToSql]) -> String {
+        if params.is_empty() {
+            return sql.to_string();
+        }
+        let values: Vec<LogParam> = params.iter().map(|param| log_param(*param)).collect();
+        inline_params(sql, &values, Dialect::Mssql)
+    }
+
+    async fn query<'q>(
+        &'q mut self,
+        sql: &'q str,
+        params: &'q [&'q dyn ToSql],
+    ) -> Result<QueryStream<'q>, tiberius::error::Error> {
+        self.log.record(&Self::shown(sql, params), Dialect::Mssql);
+        self.client.query(sql, params).await
+    }
+
+    async fn execute(
+        &mut self,
+        sql: &str,
+        params: &[&dyn ToSql],
+    ) -> Result<ExecuteResult, tiberius::error::Error> {
+        self.log.record(&Self::shown(sql, params), Dialect::Mssql);
+        self.client.execute(sql, params).await
+    }
+
+    /// Runs a data change made from the GUI; one that changed rows goes to
+    /// History, at COMMIT when `in_tx`.
+    async fn change(
+        &mut self,
+        sql: &str,
+        params: &[&dyn ToSql],
+        in_tx: bool,
+    ) -> Result<u64, tiberius::error::Error> {
+        let shown = Self::shown(sql, params);
+        self.log.record(&shown, Dialect::Mssql);
+        let started = Instant::now();
+        let changed = self.client.execute(sql, params).await?.total();
+        if changed > 0 {
+            let change = Change {
+                sql: shown,
+                ms: started.elapsed().as_millis() as u64,
+                rows: changed,
+            };
+            self.log.changed(change, in_tx);
+        }
+        Ok(changed)
+    }
+
+    // The driver sends these as transaction manager requests, not SQL; the
+    // console shows the statements they stand for.
+    async fn begin_transaction(&mut self) -> Result<(), tiberius::error::Error> {
+        self.log.record("BEGIN TRANSACTION", Dialect::Mssql);
+        self.client.begin_transaction().await
+    }
+
+    async fn commit_transaction(&mut self) -> Result<(), tiberius::error::Error> {
+        self.log.record("COMMIT", Dialect::Mssql);
+        self.client.commit_transaction().await
+    }
+
+    async fn rollback_transaction(&mut self) -> Result<(), tiberius::error::Error> {
+        self.log.record("ROLLBACK", Dialect::Mssql);
+        self.client.rollback_transaction().await
+    }
+}
+
+fn log_param(param: &dyn ToSql) -> LogParam {
+    match param.to_sql() {
+        ColumnData::String(text) => {
+            text.map_or(LogParam::Null, |text| LogParam::Text(text.into_owned()))
+        }
+        ColumnData::U8(number) => number.map_or(LogParam::Null, |n| LogParam::Int(n.into())),
+        ColumnData::I16(number) => number.map_or(LogParam::Null, |n| LogParam::Int(n.into())),
+        ColumnData::I32(number) => number.map_or(LogParam::Null, |n| LogParam::Int(n.into())),
+        ColumnData::I64(number) => number.map_or(LogParam::Null, LogParam::Int),
+        ColumnData::F32(number) => number.map_or(LogParam::Null, |n| LogParam::Float(n.into())),
+        ColumnData::F64(number) => number.map_or(LogParam::Null, LogParam::Float),
+        ColumnData::Bit(flag) => flag.map_or(LogParam::Null, LogParam::Bool),
+        ColumnData::Binary(bytes) => {
+            bytes.map_or(LogParam::Null, |bytes| LogParam::Blob(bytes.into_owned()))
+        }
+        ColumnData::Guid(guid) => {
+            guid.map_or(LogParam::Null, |guid| LogParam::Text(guid.to_string()))
+        }
+        other => LogParam::Text(format!("{other:?}")),
+    }
 }
 
 const CONNECT_INFO_SQL: &str = "SELECT @@SPID, DB_NAME(), ISNULL(SCHEMA_NAME(), 'dbo')";
@@ -176,9 +335,14 @@ const PK_SQL: &str = "SELECT kcu.COLUMN_NAME
 const COLUMN_TYPE_SQL: &str = "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
      WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 AND COLUMN_NAME = @P3";
 
-pub(crate) async fn connect(config: &MssqlConfig) -> Result<Arc<MssqlInner>, EngineError> {
+pub(crate) async fn connect(
+    config: &MssqlConfig,
+    log: SqlLog,
+) -> Result<Arc<MssqlInner>, EngineError> {
     let tiberius_config = build_config(config);
     let mut client = open_client(&tiberius_config).await?;
+    // Not yet behind MsConn: logged by hand.
+    log.record(CONNECT_INFO_SQL, Dialect::Mssql);
     let row = client
         .query(CONNECT_INFO_SQL, &[])
         .await
@@ -215,8 +379,11 @@ pub(crate) async fn connect(config: &MssqlConfig) -> Result<Arc<MssqlInner>, Eng
         default_schema,
         spid: AtomicI32::new(spid),
         in_tx: AtomicBool::new(false),
+        tx_lost: Mutex::new(None),
         cancel_requested: AtomicBool::new(false),
         session_dead: AtomicBool::new(false),
+        sources: SourceCache::default(),
+        log,
     }))
 }
 
@@ -226,7 +393,9 @@ pub(crate) async fn meta(
 ) -> Result<EngineMeta, EngineError> {
     let _ = include_system;
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    // A reload picks up schema changes made elsewhere: so do the sources.
+    inner.sources.clear();
+    let mut client = take_client(&mut guard, &inner.log)?;
     let rows = client
         .query(TABLE_LIST_SQL, &[])
         .await
@@ -256,7 +425,8 @@ pub(crate) async fn schema(
 ) -> Result<Vec<TableSchema>, EngineError> {
     let _ = include_system;
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    inner.sources.clear();
+    let mut client = take_client(&mut guard, &inner.log)?;
     let tables = client
         .query(TABLE_LIST_SQL, &[])
         .await
@@ -305,6 +475,7 @@ pub(crate) async fn schema(
                     not_null,
                     pk,
                     default,
+                    enum_values: None,
                 }
             })
             .collect();
@@ -323,16 +494,19 @@ pub(crate) async fn query(
 ) -> Result<QueryData, EngineError> {
     let started = Instant::now();
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let mut columns: Vec<String> = Vec::new();
     let mut column_values: Vec<Vec<Value>> = Vec::new();
     let mut count = 0usize;
     let mut truncated = false;
 
-    let outcome: Result<(), EngineError> = async {
-        let mut stream = client.query(sql, &[]).await.map_err(mssql_err)?;
+    let control = tx_controls(sql, Dialect::Mssql).pop();
+    // USE, DDL, COMMIT/ROLLBACK and the like.
+    inner.sources.before_statement(sql, Dialect::Mssql);
+    let outcome: Result<(), tiberius::error::Error> = async {
+        let mut stream = client.query(sql, &[]).await?;
         while let Some(item) = stream.next().await {
-            match item.map_err(mssql_err)? {
+            match item? {
                 QueryItem::Metadata(result_meta) => {
                     columns = result_meta
                         .columns()
@@ -358,6 +532,44 @@ pub(crate) async fn query(
         Ok(())
     }
     .await;
+    if outcome.is_err() {
+        // A batch that failed partway may have run some of it, or had a
+        // transaction it opened unseen (IMPLICIT_TRANSACTIONS) rolled back.
+        inner.sources.clear();
+    }
+    // A transaction statement run from the editor (nested, or behind IF),
+    // or a failure inside a transaction (a deadlock victim, XACT_ABORT): ask
+    // the server whether one is open now, and settle History if it ended.
+    let mut unknown = false;
+    if control.is_some() || (outcome.is_err() && inner.in_tx()) {
+        if let Some(count) = trancount(&mut client).await {
+            let open = count > 0;
+            let was_open = inner.in_tx.swap(open, Ordering::SeqCst);
+            if was_open {
+                let end = batch_end(control, outcome.is_ok(), open);
+                if end != BatchEnd::StillOpen {
+                    // Even a failed SELECT (a deadlock victim) may have
+                    // rolled the transaction back, and its DDL with it.
+                    inner.sources.clear();
+                    unknown = end == BatchEnd::Unknown;
+                    *inner.lost() =
+                        (end == BatchEnd::ServerRolledBack).then_some(SERVER_ROLLED_BACK);
+                    inner.log.ended(end == BatchEnd::Committed);
+                }
+            } else if open {
+                *inner.lost() = None;
+                inner.log.settle(false);
+            }
+        }
+    }
+    let outcome = outcome.map_err(mssql_err);
+    if unknown {
+        if let Err(err) = &outcome {
+            return Err(EngineError::TxOutcomeUnknown(format!(
+                "배치가 실패해 트랜잭션이 커밋되었는지 알 수 없습니다: {err}"
+            )));
+        }
+    }
 
     if inner.take_cancelled() {
         outcome.map_err(|err| {
@@ -367,7 +579,7 @@ pub(crate) async fn query(
         outcome?;
     }
 
-    let (source_table, pk) = detect_source(inner, client, sql, &columns).await;
+    let (source_table, pk) = detect_source(inner, &mut client, sql, &columns).await;
     let (schema, batches) = build_arrow(&columns, column_values, count)?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(QueryData {
@@ -380,6 +592,8 @@ pub(crate) async fn query(
         truncated,
         source_table,
         pk,
+        // Booleans arrive as true and false.
+        column_kinds: Vec::new(),
     })
 }
 
@@ -390,11 +604,12 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
         ));
     }
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let (schema_part, table) = split_display_table(&target.table);
     let schema = schema_part.unwrap_or_else(|| inner.default_schema.clone());
     let table_ref = qualified(&inner.database, &schema, &table);
-    let column_type = column_type_of(client, &schema, &table, &target.column).await?;
+    check_key(inner, &mut client, &schema, &table, &target.pk).await?;
+    let column_type = column_type_of(&mut client, &schema, &table, &target.column).await?;
     let cast = cast_type(&column_type);
 
     let mut sql = format!(
@@ -406,7 +621,7 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
         if index > 0 {
             sql.push_str(" AND ");
         }
-        let pk_type = column_type_of(client, &schema, &table, &pk.column).await?;
+        let pk_type = column_type_of(&mut client, &schema, &table, &pk.column).await?;
         let pk_cast = cast_type(&pk_type);
         let position = index + 2;
         let quoted = quote_ident(&pk.column);
@@ -418,8 +633,11 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
     }
 
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
-    let result = client.execute(sql, &refs).await.map_err(mssql_err)?;
-    Ok(result.total())
+    let result = client.change(&sql, &refs, inner.in_tx()).await;
+    if result.is_err() {
+        check_tx(inner, &mut client).await;
+    }
+    result.map_err(mssql_err)
 }
 
 pub(crate) async fn insert_row(
@@ -428,7 +646,7 @@ pub(crate) async fn insert_row(
     values: &[(String, Option<String>)],
 ) -> Result<u64, EngineError> {
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let (schema_part, table_name) = split_display_table(table);
     let schema = schema_part.unwrap_or_else(|| inner.default_schema.clone());
     let table_ref = qualified(&inner.database, &schema, &table_name);
@@ -442,7 +660,7 @@ pub(crate) async fn insert_row(
             .join(", ");
         let mut placeholders = Vec::with_capacity(values.len());
         for (index, (column, _)) in values.iter().enumerate() {
-            let column_type = column_type_of(client, &schema, &table_name, column).await?;
+            let column_type = column_type_of(&mut client, &schema, &table_name, column).await?;
             let cast = cast_type(&column_type);
             placeholders.push(format!("CAST(@P{} AS {cast})", index + 1));
         }
@@ -453,8 +671,11 @@ pub(crate) async fn insert_row(
     };
     let params: Vec<Option<String>> = values.iter().map(|(_, value)| value.clone()).collect();
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
-    let result = client.execute(sql, &refs).await.map_err(mssql_err)?;
-    Ok(result.total())
+    let result = client.change(&sql, &refs, inner.in_tx()).await;
+    if result.is_err() {
+        check_tx(inner, &mut client).await;
+    }
+    result.map_err(mssql_err)
 }
 
 pub(crate) async fn delete_row(
@@ -466,17 +687,19 @@ pub(crate) async fn delete_row(
         return Err(EngineError::BadRequest("PK 조건이 필요합니다".into()));
     }
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let (schema_part, table_name) = split_display_table(table);
     let schema = schema_part.unwrap_or_else(|| inner.default_schema.clone());
     let table_ref = qualified(&inner.database, &schema, &table_name);
+    check_key(inner, &mut client, &schema, &table_name, pk).await?;
     let mut sql = format!("DELETE FROM {table_ref} WHERE ");
     let mut params: Vec<Option<String>> = Vec::with_capacity(pk.len());
     for (index, condition) in pk.iter().enumerate() {
         if index > 0 {
             sql.push_str(" AND ");
         }
-        let column_type = column_type_of(client, &schema, &table_name, &condition.column).await?;
+        let column_type =
+            column_type_of(&mut client, &schema, &table_name, &condition.column).await?;
         let cast = cast_type(&column_type);
         let position = index + 1;
         let quoted = quote_ident(&condition.column);
@@ -487,8 +710,11 @@ pub(crate) async fn delete_row(
         params.push(pk_value_string(&condition.value));
     }
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
-    let result = client.execute(sql, &refs).await.map_err(mssql_err)?;
-    Ok(result.total())
+    let result = client.change(&sql, &refs, inner.in_tx()).await;
+    if result.is_err() {
+        check_tx(inner, &mut client).await;
+    }
+    result.map_err(mssql_err)
 }
 
 pub(crate) async fn table_detail(
@@ -496,7 +722,10 @@ pub(crate) async fn table_detail(
     name: &str,
 ) -> Result<TableDetail, EngineError> {
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    // Opening a table's structure shows its key as it is now: so should the
+    // next SELECT.
+    inner.sources.clear();
+    let mut client = take_client(&mut guard, &inner.log)?;
     let (schema_part, table_name) = split_display_table(name);
     let schema = schema_part
         .clone()
@@ -548,6 +777,7 @@ pub(crate) async fn table_detail(
                 not_null,
                 pk,
                 default,
+                enum_values: None,
             }
         })
         .collect::<Vec<_>>();
@@ -689,6 +919,33 @@ pub(crate) async fn table_detail(
         .zip(data_bytes)
         .map(|(total, data)| (total - data).max(0));
 
+    // Triggers are an extra too: a failure leaves the list empty.
+    let mut triggers: Vec<TriggerInfo> = Vec::new();
+    if let Ok(stream) = client
+        .query(
+            "SELECT tr.name, OBJECT_DEFINITION(tr.object_id), tr.is_instead_of_trigger,
+                    STUFF((SELECT ' OR ' + te.type_desc
+                           FROM sys.trigger_events te WHERE te.object_id = tr.object_id
+                           FOR XML PATH('')), 1, 4, '')
+             FROM sys.triggers tr
+             WHERE tr.parent_id = OBJECT_ID(@P1)
+             ORDER BY tr.name",
+            &[&object_ref as &dyn ToSql],
+        )
+        .await
+    {
+        for row in stream.into_first_result().await.unwrap_or_default() {
+            let values: Vec<ColumnData<'static>> = row.into_iter().collect();
+            let instead_of = cd_i64(values.get(2)).map(|value| value != 0);
+            triggers.push(TriggerInfo {
+                name: cd_string(values.first()).unwrap_or_default(),
+                timing: instead_of.map(|flag| if flag { "INSTEAD OF" } else { "AFTER" }.into()),
+                event: cd_string(values.get(3)),
+                definition: cd_string(values.get(1)),
+            });
+        }
+    }
+
     let table_ref = qualified(&inner.database, &schema, &table_name);
     Ok(TableDetail {
         name: if schema_part.is_some() {
@@ -705,13 +962,14 @@ pub(crate) async fn table_detail(
         columns,
         indexes,
         foreign_keys,
+        triggers,
         schema: Some(schema.clone()),
     })
 }
 
 pub(crate) async fn server_info(inner: &MssqlInner) -> Result<ServerInfo, EngineError> {
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let row = client
         .query(
             "SELECT LEFT(@@VERSION, CHARINDEX(CHAR(10), @@VERSION + CHAR(10)) - 1),
@@ -800,7 +1058,7 @@ pub(crate) async fn objects(
 ) -> Result<DbObjects, EngineError> {
     let _ = include_system;
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let pair_rows = |rows: Vec<tiberius::Row>| {
         rows.into_iter()
             .map(|row| {
@@ -897,7 +1155,7 @@ pub(crate) async fn objects(
 
 pub(crate) async fn table_count(inner: &MssqlInner, name: &str) -> Result<i64, EngineError> {
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let (schema_part, table_name) = split_display_table(name);
     let schema = schema_part.unwrap_or_else(|| inner.default_schema.clone());
     let table_ref = qualified(&inner.database, &schema, &table_name);
@@ -918,7 +1176,7 @@ pub(crate) async fn table_count(inner: &MssqlInner, name: &str) -> Result<i64, E
 
 pub(crate) async fn databases(inner: &MssqlInner) -> Result<Vec<String>, EngineError> {
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let rows = client
         .query(
             "SELECT name FROM sys.databases WHERE state = 0 ORDER BY name",
@@ -941,7 +1199,7 @@ pub(crate) async fn object_definition(
     name: &str,
 ) -> Result<Option<ObjectDefinition>, EngineError> {
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     let (schema_part, object_name) = split_display_table(name);
     let schema = schema_part
         .clone()
@@ -993,9 +1251,9 @@ pub(crate) async fn kill_session(inner: &MssqlInner, id: u64) -> Result<(), Engi
         ));
     }
     let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
+    let mut client = take_client(&mut guard, &inner.log)?;
     client
-        .execute(format!("KILL {id}"), &[])
+        .execute(&format!("KILL {id}"), &[])
         .await
         .map_err(mssql_err)?;
     Ok(())
@@ -1036,6 +1294,10 @@ fn sort_dedup(mut names: Vec<String>) -> Vec<String> {
 }
 
 pub(crate) async fn tx(inner: &MssqlInner, statement: &str) -> Result<(), EngineError> {
+    // The session first: a cancel may have ended it, and its transaction.
+    let mut guard = inner.client().await?;
+    // A rollback takes the transaction's DDL with it.
+    inner.sources.clear();
     let active = inner.in_tx();
     match statement {
         "BEGIN" if active => {
@@ -1044,27 +1306,97 @@ pub(crate) async fn tx(inner: &MssqlInner, statement: &str) -> Result<(), Engine
             ));
         }
         "COMMIT" | "ROLLBACK" if !active => {
+            let lost = inner.lost().take();
+            if let Some(reason) = lost {
+                inner.log.settle(false);
+                // A ROLLBACK asks for what already happened.
+                return match statement {
+                    "COMMIT" => Err(EngineError::TxRolledBack(reason.into())),
+                    _ => Ok(()),
+                };
+            }
             return Err(EngineError::Internal(
                 "진행 중인 트랜잭션이 없습니다".into(),
             ));
         }
         _ => {}
     }
-    let mut guard = inner.client().await?;
-    let client = take_client(&mut guard)?;
-    match statement {
-        "BEGIN" => client.begin_transaction().await.map_err(mssql_err)?,
-        "COMMIT" => client.commit_transaction().await.map_err(mssql_err)?,
-        "ROLLBACK" => client.rollback_transaction().await.map_err(mssql_err)?,
-        _ => {}
+    let mut client = take_client(&mut guard, &inner.log)?;
+    let outcome = match statement {
+        "BEGIN" => client.begin_transaction().await,
+        "COMMIT" => client.commit_transaction().await,
+        "ROLLBACK" => client.rollback_transaction().await,
+        _ => Ok(()),
+    };
+    // Under the lock, so no change slips between the statement and these.
+    if let Err(err) = outcome {
+        // A COMMIT or ROLLBACK that fails may find the transaction already
+        // rolled back by the server (a doomed one cannot commit).
+        if statement != "BEGIN" && trancount(&mut client).await == Some(0) {
+            inner.in_tx.store(false, Ordering::SeqCst);
+            *inner.lost() = None;
+            inner.log.ended(false);
+            return match statement {
+                "COMMIT" => Err(EngineError::TxRolledBack(format!(
+                    "커밋하지 못해 트랜잭션을 롤백했습니다: {err}"
+                ))),
+                _ => Ok(()),
+            };
+        }
+        return Err(mssql_err(err));
+    }
+    inner.in_tx.store(statement == "BEGIN", Ordering::SeqCst);
+    *inner.lost() = None;
+    if statement == "BEGIN" {
+        inner.log.settle(false);
+    } else {
+        inner.log.ended(statement == "COMMIT");
     }
     drop(guard);
-    inner.in_tx.store(statement == "BEGIN", Ordering::SeqCst);
     Ok(())
 }
 
+/// How a transaction open before an editor batch fared in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BatchEnd {
+    StillOpen,
+    Committed,
+    RolledBack,
+    /// No COMMIT or ROLLBACK of the user's ended it: SQL Server did (a
+    /// deadlock victim, an error with XACT_ABORT on).
+    ServerRolledBack,
+    /// The batch failed but had a COMMIT, which may have run before the
+    /// failure or not at all: neither a deadlock nor XACT_ABORT tells,
+    /// since the batch's order is unknown.
+    Unknown,
+}
+
+/// From the batch's last transaction statement (`control`), whether it went
+/// through, and whether @@TRANCOUNT still shows a transaction.
+fn batch_end(control: Option<TxControl>, succeeded: bool, open_after: bool) -> BatchEnd {
+    if open_after {
+        return BatchEnd::StillOpen;
+    }
+    match (control, succeeded) {
+        (Some(TxControl::Commit), true) => BatchEnd::Committed,
+        (Some(TxControl::Commit), false) => BatchEnd::Unknown,
+        // Closed by the user's ROLLBACK or by the server: not committed
+        // either way.
+        (Some(TxControl::Rollback), _) => BatchEnd::RolledBack,
+        _ => BatchEnd::ServerRolledBack,
+    }
+}
+
+/// A statement failed inside a transaction: SQL Server may have rolled the
+/// whole transaction back (a deadlock victim, XACT_ABORT). Ask.
+async fn check_tx(inner: &MssqlInner, client: &mut MsConn<'_>) {
+    if inner.in_tx() && trancount(client).await == Some(0) {
+        inner.lose_tx(SERVER_ROLLED_BACK);
+    }
+}
+
 async fn column_type_of(
-    client: &mut MssqlClient,
+    client: &mut MsConn<'_>,
     schema: &str,
     table: &str,
     column: &str,
@@ -1089,9 +1421,74 @@ async fn column_type_of(
         .ok_or_else(|| EngineError::NotEditable(format!("컬럼을 찾을 수 없습니다: {column}")))
 }
 
+/// Refuses a write keyed on columns that aren't the table's primary key now
+/// (see `key_unchanged`), and forgets the cached keys that said otherwise.
+/// It looks in the database the write goes to, which a USE doesn't move.
+async fn check_key(
+    inner: &MssqlInner,
+    client: &mut MsConn<'_>,
+    schema: &str,
+    table: &str,
+    pk: &[PkValue],
+) -> Result<(), EngineError> {
+    let catalog = if inner.database.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{}.", quote_ident(&inner.database))
+    };
+    let sql = format!(
+        "SELECT kcu.COLUMN_NAME
+         FROM {catalog}INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+         JOIN {catalog}INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+           ON tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+          AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+          AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+          AND tc.TABLE_NAME = kcu.TABLE_NAME
+         WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+           AND kcu.TABLE_SCHEMA = @P1
+           AND kcu.TABLE_NAME = @P2"
+    );
+    let rows = client
+        .query(&sql, &[&schema as &dyn ToSql, &table as &dyn ToSql])
+        .await
+        .map_err(mssql_err)?
+        .into_first_result()
+        .await
+        .map_err(mssql_err)?;
+    let current: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.get::<&str, _>(0).map(str::to_string))
+        .collect();
+    if key_unchanged(&current, pk, true) {
+        return Ok(());
+    }
+    inner.sources.clear();
+    if current.is_empty() {
+        // No key at all: dropped, or no such table in this database.
+        let sql = format!(
+            "SELECT 1 FROM {catalog}INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2"
+        );
+        let rows = client
+            .query(&sql, &[&schema as &dyn ToSql, &table as &dyn ToSql])
+            .await
+            .map_err(mssql_err)?
+            .into_first_result()
+            .await
+            .map_err(mssql_err)?;
+        if rows.is_empty() {
+            return Err(EngineError::TableNotFound);
+        }
+    }
+    Err(EngineError::NotEditable(KEY_CHANGED.into()))
+}
+
+/// The table a SELECT read and its primary key, when the result holds every
+/// key column. The lookups run on a table's first SELECT only; failed ones
+/// are not kept.
 async fn detect_source(
     inner: &MssqlInner,
-    client: &mut MssqlClient,
+    client: &mut MsConn<'_>,
     sql: &str,
     columns: &[String],
 ) -> (Option<String>, Option<Vec<String>>) {
@@ -1100,51 +1497,67 @@ async fn detect_source(
     };
     let schema = schema_part.unwrap_or_else(|| inner.default_schema.clone());
 
-    let lookup = match client
-        .query(
-            TABLE_LOOKUP_SQL,
-            &[&schema as &dyn ToSql, &table_part as &dyn ToSql],
-        )
-        .await
-    {
-        Ok(stream) => match stream.into_first_result().await {
-            Ok(rows) => rows.first().and_then(|row| {
-                let schema: Option<&str> = row.get(0);
-                let table: Option<&str> = row.get(1);
-                match (schema, table) {
-                    (Some(schema), Some(table)) => Some((schema.to_string(), table.to_string())),
-                    _ => None,
-                }
-            }),
-            Err(_) => None,
-        },
-        Err(_) => None,
-    };
-    let Some((canonical_schema, canonical_table)) = lookup else {
-        return (None, None);
-    };
-    let display = display_name(&canonical_schema, &canonical_table);
+    let key = (schema, table_part);
+    let (display, pk) = match inner.sources.get(&key) {
+        Some(Some(source)) => source,
+        Some(None) => return (None, None),
+        None => {
+            // None when the lookup failed, Some(None) when it found nothing.
+            let lookup = match client
+                .query(
+                    TABLE_LOOKUP_SQL,
+                    &[&key.0 as &dyn ToSql, &key.1 as &dyn ToSql],
+                )
+                .await
+            {
+                Ok(stream) => match stream.into_first_result().await {
+                    Ok(rows) => Some(rows.first().and_then(|row| {
+                        let schema: Option<&str> = row.get(0);
+                        let table: Option<&str> = row.get(1);
+                        match (schema, table) {
+                            (Some(schema), Some(table)) => {
+                                Some((schema.to_string(), table.to_string()))
+                            }
+                            _ => None,
+                        }
+                    })),
+                    Err(_) => None,
+                },
+                Err(_) => None,
+            };
+            let Some(found) = lookup else {
+                return (None, None);
+            };
+            let Some((canonical_schema, canonical_table)) = found else {
+                inner.sources.put(key, None);
+                return (None, None);
+            };
+            let display = display_name(&canonical_schema, &canonical_table);
 
-    let pk_rows = match client
-        .query(
-            PK_SQL,
-            &[
-                &canonical_schema as &dyn ToSql,
-                &canonical_table as &dyn ToSql,
-            ],
-        )
-        .await
-    {
-        Ok(stream) => match stream.into_first_result().await {
-            Ok(rows) => rows,
-            Err(_) => return (Some(display), None),
-        },
-        Err(_) => return (Some(display), None),
+            let pk_rows = match client
+                .query(
+                    PK_SQL,
+                    &[
+                        &canonical_schema as &dyn ToSql,
+                        &canonical_table as &dyn ToSql,
+                    ],
+                )
+                .await
+            {
+                Ok(stream) => match stream.into_first_result().await {
+                    Ok(rows) => rows,
+                    Err(_) => return (Some(display), None),
+                },
+                Err(_) => return (Some(display), None),
+            };
+            let pk: Vec<String> = pk_rows
+                .iter()
+                .filter_map(|row| row.get::<&str, _>(0).map(str::to_string))
+                .collect();
+            inner.sources.put(key, Some((display.clone(), pk.clone())));
+            (display, pk)
+        }
     };
-    let pk: Vec<String> = pk_rows
-        .iter()
-        .filter_map(|row| row.get::<&str, _>(0).map(str::to_string))
-        .collect();
     if pk.is_empty() {
         return (Some(display), None);
     }
@@ -1324,5 +1737,81 @@ where
         Ok(Some(value)) => Value::from(value.to_string()),
         Ok(None) => Value::Null,
         Err(_) => Value::from("<datetime>"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A session with no server behind it: the cancel's KILL connects to a
+    // port nobody listens on and goes nowhere.
+    fn idle_session(log: SqlLog) -> MssqlInner {
+        let mut config = Config::new();
+        config.host("127.0.0.1");
+        config.port(1);
+        MssqlInner {
+            client: tokio::sync::Mutex::new(None),
+            config,
+            database: String::new(),
+            default_schema: "dbo".into(),
+            spid: AtomicI32::new(51),
+            label: String::new(),
+            in_tx: AtomicBool::new(true),
+            tx_lost: Mutex::new(None),
+            cancel_requested: AtomicBool::new(false),
+            session_dead: AtomicBool::new(false),
+            sources: SourceCache::default(),
+            log,
+        }
+    }
+
+    #[test]
+    fn batch_end_claims_only_what_it_knows() {
+        use BatchEnd::*;
+        use TxControl::{Begin, Commit, Rollback};
+        // The user's COMMIT or ROLLBACK, the batch went through.
+        assert_eq!(batch_end(Some(Commit), true, false), Committed);
+        assert_eq!(batch_end(Some(Rollback), true, false), RolledBack);
+        // UPDATE …; COMMIT; SELECT 1/0, or UPDATE …; INSERT <dup>; COMMIT:
+        // whether the COMMIT ran is unknown, XACT_ABORT or not.
+        assert_eq!(batch_end(Some(Commit), false, false), Unknown);
+        // A failed batch with a ROLLBACK: rolled back by one or the other.
+        assert_eq!(batch_end(Some(Rollback), false, false), RolledBack);
+        // A failure and no COMMIT or ROLLBACK (a deadlock victim, XACT_ABORT).
+        assert_eq!(batch_end(None, false, false), ServerRolledBack);
+        assert_eq!(batch_end(Some(Begin), false, false), ServerRolledBack);
+        // Nested COMMIT, or a failure the transaction survived.
+        assert_eq!(batch_end(Some(Commit), true, true), StillOpen);
+        assert_eq!(batch_end(None, false, true), StillOpen);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_ends_the_transaction_at_once() {
+        let log = SqlLog::new();
+        let mut changes = log.take_changes().unwrap();
+        let inner = idle_session(log.clone());
+        let held = Change {
+            sql: "UPDATE t SET a = 1".into(),
+            ms: 0,
+            rows: 1,
+        };
+        log.changed(held, inner.in_tx());
+        let key = ("dbo".to_string(), "t".to_string());
+        inner
+            .sources
+            .put(key.clone(), Some(("t".into(), vec!["id".into()])));
+
+        inner.cancel();
+        // The reply to the cancelled query already says no transaction, and
+        // what it held is not History.
+        assert!(!inner.in_tx());
+        assert_eq!(*inner.lost(), Some(CANCELLED));
+        assert!(inner.session_dead.load(Ordering::SeqCst));
+        // The rollback may have undone DDL, and the next session starts in
+        // the connection's database: no source survives.
+        assert_eq!(inner.sources.get(&key), None);
+        log.settle(true);
+        assert!(changes.try_recv().is_err());
     }
 }

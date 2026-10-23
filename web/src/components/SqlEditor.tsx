@@ -4,9 +4,11 @@ import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import { isolateHistory } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { statementAt } from "../sqlSplit";
 
 export interface FavoriteSnippet {
   keyword: string;
@@ -16,8 +18,18 @@ export interface FavoriteSnippet {
 
 export interface SqlEditorHandle {
   getSql(): string;
+  // What ⌘↵ runs: the selection, else the statement the cursor is in (null
+  // when the cursor is among comments that belong to no statement).
+  currentStatement(): string | null;
   getDoc(): string;
   setSql(text: string): void;
+  // Rewrites the selection, or the whole text when nothing is selected, as
+  // one undo step; the cursor stays by the same code.
+  format(rewrite: (sql: string) => string): void;
+  // Replaces the selection (or inserts at the cursor) and focuses.
+  insertText(text: string): void;
+  // Drops what a background tab's editor holds, so it reopens with the tab's SQL.
+  forget(tabId: string): void;
   focus(): void;
   flush(): void;
 }
@@ -33,6 +45,36 @@ interface SqlEditorProps {
   favorites: FavoriteSnippet[];
   // CodeMirror key for onRun; null leaves running to the app's shortcuts.
   runKey?: string | null;
+  // The engine's SQL, which decides where a statement ends (see sqlSplit).
+  dialect?: string;
+}
+
+// Where `offset` in `before` lands in `after`, a rewrite of it that changed
+// blanks, letter case and comment marks (minify writes -- x as /* x */):
+// just past as many other characters as precede it.
+function sameSpot(before: string, offset: number, after: string): number {
+  // How long the mark or blank at `at` is; 0 for a character that counts.
+  const skip = (text: string, at: number): number =>
+    /\s|#/.test(text[at]) ? 1 : /^(--|\/\*|\*\/)/.test(text.slice(at, at + 2)) ? 2 : 0;
+  let code = 0;
+  for (let index = 0; index < offset; ) {
+    const step = skip(before, index);
+    code += step === 0 ? 1 : 0;
+    index += Math.max(step, 1);
+  }
+  let at = 0;
+  while (at < after.length && code > 0) {
+    const step = skip(after, at);
+    code -= step === 0 ? 1 : 0;
+    at += Math.max(step, 1);
+  }
+  // At the start of a word: still there, not at the end of the one before.
+  if (/\s/.test(before[offset - 1] ?? "") && /\S/.test(before[offset] ?? "")) {
+    while (at < after.length && /\s/.test(after[at])) {
+      at += 1;
+    }
+  }
+  return at;
 }
 
 const editorTheme = EditorView.theme(
@@ -103,10 +145,12 @@ const highlightStyle = HighlightStyle.define([
 
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
   function SqlEditor(
-    { tabId, tabIds, initialSql, readOnly, onRun, onSqlChange, schema, favorites, runKey },
+    { tabId, tabIds, initialSql, readOnly, onRun, onSqlChange, schema, favorites, runKey, dialect },
     ref,
   ) {
     const hostRef = useRef<HTMLDivElement | null>(null);
+    const dialectRef = useRef(dialect);
+    dialectRef.current = dialect;
     const viewRef = useRef<EditorView | null>(null);
     const statesRef = useRef(new Map<string, EditorState>());
     const aliveRef = useRef(new Set(tabIds));
@@ -322,6 +366,17 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
           ? view.state.doc.toString()
           : view.state.sliceDoc(range.from, range.to);
       },
+      currentStatement(): string | null {
+        const view = viewRef.current;
+        if (!view) {
+          return null;
+        }
+        const range = view.state.selection.main;
+        if (!range.empty) {
+          return view.state.sliceDoc(range.from, range.to);
+        }
+        return statementAt(view.state.doc.toString(), range.head, dialectRef.current)?.text ?? null;
+      },
       getDoc(): string {
         const view = viewRef.current;
         return view ? view.state.doc.toString() : "";
@@ -335,6 +390,44 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
           view.dispatch({
             changes: { from: 0, to: view.state.doc.length, insert: text },
           });
+        },
+        format(rewrite: (sql: string) => string): void {
+          const view = viewRef.current;
+          if (!view) {
+            return;
+          }
+          cancelPending();
+          const range = view.state.selection.main;
+          const from = range.empty ? 0 : range.from;
+          const to = range.empty ? view.state.doc.length : range.to;
+          const before = view.state.sliceDoc(from, to);
+          const after = rewrite(before);
+          if (after === before) {
+            return;
+          }
+          view.dispatch({
+            changes: { from, to, insert: after },
+            selection: range.empty
+              ? { anchor: from + sameSpot(before, range.head - from, after) }
+              : { anchor: from, head: from + after.length },
+            // Undone on its own, not with typing just before or after it.
+            annotations: isolateHistory.of("full"),
+            userEvent: "input.format",
+            scrollIntoView: true,
+          });
+        },
+        insertText(text: string): void {
+          const view = viewRef.current;
+          if (!view) {
+            return;
+          }
+          view.dispatch(view.state.replaceSelection(text));
+          view.focus();
+        },
+        forget(tabId: string): void {
+          if (tabId !== currentTabRef.current) {
+            statesRef.current.delete(tabId);
+          }
         },
         focus(): void {
           viewRef.current?.focus();

@@ -21,6 +21,7 @@ import {
 } from "../connectionsFile";
 import { t } from "../i18n";
 import { inputFromSaved } from "../savedInput";
+import { withHint } from "../shortcuts";
 import { ApiRequestError, store, type ConnSummary, type Driver, type SavedConnection } from "../store";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
@@ -468,7 +469,7 @@ export function HomeScreen({
         type="button"
         className="icon-button home-settings"
         onClick={onOpenSettings}
-        title={settingsHint !== "" ? `${t("설정")} (${settingsHint})` : t("설정")}
+        title={withHint(t("설정"), settingsHint)}
         aria-label={t("설정")}
       >
         <SettingsIcon size={14} />

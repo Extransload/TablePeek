@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
 import { ErrorNotice } from "./ErrorNotice";
+import { LoadingState } from "./Spinner";
 
 export interface PaletteAction {
   id: string;
@@ -196,7 +197,7 @@ export function CommandPalette({ actions, sources, onClose }: CommandPaletteProp
               <ErrorNotice message={error} variant="compact" />
             </div>
           ) : loading ? (
-            <div className="palette-empty">{t("불러오는 중…")}</div>
+            <LoadingState variant="compact" />
           ) : items.length === 0 ? (
             <div className="palette-empty">{t("결과가 없습니다")}</div>
           ) : (

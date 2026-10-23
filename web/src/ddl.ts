@@ -32,6 +32,8 @@ export interface StructureDraft {
   columns: ColumnDraft[];
   indexes: IndexDraft[];
   foreignKeys: FkDraft[];
+  // The primary key constraint's own name, when the table has one.
+  primaryName?: string;
 }
 
 export interface DiffResult {
@@ -115,6 +117,7 @@ export function draftsFromDetail(detail: TableDetail): StructureDraft {
       refTable: fk.ref_table,
       refColumns: fk.ref_columns.join(", "),
     })),
+    primaryName: detail.indexes.find((index) => index.primary)?.name,
   };
 }
 
@@ -185,6 +188,14 @@ function pkList(columns: ColumnDraft[]): string[] {
   return columns
     .filter((column) => column.pk)
     .map((column) => column.name.trim());
+}
+
+// The key's columns by identity, so renaming a key column isn't a new key.
+function pkIdentity(columns: ColumnDraft[]): string {
+  return columns
+    .filter((column) => column.pk)
+    .map((column) => column.orig ?? `new:${column.key}`)
+    .join(",");
 }
 
 function indexSql(kind: string, table: string, index: IndexDraft): string {
@@ -418,7 +429,7 @@ export function diffStructure(
     if (!typeChanged && !nullChanged && !defChanged) {
       continue;
     }
-    if (kind === "postgres" || kind === "cockroachdb") {
+    if (kind === "postgres" || kind === "cockroach") {
       if (typeChanged) {
         statements.push(
           `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name)} TYPE ${column.type.trim()}`,
@@ -455,21 +466,11 @@ export function diffStructure(
     }
   }
 
-  for (const column of orig.columns) {
-    if (
-      !next.columns.some(
-        (candidate) => candidate.orig === (column.orig ?? column.name),
-      )
-    ) {
-      statements.push(
-        `ALTER TABLE ${quoteIdent(kind, table)} DROP COLUMN ${quoteIdent(kind, column.name)}`,
-      );
-    }
-  }
-
+  // The key changes before any column goes: dropping a key column would take
+  // the key with it (PostgreSQL) or be refused (CockroachDB).
   const origPk = pkList(orig.columns);
   const nextPk = pkList(next.columns);
-  if (origPk.join(",") !== nextPk.join(",")) {
+  if (pkIdentity(orig.columns) !== pkIdentity(next.columns)) {
     if (kind === "mysql") {
       if (origPk.length > 0) {
         statements.push(
@@ -483,7 +484,35 @@ export function diffStructure(
             .join(", ")})`,
         );
       }
-    } else if (kind === "postgres" || kind === "cockroachdb") {
+    } else if (kind === "cockroach") {
+      // CockroachDB swaps a primary key in one statement and keeps one always;
+      // its columns must be NOT NULL first (others make them so themselves).
+      if (nextPk.length > 0) {
+        for (const column of next.columns) {
+          if (column.pk && !column.notNull) {
+            statements.push(
+              `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name.trim())} SET NOT NULL`,
+            );
+          }
+        }
+        statements.push(
+          `ALTER TABLE ${quoteIdent(kind, table)} ALTER PRIMARY KEY USING COLUMNS (${nextPk
+            .map((name) => quoteIdent(kind, name))
+            .join(", ")})`,
+        );
+      } else {
+        errors.push(t("CockroachDB 테이블에서는 기본 키를 없앨 수 없습니다"));
+      }
+    } else if (kind === "postgres") {
+      // The old key goes first: a table can't hold two. Its real name, when
+      // known; a renamed table keeps its key's old one.
+      if (origPk.length > 0) {
+        const short = table.split(".").pop() ?? table;
+        const constraint = orig.primaryName ?? `${short}_pkey`;
+        statements.push(
+          `ALTER TABLE ${quoteIdent(kind, table)} DROP CONSTRAINT IF EXISTS ${quotePart(kind, constraint)}`,
+        );
+      }
       if (nextPk.length > 0) {
         statements.push(
           `ALTER TABLE ${quoteIdent(kind, table)} ADD PRIMARY KEY (${nextPk
@@ -491,14 +520,20 @@ export function diffStructure(
             .join(", ")})`,
         );
       }
-      if (origPk.length > 0) {
-        const short = table.split(".").pop() ?? table;
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} DROP CONSTRAINT ${quotePart(kind, `${short}_pkey`)}`,
-        );
-      }
     } else {
       errors.push(t("이 엔진은 기본 키 변경을 지원하지 않습니다"));
+    }
+  }
+
+  for (const column of orig.columns) {
+    if (
+      !next.columns.some(
+        (candidate) => candidate.orig === (column.orig ?? column.name),
+      )
+    ) {
+      statements.push(
+        `ALTER TABLE ${quoteIdent(kind, table)} DROP COLUMN ${quoteIdent(kind, column.name)}`,
+      );
     }
   }
 

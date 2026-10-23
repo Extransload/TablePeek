@@ -13,6 +13,16 @@ export interface QueryMeta {
   truncated: boolean;
   sourceTable: string | null;
   pk: string[] | null;
+  // What the driver says a column holds ("boolean" for MySQL's TINYINT(1)),
+  // for results whose table structure isn't known; absent from older servers.
+  columnKinds?: (string | null)[];
+  // Whether a transaction is open once the statement finished (BEGIN/COMMIT
+  // typed in the editor move it); absent from older servers.
+  inTx?: boolean;
+  // The statement ended the transaction, and whether other results' rows were
+  // dropped on the server (they must load again).
+  txEnded?: "committed" | "rolledback";
+  invalidated?: boolean;
 }
 
 export interface QueryResult {
@@ -59,17 +69,42 @@ export interface DeleteRowRequest {
   pk: { column: string; value: string | null }[];
 }
 
+// One statement the server sent to the database, as the console shows it.
+export interface ConsoleEntry {
+  seq: number;
+  atMs: number;
+  sql: string;
+}
+
+export interface ConsoleUpdate {
+  conn: string;
+  entries: ConsoleEntry[];
+  // Replace what's shown rather than append (first answer, gap, or clear).
+  reset: boolean;
+  // The connection's engine went away: watch again from scratch.
+  closed: boolean;
+}
+
 type RowOpMessage =
   | ({ type: "insert_row" } & InsertRowRequest)
   | ({ type: "delete_row" } & DeleteRowRequest);
 
 export class TablePeekSocketError extends Error {
   readonly cancelled: boolean;
+  // A COMMIT the server turned into a rollback (the transaction had failed):
+  // nothing is open any more and nothing was written.
+  readonly rolledBack: boolean;
+  // For a failed query: whether a transaction is still open after it, and
+  // whether it ended one (see QueryMeta).
+  inTx?: boolean;
+  txEnded?: "committed" | "rolledback";
+  invalidated?: boolean;
 
-  constructor(message: string, cancelled: boolean) {
+  constructor(message: string, cancelled: boolean, rolledBack = false) {
     super(message);
     this.name = "TablePeekSocketError";
     this.cancelled = cancelled;
+    this.rolledBack = rolledBack;
   }
 }
 
@@ -84,6 +119,10 @@ interface MetaMessage {
   truncated: boolean;
   source_table: string | null;
   pk: string[] | null;
+  column_kinds?: (string | null)[];
+  in_tx?: boolean;
+  tx?: "committed" | "rolledback";
+  invalidate?: boolean;
 }
 
 interface WindowMessage {
@@ -100,6 +139,9 @@ interface ErrorMessage {
   id: string | null;
   message: string;
   cancelled: boolean;
+  in_tx?: boolean;
+  tx?: "committed" | "rolledback";
+  invalidate?: boolean;
 }
 
 interface EditedMessage {
@@ -128,7 +170,21 @@ interface RowChangeMessage {
   invalidate: boolean;
 }
 
+interface ConsoleMessage {
+  type: "console";
+  conn: string;
+  entries: { seq: number; at_ms: number; sql: string }[];
+  reset: boolean;
+}
+
+interface ConsoleClosedMessage {
+  type: "console_closed";
+  conn: string;
+}
+
 type ServerMessage =
+  | ConsoleMessage
+  | ConsoleClosedMessage
   | MetaMessage
   | WindowMessage
   | ErrorMessage
@@ -160,6 +216,8 @@ interface EditWaiter {
 interface TxWaiter {
   conn: string;
   expected: TxMessage["state"];
+  // A COMMIT came back rolled back; the error with the reason follows.
+  rolledBack?: boolean;
   resolve: () => void;
   reject: (error: TablePeekSocketError) => void;
 }
@@ -235,6 +293,9 @@ export class TablePeekSocket {
   private readonly txWaiters = new Map<string, TxWaiter>();
   private readonly rowWaiters = new Map<string, RowWaiter>();
   private readonly rowChangeListeners = new Set<(change: RowChange) => void>();
+  private readonly consoleListeners = new Set<(update: ConsoleUpdate) => void>();
+  // Connections whose console a panel is showing.
+  private readonly consoleWanted = new Set<string>();
   private pendingFrames: unknown[][][] = [];
 
   constructor(token: string) {
@@ -341,6 +402,10 @@ export class TablePeekSocket {
       truncated: message.truncated,
       sourceTable: message.source_table,
       pk: message.pk,
+      columnKinds: message.column_kinds,
+      inTx: message.in_tx,
+      txEnded: message.tx,
+      invalidated: message.invalidate,
     };
     const source = new WindowedRowSource({
       columns: meta.columns,
@@ -451,6 +516,44 @@ export class TablePeekSocket {
     return promise;
   }
 
+  // Asks for the statements logged on `conn` after `since` (all of them for
+  // null); the server answers and then keeps pushing new ones on this socket.
+  async watchConsole(conn: string, since: number | null): Promise<void> {
+    this.consoleWanted.add(conn);
+    await this.connect();
+    // Unwatched while the socket was still opening: don't start pushes now.
+    if (!this.consoleWanted.has(conn)) {
+      return;
+    }
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
+    }
+    ws.send(JSON.stringify({ type: "console", conn, since }));
+  }
+
+  // Stops the pushes for `conn` (the console closed); nothing to wait for.
+  unwatchConsole(conn: string): void {
+    this.consoleWanted.delete(conn);
+    const ws = this.ws;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "console_unwatch", conn }));
+    }
+  }
+
+  onConsole(listener: (update: ConsoleUpdate) => void): () => void {
+    this.consoleListeners.add(listener);
+    return () => {
+      this.consoleListeners.delete(listener);
+    };
+  }
+
+  private emitConsole(update: ConsoleUpdate): void {
+    for (const listener of this.consoleListeners) {
+      listener(update);
+    }
+  }
+
   private emitRowChange(change: RowChange): void {
     for (const listener of this.rowChangeListeners) {
       listener(change);
@@ -506,6 +609,23 @@ export class TablePeekSocket {
     } catch {
       return;
     }
+    if (message.type === "console") {
+      this.emitConsole({
+        conn: message.conn,
+        entries: message.entries.map((entry) => ({
+          seq: entry.seq,
+          atMs: entry.at_ms,
+          sql: entry.sql,
+        })),
+        reset: message.reset,
+        closed: false,
+      });
+      return;
+    }
+    if (message.type === "console_closed") {
+      this.emitConsole({ conn: message.conn, entries: [], reset: true, closed: true });
+      return;
+    }
     if (message.type === "meta") {
       const waiter = this.metaWaiters.get(message.id);
       if (waiter) {
@@ -544,7 +664,18 @@ export class TablePeekSocket {
       return;
     }
     if (message.type === "error") {
+      // The reason a COMMIT came back rolled back belongs to that COMMIT alone;
+      // rows being fetched meanwhile carry on.
+      const rolledBack = message.id == null && message.conn != null ? this.txWaiters.get(message.conn) : undefined;
+      if (rolledBack?.rolledBack) {
+        this.txWaiters.delete(rolledBack.conn);
+        rolledBack.reject(new TablePeekSocketError(message.message, false, true));
+        return;
+      }
       const error = new TablePeekSocketError(message.message, message.cancelled);
+      error.inTx = message.in_tx;
+      error.txEnded = message.tx;
+      error.invalidated = message.invalidate;
       for (const [id, waiter] of this.metaWaiters) {
         const matches =
           message.id !== null
@@ -589,16 +720,18 @@ export class TablePeekSocket {
           waiter.reject(error);
         }
       }
+      const txError = (tx: TxWaiter): TablePeekSocketError =>
+        tx.rolledBack ? new TablePeekSocketError(message.message, false, true) : error;
       if (idless && message.conn != null) {
         const tx = this.txWaiters.get(message.conn);
         if (tx) {
           this.txWaiters.delete(message.conn);
-          tx.reject(error);
+          tx.reject(txError(tx));
         }
       } else if (idless) {
         for (const [conn, tx] of this.txWaiters) {
           this.txWaiters.delete(conn);
-          tx.reject(error);
+          tx.reject(txError(tx));
         }
       }
       return;
@@ -631,8 +764,23 @@ export class TablePeekSocket {
       const waiter = message.conn != null ? this.txWaiters.get(message.conn) : undefined;
       const target = waiter ?? (message.conn == null ? this.txWaiters.entries().next().value?.[1] : undefined);
       if (target) {
-        this.txWaiters.delete(target.conn);
-        if (target.expected === message.state) {
+        if (target.expected === "committed" && message.state === "rolledback") {
+          // Keep waiting for the reason; settle without it if none comes.
+          target.rolledBack = true;
+          window.setTimeout(() => {
+            if (this.txWaiters.get(target.conn) === target) {
+              this.txWaiters.delete(target.conn);
+              target.reject(
+                new TablePeekSocketError(t("트랜잭션이 오류로 중단되어 롤백했습니다"), false, true),
+              );
+            }
+          }, 2000);
+        } else {
+          this.txWaiters.delete(target.conn);
+        }
+        if (target.rolledBack) {
+          // Settled when the reason arrives.
+        } else if (target.expected === message.state) {
           target.resolve();
         } else {
           target.reject(new TablePeekSocketError(

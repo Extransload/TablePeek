@@ -10,9 +10,15 @@ export type ValueKind =
   | "boolean"
   | "json"
   | "list"
-  | "date";
+  | "date"
+  | "time"
+  | "enum"
+  | "uuid"
+  | "binary";
 
-export interface TypeInks {
+// The colours a theme's author picks; the later kinds (time, enum, uuid,
+// binary) are worked out from the theme when it doesn't (see withAllInks).
+export interface BaseTypeInks {
   string: string;
   integer: string;
   float: string;
@@ -21,6 +27,13 @@ export interface TypeInks {
   json: string;
   list: string;
   date: string;
+}
+
+export interface TypeInks extends BaseTypeInks {
+  time: string;
+  enum: string;
+  uuid: string;
+  binary: string;
 }
 
 export const VALUE_KINDS: ValueKind[] = [
@@ -32,6 +45,10 @@ export const VALUE_KINDS: ValueKind[] = [
   "json",
   "list",
   "date",
+  "time",
+  "enum",
+  "uuid",
+  "binary",
 ];
 
 export interface Palette {
@@ -121,6 +138,80 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${rgb.join(", ")}, ${alpha})`;
 }
 
+function saturation(hex: string): number {
+  const rgb = parseHex(hex);
+  if (rgb === null) {
+    return 0;
+  }
+  const max = Math.max(...rgb) / 255;
+  const min = Math.min(...rgb) / 255;
+  const lightness = (max + min) / 2;
+  return max === min ? 0 : (max - min) / (1 - Math.abs(2 * lightness - 1));
+}
+
+// A theme's inks for every kind, each its own colour. Kinds go in order of how
+// often they're seen; one its author didn't pick, or picked in a colour an
+// earlier kind has (or a grey, or the red key columns are drawn in), gets the
+// first free colour from the theme's own palette, syntax colours first. With
+// nothing free, TablePeek's own ink for it, tinted toward the theme. Strings
+// keep the author's colour whatever it is (Xcode writes them in red).
+function withAllInks(
+  base: BaseTypeInks & Partial<TypeInks>,
+  colors: { ink: string; muted: string; faint: string; warn: string; ok: string; error: string },
+  accent: string,
+  syntax: SyntaxColors | undefined,
+  mode: "dark" | "light",
+): TypeInks {
+  const fallback = (mode === "light" ? tablepeekLight : tablepeekDark).typeInks;
+  const candidates: Record<keyof TypeInks, (string | undefined)[]> = {
+    string: [],
+    integer: [syntax?.number, syntax?.type, accent],
+    boolean: [syntax?.bool, syntax?.keyword, syntax?.label, accent],
+    date: [syntax?.function, syntax?.label, syntax?.type, colors.warn, accent],
+    json: [syntax?.keyword, syntax?.label, accent],
+    float: [syntax?.number, syntax?.type, syntax?.operator],
+    bigint: [colors.warn, syntax?.function, syntax?.number],
+    list: [syntax?.label, syntax?.punctuation, syntax?.operator],
+    time: [syntax?.label, syntax?.type, syntax?.function, accent],
+    enum: [syntax?.type, syntax?.keyword, colors.ok, accent],
+    uuid: [syntax?.keyword, accent, syntax?.type, syntax?.operator],
+    binary: [syntax?.operator, syntax?.punctuation, colors.warn],
+  };
+  const order: (keyof TypeInks)[] = [
+    "string",
+    "integer",
+    "boolean",
+    "date",
+    "json",
+    "float",
+    "bigint",
+    "list",
+    "time",
+    "enum",
+    "uuid",
+    "binary",
+  ];
+  const used = new Set([colors.ink, colors.muted, colors.faint].map((value) => value.toLowerCase()));
+  const free = (value: string | undefined): value is string =>
+    value !== undefined && !used.has(value.toLowerCase()) && saturation(value) >= 0.15;
+  const inks = {} as TypeInks;
+  for (const kind of order) {
+    const given = base[kind];
+    const ink =
+      kind === "string" && given !== undefined
+        ? given
+        : free(given)
+          ? given
+          : (candidates[kind].find(free) ?? mixHex(fallback[kind], colors.ink, 0.15));
+    inks[kind] = ink;
+    used.add(ink.toLowerCase());
+    if (kind === "string") {
+      used.add(colors.error.toLowerCase());
+    }
+  }
+  return inks;
+}
+
 function themeFromSpec(spec: ThemeSpec): Theme {
   const { colors, accent, mode } = spec;
   const light = mode === "light";
@@ -139,7 +230,7 @@ function themeFromSpec(spec: ThemeSpec): Theme {
         selFillFocus: withAlpha(accent, light ? 0.21 : 0.32),
         selLine: accent,
         nullInk: colors.faint,
-        typeInks: spec.typeInks,
+        typeInks: withAllInks(spec.typeInks, colors, accent, spec.syntax, mode),
       },
       accent,
       mode,
@@ -188,11 +279,15 @@ const tablepeekDark: Palette = makePalette(
       string: "#9bd7a0",
       integer: "#6cb6ff",
       float: "#7fd6d0",
-      bigint: "#e8c98a",
-      boolean: "#f29b8f",
+      bigint: "#f5a97f",
+      boolean: "#f28fe0",
       json: "#c6a3ff",
-      list: "#f5b98a",
-      date: "#a3a3ad",
+      list: "#ddb8ff",
+      date: "#e8c98a",
+      time: "#f2dfae",
+      enum: "#c5e478",
+      uuid: "#9fa8ff",
+      binary: "#b9a389",
     },
     btn: "#33333a",
     btnHover: "#3e3e46",
@@ -223,11 +318,15 @@ const tablepeekLight: Palette = makePalette(
       string: "#1f7a3d",
       integer: "#1d4ed8",
       float: "#0f766e",
-      bigint: "#8a5a00",
-      boolean: "#b3392f",
+      bigint: "#c2410c",
+      boolean: "#a21caf",
       json: "#7e22ce",
-      list: "#c2410c",
-      date: "#5f6369",
+      list: "#9333ea",
+      date: "#8a5a00",
+      time: "#a16207",
+      enum: "#4d7c0f",
+      uuid: "#4338ca",
+      binary: "#78716c",
     },
     btn: "#e8e8e4",
     btnHover: "#deded9",
@@ -473,7 +572,8 @@ export function themeFromJson(input: unknown): Theme {
     setInk("boolean", colorOf(explicit, "base08"));
     setInk("json", colorOf(explicit, "base0E"));
     setInk("list", colorOf(explicit, "base09"));
-    setInk("date", colorOf(explicit, "base04") ?? colorOf(explicit, "base03"));
+    // base0F, not the greys (base03/04): a date is a format with its own colour.
+    setInk("date", colorOf(explicit, "base0F"));
   } else {
     const pick = (keys: string[]): string | undefined =>
       keys.map((name) => colorOf(vscode, name)).find(Boolean);
@@ -484,11 +584,7 @@ export function themeFromJson(input: unknown): Theme {
     setInk("boolean", pick(["terminal.ansiRed", "terminal.ansiBrightRed"]));
     setInk("json", pick(["terminal.ansiMagenta", "terminal.ansiBrightMagenta"]));
     setInk("list", pick(["terminal.ansiBrightRed", "terminal.ansiRed"]));
-    setInk(
-      "date",
-      pick(["descriptionForeground", "disabledForeground"]) ??
-        colorOf(explicit, "muted"),
-    );
+    // Dates keep the base theme's colour: VS Code's candidates for it are greys.
   }
   const themeTypes =
     typeof source.typeInks === "object" && source.typeInks !== null

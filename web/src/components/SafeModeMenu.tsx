@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { t } from "../i18n";
 import type { SafeMode } from "../sqlTools";
-import { useMenuDismiss } from "./Dropdowns";
+import { useMenuDismiss } from "./useMenuDismiss";
 import { CheckIcon, ChevronDownIcon, ShieldIcon } from "./icons";
 
 export const SAFE_MODE_LABELS: Record<SafeMode, { short: string; title: string; description: string }> = {

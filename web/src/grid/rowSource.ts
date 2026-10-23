@@ -8,6 +8,10 @@ export interface RowSource {
   onUpdate?(listener: () => void): () => void;
   rowState?(row: number): RowState;
   cellState?(row: number, col: number): CellState;
+  // A text colour in place of the value's type colour.
+  cellInk?(row: number, col: number): string | null;
+  // Shown as the tooltip while the pointer is over the cell.
+  cellTitle?(row: number, col: number): string | undefined;
 }
 
 export class JsonRowSource implements RowSource {

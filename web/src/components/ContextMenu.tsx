@@ -12,6 +12,8 @@ export interface ContextMenuItem {
   danger?: boolean;
   disabled?: boolean;
   separatorBefore?: boolean;
+  // A colour shown as a dot before the label (a table colour, say).
+  swatch?: string;
 }
 
 interface ContextMenuProps {
@@ -234,6 +236,13 @@ export function ContextMenu({ x, y, items, anchor, onClose }: ContextMenuProps) 
                       <span className="context-check" aria-hidden="true">
                         {item.checked ? <CheckIcon size={9} /> : null}
                       </span>
+                    ) : null}
+                    {item.swatch !== undefined ? (
+                      <span
+                        className={item.swatch === "transparent" ? "context-swatch empty" : "context-swatch"}
+                        style={{ background: item.swatch }}
+                        aria-hidden="true"
+                      />
                     ) : null}
                     <span className="context-label">{item.label}</span>
                     {item.submenu !== undefined ? (

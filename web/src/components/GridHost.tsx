@@ -1,6 +1,8 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { CanvasGrid, type SelectedRows, type SortIndicator } from "../grid/CanvasGrid";
+import { forwardRef, useImperativeHandle, useRef } from "react";
+import type { CellChoices, GridEditHandlers, SelectedRows, SortIndicator } from "../grid/CanvasGrid";
+import type { GridColumnSpec } from "../grid/columns";
 import { store, type GridResult } from "../store";
+import { TableGrid, type TableGridHandle } from "./TableGrid";
 
 export interface GridHostHandle {
   beginEdit(row: number, col: number): void;
@@ -12,6 +14,10 @@ export interface GridHostHandle {
 
 interface GridHostProps {
   result: GridResult | null;
+  // No result yet because one is loading (see TableGrid).
+  awaitingRows?: boolean;
+  // What the table's structure says about each result column.
+  specs?: (GridColumnSpec | null)[] | null;
   sortColumns?: SortIndicator[];
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
   onSelectionChange?(row: number | null, rows: SelectedRows | null): void;
@@ -19,150 +25,93 @@ interface GridHostProps {
   onDeleteRows?(rows: number[]): void;
   onQuickLook?(row: number): void;
   onCellQuickLook?(row: number, col: number): void;
+  onLink?(row: number, col: number): void;
   themeKey?: string;
 }
 
-export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridHost(
-  {
-    result,
-    sortColumns,
-    onHeaderClick,
-    onSelectionChange,
-    onCellContextMenu,
-    onDeleteRows,
-    onQuickLook,
-    onCellQuickLook,
-    themeKey,
-  },
-  ref,
-) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const gridRef = useRef<CanvasGrid | null>(null);
-  const headerClickRef = useRef(onHeaderClick);
-  const selectionRef = useRef(onSelectionChange);
-  const contextMenuRef = useRef(onCellContextMenu);
-  const deleteRowsRef = useRef(onDeleteRows);
-  const quickLookRef = useRef(onQuickLook);
-  const cellQuickLookRef = useRef(onCellQuickLook);
+// "a,b" with b picked → "a"; with c picked → "a,b,c".
+function toggleMember(text: string, option: string): string {
+  const members = text
+    .split(",")
+    .map((member) => member.trim())
+    .filter((member) => member !== "");
+  const next = members.includes(option) ? members.filter((member) => member !== option) : [...members, option];
+  return next.join(",");
+}
 
-  headerClickRef.current = onHeaderClick;
-  selectionRef.current = onSelectionChange;
-  contextMenuRef.current = onCellContextMenu;
-  deleteRowsRef.current = onDeleteRows;
-  quickLookRef.current = onQuickLook;
-  cellQuickLookRef.current = onCellQuickLook;
+// The Data tab's table: a query result on the shared TableGrid. Edits stage
+// through the store; enum and boolean columns offer their values in a list.
+export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridHost(props, ref) {
+  const { result, specs } = props;
+  const tableRef = useRef<TableGridHandle | null>(null);
 
-  const hasHeaderClick = onHeaderClick !== undefined;
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) {
-      return;
-    }
-    const grid = new CanvasGrid(host);
-    gridRef.current = grid;
-    grid.setSelectionListener((row, rows) => {
-      selectionRef.current?.(row, rows);
-    });
-    grid.setCellContextMenuHandler((row, col, x, y) => {
-      contextMenuRef.current?.(row, col, x, y);
-    });
-    grid.setQuickLookHandler((row) => {
-      quickLookRef.current?.(row);
-    });
-    grid.setCellQuickLookHandler((row, col) => {
-      cellQuickLookRef.current?.(row, col);
-    });
-    const onTheme = (): void => {
-      grid.refreshTheme();
+  let editing: GridEditHandlers | null = null;
+  const meta = result?.meta ?? null;
+  if (result !== null && meta !== null && meta.sourceTable !== null) {
+    const source = result.source;
+    const pk = meta.pk;
+    const keyed = pk !== null && pk.length > 0 && pk.every((name) => meta.columns.includes(name));
+    editing = {
+      // Rows staged for insert are editable even when the table has no primary
+      // key; nothing is editable while a run or an apply could replace this result.
+      canEdit: (row) => {
+        const current = store.getState();
+        const busy = store.isApplying() || (current.status === "running" && current.connId === result.conn);
+        return !busy && !source.isDeleted(row) && (keyed || source.isInserted(row));
+      },
+      onCommit: (row, col, value) => {
+        // A list's NULL entry stands for the NULL value, not the text.
+        const spec = specs?.[col] ?? null;
+        const listed = spec !== null && (spec.kind === "enum" || spec.kind === "boolean");
+        // A set with its last member taken off is the empty set, not NULL.
+        const emptied = spec?.kind === "set" && value === null;
+        void store.editCell(row, col, emptied ? "" : listed && value === "NULL" ? null : value);
+      },
+      choices: (_row, col): CellChoices | null => {
+        const spec = specs?.[col] ?? null;
+        if (spec === null || spec.options === undefined) {
+          return null;
+        }
+        if (spec.kind === "set") {
+          // A set holds several members: a pick adds or removes one.
+          return { options: spec.options, query: () => "", pick: toggleMember };
+        }
+        if (spec.kind !== "enum" && spec.kind !== "boolean") {
+          return null;
+        }
+        return { options: spec.nullable ? [...spec.options, "NULL"] : spec.options, strict: true };
+      },
     };
-    window.addEventListener("tablepeek:theme", onTheme);
-    return () => {
-      window.removeEventListener("tablepeek:theme", onTheme);
-      gridRef.current = null;
-      grid.destroy();
-    };
-  }, []);
-
-  useEffect(() => {
-    gridRef.current?.setHeaderClickHandler(
-      hasHeaderClick
-        ? (columnIndex, event) => {
-            headerClickRef.current?.(columnIndex, event);
-          }
-        : null,
-    );
-  }, [hasHeaderClick]);
-
-  useEffect(() => {
-    gridRef.current?.refreshTheme();
-  }, [themeKey]);
-
-  const sortsKey = JSON.stringify(sortColumns ?? null);
-
-  useEffect(() => {
-    gridRef.current?.setSortColumns(sortColumns ?? null);
-  }, [sortsKey]);
-
-  useEffect(() => {
-    const grid = gridRef.current;
-    if (!grid) {
-      return;
-    }
-    grid.setSource(result ? result.source : null);
-    const meta = result ? result.meta : null;
-    const columns = meta ? meta.columns : [];
-    const pk = meta ? meta.pk : null;
-    const keyed = pk !== null && pk.length > 0 && pk.every((name) => columns.includes(name));
-    if (result !== null && meta !== null && meta.sourceTable !== null) {
-      const source = result.source;
-      // Rows staged for insert are editable even when the table has no primary key;
-      // nothing is editable while a run or an apply could replace this result.
-      grid.setEditable({
-        canEdit: (row) => {
-          const current = store.getState();
-          const busy =
-            store.isApplying() || (current.status === "running" && current.connId === result.conn);
-          return !busy && !source.isDeleted(row) && (keyed || source.isInserted(row));
-        },
-        onCommit: (row, col, value) => {
-          void store.editCell(row, col, value);
-        },
-      });
-      grid.setDeleteRowsHandler((rows) => {
-        deleteRowsRef.current?.(rows);
-      });
-    } else {
-      grid.setEditable(null);
-      grid.setDeleteRowsHandler(null);
-    }
-    return () => {
-      grid.setEditable(null);
-      grid.setDeleteRowsHandler(null);
-    };
-  }, [result]);
+  }
 
   useImperativeHandle(
     ref,
     () => ({
-      beginEdit(row: number, col: number): void {
-        gridRef.current?.beginEdit(row, col);
-      },
-      focus(): void {
-        gridRef.current?.focus();
-      },
-      keepViewOnNextResult(): void {
-        gridRef.current?.keepViewOnNextSource();
-      },
-      selectCell(row: number, col: number): void {
-        gridRef.current?.selectCell(row, col);
-      },
-      cellRect(row: number, col: number) {
-        return gridRef.current?.cellRect(row, col) ?? null;
-      },
+      beginEdit: (row, col) => tableRef.current?.beginEdit(row, col),
+      focus: () => tableRef.current?.focus(),
+      keepViewOnNextResult: () => tableRef.current?.keepViewOnNextSource(),
+      selectCell: (row, col) => tableRef.current?.selectCell(row, col),
+      cellRect: (row, col) => tableRef.current?.cellRect(row, col) ?? null,
     }),
     [],
   );
 
-  return <div className="grid-host" ref={hostRef} />;
+  return (
+    <TableGrid
+      ref={tableRef}
+      source={result?.source ?? null}
+      awaitingRows={props.awaitingRows}
+      specs={specs ?? null}
+      editing={editing}
+      sortColumns={props.sortColumns}
+      onHeaderClick={props.onHeaderClick}
+      onSelectionChange={props.onSelectionChange}
+      onCellContextMenu={props.onCellContextMenu}
+      onDeleteRows={props.onDeleteRows}
+      onQuickLook={props.onQuickLook}
+      onCellQuickLook={props.onCellQuickLook}
+      onLink={props.onLink}
+      themeKey={props.themeKey}
+    />
+  );
 });

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { t } from "../i18n";
-import type { GridResult } from "../store";
+import type { RowSource } from "../grid/rowSource";
 import { FieldBox } from "./FieldBox";
 import { ChevronIcon } from "./icons";
 import { Spinner } from "./Spinner";
@@ -14,7 +14,9 @@ export interface CellAnchor {
 }
 
 interface CellInspectorProps {
-  result: GridResult;
+  // Any grid's rows: a query result's, or a structure grid's.
+  source: RowSource;
+  columns: string[];
   row: number;
   col: number;
   table: string | null;
@@ -171,7 +173,7 @@ function inlineValue(row: TreeRow): string {
 
 // TablePlus-style popover beside a cell: a JSON tree on the left, the picked
 // node's value on the right, and Raw for the cell text as stored.
-export function CellInspector({ result, row, col, table, anchor, onClose }: CellInspectorProps) {
+export function CellInspector({ source, columns, row, col, table, anchor, onClose }: CellInspectorProps) {
   const [, setNonce] = useState(0);
   const [raw, setRaw] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([ROOT]));
@@ -181,9 +183,9 @@ export function CellInspector({ result, row, col, table, anchor, onClose }: Cell
   const treeRef = useRef<HTMLDivElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
 
-  const value = result.source.cell(row, col);
+  const value = source.cell(row, col);
   const loading = value === undefined;
-  const column = result.meta.columns[col] ?? `#${col + 1}`;
+  const column = columns[col] ?? `#${col + 1}`;
   const text = rawText(value);
   const doc = useMemo(() => documentOf(value), [value]);
   const rows = useMemo(
@@ -212,10 +214,10 @@ export function CellInspector({ result, row, col, table, anchor, onClose }: Cell
     setLimits({});
     setSelected(ROOT);
     setRaw(false);
-  }, [result, row, col]);
+  }, [source, row, col]);
 
   // Cells still loading arrive through the source's update stream.
-  useEffect(() => result.source.onUpdate?.(() => setNonce((n) => n + 1)), [result]);
+  useEffect(() => source.onUpdate?.(() => setNonce((n) => n + 1)), [source]);
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent): void {

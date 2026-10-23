@@ -1,4 +1,4 @@
-import type { Palette, ThemeId, TypeInks } from "./palette";
+import type { BaseTypeInks, Palette, ThemeId } from "./palette";
 import type { SyntaxColors } from "./syntax";
 
 // A built-in theme as its author defines it. Hover, selection and striped-row
@@ -25,7 +25,7 @@ export interface ThemeSpec {
   > &
     // Striped rows default to a 3% step from bg toward ink.
     Partial<Pick<Palette, "rowAlt">>;
-  typeInks: TypeInks;
+  typeInks: BaseTypeInks;
   syntax: SyntaxColors;
 }
 

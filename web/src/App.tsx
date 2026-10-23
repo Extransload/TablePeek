@@ -14,7 +14,8 @@ import { ConnectModal } from "./components/ConnectModal";
 import { CreateTableModal } from "./components/CreateTableModal";
 import { ConnSwitcher } from "./components/ConnSwitcher";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
-import { DataTabToolbar } from "./components/DataToolbar";
+import { DataTabToolbar, type DataTotal } from "./components/DataToolbar";
+import { EditorActions } from "./components/EditorActions";
 import {
   dropTableSql,
   laravelSchemaScript,
@@ -32,10 +33,10 @@ import { EmptyWorkspace } from "./components/EmptyWorkspace";
 import { ErrorNotice } from "./components/ErrorNotice";
 import { ExportModal } from "./components/ExportModal";
 import { FilterBar } from "./components/FilterBar";
-import { FavoritesMenu } from "./components/Dropdowns";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
 import type { SelectedRows } from "./grid/CanvasGrid";
+import type { RowSource } from "./grid/rowSource";
 import { HomeScreen, type NewConnectionOptions } from "./components/HomeScreen";
 import { HoverTooltip } from "./components/HoverTooltip";
 import { t, tServer, tTableCount } from "./i18n";
@@ -53,8 +54,13 @@ import { LockScreen } from "./components/LockScreen";
 import { OverviewPanel } from "./components/OverviewPanel";
 import { CellInspector, type CellAnchor } from "./components/CellInspector";
 import { RowDetailPanel } from "./components/RowDetailPanel";
-import { Spinner } from "./components/Spinner";
+import { LoadingState, Spinner } from "./components/Spinner";
 import { SchemaSidebar, type TableAction } from "./components/SchemaSidebar";
+import { SidebarPanel } from "./components/SidebarPanel";
+import { QueriesPane } from "./components/QueriesPane";
+import { HistoryPane } from "./components/HistoryPane";
+import { PromptModal } from "./components/PromptModal";
+import { DiscardModal } from "./components/DiscardModal";
 import { ServerInfoPanel } from "./components/ServerInfoPanel";
 import { SqlEditor, type SqlEditorHandle } from "./components/SqlEditor";
 import { StructurePanel } from "./components/StructurePanel";
@@ -67,14 +73,16 @@ import {
   PanelIcon,
   PanelLeftIcon,
   PanelBottomIcon,
-  PlayIcon,
   PlusIcon,
   SettingsIcon,
   SnippetIcon,
+  StarIcon,
   StopIcon,
 } from "./components/icons";
 import {
+  buildCountSql,
   buildDataSql,
+  buildWhere,
   cycleSort,
   EMPTY_FILTER,
   quoteLiteral,
@@ -84,6 +92,13 @@ import {
 } from "./dataQuery";
 import { buildUpdateSql, toSqlInserts } from "./export";
 import { subscribeJobs } from "./jobs";
+import {
+  loadTableColors,
+  moveTableColor,
+  saveTableColors,
+  withTableColor,
+  type TableColorMap,
+} from "./tableColors";
 import {
   getPasscodeHash,
   getSettings,
@@ -108,10 +123,14 @@ import {
 } from "./sqlTools";
 import { forgetSchema, loadSchema } from "./schemaCache";
 import { splitSqlStatements } from "./sqlSplit";
-import { IS_MAC, actionForEvent, shortcutHint, type KeyAction } from "./shortcuts";
+import { loadAutoSave } from "./savedQueries";
+import { specsForTable, withResultKinds } from "./grid/columns";
+import { cellMenuItems } from "./grid/cellMenu";
+import { IS_MAC, actionForEvent, formatBinding, matchesBinding, shortcutHint, withHint, type KeyAction } from "./shortcuts";
 import type { SortIndicator } from "./grid/CanvasGrid";
 import { subscribePendingChanges, type WindowedRowSource } from "./grid/windowSource";
 import {
+  ApiRequestError,
   missingSecretOf,
   store,
   type ConnSummary,
@@ -130,6 +149,7 @@ import {
   addTab,
   activateTab,
   closeTab,
+  countFor,
   createDataTab,
   createDefinitionTab,
   createOverviewTab,
@@ -150,7 +170,19 @@ import {
 } from "./tabs";
 
 const EMPTY_TABLES: string[] = [];
+// TablePlus's Beautify; only in the SQL editor, so ⌘I keeps its keymap action elsewhere.
+const BEAUTIFY_KEY = "Mod+i";
+// Past this many rows (by the driver's estimate) a table's total isn't counted
+// on its own: COUNT(*) would hold the connection too long.
+const AUTO_COUNT_MAX = 1_000_000;
+// With no row estimate (a view, a table never analyzed), a table this small
+// on disk is still counted.
+const AUTO_COUNT_BYTES = 128 * 1024 * 1024;
 const CONSOLE_HEIGHT_KEY = "tablepeek.console-height";
+// Which connections have the bottom console and the right panel open, kept
+// across reloads.
+const CONSOLE_PANELS_KEY = "tablepeek.console-panels";
+const DETAIL_PANELS_KEY = "tablepeek.detail-panels";
 const CONSOLE_DEFAULT = 180;
 const CONSOLE_MIN = 90;
 const SIDEBAR_WIDTH_KEY = "tablepeek.sidebar-width";
@@ -245,7 +277,7 @@ function keyPanelEdge(
 const WORKSPACES_KEY = "tablepeek.workspaces";
 const PINNED_KEY = "tablepeek.pinned-tables";
 const PERSIST_DROP_KEYS = new Set(["source", "data", "detail"]);
-const TABLE_VIEWS: TableView[] = ["data", "structure"];
+const TABLE_VIEWS: TableView[] = ["data", "structure", "index"];
 
 interface DataRunSpec {
   offset: number;
@@ -300,24 +332,6 @@ function primaryKeyOf(detail: TableDetail | undefined): string[] | null {
   return pkColumns.length > 0 ? pkColumns : null;
 }
 
-function cellToText(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-  try {
-    const text = JSON.stringify(value);
-    return text === undefined ? String(value) : text;
-  } catch {
-    return String(value);
-  }
-}
-
 async function rowValues(source: WindowedRowSource, row: number): Promise<unknown[]> {
   const count = source.columns.length;
   if (source.cell(row, 0) === undefined) {
@@ -343,6 +357,10 @@ function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function sameSql(a: string | undefined, b: string | undefined): boolean {
+  return (a ?? "").trim() === (b ?? "").trim();
+}
+
 function pendingTotal(tabs: WorkbenchTab[]): number {
   let total = 0;
   for (const tab of tabs) {
@@ -351,27 +369,6 @@ function pendingTotal(tabs: WorkbenchTab[]): number {
     }
   }
   return total;
-}
-
-function discardAllPending(tabs: WorkbenchTab[]): void {
-  for (const tab of tabs) {
-    if (tab.kind === "query" || tab.kind === "data") {
-      tab.source?.discardPending();
-    }
-  }
-}
-
-// Staged grid changes are dropped only after the user agrees to lose them.
-function confirmDropPending(source: WindowedRowSource | null | undefined): boolean {
-  if (!source || !source.hasPending()) {
-    return true;
-  }
-  const count = source.pendingSummary().total;
-  if (!window.confirm(t("적용하지 않은 변경 {count}건이 있습니다. 버리고 계속할까요?", { count }))) {
-    return false;
-  }
-  source.discardPending();
-  return true;
 }
 
 function persistReplacer(key: string, value: unknown): unknown {
@@ -416,6 +413,30 @@ function loadTableMap(key: string): Record<string, string[]> {
   } catch {
     return {};
   }
+}
+
+function loadFlagMap(key: string): Record<string, boolean> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    if (parsed === null || typeof parsed !== "object") {
+      return {};
+    }
+    const out: Record<string, boolean> = {};
+    for (const [conn, open] of Object.entries(parsed)) {
+      if (typeof open === "boolean") {
+        out[conn] = open;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveFlagMap(key: string, map: Record<string, boolean>): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(map));
+  } catch {}
 }
 
 function saveTableMap(key: string, map: Record<string, string[]>): void {
@@ -468,8 +489,15 @@ export default function App() {
   const [filterOpen, setFilterOpen] = useState<Record<string, boolean>>({});
   // The row detail panel stays open or closed per connection, across its
   // tables; detailRows is the span of rows it describes (null until picked).
-  const [detailPanels, setDetailPanels] = useState<Record<string, boolean>>({});
+  const [detailPanels, setDetailPanels] = useState<Record<string, boolean>>(() => loadFlagMap(DETAIL_PANELS_KEY));
   const [detailRows, setDetailRows] = useState<SelectedRows | null>(null);
+  // The same for the Structure and Index views' grids, with the rows they
+  // read from; keyed "tab:view" so it only describes the grid it came from.
+  const [structurePick, setStructurePick] = useState<{
+    key: string;
+    source: RowSource;
+    rows: SelectedRows;
+  } | null>(null);
   // Keyed by "conn:table" so a panel never shows another table's detail.
   const [rowDetailInfo, setRowDetailInfo] = useState<{ key: string; detail: TableDetail | null } | null>(
     null,
@@ -509,9 +537,18 @@ export default function App() {
     loadTableMap(PINNED_KEY),
   );
   const [countingTabId, setCountingTabId] = useState<string | null>(null);
+  const countSeqRef = useRef(new Map<string, number>());
+  // Tables whose structure couldn't be read: no automatic count asks again.
+  const detailFailedRef = useRef(new Set<string>());
   const [columnsPickOpen, setColumnsPickOpen] = useState(false);
   const [createTableOpen, setCreateTableOpen] = useState(false);
   const [userMgrOpen, setUserMgrOpen] = useState(false);
+  const [addQueryOpen, setAddQueryOpen] = useState(false);
+  // Staged changes waiting on the discard warning, and what runs once dropped.
+  const [discardPrompt, setDiscardPrompt] = useState<{
+    sources: WindowedRowSource[];
+    proceed(): void;
+  } | null>(null);
   const [dbMenu, setDbMenu] = useState<DbMenuState | null>(null);
   const [importTarget, setImportTarget] = useState<{ kind: string; table: string } | null>(null);
   const [dumpTab, setDumpTab] = useState<"backup" | "restore" | null>(null);
@@ -531,7 +568,11 @@ export default function App() {
   const [locked, setLocked] = useState<boolean>(() => getPasscodeHash() !== null);
   // The bottom console stays open or closed per connection, like the row
   // detail panel. historyVersion bumps after each editor run so it refetches.
-  const [consolePanels, setConsolePanels] = useState<Record<string, boolean>>({});
+  const [consolePanels, setConsolePanels] = useState<Record<string, boolean>>(() =>
+    loadFlagMap(CONSOLE_PANELS_KEY),
+  );
+  // Font colours picked for tables, per connection (sidebar names and tabs).
+  const [tableColors, setTableColors] = useState<TableColorMap>(loadTableColors);
   const [consoleHeight, setConsoleHeight] = useState<number>(() => {
     const saved = Number(window.localStorage.getItem(CONSOLE_HEIGHT_KEY));
     return Number.isFinite(saved) && saved >= CONSOLE_MIN ? saved : CONSOLE_DEFAULT;
@@ -544,6 +585,7 @@ export default function App() {
     tabId: string;
     sql: string;
     params: string[];
+    dialect: string;
   } | null>(null);
   const [reviewPrompt, setReviewPrompt] = useState<{
     conn: string;
@@ -551,11 +593,35 @@ export default function App() {
     sql: string;
     items: ReviewItem[];
   } | null>(null);
-  const [resultChips, setResultChips] = useState<{
-    conn: string;
-    tabId: string;
-    entries: { label: string; outcome: QueryOutcome }[];
-  } | null>(null);
+  // Several statements run at once in a tab: each one's result, and which is
+  // shown. Per tab, so a run in another tab leaves them.
+  const [resultSets, setResultSets] = useState<
+    Record<
+      string,
+      {
+        conn: string;
+        tabId: string;
+        entries: { label: string; sql: string; outcome: QueryOutcome }[];
+        active: number;
+      }
+    >
+  >({});
+  // Statement results go with their tab (closed, or its connection closed).
+  useEffect(() => {
+    setResultSets((prev) => {
+      const kept = Object.fromEntries(
+        Object.entries(prev).filter(([tabId, set]) => {
+          const tabs = workspaces[set.conn]?.tabs;
+          return tabs !== undefined && tabById(tabs, tabId) !== null;
+        }),
+      );
+      return Object.keys(kept).length === Object.keys(prev).length ? prev : kept;
+    });
+  }, [workspaces]);
+  // A short note shown over the window for a moment ("nothing to run"): where
+  // the result pane shows rows, the message view's note wouldn't be seen.
+  const [flash, setFlash] = useState<string | null>(null);
+  const flashTimerRef = useRef(0);
   const [schemaMap, setSchemaMap] = useState<Record<string, string[]>>({});
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   // null keeps the stylesheet's default width.
@@ -592,7 +658,11 @@ export default function App() {
     return () => store.setActiveRunner(null);
   }, []);
   useEffect(
-    () => subscribePendingChanges(() => setPendingVersion((value) => value + 1)),
+    () =>
+      subscribePendingChanges(() => {
+        setPendingVersion((value) => value + 1);
+        keepChangedTabsRef.current();
+      }),
     [],
   );
   useEffect(
@@ -623,6 +693,7 @@ export default function App() {
         .then((next) => {
           if (alive) {
             setFavorites(next);
+            syncSavedQueryTabsRef.current(next);
           }
         })
         .catch(() => {});
@@ -643,8 +714,30 @@ export default function App() {
   const prevConnRef = useRef<string | null>(null);
   const runningTabRef = useRef(runningTabId);
   const closedDuringRunRef = useRef<string | null>(null);
+  // Data tabs whose open is still reading the table's structure.
+  const openingTabsRef = useRef(new Set<string>());
   const focusRequestRef = useRef(false);
   const pendingEditorSqlRef = useRef<string | null>(null);
+  // Saved-query write-backs waiting for typing to stop, by saved query id.
+  const savedQueryWritesRef = useRef(new Map<string, { timer: number; sql: string }>());
+  const syncSavedQueryTabsRef = useRef<(queries: Favorite[]) => void>(() => undefined);
+  // The text a saved query's write last failed with, so a catch-up doesn't
+  // retry (and report) it on every change.
+  const failedWritesRef = useRef(new Map<string, string>());
+  const keepChangedTabsRef = useRef<() => void>(() => undefined);
+  // Closing the page mustn't lose the last edit to a saved query's tab.
+  useEffect(() => {
+    function onPageHide(): void {
+      editorRef.current?.flush();
+      for (const [id, pending] of savedQueryWritesRef.current) {
+        window.clearTimeout(pending.timer);
+        void store.updateFavorite(id, { sql: pending.sql }, { keepalive: true }).catch(() => undefined);
+      }
+      savedQueryWritesRef.current.clear();
+    }
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
   const connectOpenRef = useRef(connectOpen);
   const fsOpenRef = useRef(fsOpen);
   const detailPanelOpenRef = useRef(false);
@@ -653,6 +746,7 @@ export default function App() {
   const exportTargetRef = useRef(exportTarget);
   const importTargetRef = useRef(importTarget);
   const paramPromptRef = useRef(paramPrompt);
+  const resultSetsRef = useRef(resultSets);
   const reviewPromptRef = useRef(reviewPrompt);
   const dumpTabRef = useRef(dumpTab);
   const jobsOpenRef = useRef(jobsOpen);
@@ -665,26 +759,49 @@ export default function App() {
   const activityOpenRef = useRef(activityOpen);
   const metricsOpenRef = useRef(metricsOpen);
   const detailCacheRef = useRef(new Map<string, TableDetail>());
+  const detailLoadsRef = useRef(new Map<string, Promise<TableDetail | null>>());
   const shortcutRef = useRef<(action: KeyAction) => void>(() => {});
   const lastSelectionRef = useRef<SelectedRows | null>(null);
   // A drag changes the selection many times a frame; the panel follows once per frame.
   const selectionFrameRef = useRef(0);
+  const lastStructurePickRef = useRef<{ key: string; source: RowSource; rows: SelectedRows } | null>(null);
+  const structureFrameRef = useRef(0);
   const invalidateRef = useRef<() => void>(() => {});
   const applyingRef = useRef(false);
   const cycleViewRef = useRef<(delta: -1 | 1) => void>(() => {});
+  const tabAtRef = useRef<(position: number) => boolean>(() => false);
+  const formatRef = useRef<(mode: "beautify" | "minify") => void>(() => {});
   const serverConnRef = useRef(false);
 
   workspacesRef.current = workspaces;
+  // What a connection's own UI state (panels, table colours) is kept under:
+  // its saved connection (and the database it's on: tables of one database
+  // aren't another's), else its file, which outlive the id a session gets
+  // each time it opens.
+  function stableKeyOf(connId: string): string {
+    const conn = conns.find((entry) => entry.id === connId);
+    if (conn?.saved_id) {
+      const at = workspacesRef.current[connId]?.meta.path;
+      return at ? `saved:${conn.saved_id}@${at}` : `saved:${conn.saved_id}`;
+    }
+    if (conn?.demo) {
+      return "demo";
+    }
+    return conn?.path ? `file:${conn.path}` : connId;
+  }
+  const activeKey = activeConnId !== null ? stableKeyOf(activeConnId) : null;
+
   activeConnIdRef.current = activeConnId;
   runningTabRef.current = runningTabId;
   connectOpenRef.current = connectOpen;
   fsOpenRef.current = fsOpen;
-  detailPanelOpenRef.current = activeConnId !== null && detailPanels[activeConnId] === true;
+  detailPanelOpenRef.current = activeKey !== null && detailPanels[activeKey] === true;
   cellQuickLookRef.current = cellQuickLook;
   menuRef.current = menu;
   exportTargetRef.current = exportTarget;
   importTargetRef.current = importTarget;
   paramPromptRef.current = paramPrompt;
+  resultSetsRef.current = resultSets;
   reviewPromptRef.current = reviewPrompt;
   dumpTabRef.current = dumpTab;
   jobsOpenRef.current = jobsOpen;
@@ -700,6 +817,120 @@ export default function App() {
   const home = activeConnId === null || workspace === null;
   const activeTab = tabs !== null ? activeTabOf(tabs) : null;
   const activeDataTab = activeTab !== null && activeTab.kind === "data" ? activeTab : null;
+  // What the result's table says about each column (key, type, foreign key):
+  // the grid colours keys and puts ⌃⌄ and → on the cells that take them.
+  const resultTable = activeDataTab?.table ?? state.result?.meta.sourceTable ?? null;
+  const resultDetail =
+    activeDataTab?.detail ??
+    (activeConnId !== null && resultTable !== null
+      ? detailCacheRef.current.get(`${activeConnId}:${resultTable}`)
+      : undefined);
+  // A transaction the editor ended: data tabs whose rows the server dropped load
+  // again when shown; rolled-back ones read their reverted rows again.
+  useEffect(() => {
+    function onTxEnded(event: Event): void {
+      const detail = (event as CustomEvent<{
+        conn: string;
+        ownerId: string | null;
+        rolledBack: boolean;
+        invalidated: boolean;
+      }>).detail;
+      const ws = workspacesRef.current[detail.conn];
+      if (ws === undefined || (!detail.rolledBack && !detail.invalidated)) {
+        return;
+      }
+      let tabsState = ws.tabs;
+      for (const tab of ws.tabs.tabs) {
+        if ((tab.kind !== "data" && tab.kind !== "query") || tab.id === detail.ownerId || tab.source === undefined) {
+          continue;
+        }
+        // Staged edits stay: they target rows by key, and the next reload of
+        // that tab asks before dropping them.
+        if (tab.source.hasPending()) {
+          continue;
+        }
+        if (detail.invalidated && tab.kind === "data") {
+          tab.source.dispose();
+          tabsState = patchTab(tabsState, tab.id, { source: undefined, meta: undefined });
+          autoHydratedRef.current.delete(`${detail.conn}:${tab.id}`);
+        } else if (detail.invalidated) {
+          // A query's rows can't be read again from a dropped session, and a
+          // query isn't re-run behind the user's back: it says so instead.
+          tab.source.dispose();
+          tabsState = patchTab(tabsState, tab.id, {
+            source: undefined,
+            meta: undefined,
+            info: t("결과가 만료되었습니다. 다시 실행하세요"),
+          });
+        } else if (detail.rolledBack) {
+          // Rows read again from the server's reverted copy.
+          tab.source.clearWindows();
+        }
+      }
+      if (tabsState !== ws.tabs) {
+        commitWorkspaces({ ...workspacesRef.current, [detail.conn]: { ...ws, tabs: tabsState } });
+      }
+      // A run's other statements' results went with their sessions, or hold
+      // rows the rollback reverted.
+      if (detail.invalidated) {
+        dropResultSets(detail.conn);
+      } else {
+        for (const set of Object.values(resultSetsRef.current)) {
+          if (set.conn !== detail.conn || set.tabId === detail.ownerId) {
+            continue;
+          }
+          for (const entry of set.entries) {
+            if (entry.outcome.kind === "ok" && !entry.outcome.result.source.hasPending()) {
+              entry.outcome.result.source.clearWindows();
+            }
+          }
+        }
+      }
+    }
+    window.addEventListener("tablepeek:tx-ended", onTxEnded);
+    return () => window.removeEventListener("tablepeek:tx-ended", onTxEnded);
+  }, []);
+
+  // The connection's open transaction follows the store, so re-activating the
+  // workspace (a refresh, a connection switch) brings the TX controls back.
+  useEffect(() => {
+    const conn = state.connId;
+    const ws = conn !== null ? workspacesRef.current[conn] : undefined;
+    if (conn !== null && ws !== undefined && ws.tx !== state.tx) {
+      commitWorkspaces({ ...workspacesRef.current, [conn]: { ...ws, tx: state.tx } });
+    }
+  }, [state.connId, state.tx]);
+
+  // A data tab without its table's structure (restored after a reload, opened
+  // by a foreign key) reads it, so keys and cell buttons show.
+  const missingDetail = activeDataTab !== null && activeDataTab.detail === undefined;
+  useEffect(() => {
+    const conn = activeConnId;
+    const tab = activeDataTab;
+    // A tab still being opened reads its structure itself.
+    if (conn === null || tab === null || !missingDetail || openingTabsRef.current.has(tab.id)) {
+      return;
+    }
+    void ensureDetail(conn, tab.table).then((detail) => {
+      const latest = detail === null ? null : tabsOf(conn);
+      const target = latest !== null ? tabById(latest, tab.id) : null;
+      if (latest !== null && target !== null && target.kind === "data" && target.detail === undefined) {
+        setTabsFor(conn, patchTab(latest, tab.id, { detail: detail ?? undefined }));
+      }
+    });
+    // ensureDetail and the tab helpers read refs; the tab's id is what matters.
+  }, [activeConnId, activeDataTab?.id, missingDetail]);
+  const gridSpecs = useMemo(
+    () =>
+      state.result === null
+        ? null
+        : withResultKinds(
+            specsForTable(state.result.meta.columns, resultDetail, meta?.kind ?? ""),
+            state.result.meta.columnKinds,
+            state.result.meta.columns.length,
+          ),
+    [state.result, resultDetail, meta?.kind],
+  );
   const dataView = activeDataTab !== null && (activeDataTab.view ?? "data") === "data";
   const schemaKey = meta
     ? `${meta.kind}:${meta.path ?? ""}:${meta.tables.length}:${metaNonce}`
@@ -844,6 +1075,13 @@ export default function App() {
       }
     }
     const existing = tabById(current, tabId);
+    // The tab closed (or was replaced) while its run was out: nothing shows it.
+    if (existing === null) {
+      if (outcome.kind === "ok") {
+        outcome.result.source.dispose();
+      }
+      return false;
+    }
     if (
       existing &&
       (existing.kind === "query" || existing.kind === "data") &&
@@ -857,15 +1095,17 @@ export default function App() {
     return true;
   }
 
-  function runDataWith(conn: string, tab: DataTab, spec: DataRunSpec): void {
+  // False when nothing started: the connection is busy, staged changes are
+  // waiting on the discard warning, or the workspace is gone.
+  function runDataWith(conn: string, tab: DataTab, spec: DataRunSpec): boolean {
     const current = store.getState();
     if (current.status === "running" && current.connId === conn) {
-      return;
+      return false;
     }
     const known = tabsOf(conn);
     const live = known !== null ? tabById(known, tab.id) : null;
-    if (live !== null && live.kind === "data" && !confirmDropPending(live.source)) {
-      return;
+    if (live !== null && live.kind === "data" && !guardPending([live.source], () => runDataWith(conn, tab, spec))) {
+      return false;
     }
     const pk =
       tab.pkColumns ??
@@ -884,7 +1124,7 @@ export default function App() {
     });
     const tabsState = tabsOf(conn);
     if (tabsState === null) {
-      return;
+      return false;
     }
     setTabsFor(
       conn,
@@ -897,9 +1137,17 @@ export default function App() {
       }),
     );
     setRunningTabId(tab.id);
-    const wantsCount = tab.count !== undefined;
+    // A reload of what the tab shows (Refresh, F5) counts again; paging or
+    // sorting keeps the count of the same filter.
+    const reload =
+      spec.offset === tab.offset &&
+      spec.pageSize === tab.pageSize &&
+      JSON.stringify(spec.filter ?? null) === JSON.stringify(tab.filter ?? null) &&
+      JSON.stringify(spec.sorts ?? null) === JSON.stringify(tab.sorts ?? null);
+    const countKey = buildWhere(spec.filter, meta?.kind ?? "") ?? "";
     void store.runQuery(conn, sql, spec.pageSize, tab.id).then((outcome) => {
-      setRunningTabId(null);
+      // A run for another tab may already have started (the next table's load).
+      setRunningTabId((value) => (value === tab.id ? null : value));
       const applied = handleOutcome(conn, tab.id, outcome);
       if (!applied || outcome.kind !== "ok") {
         return;
@@ -909,8 +1157,49 @@ export default function App() {
         runDataWith(conn, { ...tab, meta: outcome.result.meta }, { ...spec, offset: back });
         return;
       }
-      if (wantsCount) {
-        void refreshCount(conn, tab.id);
+      const rows = outcome.result.meta.rowCount;
+      if (!outcome.result.meta.truncated && rows < spec.pageSize) {
+        // The last page: the total needs no count.
+        const latest = tabsOf(conn);
+        if (latest !== null) {
+          setTabsFor(conn, patchTab(latest, tab.id, { count: spec.offset + rows, countFilter: countKey }));
+        }
+      } else if (tab.count !== undefined && (tab.countFilter ?? "") === countKey) {
+        // Counted already: a reload (Refresh, the rerun after Apply) brings
+        // the count up to date; paging or sorting doesn't change it.
+        if (reload) {
+          void refreshCount(conn, tab.id, false);
+        }
+      } else {
+        autoCount(conn, tab.id, tab.table);
+      }
+    });
+    return true;
+  }
+
+  // Counts a table's rows as TablePlus does when it opens, unless its size
+  // says COUNT(*) would hold the connection long; the footer offers it then.
+  function autoCount(conn: string, tabId: string, table: string): void {
+    const key = `${conn}:${table}`;
+    if (detailFailedRef.current.has(key)) {
+      return;
+    }
+    void ensureDetail(conn, table).then((detail) => {
+      if (detail === null) {
+        detailFailedRef.current.add(key);
+        return;
+      }
+      // No estimate (or 0, which an unanalyzed or partitioned Postgres table
+      // reports) leaves its size to judge by, and a size of 0 (a partitioned
+      // parent has no storage of its own) says nothing.
+      const estimate = detail.row_count_estimate;
+      const bytes = detail.size_bytes;
+      const small =
+        estimate !== null && estimate > 0
+          ? estimate <= AUTO_COUNT_MAX
+          : bytes !== null && bytes > 0 && bytes <= AUTO_COUNT_BYTES;
+      if (small) {
+        void refreshCount(conn, tabId, false);
       }
     });
   }
@@ -919,30 +1208,72 @@ export default function App() {
     return { offset, pageSize, filter: tab.filter ?? null, sorts: tab.sorts ?? null };
   }
 
-  async function refreshCount(conn: string, tabId: string): Promise<void> {
+  // Counts the rows the tab's filter keeps. `asked`: the user clicked for it,
+  // so a failure says so (an automatic count fails quietly).
+  async function refreshCount(conn: string, tabId: string, asked = true): Promise<void> {
     const current = tabsOf(conn);
     const tab = current !== null ? tabById(current, tabId) : null;
     if (tab === null || tab.kind !== "data") {
       return;
     }
+    const kind = meta?.kind ?? "";
+    const countKey = buildWhere(tab.filter ?? null, kind) ?? "";
+    if (!asked && workspacesRef.current[conn]?.tx === "active") {
+      // Inside a transaction a count cut short by the next query would abort
+      // it (Postgres), so none runs on its own; the one shown may be stale.
+      if (tab.count !== undefined && current !== null) {
+        setTabsFor(conn, patchTab(current, tabId, { count: undefined, countFilter: undefined }));
+      }
+      return;
+    }
+    // Only the latest count of a tab lands; an older one finishing late is dropped.
+    const seq = (countSeqRef.current.get(tabId) ?? 0) + 1;
+    countSeqRef.current.set(tabId, seq);
     setCountingTabId(tabId);
     try {
-      const count = await store.fetchCount(conn, tab.table);
+      const result = await store.exec(conn, buildCountSql({ kind, table: tab.table, filter: tab.filter ?? null }));
+      const count = Number(result.rows[0]?.[0]);
+      if (!Number.isFinite(count)) {
+        throw new Error(t("행 수를 계산하지 못했습니다"));
+      }
       const latest = tabsOf(conn);
       const latestTab = latest !== null ? tabById(latest, tabId) : null;
-      if (latest !== null && latestTab !== null && latestTab.kind === "data") {
-        setTabsFor(conn, patchTab(latest, tabId, { count }));
+      // A filter changed meanwhile has its own count coming.
+      if (
+        countSeqRef.current.get(tabId) === seq &&
+        latest !== null &&
+        latestTab !== null &&
+        latestTab.kind === "data" &&
+        (buildWhere(latestTab.filter ?? null, kind) ?? "") === countKey
+      ) {
+        setTabsFor(conn, patchTab(latest, tabId, { count, countFilter: countKey }));
       }
     } catch (err) {
-      store.setError(errorOf(err, t("행 수를 계산하지 못했습니다")));
+      if (asked && countSeqRef.current.get(tabId) === seq) {
+        store.setError(errorOf(err, t("행 수를 계산하지 못했습니다")));
+      }
     } finally {
-      setCountingTabId((value) => (value === tabId ? null : value));
+      if (countSeqRef.current.get(tabId) === seq) {
+        setCountingTabId((value) => (value === tabId ? null : value));
+      }
     }
+  }
+
+  // The footer's total: the count for the filter shown, else (no filter) the
+  // driver's estimate.
+  function totalOf(conn: string, tab: DataTab): DataTotal | null {
+    const counted = countFor(tab, meta?.kind ?? "");
+    if (counted !== null) {
+      return { rows: counted, exact: true };
+    }
+    const unfiltered = (buildWhere(tab.filter ?? null, meta?.kind ?? "") ?? "") === "";
+    const estimate = unfiltered ? detailCacheRef.current.get(`${conn}:${tab.table}`)?.row_count_estimate : null;
+    return estimate !== null && estimate !== undefined && estimate >= 0 ? { rows: estimate, exact: false } : null;
   }
 
   function applyColumns(tab: DataTab, columns: string[] | undefined): void {
     const conn = activeConnIdRef.current;
-    if (conn === null || !confirmDropPending(tab.source)) {
+    if (conn === null || !guardPending([tab.source], () => applyColumns(tab, columns))) {
       return;
     }
     const current = tabsOf(conn);
@@ -1023,11 +1354,19 @@ export default function App() {
     }
     const owners = tabsOf(conn);
     const owner = owners !== null ? tabById(owners, tabId) : null;
-    if (owner !== null && owner.kind === "query" && !confirmDropPending(owner.source)) {
+    if (
+      owner !== null &&
+      owner.kind === "query" &&
+      !guardPending([owner.source], () => executeStatements(conn, tabId, statements, wrapTx))
+    ) {
       return;
     }
     setRunningTabId(tabId);
-    setResultChips(null);
+    setResultSets((prev) => {
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
     void (async () => {
       const outcomes: QueryOutcome[] = [];
       try {
@@ -1042,12 +1381,12 @@ export default function App() {
           }
         }
       } catch (err) {
-        setRunningTabId(null);
+        setRunningTabId((value) => (value === tabId ? null : value));
         setHistoryVersion((value) => value + 1);
         store.setError(errorOf(err, t("쿼리를 실행하지 못했습니다")));
         return;
       }
-      setRunningTabId(null);
+      setRunningTabId((value) => (value === tabId ? null : value));
       setHistoryVersion((value) => value + 1);
       // A statement may have changed rows, structure or sizes.
       forgetTableDetails();
@@ -1056,22 +1395,29 @@ export default function App() {
         handleOutcome(conn, tabId, last);
       }
       if (statements.length > 1 && outcomes.length > 0) {
-        setResultChips({
-          conn,
-          tabId,
-          entries: outcomes.map((outcome, index) => ({
-            label: t("결과 {n}", { n: index + 1 }),
-            outcome,
-          })),
-        });
+        setResultSets((prev) => ({
+          ...prev,
+          [tabId]: {
+            conn,
+            tabId,
+            entries: outcomes.map((outcome, index) => ({
+              label: t("쿼리 {count}", { count: index + 1 }),
+              sql: statements[index] ?? "",
+              outcome,
+            })),
+            // The last statement's result is the one shown first.
+            active: outcomes.length - 1,
+          },
+        }));
       }
     })();
   }
 
   function startRun(conn: string, tabId: string, sqlText: string): void {
-    const statements = splitSqlStatements(sqlText);
+    const dialect = meta?.kind ?? "";
+    const statements = splitSqlStatements(sqlText, dialect);
     // Every statement is checked, not just the first one.
-    const items = reviewStatements(statements, alertMode);
+    const items = reviewStatements(statements, alertMode, dialect);
     if (items.length > 0) {
       setReviewPrompt({ conn, tabId, sql: sqlText, items });
       return;
@@ -1079,7 +1425,9 @@ export default function App() {
     executeStatements(conn, tabId, statements);
   }
 
-  function run(): void {
+  // ⌘↵ (Run Current) runs the selection, else the statement the cursor is in;
+  // ⇧⌘↵ (Run All) every statement in the editor. Comments alone never run.
+  function run(scope: "current" | "all" = "current"): void {
     const conn = activeConnIdRef.current;
     const tab = currentTab();
     if (conn === null || !tab || store.getState().status === "running") {
@@ -1092,16 +1440,35 @@ export default function App() {
     if (tab.kind !== "query") {
       return;
     }
-    const sqlText = (editorRef.current?.getSql() ?? tab.sql).trim();
-    if (sqlText === "") {
+    const editor = editorRef.current;
+    const picked =
+      editor === null ? tab.sql : scope === "all" ? editor.getDoc() : editor.currentStatement();
+    const sqlText = (picked ?? "").trim();
+    if (sqlText === "" || splitSqlStatements(sqlText, meta?.kind ?? "").length === 0) {
+      notify(t("실행할 쿼리가 없습니다"));
       return;
     }
-    const params = extractParams(sqlText);
+    const dialect = meta?.kind ?? "";
+    const params = extractParams(sqlText, dialect);
     if (params.length > 0) {
-      setParamPrompt({ conn, tabId: tab.id, sql: sqlText, params });
+      setParamPrompt({ conn, tabId: tab.id, sql: sqlText, params, dialect });
       return;
     }
     startRun(conn, tab.id, sqlText);
+  }
+
+  // A connection's statement results, once their sessions are gone.
+  function dropResultSets(conn: string): void {
+    setResultSets((prev) => {
+      const kept = Object.fromEntries(Object.entries(prev).filter(([, set]) => set.conn !== conn));
+      return Object.keys(kept).length === Object.keys(prev).length ? prev : kept;
+    });
+  }
+
+  function notify(message: string): void {
+    window.clearTimeout(flashTimerRef.current);
+    setFlash(message);
+    flashTimerRef.current = window.setTimeout(() => setFlash(null), 2400);
   }
 
   function runWithParams(values: Record<string, string>): void {
@@ -1117,7 +1484,7 @@ export default function App() {
         JSON.stringify({ ...stored, ...values }),
       );
     } catch {}
-    startRun(prompt.conn, prompt.tabId, bindParams(prompt.sql, values, quoteLiteral));
+    startRun(prompt.conn, prompt.tabId, bindParams(prompt.sql, values, quoteLiteral, prompt.dialect));
   }
 
   function runReviewed(wrapTx: boolean): void {
@@ -1126,7 +1493,7 @@ export default function App() {
     if (review === null) {
       return;
     }
-    executeStatements(review.conn, review.tabId, splitSqlStatements(review.sql), wrapTx);
+    executeStatements(review.conn, review.tabId, splitSqlStatements(review.sql, meta?.kind ?? ""), wrapTx);
   }
 
   function setAlertMode(mode: SafeMode): void {
@@ -1165,19 +1532,21 @@ export default function App() {
     if (tab === null || tab.kind !== "query") {
       return;
     }
-    const sqlText = editorRef.current?.getDoc() ?? tab.sql;
-    if (sqlText.trim() === "") {
-      return;
-    }
-    const prepared =
-      mode === "minify" && settingsRef.current.uppercaseKeywords
-        ? uppercaseSql(sqlText)
-        : sqlText;
-    editorRef.current?.setSql(formatSql(prepared, mode));
+    const dialect = meta?.kind ?? "";
+    editorRef.current?.format((sqlText) => {
+      if (sqlText.trim() === "") {
+        return sqlText;
+      }
+      const prepared =
+        mode === "minify" && settingsRef.current.uppercaseKeywords ? uppercaseSql(sqlText, dialect) : sqlText;
+      return formatSql(prepared, mode, dialect);
+    });
   }
 
-  function showResultChip(entry: { label: string; outcome: QueryOutcome }): void {
-    if (resultChips === null) {
+  function showResultChip(index: number): void {
+    const resultChips = activeTab !== null ? (resultSets[activeTab.id] ?? null) : null;
+    const entry = resultChips?.entries[index];
+    if (resultChips === null || entry === undefined) {
       return;
     }
     const current = tabsOf(resultChips.conn);
@@ -1185,9 +1554,18 @@ export default function App() {
       return;
     }
     const owner = tabById(current, resultChips.tabId);
-    if (owner !== null && owner.kind === "query" && !confirmDropPending(owner.source)) {
+    if (owner !== null && owner.kind === "query" && !guardPending([owner.source], () => showResultChip(index))) {
       return;
     }
+    setResultSets((prev) => ({ ...prev, [resultChips.tabId]: { ...resultChips, active: index } }));
+    // The pane follows: a failed statement's message, a plan, or the rows.
+    setResultView(
+      entry.outcome.kind === "error"
+        ? "message"
+        : entry.outcome.kind === "ok" && isExplainSql(entry.outcome.result.sql)
+          ? "plan"
+          : "grid",
+    );
     const next = patchFromOutcome(current, resultChips.tabId, entry.outcome);
     setTabsFor(resultChips.conn, next);
     const tab = tabById(next, resultChips.tabId);
@@ -1250,7 +1628,8 @@ export default function App() {
     focusRequestRef.current = true;
   }
 
-  function closeTabById(id: string): void {
+  // `force` closes without asking about staged changes: their table is gone.
+  function closeTabById(id: string, force = false): void {
     const conn = activeConnIdRef.current;
     if (conn === null) {
       return;
@@ -1263,13 +1642,13 @@ export default function App() {
     if (!tab) {
       return;
     }
-    if ((tab.kind === "query" || tab.kind === "data") && !confirmDropPending(tab.source)) {
+    if (force) {
+      stagedSources([tab]).forEach((source) => source?.discardPending());
+    } else if (!guardPending(stagedSources([tab]), () => closeTabById(id))) {
       return;
     }
     if (runningTabRef.current === id) {
-      closedDuringRunRef.current = id;
-      store.cancelQuery(conn);
-      setRunningTabId(null);
+      stopRunOf(conn, id);
     }
     const wasActive = current.activeId === id;
     if (tab.kind === "query") {
@@ -1298,6 +1677,87 @@ export default function App() {
     }
   }
 
+  // Refresh (F5) as in TablePlus: the schema is read again, and a table in
+  // front reloads its rows, after asking about any staged changes.
+  function refreshView(): void {
+    const conn = activeConnIdRef.current;
+    const tab = currentTab();
+    if (conn === null || tab === null || tab.kind !== "data" || (tab.view ?? "data") !== "data") {
+      void refreshActiveMeta();
+      return;
+    }
+    if (!guardPending([tab.source], refreshView)) {
+      return;
+    }
+    const tabId = tab.id;
+    void refreshActiveMeta().then(() => {
+      const latest = tabsOf(conn);
+      const target = latest !== null ? tabById(latest, tabId) : null;
+      if (target !== null && target.kind === "data") {
+        runDataWith(conn, target, dataSpecOf(target, target.offset, target.pageSize));
+      }
+    });
+  }
+
+  // A row added, edited or deleted in the temporary tab keeps it.
+  function keepChangedTabs(): void {
+    let next = workspacesRef.current;
+    for (const [conn, ws] of Object.entries(workspacesRef.current)) {
+      let tabsState = ws.tabs;
+      for (const tab of ws.tabs.tabs) {
+        if (tab.kind === "data" && tab.preview && (tab.source?.hasPending() ?? false)) {
+          tabsState = patchTab(tabsState, tab.id, { preview: false });
+        }
+      }
+      if (tabsState !== ws.tabs) {
+        next = { ...next, [conn]: { ...ws, tabs: tabsState } };
+      }
+    }
+    if (next !== workspacesRef.current) {
+      commitWorkspaces(next);
+    }
+  }
+  keepChangedTabsRef.current = keepChangedTabs;
+
+  // Staged grid changes are dropped only after the user agrees (TablePlus's
+  // "Discard all changes?"). True when there are none; otherwise asks, and on
+  // Discard drops them and runs `proceed`, which repeats the interrupted action.
+  function guardPending(sources: (WindowedRowSource | null | undefined)[], proceed: () => void): boolean {
+    const staged = sources.filter((source): source is WindowedRowSource => source?.hasPending() ?? false);
+    if (staged.length === 0) {
+      return true;
+    }
+    setDiscardPrompt({ sources: staged, proceed });
+    return false;
+  }
+
+  function stagedSources(tabs: WorkbenchTab[]): (WindowedRowSource | undefined)[] {
+    return tabs.map((tab) => (tab.kind === "query" || tab.kind === "data" ? tab.source : undefined));
+  }
+
+  // A tab going away mid-run: its result is dropped when it lands. The query
+  // is cancelled too, except inside a transaction, where a cancel would abort
+  // it (PostgreSQL) or end the session (SQL Server); there it runs out.
+  function stopRunOf(conn: string, tabId: string): void {
+    closedDuringRunRef.current = tabId;
+    if (store.getState().tx !== "active") {
+      store.cancelQuery(conn);
+    }
+    setRunningTabId(null);
+  }
+
+  // The temporary tab becomes a kept one: a double-click, or a change in it.
+  function pinTab(id: string, conn = activeConnIdRef.current): void {
+    if (conn === null) {
+      return;
+    }
+    const current = tabsOf(conn);
+    const tab = current !== null ? tabById(current, id) : null;
+    if (current !== null && tab !== null && tab.kind === "data" && tab.preview) {
+      setTabsFor(conn, patchTab(current, id, { preview: false }));
+    }
+  }
+
   function renameTabById(id: string, title: string): void {
     updateActiveTabs((current) => renameTab(current, id, title));
   }
@@ -1317,6 +1777,9 @@ export default function App() {
     }
     saveDraft(conn, tabId, sql, tab.title);
     setTabsFor(conn, patchTab(current, tabId, { sql }));
+    if (tab.favoriteId !== undefined && loadAutoSave()) {
+      queueSavedQueryWrite(conn, tabId, tab.favoriteId, sql);
+    }
   }
 
   function openInQueryEditor(sql: string): void {
@@ -1328,9 +1791,11 @@ export default function App() {
     if (current === null) {
       return;
     }
+    // A saved query's own tab keeps its text: the SQL goes elsewhere.
+    const bound = (tab: WorkbenchTab): boolean => tab.kind === "query" && tab.favoriteId !== undefined;
     let target = activeTabOf(current);
-    if (target === null || target.kind === "data") {
-      const queryTabs = current.tabs.filter((tab) => tab.kind === "query");
+    if (target === null || target.kind === "data" || bound(target)) {
+      const queryTabs = current.tabs.filter((tab) => tab.kind === "query" && !bound(tab));
       target = queryTabs.length > 0 ? queryTabs[queryTabs.length - 1] : null;
     }
     if (target === null) {
@@ -1365,6 +1830,72 @@ export default function App() {
   }
 
   function openSqlTab(sql: string, title: string): void {
+    openQueryTab(sql, { title });
+  }
+
+  // A new editor tab holding `sql`; returns its id.
+  function openQueryTab(sql: string, options?: { title?: string; favoriteId?: string }): string | null {
+    const conn = activeConnIdRef.current;
+    if (conn === null) {
+      return null;
+    }
+    const current = tabsOf(conn);
+    if (current === null) {
+      return null;
+    }
+    const created = createQueryTab(nextSeq(), sql);
+    const tab: WorkbenchTab = {
+      ...created,
+      title: options?.title ?? created.title,
+      favoriteId: options?.favoriteId,
+      favoriteSql: options?.favoriteId === undefined ? undefined : sql,
+    };
+    setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
+    store.showSnapshot(conn, snapshotOf(tab));
+    focusRequestRef.current = true;
+    return tab.id;
+  }
+
+  // History's and Queries' "Run": a new tab that runs straight away.
+  function runInNewTab(sql: string): void {
+    const conn = activeConnIdRef.current;
+    const text = sql.trim();
+    if (conn === null) {
+      return;
+    }
+    if (splitSqlStatements(text, meta?.kind ?? "").length === 0) {
+      notify(t("실행할 쿼리가 없습니다"));
+      return;
+    }
+    const tabId = openQueryTab(sql);
+    if (tabId === null) {
+      return;
+    }
+    if (store.getState().status === "running") {
+      notify(t("다른 쿼리가 실행 중입니다. 끝난 뒤 실행하세요"));
+      return;
+    }
+    const dialect = meta?.kind ?? "";
+    const params = extractParams(text, dialect);
+    if (params.length > 0) {
+      setParamPrompt({ conn, tabId, sql: text, params, dialect });
+      return;
+    }
+    startRun(conn, tabId, text);
+  }
+
+  // At the cursor of the editor in front, or in a new tab when none is.
+  function insertIntoEditor(sql: string): void {
+    const tab = currentTab();
+    if (tab !== null && tab.kind === "query" && editorRef.current !== null) {
+      editorRef.current.insertText(sql);
+      return;
+    }
+    openQueryTab(sql);
+  }
+
+  // A saved query's own tab: brought forward when already open.
+  function openSavedQuery(query: Favorite): void {
     const conn = activeConnIdRef.current;
     if (conn === null) {
       return;
@@ -1373,10 +1904,165 @@ export default function App() {
     if (current === null) {
       return;
     }
-    const tab: WorkbenchTab = { ...createQueryTab(nextSeq(), sql), title };
-    setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
-    store.showSnapshot(conn, snapshotOf(tab));
+    const open = current.tabs.find((tab) => tab.kind === "query" && tab.favoriteId === query.id);
+    if (open === undefined) {
+      openQueryTab(query.sql, { title: query.name, favoriteId: query.id });
+      return;
+    }
+    if (open.id !== current.activeId) {
+      const next = activateTab(current, open.id);
+      setTabsFor(conn, next);
+      store.showSnapshot(conn, snapshotOf(open));
+    }
     focusRequestRef.current = true;
+  }
+
+  // Writes a saved query's tab back to it shortly after typing stops.
+  function queueSavedQueryWrite(conn: string, tabId: string, favoriteId: string, sql: string): void {
+    const pending = savedQueryWritesRef.current;
+    window.clearTimeout(pending.get(favoriteId)?.timer);
+    const timer = window.setTimeout(() => {
+      pending.delete(favoriteId);
+      store
+        .updateFavorite(favoriteId, { sql })
+        .then(() => {
+          failedWritesRef.current.delete(favoriteId);
+          const tabs = tabsOf(conn);
+          if (tabs !== null) {
+            setTabsFor(conn, patchTab(tabs, tabId, { favoriteSql: sql }));
+          }
+        })
+        .catch((err: unknown) => {
+          // Deleted meanwhile: the tab goes on as a plain query.
+          if (err instanceof ApiRequestError && err.code === "not_found") {
+            const tabs = tabsOf(conn);
+            if (tabs !== null) {
+              setTabsFor(conn, patchTab(tabs, tabId, { favoriteId: undefined, favoriteSql: undefined }));
+            }
+            return;
+          }
+          failedWritesRef.current.set(favoriteId, sql);
+          store.setError(errorOf(err, t("쿼리를 저장하지 못했습니다")));
+        });
+    }, 600);
+    pending.set(favoriteId, { timer, sql });
+  }
+
+  function hasStagedRows(): boolean {
+    return store.getState().result?.source.hasPending() ?? false;
+  }
+
+  // ⌘S in a saved query's tab: written back now, auto-save or not.
+  function saveQueryTab(tabId: string, favoriteId: string): void {
+    const conn = activeConnIdRef.current;
+    if (conn === null) {
+      return;
+    }
+    editorRef.current?.flush();
+    const tabs = tabsOf(conn);
+    const tab = tabs !== null ? tabById(tabs, tabId) : null;
+    if (tab === null || tab.kind !== "query") {
+      return;
+    }
+    const pending = savedQueryWritesRef.current.get(favoriteId);
+    if (pending !== undefined) {
+      window.clearTimeout(pending.timer);
+      savedQueryWritesRef.current.delete(favoriteId);
+    }
+    const sql = tab.sql;
+    store
+      .updateFavorite(favoriteId, { sql })
+      .then(() => {
+        const latest = tabsOf(conn);
+        if (latest !== null) {
+          setTabsFor(conn, patchTab(latest, tabId, { favoriteSql: sql }));
+        }
+        store.setInfo(t("쿼리를 저장했습니다: {name}", { name: tab.title }));
+      })
+      .catch((err: unknown) => store.setError(errorOf(err, t("쿼리를 저장하지 못했습니다"))));
+  }
+
+  // Saved queries changed (edited, renamed or deleted from the Queries tab):
+  // their tabs follow, unless they hold edits not yet written back.
+  function syncSavedQueryTabs(queries: Favorite[]): void {
+    const byId = new Map(queries.map((query) => [query.id, query]));
+    const activeConn = activeConnIdRef.current;
+    let next = workspacesRef.current;
+    let activeSql: string | null = null;
+    for (const [conn, ws] of Object.entries(workspacesRef.current)) {
+      let tabsState = ws.tabs;
+      for (const tab of ws.tabs.tabs) {
+        if (tab.kind !== "query" || tab.favoriteId === undefined) {
+          continue;
+        }
+        const saved = byId.get(tab.favoriteId);
+        if (saved === undefined) {
+          tabsState = patchTab(tabsState, tab.id, { favoriteId: undefined, favoriteSql: undefined });
+          continue;
+        }
+        if (saved.name !== tab.title) {
+          tabsState = patchTab(tabsState, tab.id, { title: saved.name });
+        }
+        // Compared without surrounding whitespace: the server trims a new
+        // query's text, and a trailing newline is no edit worth undoing.
+        const writing = savedQueryWritesRef.current.has(saved.id);
+        const untouched = sameSql(tab.sql, tab.favoriteSql) && !writing;
+        if (!sameSql(saved.sql, tab.favoriteSql) && untouched) {
+          tabsState = patchTab(tabsState, tab.id, { sql: saved.sql, favoriteSql: saved.sql });
+          saveDraft(conn, tab.id, saved.sql, saved.name);
+          if (conn === activeConn && tab.id === ws.tabs.activeId) {
+            activeSql = saved.sql;
+          } else {
+            editorRef.current?.forget(tab.id);
+          }
+        } else if (
+          !sameSql(tab.sql, tab.favoriteSql) &&
+          !writing &&
+          failedWritesRef.current.get(saved.id) !== tab.sql &&
+          loadAutoSave()
+        ) {
+          // An edit that never reached the server (the page closed first, or
+          // the write was too large to send while closing) catches up now.
+          queueSavedQueryWrite(conn, tab.id, saved.id, tab.sql);
+        }
+      }
+      if (tabsState !== ws.tabs) {
+        next = { ...next, [conn]: { ...ws, tabs: tabsState } };
+      }
+    }
+    if (next !== workspacesRef.current) {
+      commitWorkspaces(next);
+    }
+    if (activeSql !== null) {
+      editorRef.current?.setSql(activeSql);
+    }
+  }
+  syncSavedQueryTabsRef.current = syncSavedQueryTabs;
+
+  // The editor's "Add to Queries": the whole editor becomes a saved query this
+  // tab then writes back to; a selection is saved on its own.
+  async function addEditorToQueries(name: string): Promise<string | null> {
+    const conn = activeConnIdRef.current;
+    const tab = currentTab();
+    const editor = editorRef.current;
+    if (conn === null || tab === null || tab.kind !== "query" || editor === null) {
+      return null;
+    }
+    const whole = editor.getDoc();
+    const picked = editor.getSql();
+    const sql = picked.trim() === "" ? whole : picked;
+    try {
+      const id = await store.createFavorite(name, sql);
+      if (sql === whole) {
+        const tabs = tabsOf(conn);
+        if (tabs !== null) {
+          setTabsFor(conn, patchTab(tabs, tab.id, { favoriteId: id, favoriteSql: sql, title: name }));
+        }
+      }
+      return null;
+    } catch (err) {
+      return errorOf(err, t("쿼리를 저장하지 못했습니다"));
+    }
   }
 
   function activateNewTab(conn: string, tab: WorkbenchTab): void {
@@ -1389,7 +2075,9 @@ export default function App() {
     store.showSnapshot(conn, snapshotOf(tab));
   }
 
-  function openDataTab(table: string, options?: { view?: TableView; newTab?: boolean }): void {
+  // A plain open goes to the temporary tab (TablePlus's italic one), replacing
+  // the table it showed; `pin` (a double-click) and `newTab` keep a tab.
+  function openDataTab(table: string, options?: { view?: TableView; newTab?: boolean; pin?: boolean }): void {
     const conn = activeConnIdRef.current;
     if (conn === null) {
       return;
@@ -1402,21 +2090,66 @@ export default function App() {
       ? undefined
       : current.tabs.find((tab): tab is DataTab => tab.kind === "data" && tab.table === table);
     if (existing) {
+      let next = current;
       if (options?.view !== undefined && (existing.view ?? "data") !== options.view) {
-        setTabsFor(conn, patchTab(current, existing.id, { view: options.view }));
+        next = patchTab(next, existing.id, { view: options.view });
         if (options.view !== "data") {
           void ensureDetail(conn, table);
         }
       }
+      if (options?.pin && existing.preview) {
+        next = patchTab(next, existing.id, { preview: false });
+      }
+      if (next !== current) {
+        setTabsFor(conn, next);
+      }
       activate(existing.id);
+      // A tab restored before its rows ever came (a reload mid-load) loads now,
+      // unless its own open is still under way (the second click of a double).
+      if (
+        existing.source === undefined &&
+        existing.meta === undefined &&
+        !openingTabsRef.current.has(existing.id) &&
+        (options?.view ?? existing.view ?? "data") === "data"
+      ) {
+        runDataWith(conn, existing, dataSpecOf(existing, existing.offset, existing.pageSize));
+      }
       return;
     }
+    const keep = options?.newTab === true || options?.pin === true;
+    // The temporary tab takes the new table in its place, unless it holds
+    // staged changes (those keep it). A load still running in it is cancelled.
+    const reused = keep
+      ? undefined
+      : current.tabs.find(
+          (entry): entry is DataTab =>
+            entry.kind === "data" && entry.preview === true && !(entry.source?.hasPending() ?? false),
+        );
     const created = createDataTab(table, undefined, meta?.kind ?? "postgres");
-    const tab: DataTab = options?.view !== undefined ? { ...created, view: options.view } : created;
-    const next: TabsState = { tabs: [...current.tabs, tab], activeId: tab.id };
+    const tab: DataTab = {
+      ...created,
+      ...(options?.view !== undefined ? { view: options.view } : {}),
+      ...(reused !== undefined ? { slot: reused.slot ?? reused.id } : {}),
+      preview: !keep,
+    };
+    let next: TabsState;
+    if (reused !== undefined) {
+      if (runningTabRef.current === reused.id) {
+        stopRunOf(conn, reused.id);
+      }
+      reused.source?.dispose();
+      next = {
+        tabs: current.tabs.map((entry) => (entry.id === reused.id ? tab : entry)),
+        activeId: tab.id,
+      };
+    } else {
+      next = { tabs: [...current.tabs, tab], activeId: tab.id };
+    }
     setTabsFor(conn, next);
     store.showSnapshot(conn, snapshotOf(tab));
+    openingTabsRef.current.add(tab.id);
     void ensureDetail(conn, table).then((detail) => {
+      openingTabsRef.current.delete(tab.id);
       if (detail !== null) {
         const latestDetail = tabsOf(conn);
         const targetDetail = latestDetail !== null ? tabById(latestDetail, tab.id) : null;
@@ -1424,20 +2157,32 @@ export default function App() {
           setTabsFor(conn, patchTab(latestDetail, tab.id, { detail }));
         }
       }
-      if ((options?.view ?? "data") !== "data") {
-        return;
-      }
+      // Rows load on the Data view: the one the tab is on now, which may not
+      // be the one it opened on (switched while the structure was read).
       const latest = tabsOf(conn);
       const target = latest !== null ? tabById(latest, tab.id) : null;
-      if (target === null || target.kind !== "data") {
+      // Rows a refresh already brought (while the structure was read) stay,
+      // with whatever filter that refresh used.
+      if (
+        target === null ||
+        target.kind !== "data" ||
+        (target.view ?? "data") !== "data" ||
+        target.source !== undefined
+      ) {
         return;
       }
-      runDataWith(conn, target, {
+      // This is the tab's load; the auto-load below must not run it again
+      // (after a failure, say). If the connection was busy it didn't start,
+      // and the auto-load picks the tab up once the connection is free.
+      const started = runDataWith(conn, target, {
         offset: 0,
         pageSize: target.pageSize,
         filter: null,
         sorts: null,
       });
+      if (started) {
+        autoHydratedRef.current.add(`${conn}:${tab.id}`);
+      }
     });
   }
 
@@ -1501,13 +2246,25 @@ export default function App() {
     if (cached !== undefined) {
       return cached;
     }
-    try {
-      const detail = await store.fetchTableDetail(conn, table);
-      cache.set(key, detail);
-      return detail;
-    } catch {
-      return null;
+    // One read per table at a time: a second ask waits for the first.
+    const pending = detailLoadsRef.current.get(key);
+    if (pending !== undefined) {
+      return pending;
     }
+    const load = store
+      .fetchTableDetail(conn, table)
+      .then((detail) => {
+        cache.set(key, detail);
+        return detail;
+      })
+      .catch(() => null)
+      .finally(() => {
+        if (detailLoadsRef.current.get(key) === load) {
+          detailLoadsRef.current.delete(key);
+        }
+      });
+    detailLoadsRef.current.set(key, load);
+    return load;
   }
 
   function openServerTab(): void {
@@ -1655,7 +2412,7 @@ export default function App() {
         }
         setRunningTabId(tab.id);
         void store.runQuery(conn, result.sql, maxRows, tab.id).then((next) => {
-          setRunningTabId(null);
+          setRunningTabId((value) => (value === tab.id ? null : value));
           handleOutcome(conn, tab.id, next);
         });
       } else {
@@ -1674,6 +2431,9 @@ export default function App() {
       return;
     }
     const conn = activeConnIdRef.current;
+    if (conn !== null) {
+      dropResultSets(conn);
+    }
     const tab = currentTab();
     if (conn === null || tab === null || (tab.kind !== "data" && tab.kind !== "query")) {
       return;
@@ -1699,12 +2459,29 @@ export default function App() {
     activate(next.id);
   }
 
+  // ⌥1…⌥8 bring that tab forward and ⌥9 the last, as ⌘1…⌘9 do in a browser.
+  // False when there's no such tab, so the key does what it would otherwise.
+  function activateTabAt(position: number): boolean {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    if (current === null || current.tabs.length === 0) {
+      return false;
+    }
+    const tab = position === 9 ? current.tabs[current.tabs.length - 1] : current.tabs[position - 1];
+    if (tab === undefined) {
+      return false;
+    }
+    activate(tab.id);
+    return true;
+  }
+
   function setDetailPanelOpen(open: boolean): void {
     const conn = activeConnIdRef.current;
     if (conn === null) {
       return;
     }
-    setDetailPanels((prev) => (prev[conn] === open ? prev : { ...prev, [conn]: open }));
+    const key = stableKeyOf(conn);
+    setDetailPanels((prev) => (prev[key] === open ? prev : { ...prev, [key]: open }));
   }
 
   // The panel opens on any tab: the selected row, else the table's info.
@@ -1713,6 +2490,7 @@ export default function App() {
       setDetailPanelOpen(false);
     } else {
       setDetailRows(lastSelectionRef.current);
+      setStructurePick(lastStructurePickRef.current);
       setDetailPanelOpen(true);
     }
   }
@@ -1727,7 +2505,7 @@ export default function App() {
         setSettingsOpen(true);
         return;
       case "refresh":
-        void refreshActiveMeta();
+        refreshView();
         return;
       default:
         break;
@@ -1739,9 +2517,15 @@ export default function App() {
       case "run":
         run();
         return;
+      case "runAll":
+        run("all");
+        return;
       case "applyChanges":
-        // The structure editor saves its own changes on ⌘S.
-        if (activeTab?.kind === "query" || dataView) {
+        // The structure editor saves its own changes on ⌘S. A saved query's
+        // tab with no staged rows saves the query, as TablePlus does.
+        if (activeTab?.kind === "query" && activeTab.favoriteId !== undefined && !hasStagedRows()) {
+          saveQueryTab(activeTab.id, activeTab.favoriteId);
+        } else if (activeTab?.kind === "query" || dataView) {
           void applyChanges();
         }
         return;
@@ -1815,6 +2599,16 @@ export default function App() {
       store.setInfo(t("NULL 값은 참조 행이 없습니다"));
       return;
     }
+    // A key of several columns matches on all of them, when the row has them.
+    if (fk.columns.length > 1) {
+      const parts = fk.columns.map((local, part) => ({
+        ref: fk.ref_columns[part] ?? fk.ref_columns[0],
+        value: result.source.cell(row, result.meta.columns.indexOf(local)),
+      }));
+      if (parts.every((part) => part.value !== undefined && part.value !== null)) {
+        filter.rows = parts.flatMap((part, partIndex) => fkFilterFor(part.ref, part.value, `fk${partIndex}`)?.rows ?? []);
+      }
+    }
     openDataTabFiltered(fk.ref_table, filter);
   }
 
@@ -1831,6 +2625,10 @@ export default function App() {
       (tab): tab is DataTab => tab.kind === "data" && tab.table === table,
     );
     if (existing) {
+      // A tab showing the table's structure goes to its rows.
+      if ((existing.view ?? "data") !== "data") {
+        setTabsFor(conn, patchTab(current, existing.id, { view: "data" }));
+      }
       runDataWith(conn, existing, {
         offset: 0,
         pageSize: existing.pageSize,
@@ -1838,10 +2636,13 @@ export default function App() {
         sorts: existing.sorts ?? null,
       });
       activate(existing.id);
+      // The condition shows in the filter bar, as TablePlus's quick filter does.
+      setFilterOpen((prev) => ({ ...prev, [existing.id]: true }));
       return;
     }
     const tab: DataTab = { ...createDataTab(table, undefined, meta?.kind ?? "postgres"), filter };
     activateNewTab(conn, tab);
+    setFilterOpen((prev) => ({ ...prev, [tab.id]: true }));
     runDataWith(conn, tab, { offset: 0, pageSize: tab.pageSize, filter, sorts: null });
   }
 
@@ -1853,27 +2654,33 @@ export default function App() {
     }
     let sqlText: string;
     if (tab.kind === "query") {
-      sqlText = (editorRef.current?.getSql() ?? tab.sql).trim();
+      sqlText = (editorRef.current?.currentStatement() ?? "").trim();
     } else if (tab.kind === "data") {
       sqlText = tab.sql.trim();
     } else {
       return;
     }
-    if (sqlText === "" || isExplainSql(sqlText)) {
+    if (sqlText === "" || splitSqlStatements(sqlText, meta?.kind ?? "").length === 0) {
+      notify(t("실행할 쿼리가 없습니다"));
       return;
     }
+    if (splitSqlStatements(sqlText, meta?.kind ?? "").length > 1) {
+      notify(t("실행 계획은 쿼리 하나씩 볼 수 있습니다"));
+      return;
+    }
+    // An EXPLAIN already written runs as it is.
     const prefix = explainPrefixFor(meta?.kind ?? "");
-    if (prefix === null) {
-      store.setInfo(t("이 드라이버는 실행 계획 보기를 지원하지 않습니다"));
+    if (prefix === null && !isExplainSql(sqlText)) {
+      notify(t("이 드라이버는 실행 계획 보기를 지원하지 않습니다"));
       return;
     }
-    const planSql = planSqlFor(sqlText, prefix);
+    const planSql = prefix === null ? sqlText : planSqlFor(sqlText, prefix);
     const planTab = { ...createQueryTab(nextSeq()), title: t("실행 계획 — {title}", { title: tab.title }), sql: planSql };
     activateNewTab(conn, planTab);
     focusRequestRef.current = true;
     setRunningTabId(planTab.id);
     void store.runQuery(conn, planSql, maxRows, planTab.id).then((outcome) => {
-      setRunningTabId(null);
+      setRunningTabId((value) => (value === planTab.id ? null : value));
       handleOutcome(conn, planTab.id, outcome);
     });
   }
@@ -1918,16 +2725,8 @@ export default function App() {
     }
     setDbMenu(null);
     const staged = workspacesRef.current[conn]?.tabs.tabs ?? [];
-    const pending = pendingTotal(staged);
-    if (pending > 0) {
-      if (
-        !window.confirm(
-          t("적용하지 않은 변경 {count}건이 있습니다. 버리고 계속할까요?", { count: pending }),
-        )
-      ) {
-        return;
-      }
-      discardAllPending(staged);
+    if (!guardPending(stagedSources(staged), () => void switchToDatabase(database))) {
+      return;
     }
     try {
       const live = await store.switchDatabase(conn, database);
@@ -1969,7 +2768,7 @@ export default function App() {
     }
     setDbMenu(null);
     try {
-      await store.exec(conn, `CREATE DATABASE ${quoteIdent(kind, trimmed)}`);
+      await store.exec(conn, `CREATE DATABASE ${quoteIdent(kind, trimmed)}`, { history: true });
       store.setInfo(t("데이터베이스 생성됨: {name}", { name: trimmed }));
     } catch (err) {
       store.setError(errorOf(err, t("데이터베이스를 만들지 못했습니다")));
@@ -1996,7 +2795,7 @@ export default function App() {
     }
     setDbMenu(null);
     try {
-      await store.exec(conn, `DROP DATABASE ${quoteIdent(kind, trimmed)}`);
+      await store.exec(conn, `DROP DATABASE ${quoteIdent(kind, trimmed)}`, { history: true });
       store.setInfo(t("데이터베이스 삭제됨: {name}", { name: trimmed }));
     } catch (err) {
       store.setError(errorOf(err, t("데이터베이스를 삭제하지 못했습니다")));
@@ -2017,19 +2816,122 @@ export default function App() {
     });
   }
 
-  async function tableAction(action: TableAction, table: string): Promise<void> {
+  // One statement per table. A table that another picked table still depends
+  // on fails until that one has gone, so failures are tried again while a pass
+  // gets anything done; what still fails is returned with its error.
+  async function eachTable(
+    conn: string,
+    tables: string[],
+    statement: (table: string) => string,
+  ): Promise<{ done: string[]; failed: { table: string; error: unknown }[] }> {
+    const done: string[] = [];
+    let rest = tables;
+    for (;;) {
+      const failed: { table: string; error: unknown }[] = [];
+      for (const table of rest) {
+        try {
+          await store.exec(conn, statement(table), { history: true });
+          done.push(table);
+        } catch (error) {
+          failed.push({ table, error });
+        }
+      }
+      if (failed.length === 0 || failed.length === rest.length) {
+        return { done, failed };
+      }
+      rest = failed.map((entry) => entry.table);
+    }
+  }
+
+  // Renames a table (the sidebar's Rename…, the Structure view's Name field)
+  // and the tabs showing it. True once renamed.
+  async function renameTable(conn: string, table: string, name: string): Promise<boolean> {
+    const typed = name.trim();
+    // A name typed without its schema stays in the table's own schema.
+    const dot = table.lastIndexOf(".");
+    const nextName = typed !== "" && !typed.includes(".") && dot > 0 ? `${table.slice(0, dot + 1)}${typed}` : typed;
+    if (typed === "" || nextName === table) {
+      store.setInfo(t("테이블 이름을 확인하세요"));
+      return false;
+    }
+    // RENAME keeps a table in its schema; another schema would only be a title.
+    if (typed.includes(".") && typed.slice(0, typed.lastIndexOf(".")) !== (dot > 0 ? table.slice(0, dot) : "")) {
+      store.setError(t("이름 변경으로 다른 스키마로 옮길 수는 없습니다"));
+      return false;
+    }
+    const showing = tabsOf(conn)?.tabs.filter((tab): tab is DataTab => tab.kind === "data" && tab.table === table) ?? [];
+    // Staged rows name the table they were read from.
+    if (showing.some((tab) => tab.source?.hasPending() ?? false)) {
+      store.setError(t("저장하지 않은 변경 사항을 먼저 적용하거나 취소하세요"));
+      return false;
+    }
+    try {
+      await store.exec(conn, renameTableSql(meta?.kind ?? "", table, nextName), { history: true });
+      store.setInfo(t("테이블 이름을 변경했습니다: {from} → {to}", { from: table, to: nextName }));
+      const current = tabsOf(conn);
+      if (current !== null) {
+        let next = current;
+        for (const tab of current.tabs) {
+          if (tab.kind === "structure" && tab.table === table) {
+            next = patchTab(next, tab.id, { table: nextName, title: `${t("구조")}: ${nextName}`, data: undefined });
+          }
+          if (tab.kind === "data" && tab.table === table) {
+            // Its rows are read again under the new name.
+            tab.source?.dispose();
+            autoHydratedRef.current.delete(`${conn}:${tab.id}`);
+            next = patchTab(next, tab.id, {
+              table: nextName,
+              title: nextName,
+              source: undefined,
+              meta: undefined,
+              detail: undefined,
+            });
+          }
+        }
+        if (next !== current) {
+          setTabsFor(conn, next);
+          const active = activeTabOf(next);
+          if (active !== null && active.kind === "data" && active.table === nextName) {
+            store.showSnapshot(conn, snapshotOf(active));
+          }
+        }
+      }
+      setTableColors((prev) => moveTableColor(prev, stableKeyOf(conn), table, nextName));
+      setPinnedTables((prev) =>
+        prev[conn]?.includes(table)
+          ? { ...prev, [conn]: prev[conn].map((entry) => (entry === table ? nextName : entry)) }
+          : prev,
+      );
+      forgetTableDetails();
+      setMetaNonce((value) => value + 1);
+      return true;
+    } catch (err) {
+      store.setError(errorOf(err, t("테이블 이름을 변경하지 못했습니다")));
+      return false;
+    }
+  }
+
+  // Copies, truncates and drops cover every table picked in the sidebar; the
+  // other actions take the first.
+  async function tableAction(action: TableAction, tables: string[]): Promise<void> {
     const conn = activeConnIdRef.current;
-    if (conn === null) {
+    const table = tables[0];
+    if (conn === null || table === undefined) {
       return;
     }
     const kind = meta?.kind ?? "";
     const quoted = quoteIdent(meta?.kind ?? "", table);
+    const several = tables.length > 1;
     if (action === "copyDrop") {
-      await writeClipboard(dropTableSql(kind, table));
+      await writeClipboard(
+        several
+          ? tables.map((name) => `${dropTableSql(kind, name)};`).join("\n")
+          : dropTableSql(kind, table),
+      );
       return;
     }
     if (action === "copyTruncate") {
-      await writeClipboard(`${truncateTableSql(kind, table)};`);
+      await writeClipboard(tables.map((name) => `${truncateTableSql(kind, name)};`).join("\n"));
       return;
     }
     if (action === "import") {
@@ -2038,54 +2940,35 @@ export default function App() {
     }
     if (action === "rename") {
       const name = window.prompt(t("새 테이블 이름"), table);
-      if (name === null) {
-        return;
-      }
-      const nextName = name.trim();
-      if (nextName === "" || nextName === table) {
-        store.setInfo(t("테이블 이름을 확인하세요"));
-        return;
-      }
-      try {
-        await store.exec(conn, renameTableSql(kind, table, nextName));
-        store.setInfo(t("테이블 이름을 변경했습니다: {from} → {to}", { from: table, to: nextName }));
-        const current = tabsOf(conn);
-        if (current !== null) {
-          let next = current;
-          for (const tab of current.tabs) {
-            if (tab.kind === "data" && tab.table === table) {
-              next = patchTab(next, tab.id, {
-                table: nextName,
-                title: nextName,
-                meta: tab.meta === undefined ? undefined : { ...tab.meta, sourceTable: nextName },
-                detail: undefined,
-              });
-            }
-          }
-          if (next !== current) {
-            setTabsFor(conn, next);
-          }
-        }
-        forgetTableDetails();
-        setMetaNonce((value) => value + 1);
-      } catch (err) {
-        store.setError(errorOf(err, t("테이블 이름을 변경하지 못했습니다")));
+      if (name !== null) {
+        await renameTable(conn, table, name);
       }
       return;
     }
     if (action === "copyCreate") {
-      const detail = await ensureDetail(conn, table);
-      if (detail?.ddl) {
-        await writeClipboard(detail.ddl);
+      const ddls: string[] = [];
+      for (const name of tables) {
+        const ddl = (await ensureDetail(conn, name))?.ddl;
+        if (ddl) {
+          // Several statements need their own terminators to run as one script.
+          ddls.push(several && !ddl.trimEnd().endsWith(";") ? `${ddl.trimEnd()};` : ddl);
+        }
+      }
+      if (ddls.length > 0) {
+        await writeClipboard(ddls.join("\n\n"));
       } else {
         store.setInfo(t("DDL을 가져올 수 없습니다"));
       }
       return;
     }
     if (action === "copySelect") {
-      const detail = await ensureDetail(conn, table);
-      const columns = detail?.columns.map((column) => column.name) ?? null;
-      await writeClipboard(`SELECT ${selectList(columns, kind)} FROM ${quoted} LIMIT 100;`);
+      const lines: string[] = [];
+      for (const name of tables) {
+        const detail = await ensureDetail(conn, name);
+        const columns = detail?.columns.map((column) => column.name) ?? null;
+        lines.push(`SELECT ${selectList(columns, kind)} FROM ${quoteIdent(kind, name)} LIMIT 100;`);
+      }
+      await writeClipboard(lines.join("\n"));
       return;
     }
     if (action === "copyLaravel") {
@@ -2114,7 +2997,7 @@ export default function App() {
           ? `SELECT * INTO ${targetQuoted} FROM ${quoted};`
           : `CREATE TABLE ${targetQuoted} AS SELECT * FROM ${quoted};`;
       try {
-        await store.exec(conn, sql);
+        await store.exec(conn, sql, { history: true });
         store.setInfo(t("테이블을 복제했습니다: {name}", { name: target }));
         await refreshActiveMeta();
       } catch (err) {
@@ -2122,44 +3005,103 @@ export default function App() {
       }
       return;
     }
+    // The confirmation names the first few tables only.
+    const shown = tables.slice(0, 10).join(", ");
+    const names =
+      tables.length > 10 ? `${shown} ${t("외 {count}개", { count: tables.length - 10 })}` : shown;
     if (action === "truncate") {
-      if (!window.confirm(t("{table} 테이블의 모든 행을 삭제할까요?", { table }))) {
+      const question = several
+        ? t("테이블 {count}개의 모든 행을 삭제할까요?\n{tables}", { count: tables.length, tables: names })
+        : t("{table} 테이블의 모든 행을 삭제할까요?", { table });
+      if (!window.confirm(question)) {
         return;
       }
-      const sql = kind === "sqlite" ? `DELETE FROM ${quoted};` : `TRUNCATE TABLE ${quoted};`;
-      try {
-        await store.exec(conn, sql);
-        store.setInfo(t("테이블을 비웠습니다: {table}", { table }));
-        const ws = workspacesRef.current[conn];
-        const tab = ws !== undefined ? activeTabOf(ws.tabs) : null;
-        if (ws !== undefined && tab !== null && tab.kind === "data" && tab.table === table) {
-          runDataWith(conn, tab, dataSpecOf(tab, 0, tab.pageSize));
-        }
-      } catch (err) {
-        store.setError(errorOf(err, t("테이블을 비우지 못했습니다")));
+      // Postgres won't empty a table another one references unless both go in
+      // one TRUNCATE; elsewhere it is one table at a time.
+      const together = several && (kind === "postgres" || kind === "cockroach");
+      const { done: emptied, failed } = together
+        ? await store
+            .exec(conn, `TRUNCATE TABLE ${tables.map((name) => quoteIdent(kind, name)).join(", ")};`, {
+              history: true,
+            })
+            .then(
+              () => ({ done: tables, failed: [] }),
+              (error: unknown) => ({ done: [], failed: [{ table: names, error }] }),
+            )
+        : await eachTable(conn, tables, (name) => `${truncateTableSql(kind, name)};`);
+      if (failed.length === 0) {
+        store.setInfo(
+          several
+            ? t("테이블 {count}개를 비웠습니다", { count: emptied.length })
+            : t("테이블을 비웠습니다: {table}", { table }),
+        );
+      } else if (!several || together) {
+        store.setError(errorOf(failed[0].error, t("테이블을 비우지 못했습니다")));
+      } else {
+        store.setError(
+          t("테이블 {done}개를 비웠고 {failed}개는 실패했습니다 — {table}: {error}", {
+            done: emptied.length,
+            failed: failed.length,
+            table: failed[0].table,
+            error: errorOf(failed[0].error, t("테이블을 비우지 못했습니다")),
+          }),
+        );
+      }
+      const ws = workspacesRef.current[conn];
+      const tab = ws !== undefined ? activeTabOf(ws.tabs) : null;
+      if (ws !== undefined && tab !== null && tab.kind === "data" && emptied.includes(tab.table ?? "")) {
+        runDataWith(conn, tab, dataSpecOf(tab, 0, tab.pageSize));
       }
       return;
     }
     if (action === "delete") {
-      if (!window.confirm(t("테이블 {table}을(를) 삭제하면 되돌릴 수 없습니다. 삭제할까요?", { table }))) {
+      const question = several
+        ? t("테이블 {count}개를 삭제하면 되돌릴 수 없습니다. 삭제할까요?\n{tables}", {
+            count: tables.length,
+            tables: names,
+          })
+        : t("테이블 {table}을(를) 삭제하면 되돌릴 수 없습니다. 삭제할까요?", { table });
+      if (!window.confirm(question)) {
         return;
       }
-      const sql = `DROP TABLE ${quoted};`;
-      try {
-        await store.exec(conn, sql);
-        store.setInfo(t("테이블을 삭제했습니다: {table}", { table }));
+      const { done: dropped, failed } = await eachTable(
+        conn,
+        tables,
+        (name) => `DROP TABLE ${quoteIdent(kind, name)};`,
+      );
+      if (failed.length === 0) {
+        store.setInfo(
+          several
+            ? t("테이블 {count}개를 삭제했습니다", { count: dropped.length })
+            : t("테이블을 삭제했습니다: {table}", { table }),
+        );
+      } else if (!several) {
+        store.setError(errorOf(failed[0].error, t("테이블을 삭제하지 못했습니다")));
+      } else {
+        store.setError(
+          t("테이블 {done}개를 삭제했고 {failed}개는 실패했습니다 — {table}: {error}", {
+            done: dropped.length,
+            failed: failed.length,
+            table: failed[0].table,
+            error: errorOf(failed[0].error, t("테이블을 삭제하지 못했습니다")),
+          }),
+        );
+      }
+      if (dropped.length > 0) {
+        setTableColors((prev) => withTableColor(prev, stableKeyOf(conn), dropped, null));
+        setPinnedTables((prev) =>
+          prev[conn] === undefined ? prev : { ...prev, [conn]: prev[conn].filter((entry) => !dropped.includes(entry)) },
+        );
         const current = tabsOf(conn);
         if (current !== null) {
           const doomed = current.tabs.filter(
-            (tab) => tab.kind === "data" && tab.table === table,
+            (tab) => tab.kind === "data" && dropped.includes(tab.table ?? ""),
           );
           for (const tab of doomed) {
-            closeTabById(tab.id);
+            closeTabById(tab.id, true);
           }
         }
         await refreshActiveMeta();
-      } catch (err) {
-        store.setError(errorOf(err, t("테이블을 삭제하지 못했습니다")));
       }
     }
   }
@@ -2167,6 +3109,9 @@ export default function App() {
   // Structure, data or sizes may have changed; details are fetched again.
   function forgetTableDetails(): void {
     detailCacheRef.current = new Map();
+    detailFailedRef.current = new Set();
+    // A read started before the change would bring the old structure back.
+    detailLoadsRef.current = new Map();
     setDetailNonce((value) => value + 1);
   }
 
@@ -2378,11 +3323,7 @@ export default function App() {
     }
     const ws = workspacesRef.current[id];
     if (ws !== undefined) {
-      const pending = pendingTotal(ws.tabs.tabs);
-      if (
-        pending > 0 &&
-        !window.confirm(t("적용하지 않은 변경 {count}건이 있습니다. 버리고 계속할까요?", { count: pending }))
-      ) {
+      if (!guardPending(stagedSources(ws.tabs.tabs), () => void closeConn(id))) {
         return;
       }
       if (runningTabRef.current !== null && tabById(ws.tabs, runningTabRef.current) !== null) {
@@ -2424,7 +3365,7 @@ export default function App() {
       { id: "open-structure", label: t("테이블 구조 보기"), sourceId: "structure" },
       { id: "server-info", label: t("서버 정보"), run: openServerTab },
       { id: "export", label: t("결과 내보내기"), disabled: result === null, run: openExport },
-      { id: "refresh-meta", label: t("메타 새로고침"), hint: shortcutHint(settings.keymap, "refresh"), run: () => void refreshActiveMeta() },
+      { id: "refresh-meta", label: t("새로고침"), hint: shortcutHint(settings.keymap, "refresh"), run: refreshView },
       {
         id: "alert-mode",
         label: t("안전 모드 바꾸기 (끔 → 위험만 → 모든 변경)"),
@@ -2519,7 +3460,7 @@ export default function App() {
       { id: "connect", label: t("서버 연결"), run: () => openConnectionEditor(null) },
       { id: "demo", label: t("데모 열기"), run: () => void openDemo() },
       { id: "history", label: t("실행 기록"), sourceId: "history" },
-      { id: "favorites", label: t("즐겨찾기"), sourceId: "favorites" },
+      { id: "favorites", label: t("저장한 쿼리"), sourceId: "favorites" },
       { id: "drafts", label: t("초안 복구"), sourceId: "drafts" },
     ];
   }
@@ -2585,7 +3526,7 @@ export default function App() {
       },
       {
         id: "favorites",
-        title: t("즐겨찾기"),
+        title: t("저장한 쿼리"),
         load: async () => {
           const favorites = await store.fetchFavorites();
           return favorites.map((favorite) => ({
@@ -2640,6 +3581,17 @@ export default function App() {
     setDetailPanelOpen(true);
   }
 
+  function pickStructureRows(pick: { key: string; source: RowSource; rows: SelectedRows } | null): void {
+    lastStructurePickRef.current = pick;
+    // As with the data grid, only an open panel follows the selection.
+    if (detailPanelOpenRef.current && structureFrameRef.current === 0) {
+      structureFrameRef.current = requestAnimationFrame(() => {
+        structureFrameRef.current = 0;
+        setStructurePick(lastStructurePickRef.current);
+      });
+    }
+  }
+
   function handleSelectionChange(row: number | null, rows: SelectedRows | null): void {
     if (row === null || rows === null) {
       return;
@@ -2685,54 +3637,33 @@ export default function App() {
         : tab && tab.kind === "data"
           ? tab.table
           : null;
-    const items: ContextMenuItem[] = [
-      {
-        label: t("셀 값 복사"),
-        onSelect: () => {
-          void (async () => {
-            if (source.cell(menuState.row, menuState.col) === undefined) {
-              await source.ensureRow(menuState.row);
-            }
-            const cell = source.cell(menuState.row, menuState.col);
-            await writeClipboard(cell === null ? "NULL" : cellToText(cell));
-          })();
-        },
+    const { row, col } = menuState;
+    const spec = gridSpecs?.[col] ?? null;
+    const items = cellMenuItems({
+      column: result.meta.columns[col] ?? "",
+      value: async () => {
+        if (source.cell(row, col) === undefined) {
+          await source.ensureRow(row);
+        }
+        return source.cell(row, col) ?? null;
       },
-      {
-        label: t("행 복사 (TSV)"),
-        onSelect: () => {
-          void (async () => {
-            const values = await rowValues(source, menuState.row);
-            await writeClipboard(
-              values.map((entry) => (entry === null ? "" : cellToText(entry))).join("\t"),
-            );
-          })();
-        },
-      },
-    ];
-    if (canEdit) {
+      row: () => rowValues(source, row),
+      copy: writeClipboard,
+      quickLook: () => openCellQuickLook(row, col),
+      views: [{ label: t("행 상세 보기"), onSelect: () => openRowDetail(row) }],
+      edit: canEdit ? () => gridHostRef.current?.beginEdit(row, col) : undefined,
+      setValue: canEdit ? (next) => void store.editCell(row, col, next) : undefined,
+      // Without the table's structure, any column may take either.
+      nullable: spec?.nullable ?? true,
+      allowsEmpty: spec === null || spec.kind === "text" || spec.kind === "enum" || spec.kind === "set",
+      isNull: value === undefined || (value === null && !inserted),
+    });
+    if (canEdit && source.cellState(row, col) === "edited") {
       items.push({
-        label: t("값을 NULL로 설정"),
-        disabled: value === undefined || (value === null && !inserted),
-        onSelect: () => {
-          void store.editCell(menuState.row, menuState.col, null);
-        },
+        label: t("변경 되돌리기"),
+        onSelect: () => source.revertCell(row, col),
       });
-      if (source.cellState(menuState.row, menuState.col) === "edited") {
-        items.push({
-          label: t("변경 되돌리기"),
-          onSelect: () => source.revertCell(menuState.row, menuState.col),
-        });
-      }
     }
-    items.push({
-      label: "Quick Look",
-      onSelect: () => openCellQuickLook(menuState.row, menuState.col),
-    });
-    items.push({
-      label: t("행 상세 보기"),
-      onSelect: () => openRowDetail(menuState.row),
-    });
     if (result.meta.sourceTable !== null) {
       items.push({
         label: t("행 복제"),
@@ -2798,13 +3729,6 @@ export default function App() {
         },
       });
     }
-    if (canEdit) {
-      items.push({
-        label: t("이 셀 편집"),
-        separatorBefore: true,
-        onSelect: () => gridHostRef.current?.beginEdit(menuState.row, menuState.col),
-      });
-    }
     return items;
   }
 
@@ -2832,14 +3756,15 @@ export default function App() {
     storeWidth(DETAIL_WIDTH_KEY, width);
   }
 
-  const consoleOpen = activeConnId !== null && consolePanels[activeConnId] === true;
+  const consoleOpen = activeKey !== null && consolePanels[activeKey] === true;
 
   function setConsoleOpen(open: boolean): void {
     const conn = activeConnIdRef.current;
     if (conn === null) {
       return;
     }
-    setConsolePanels((prev) => (prev[conn] === open ? prev : { ...prev, [conn]: open }));
+    const key = stableKeyOf(conn);
+    setConsolePanels((prev) => (prev[key] === open ? prev : { ...prev, [key]: open }));
   }
 
   function saveConsoleHeight(height: number): void {
@@ -3037,11 +3962,25 @@ export default function App() {
   }, [workspaces, activeConnId, booting]);
 
   cycleViewRef.current = cycleTableView;
+  formatRef.current = formatCurrent;
+  tabAtRef.current = activateTabAt;
   serverConnRef.current = serverConn;
 
   useEffect(() => {
     saveTableMap(PINNED_KEY, pinnedTables);
   }, [pinnedTables]);
+
+  useEffect(() => {
+    saveFlagMap(CONSOLE_PANELS_KEY, consolePanels);
+  }, [consolePanels]);
+
+  useEffect(() => {
+    saveTableColors(tableColors);
+  }, [tableColors]);
+
+  useEffect(() => {
+    saveFlagMap(DETAIL_PANELS_KEY, detailPanels);
+  }, [detailPanels]);
 
   useEffect(() => {
     if (prevConnRef.current === activeConnId) {
@@ -3115,10 +4054,13 @@ export default function App() {
         if (
           exportTargetRef.current !== null ||
           menuRef.current !== null ||
-          document.querySelector(".context-menu, .menu-panel, .structure-menu") !== null ||
-          // The structure grid uses Escape to leave a cell.
+          document.querySelector(
+            ".context-menu, .menu-panel, .cell-menu, .date-picker, .column-picker, .page-size-panel",
+          ) !== null ||
+          // The structure grid uses Escape to leave a cell, and the bar over
+          // it to clear its search or put the name back.
           (document.activeElement instanceof Element &&
-            document.activeElement.closest(".structure-grid") !== null) ||
+            document.activeElement.closest(".structure-grid, .structure-bar") !== null) ||
           modalOpen()
         ) {
           return;
@@ -3136,11 +4078,40 @@ export default function App() {
         }
         return;
       }
+      const target = event.target instanceof Element ? event.target : null;
+      // ⌥1…⌥9 pick a tab. Text fields keep the key: on macOS ⌥ digits type
+      // characters (¡ ™ £); the SQL editor isn't one here.
+      // On German, Nordic or UK layouts ⌥ digits type [ ] { } | #, which SQL
+      // needs: a key that gives plain ASCII is left to the editor.
+      if (
+        event.altKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        /^Digit[1-9]$/.test(event.code) &&
+        !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
+        !(target?.closest(".cm-editor") != null && /^[\x20-\x7E]$/.test(event.key)) &&
+        document.querySelector(".context-menu") === null &&
+        !modalOpen() &&
+        tabAtRef.current(Number(event.code.slice(5)))
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      // ⌘I in the SQL editor beautifies it, as in TablePlus; elsewhere it
+      // stays whatever the keymap gives it (the right panel by default).
+      if (matchesBinding(event, BEAUTIFY_KEY) && target?.closest(".sql-editor") != null && !modalOpen()) {
+        event.preventDefault();
+        event.stopPropagation();
+        formatRef.current("beautify");
+        return;
+      }
       const action = actionForEvent(event, settingsRef.current.keymap);
       if (action === null) {
         return;
       }
-      const target = event.target instanceof Element ? event.target : null;
       // ⌥ types characters on macOS (⌥T → †); text fields keep them. The SQL
       // editor is not a text field here, so ⌥W still closes the tab there.
       if (
@@ -3160,8 +4131,13 @@ export default function App() {
         }
         return;
       }
-      // In the grid ⌘↩ opens the cell popover or commits the cell being edited.
-      if (action === "run" && event.key === "Enter" && target?.closest(".grid-host") != null) {
+      // In the grid ⌘↩ opens the cell popover or commits the cell being edited;
+      // on a sidebar table it opens the table in a kept tab.
+      if (
+        action === "run" &&
+        event.key === "Enter" &&
+        target?.closest(".table-grid, .schema-table-row, .schema-object-row, .date-picker") != null
+      ) {
         return;
       }
       // Runs in the capture phase: an app shortcut wins over the browser's
@@ -3190,11 +4166,6 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
-  const canEditResult =
-    state.result !== null &&
-    state.result.meta.sourceTable !== null &&
-    state.result.meta.pk !== null &&
-    state.result.meta.pk.length > 0;
   const pendingSummary =
     state.result !== null && state.result.meta.sourceTable !== null
       ? state.result.source.pendingSummary()
@@ -3208,10 +4179,40 @@ export default function App() {
       ((activeTab.kind === "data" && (activeTab.view ?? "data") === "data") ||
         resultView === "message"));
 
-  const chipsShown =
-    resultChips !== null && resultChips.conn === activeConnId && resultChips.tabId === activeTab?.id;
+  // The result sets of the tab in front, when it ran several statements.
+  const resultChips = activeTab !== null ? (resultSets[activeTab.id] ?? null) : null;
+  const chipsShown = resultChips !== null && resultChips.conn === activeConnId;
   const planAvailable = state.result !== null && isExplainSql(state.result.sql);
-  const detailPanelOpen = activeConnId !== null && detailPanels[activeConnId] === true;
+  const detailPanelOpen = activeKey !== null && detailPanels[activeKey] === true;
+  // TablePlus's Data | Structure | Index switch, which leads each view's footer.
+  const tableViewTabs =
+    activeDataTab !== null ? (
+      <div className="view-tabs">
+        {(
+          [
+            ["data", t("데이터")],
+            ["structure", t("구조")],
+            ["index", t("인덱스")],
+          ] as const
+        ).map(([view, label]) => (
+          <button
+            type="button"
+            key={view}
+            className={(activeDataTab.view ?? "data") === view ? "active" : ""}
+            onClick={() => setTableView(view)}
+            title={`${label} (⌘⌃[ / ⌘⌃])`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    ) : null;
+  // The Structure or Index view's picked rows, which the panel shows instead
+  // of the table's info.
+  const structureRows =
+    structurePick !== null && activeDataTab !== null && structurePick.key === `${activeDataTab.id}:${activeDataTab.view}`
+      ? structurePick
+      : null;
   // The grid row the panel can describe, if the current tab shows a grid.
   const gridTab =
     activeTab !== null && (activeTab.kind === "query" || (activeTab.kind === "data" && dataView));
@@ -3265,9 +4266,35 @@ export default function App() {
     setCellQuickLook(null);
     setDetailRows(null);
     lastSelectionRef.current = null;
+    setStructurePick(null);
+    lastStructurePickRef.current = null;
   }, [tabs?.activeId]);
+
+  // The column list belongs to the Data view it was opened on.
+  useEffect(() => {
+    setColumnsPickOpen(false);
+  }, [tabs?.activeId, activeDataTab?.view]);
   const filterVisible = activeDataTab !== null && (filterOpen[activeDataTab.id] ?? false);
   const connRunning = state.status === "running" && state.connId === activeConnId;
+  // The tab in front is waiting for its rows: its query is running, or its
+  // table (just opened, restored or expired) is about to be read, as the
+  // auto-load below does for a Data view with no rows, error or cancel.
+  const resultLoading =
+    activeTab !== null &&
+    ((connRunning && runningTabId === activeTab.id) ||
+      (activeTab.kind === "data" &&
+        (activeTab.view ?? "data") === "data" &&
+        activeTab.source === undefined &&
+        activeTab.error === undefined &&
+        activeTab.info === undefined));
+  // The run spinner belongs to this connection's tabs only; a table still
+  // opening (reading its structure first) spins too.
+  const spinningTabId =
+    runningTabId !== null && tabs !== null && tabs.tabs.some((tab) => tab.id === runningTabId)
+      ? runningTabId
+      : resultLoading && activeTab !== null
+        ? activeTab.id
+        : null;
   const autoHydratedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -3282,7 +4309,9 @@ export default function App() {
       activeConnId === null ||
       activeDataTab === null ||
       activeDataTab.source !== undefined ||
-      activeDataTab.meta === undefined ||
+      // Its own open is still reading the structure and will load it.
+      openingTabsRef.current.has(activeDataTab.id) ||
+      activeDataTab.error !== undefined ||
       (activeDataTab.view ?? "data") !== "data" ||
       connRunning
     ) {
@@ -3292,12 +4321,14 @@ export default function App() {
     if (autoHydratedRef.current.has(key)) {
       return;
     }
-    autoHydratedRef.current.add(key);
-    runDataWith(
+    const started = runDataWith(
       activeConnId,
       activeDataTab,
       dataSpecOf(activeDataTab, activeDataTab.offset, activeDataTab.pageSize),
     );
+    if (started) {
+      autoHydratedRef.current.add(key);
+    }
   }, [booting, activeConnId, activeDataTab, connRunning]);
 
   useEffect(() => {
@@ -3341,7 +4372,7 @@ export default function App() {
             type="button"
             className="icon-button appbar-icon"
             onClick={() => setSettingsOpen(true)}
-            title={t("설정")}
+            title={withHint(t("설정"), shortcutHint(settings.keymap, "openSettings"))}
           >
             <SettingsIcon size={13} />
             <span className="sr-only">{t("설정")}</span>
@@ -3374,7 +4405,7 @@ export default function App() {
               type="button"
               className={`icon-button tabbar-side${schemaOpen ? " active" : ""}`}
               onClick={() => setSchemaOpen((value) => !value)}
-              title={`${schemaOpen ? t("스키마 패널 숨기기") : t("스키마 패널 표시")} (${shortcutHint(settings.keymap, "toggleSidebar")})`}
+              title={withHint(schemaOpen ? t("스키마 패널 숨기기") : t("스키마 패널 표시"), shortcutHint(settings.keymap, "toggleSidebar"))}
             >
               <PanelLeftIcon size={13} />
             </button>
@@ -3382,17 +4413,20 @@ export default function App() {
               <TabStrip
                 tabs={tabs.tabs}
                 activeId={tabs.activeId}
-                runningTabId={runningTabId}
+                runningTabId={spinningTabId}
                 onActivate={activate}
                 onClose={closeTabById}
                 onRename={renameTabById}
+                tableColors={activeKey !== null ? tableColors[activeKey] : undefined}
+                closeHint={shortcutHint(settings.keymap, "closeTab")}
+                onPin={pinTab}
               />
             ) : null}
             <button
               type="button"
               className="icon-button tabbar-new"
               onClick={createNewTab}
-              title={`${t("새 탭")} (${shortcutHint(settings.keymap, "newTab")})`}
+              title={withHint(t("새 탭"), shortcutHint(settings.keymap, "newTab"))}
             >
               <PlusIcon size={12} />
             </button>
@@ -3408,13 +4442,17 @@ export default function App() {
                   <span className="toolbar-badge">{jobsRunning}</span>
                 </button>
               ) : null}
+              {/* An open transaction (BEGIN in the editor, or Run in transaction)
+                  shows here until it's committed or rolled back. */}
               {state.tx === "active" ? (
-                <div className="tx-slot compact">
-                  <span className="tx-badge" title={t("트랜잭션 진행 중")}>
-                    TX
+                <div className="tx-slot compact" role="group" aria-label={t("트랜잭션 진행 중")}>
+                  <span className="tx-state" title={t("트랜잭션 진행 중")}>
+                    <span className="tx-dot" aria-hidden="true" />
+                    {t("트랜잭션")}
                   </span>
                   <button
                     type="button"
+                    className="primary"
                     disabled={connRunning}
                     onClick={() => void store.commitTx()}
                     title={t("커밋")}
@@ -3430,16 +4468,6 @@ export default function App() {
                     {t("롤백")}
                   </button>
                 </div>
-              ) : canEditResult ? (
-                <button
-                  type="button"
-                  className="tabbar-tx"
-                  disabled={connRunning}
-                  onClick={() => void store.beginTx()}
-                  title={t("트랜잭션 시작")}
-                >
-                  TX
-                </button>
               ) : null}
               <SafeModeMenu mode={alertMode} onChange={setAlertMode} compact />
               <button
@@ -3458,7 +4486,7 @@ export default function App() {
                 type="button"
                 className={`icon-button tabbar-side${consoleOpen ? " active" : ""}`}
                 onClick={() => setConsoleOpen(!consoleOpen)}
-                title={`${consoleOpen ? t("아래 콘솔 닫기") : t("아래 콘솔 열기")} (${shortcutHint(settings.keymap, "toggleConsole")})`}
+                title={withHint(consoleOpen ? t("아래 콘솔 닫기") : t("아래 콘솔 열기"), shortcutHint(settings.keymap, "toggleConsole"))}
               >
                 <PanelBottomIcon size={13} />
               </button>
@@ -3466,7 +4494,7 @@ export default function App() {
                 type="button"
                 className={`icon-button tabbar-side${detailPanelOpen ? " active" : ""}`}
                 onClick={toggleDetailPanel}
-                title={`${detailPanelOpen ? t("행 상세 패널 닫기") : t("행 상세 패널 열기")} (${shortcutHint(settings.keymap, "toggleDetail")})`}
+                title={withHint(detailPanelOpen ? t("행 상세 패널 닫기") : t("행 상세 패널 열기"), shortcutHint(settings.keymap, "toggleDetail"))}
               >
                 <PanelIcon size={13} />
               </button>
@@ -3483,8 +4511,24 @@ export default function App() {
           >
             {schemaOpen && activeConnId !== null ? (
               <>
-                <SchemaSidebar
+                <SidebarPanel
                   key={activeConnId}
+                  conn={activeConnId}
+                  queries={
+                    <QueriesPane onOpen={openSavedQuery} onRun={runInNewTab} onInsert={insertIntoEditor} />
+                  }
+                  history={(active) => (
+                    <HistoryPane
+                      conn={activeConnId}
+                      version={historyVersion}
+                      active={active}
+                      onOpen={(sqlText) => void openQueryTab(sqlText)}
+                      onRun={runInNewTab}
+                      onInsert={insertIntoEditor}
+                    />
+                  )}
+                  items={
+                <SchemaSidebar
                   conn={activeConnId}
                   kind={meta?.kind ?? ""}
                   refreshKey={schemaKey}
@@ -3495,6 +4539,7 @@ export default function App() {
                       : null
                   }
                   onOpenData={(table) => openDataTab(table)}
+                  onPinData={(table) => openDataTab(table, { pin: true })}
                   onOpenDataNewTab={(table) => openDataTab(table, { newTab: true })}
                   onOpenInEditor={pickTable}
                   onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
@@ -3502,11 +4547,19 @@ export default function App() {
                   onOpenServer={openServerTab}
                   onOpenDefinition={openDefinitionTab}
                   onTogglePin={togglePin}
-                  onTableAction={(action, table) => void tableAction(action, table)}
+                  onTableAction={(action, tables) => void tableAction(action, tables)}
                   onOpenCreateTable={() => setCreateTableOpen(true)}
                   onOpenSql={openSqlTab}
                   onOpenUsers={() => setUserMgrOpen(true)}
                   onSwitchDatabase={serverConn ? (x, y) => void openDbMenu(x, y) : undefined}
+                  loadTableDetail={(table) => ensureDetail(activeConnId, table)}
+                  tableColors={activeKey !== null ? tableColors[activeKey] : undefined}
+                  onSetTableColor={(tables, color) =>
+                    setTableColors((prev) => withTableColor(prev, stableKeyOf(activeConnId), tables, color))
+                  }
+                  onResetTableColors={() => setTableColors((prev) => ({ ...prev, [stableKeyOf(activeConnId)]: {} }))}
+                />
+                  }
                 />
                 <div
                   className="sidebar-splitter"
@@ -3556,36 +4609,19 @@ export default function App() {
                         schema={schemaMap}
                         favorites={favoriteSnippets}
                         runKey={settings.keymap.run[0]?.replaceAll("+", "-") ?? null}
+                        dialect={meta?.kind}
                       />
                       {/* What acts on the editor lives with it, as in TablePlus. */}
                       <div className="editor-bar">
                         <button
                           type="button"
-                          className="primary run-button"
-                          disabled={connRunning}
-                          onClick={run}
-                          title={`${t("실행")} (${shortcutHint(settings.keymap, "run")})`}
-                        >
-                          <PlayIcon size={10} />
-                          {t("실행")}
-                        </button>
-                        {connRunning ? (
-                          <button type="button" onClick={() => store.cancelQuery()} title={t("정지")}>
-                            <StopIcon size={10} />
-                            {t("정지")}
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
                           className="icon-text-button"
-                          disabled={connRunning}
-                          onClick={explain}
-                          title={t("실행 계획")}
+                          title={t("에디터의 SQL(선택한 부분)을 쿼리 탭에 저장")}
+                          onClick={() => setAddQueryOpen(true)}
                         >
-                          {t("실행 계획")}
+                          <StarIcon size={11} />
+                          {t("쿼리에 추가")}
                         </button>
-                        <span className="spacer" />
-                        <FavoritesMenu onPickSql={pickSql} getSql={() => editorRef.current?.getSql() ?? ""} />
                         <button
                           type="button"
                           className="icon-text-button"
@@ -3598,6 +4634,19 @@ export default function App() {
                           <SnippetIcon size={11} />
                           {t("스니펫")}
                         </button>
+                        <span className="spacer" />
+                        <EditorActions
+                          limit={maxRows}
+                          running={connRunning}
+                          runHint={shortcutHint(settings.keymap, "run")}
+                          runAllHint={shortcutHint(settings.keymap, "runAll")}
+                          beautifyHint={formatBinding(BEAUTIFY_KEY)}
+                          onLimit={(limit) => setSettings(saveSettings({ maxRows: limit }))}
+                          onRun={run}
+                          onStop={() => store.cancelQuery()}
+                          onFormat={formatCurrent}
+                          onExplain={explain}
+                        />
                       </div>
                     </div>
                     <div
@@ -3637,7 +4686,7 @@ export default function App() {
                       className="primary pending-apply"
                       disabled={applying || connRunning}
                       onClick={() => void applyChanges()}
-                      title={`${t("변경사항 적용")} (${shortcutHint(settings.keymap, "applyChanges")})`}
+                      title={withHint(t("변경사항 적용"), shortcutHint(settings.keymap, "applyChanges"))}
                     >
                       {applying ? <Spinner size={13} /> : <CheckIcon size={12} />}
                       {t("변경사항 적용")}
@@ -3653,7 +4702,7 @@ export default function App() {
                       kind={meta?.kind ?? ""}
                       table={activeTab.table}
                       data={activeTab.data}
-                      exactRows={meta?.kind === "sqlite"}
+                      onRename={(name) => renameTable(activeConnId, activeTab.table, name)}
                       onData={(detail) =>
                         updateActiveTabs((current) => patchTab(current, activeTab.id, { data: detail }))
                       }
@@ -3685,34 +4734,30 @@ export default function App() {
                     />
                   ) : (
                     <>
-                      {activeDataTab && activeConnId !== null ? (
+                      {activeDataTab && activeConnId !== null && (activeDataTab.view ?? "data") === "data" ? (
                         <div className="data-toolbar">
-                          <div className="view-tabs">
-                            <button
-                              type="button"
-                              className={(activeDataTab.view ?? "data") === "data" ? "active" : ""}
-                              onClick={() => setTableView("data")}
-                              title={`${t("데이터")} (⌘⌃[ / ⌘⌃])`}
-                            >
-                              {t("데이터")}
-                            </button>
-                            <button
-                              type="button"
-                              className={activeDataTab.view === "structure" ? "active" : ""}
-                              onClick={() => setTableView("structure")}
-                              title={`${t("구조")} (⌘⌃[ / ⌘⌃])`}
-                            >
-                              {t("구조")}
-                            </button>
-                          </div>
-                          {(activeDataTab.view ?? "data") === "data" ? (
-                            <>
                               <DataTabToolbar
                                 tab={activeDataTab}
+                                viewTabs={tableViewTabs}
+                                total={totalOf(activeConnId, activeDataTab)}
+                                refreshHint={shortcutHint(settings.keymap, "refresh")}
                                 running={connRunning}
+                                loading={resultLoading}
                                 counting={countingTabId === activeDataTab.id}
                                 filterOpen={filterVisible}
                                 columnsOpen={columnsPickOpen}
+                                columnsPicker={
+                                  columnsPickOpen ? (
+                                    <ColumnPicker
+                                      columns={columnEntries}
+                                      onToggle={toggleColumn}
+                                      onMove={moveColumn}
+                                      onAll={resetColumns}
+                                      onReset={resetColumns}
+                                      onClose={() => setColumnsPickOpen(false)}
+                                    />
+                                  ) : null
+                                }
                                 onRefresh={() =>
                                   runDataWith(
                                     activeConnId,
@@ -3747,13 +4792,6 @@ export default function App() {
                                   )
                                 }
                                 onCount={() => void refreshCount(activeConnId, activeDataTab.id)}
-                                onFirst={() =>
-                                  runDataWith(
-                                    activeConnId,
-                                    activeDataTab,
-                                    dataSpecOf(activeDataTab, 0, activeDataTab.pageSize),
-                                  )
-                                }
                                 onPrev={() =>
                                   runDataWith(
                                     activeConnId,
@@ -3777,28 +4815,28 @@ export default function App() {
                                   )
                                 }
                               />
-                              {columnsPickOpen ? (
-                                <ColumnPicker
-                                  columns={columnEntries}
-                                  onToggle={toggleColumn}
-                                  onMove={moveColumn}
-                                  onAll={resetColumns}
-                                  onReset={resetColumns}
-                                  onClose={() => setColumnsPickOpen(false)}
-                                />
-                              ) : null}
-                            </>
-                          ) : null}
                         </div>
                       ) : null}
-                      {activeDataTab && activeConnId !== null && activeDataTab.view === "structure" ? (
+                      {activeDataTab &&
+                      activeConnId !== null &&
+                      (activeDataTab.view === "structure" || activeDataTab.view === "index") ? (
+                        // One panel for both views, so edits made in either stay
+                        // put while switching between them.
                         <StructurePanel
-                          key={`${activeConnId}:${activeDataTab.id}:structure`}
+                          key={`${activeConnId}:${activeDataTab.id}:schema`}
+                          section={activeDataTab.view === "index" ? "indexes" : "columns"}
                           conn={activeConnId}
                           kind={meta?.kind ?? ""}
                           table={activeDataTab.table}
                           data={activeDataTab.detail}
-                          exactRows={meta?.kind === "sqlite"}
+                          viewTabs={tableViewTabs}
+                          onRename={(name) => renameTable(activeConnId, activeDataTab.table, name)}
+                          onSelectRows={(pick) =>
+                            pickStructureRows(
+                              pick === null ? null : { ...pick, key: `${activeDataTab.id}:${activeDataTab.view}` },
+                            )
+                          }
+                          onPending={() => pinTab(activeDataTab.id)}
                           onData={(detail) =>
                             updateActiveTabs((current) =>
                               patchTab(current, activeDataTab.id, { detail }),
@@ -3835,7 +4873,41 @@ export default function App() {
                       ) : null}
                       {/* Results show on their own; this bar appears only for a plan to
                           switch to, several statements' results, or rows cut off. */}
-                      {!dataView && (planAvailable || chipsShown || state.result?.meta.truncated) ? (
+                      {/* Several statements' results: one segment each, the
+                          one shown marked, so it's plain which result this is. */}
+                      {!dataView && chipsShown && resultChips !== null ? (
+                        <div className="result-sets" role="tablist" aria-label={t("쿼리 결과")}>
+                          {resultChips.entries.map((entry, index) => {
+                            const status =
+                              entry.outcome.kind === "ok"
+                                ? entry.outcome.result.meta.columns.length > 0
+                                  ? t("{count}행", { count: entry.outcome.result.meta.rowCount.toLocaleString() })
+                                  : t("완료")
+                                : entry.outcome.kind === "error"
+                                  ? t("오류")
+                                  : t("취소됨");
+                            return (
+                              <button
+                                type="button"
+                                role="tab"
+                                aria-selected={resultChips.active === index}
+                                key={entry.label}
+                                className={`result-set${resultChips.active === index ? " active" : ""}${entry.outcome.kind === "error" ? " failed" : ""}`}
+                                title={(() => {
+                                  // A long statement (an INSERT batch) is cut short.
+                                  const sql = entry.sql.length > 400 ? `${entry.sql.slice(0, 400)}…` : entry.sql;
+                                  return entry.outcome.kind === "error" ? `${sql}\n\n${entry.outcome.error}` : sql;
+                                })()}
+                                onClick={() => showResultChip(index)}
+                              >
+                                <span className="result-set-name">{entry.label}</span>
+                                <span className="result-set-status">{status}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                      {!dataView && (planAvailable || state.result?.meta.truncated) ? (
                         <div className="result-tabs">
                           {planAvailable ? (
                             <>
@@ -3855,25 +4927,6 @@ export default function App() {
                               </button>
                             </>
                           ) : null}
-                          {chipsShown && resultChips !== null
-                            ? resultChips.entries.map((entry) => (
-                                <button
-                                  type="button"
-                                  className="result-tab chip"
-                                  key={entry.label}
-                                  title={
-                                    entry.outcome.kind === "ok"
-                                      ? t("{count}행", { count: entry.outcome.result.meta.rowCount.toLocaleString() })
-                                      : entry.outcome.kind === "error"
-                                        ? entry.outcome.error
-                                        : t("취소됨")
-                                  }
-                                  onClick={() => showResultChip(entry)}
-                                >
-                                  {entry.label}
-                                </button>
-                              ))
-                            : null}
                           {state.result?.meta.truncated ? (
                             <span className="result-truncated warn">
                               {t("최대 {count}행까지만 가져왔습니다", { count: maxRows.toLocaleString() })}
@@ -3898,6 +4951,7 @@ export default function App() {
                           <GridHost
                             ref={gridHostRef}
                             result={state.result}
+                            awaitingRows={resultLoading}
                             sortColumns={sortIndicators}
                             onHeaderClick={activeDataTab ? handleHeaderClick : undefined}
                             onSelectionChange={handleSelectionChange}
@@ -3905,9 +4959,23 @@ export default function App() {
                             onDeleteRows={deleteRows}
                             onQuickLook={(row) => openRowDetail(row)}
                             onCellQuickLook={(row, col) => openCellQuickLook(row, col)}
+                            specs={gridSpecs}
+                            onLink={(row, col) => void fkJump(row, col)}
                             themeKey={`${settings.theme}:${settings.accent}:${settings.rowAlt}`}
                           />
-                          {!state.result && (
+                          {state.result !== null ? null : resultLoading ? (
+                            <LoadingState
+                              variant="overlay"
+                              label={activeTab?.kind === "data" ? t("불러오는 중…") : t("실행 중…")}
+                            >
+                              {activeTab?.kind === "data" && connRunning && runningTabId === activeTab.id ? (
+                                <button type="button" onClick={() => store.cancelQuery()}>
+                                  <StopIcon size={10} />
+                                  {t("정지")}
+                                </button>
+                              ) : null}
+                            </LoadingState>
+                          ) : activeTab?.kind === "data" ? null : (
                             <div className="grid-empty">
                               {meta
                                 ? t("쿼리를 실행하세요 ({key})", { key: shortcutHint(settings.keymap, "run") })
@@ -3924,7 +4992,8 @@ export default function App() {
                         ) : null}
                         {cellQuickLook && state.result && resultView === "grid" ? (
                           <CellInspector
-                            result={state.result}
+                            source={state.result.source}
+                            columns={state.result.meta.columns}
                             row={cellQuickLook.row}
                             col={cellQuickLook.col}
                             anchor={cellQuickLook.anchor}
@@ -3946,10 +5015,21 @@ export default function App() {
                             )}
                           </div>
                         )}
-                        {state.status === "running" ? (
+                        {/* Rows already shown stay while new ones load; the
+                            empty case has the loading state in the middle. */}
+                        {connRunning &&
+                        state.result !== null &&
+                        (runningTabId === null || runningTabId === activeTab?.id) ? (
                           <div className="result-loading" role="status">
                             <Spinner size={12} />
-                            {t("실행 중…")}
+                            {activeTab?.kind === "data" && runningTabId === activeTab.id
+                              ? t("불러오는 중…")
+                              : t("실행 중…")}
+                            {activeTab?.kind === "data" && runningTabId === activeTab.id ? (
+                              <button type="button" onClick={() => store.cancelQuery()} title={t("정지")}>
+                                {t("정지")}
+                              </button>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
@@ -3969,13 +5049,7 @@ export default function App() {
                     onPointerDown={onConsoleSplitterDown}
                     onDoubleClick={() => saveConsoleHeight(CONSOLE_DEFAULT)}
                   />
-                  <ConsolePanel
-                    conn={activeConnId}
-                    version={historyVersion}
-                    height={consoleHeight}
-                    onOpenSql={(sqlText) => openInQueryEditor(sqlText)}
-                    onClose={() => setConsoleOpen(false)}
-                  />
+                  <ConsolePanel conn={activeConnId} height={consoleHeight} />
                 </>
               ) : null}
             </div>
@@ -4004,11 +5078,14 @@ export default function App() {
                   }
                 />
                 <RowDetailPanel
-                  result={detailResult}
-                  rows={detailRows}
+                  source={structureRows?.source ?? detailResult?.source ?? null}
+                  columns={structureRows?.source.columns ?? detailResult?.meta.columns ?? EMPTY_TABLES}
+                  rows={structureRows?.rows ?? detailRows}
+                  tableRows={structureRows === null}
                   table={detailTable}
                   detail={panelDetail}
                   detailLoading={rowDetailLoading}
+                  exactRows={meta?.kind === "sqlite"}
                   onOpenReference={(row, col) => void fkJump(row, col)}
                 />
               </>
@@ -4016,6 +5093,9 @@ export default function App() {
           </div>
         </>
       )}
+      <div className="flash-toast" role="status">
+        {flash}
+      </div>
       {state.error !== null && !errorInline ? (
         <ErrorNotice message={state.error} variant="toast" onClose={() => store.setError(null)} />
       ) : null}
@@ -4035,6 +5115,29 @@ export default function App() {
             void refreshActiveMeta();
             openDataTab(table);
           }}
+        />
+      ) : null}
+      {discardPrompt !== null ? (
+        <DiscardModal
+          applyHint={shortcutHint(settings.keymap, "applyChanges")}
+          onCancel={() => setDiscardPrompt(null)}
+          onDiscard={() => {
+            setDiscardPrompt(null);
+            for (const source of discardPrompt.sources) {
+              source.discardPending();
+            }
+            discardPrompt.proceed();
+          }}
+        />
+      ) : null}
+      {addQueryOpen ? (
+        <PromptModal
+          title={t("쿼리에 추가")}
+          label={t("이름")}
+          placeholder={t("쿼리 이름")}
+          confirmLabel={t("저장")}
+          onSubmit={addEditorToQueries}
+          onClose={() => setAddQueryOpen(false)}
         />
       ) : null}
       {userMgrOpen && activeConnId !== null && meta !== null ? (
@@ -4205,6 +5308,7 @@ export default function App() {
           title={exportTarget.title}
           result={exportTarget.result}
           dataTab={exportTarget.dataTab}
+          loading={exportTarget.dataTab !== null && runningTabId === exportTarget.dataTab.id}
           kind={meta?.kind ?? "postgres"}
           onClose={() => setExportTarget(null)}
         />

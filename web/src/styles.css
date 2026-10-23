@@ -37,11 +37,13 @@ body,
   margin: 0;
 }
 
+/* Text sizes are written in px at the default system font size (12px) and
+   scaled by --ui-scale, which Settings → system font size sets. */
 body {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--ui);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
@@ -115,7 +117,7 @@ button {
   border: 1px solid transparent;
   border-radius: 3px;
   font-family: var(--ui);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1;
   cursor: pointer;
   white-space: nowrap;
@@ -179,7 +181,7 @@ button.active {
 input,
 select {
   font-family: var(--ui);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .app {
@@ -201,7 +203,7 @@ select {
 
 .brand {
   font-weight: 700;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
   color: var(--accent);
   letter-spacing: 0.3px;
 }
@@ -217,7 +219,7 @@ select {
   border-radius: 10px;
   background: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   overflow: hidden;
 }
 
@@ -229,7 +231,7 @@ select {
 .conn-path {
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -241,10 +243,6 @@ select {
   color: var(--faint);
 }
 
-.run-button {
-  padding: 0 10px;
-}
-
 .tx-badge {
   display: inline-flex;
   align-items: center;
@@ -254,7 +252,7 @@ select {
   border-radius: 3px;
   color: var(--warn);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .tab-strip {
@@ -317,19 +315,22 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
+  /* Titles sit in the middle of their tab, as in TablePlus. */
+  text-align: center;
 }
 
 .tab-rename {
   flex: 1;
   min-width: 0;
+  text-align: center;
   height: 18px;
   padding: 0 4px;
   background: var(--bg);
   color: var(--ink);
   border: 1px solid var(--accent);
   border-radius: 2px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .tab-rename:focus {
@@ -429,7 +430,7 @@ select {
   border: none;
   border-radius: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .result-tab:hover {
@@ -486,7 +487,7 @@ select {
   align-items: center;
   justify-content: center;
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   pointer-events: none;
 }
 
@@ -499,7 +500,7 @@ select {
   background: var(--panel);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   outline: none;
   z-index: 10;
   border-radius: 0;
@@ -511,7 +512,7 @@ select {
   overflow: auto;
   padding: 10px 12px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
   background: var(--bg);
 }
@@ -545,7 +546,7 @@ select {
 
 .plan-title {
   color: var(--ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -553,7 +554,7 @@ select {
   margin-top: 1px;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .plan-summary {
@@ -570,7 +571,7 @@ select {
   color: var(--muted);
   background: var(--panel);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   white-space: nowrap;
 }
 
@@ -631,7 +632,7 @@ select {
 .plan-card-label {
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -640,7 +641,7 @@ select {
   overflow: hidden;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -683,7 +684,7 @@ select {
   background: var(--bg);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   line-height: 1.45;
   white-space: pre-wrap;
 }
@@ -697,7 +698,7 @@ select {
   background: var(--panel);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   white-space: pre-wrap;
 }
 
@@ -708,7 +709,7 @@ select {
   height: 100%;
   padding: 20px;
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   text-align: center;
 }
 
@@ -730,7 +731,7 @@ select {
   border-top: 1px solid var(--line);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   overflow: hidden;
   white-space: nowrap;
 }
@@ -769,7 +770,7 @@ select {
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 3px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .schema-search input:focus {
@@ -792,7 +793,7 @@ select {
   padding: 16px 10px;
   text-align: center;
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .schema-table-row {
@@ -843,7 +844,7 @@ select {
   color: var(--ink);
   border-radius: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -867,7 +868,7 @@ select {
   gap: 6px;
   height: 22px;
   padding: 0 8px 0 20px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .schema-col-pk {
@@ -892,7 +893,7 @@ select {
   margin-left: auto;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -906,7 +907,7 @@ select {
   border-radius: 3px;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale, 1));
   line-height: 14px;
 }
 
@@ -938,126 +939,6 @@ select {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   overflow: hidden;
   z-index: 40;
-}
-
-.menu-list {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 3px;
-}
-
-.menu-empty {
-  padding: 18px;
-  text-align: center;
-  color: var(--faint);
-  font-size: 12px;
-}
-
-.menu-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: auto;
-  padding: 5px 7px;
-  border-radius: 3px;
-  background: transparent;
-  text-align: left;
-  font-size: 12px;
-}
-
-.menu-row:hover {
-  background: var(--hover-fill);
-}
-
-.menu-row.col {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
-}
-
-.menu-sql {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.menu-sql.dim {
-  color: var(--faint);
-}
-
-.menu-time {
-  flex: none;
-  color: var(--faint);
-  font-size: 10px;
-}
-
-.menu-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.menu-foot {
-  display: flex;
-  justify-content: flex-end;
-  padding: 5px 7px;
-  border-top: 1px solid var(--line);
-  background: var(--head);
-}
-
-.menu-head {
-  display: flex;
-  gap: 6px;
-  padding: 7px;
-  border-bottom: 1px solid var(--line);
-  background: var(--head);
-}
-
-.menu-input {
-  flex: 1;
-  min-width: 0;
-  height: 22px;
-  padding: 0 7px;
-  background: var(--bg);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  font-size: 12px;
-}
-
-.menu-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.menu-row-wrap {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-}
-
-.menu-row-wrap .menu-row {
-  flex: 1;
-  min-width: 0;
-}
-
-.menu-del {
-  flex: none;
-  padding: 0 6px;
-  background: transparent;
-  color: var(--faint);
-  font-size: 11px;
-}
-
-.menu-del:hover {
-  color: var(--error);
 }
 
 .modal-backdrop {
@@ -1093,13 +974,13 @@ select {
 
 .modal-title {
   font-weight: 600;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .modal-path {
   flex: 1;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   color: var(--faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1144,7 +1025,7 @@ select {
   background: transparent;
   color: var(--ink);
   text-align: left;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-family: inherit;
 }
 
@@ -1171,12 +1052,12 @@ select {
   margin-left: auto;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .section-title {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -1186,7 +1067,7 @@ select {
   border: 1px solid var(--line);
   border-radius: 3px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   line-height: 15px;
 }
 
@@ -1213,7 +1094,7 @@ select {
 
 .field span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .field input,
@@ -1225,7 +1106,7 @@ select {
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 3px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .field input:focus,
@@ -1242,7 +1123,7 @@ select {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   color: var(--ink);
 }
 
@@ -1253,14 +1134,14 @@ select {
 .helper {
   margin: 0;
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .connect-error,
 .connect-ok {
   min-width: 0;
   flex: 1;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1333,7 +1214,7 @@ select {
 .data-toolbar button {
   height: 20px;
   padding: 0 7px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .toolbar-sep {
@@ -1349,7 +1230,7 @@ select {
   align-items: center;
   gap: 4px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .page-size select {
@@ -1360,21 +1241,14 @@ select {
   border: 1px solid var(--line);
   border-radius: 3px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .page-label {
   padding: 0 2px;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.row-count {
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   white-space: nowrap;
 }
 
@@ -1406,7 +1280,7 @@ select {
   border: 1px solid var(--line);
   border-radius: 0;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .filter-logic button:first-child {
@@ -1425,13 +1299,13 @@ select {
 
 .filter-hint {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .filter-empty {
   padding: 2px 0;
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .filter-rows {
@@ -1462,7 +1336,7 @@ select {
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 3px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .filter-column {
@@ -1507,7 +1381,7 @@ select {
   padding: 0 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .result-action:hover {
@@ -1560,7 +1434,7 @@ select {
   background: transparent;
   color: var(--ink);
   border-radius: 3px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .context-item:hover {
@@ -1587,6 +1461,20 @@ select {
   color: var(--error);
 }
 
+.context-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+/* No colour: a ring, so the item still shows where its colour would be. */
+.context-swatch.empty {
+  box-shadow: inset 0 0 0 1.5px var(--faint);
+}
+
 .context-label {
   flex: 1;
   min-width: 0;
@@ -1606,7 +1494,7 @@ select {
   flex: none;
   margin-left: 12px;
   color: var(--faint);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale, 1));
   line-height: 1;
 }
 
@@ -1669,13 +1557,13 @@ select {
   background: var(--btn);
   border-radius: 8px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   line-height: 15px;
 }
 
 .panel-dim {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .panel-body {
@@ -1719,7 +1607,7 @@ select {
   gap: 6px;
   color: var(--muted);
   font-weight: 600;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-bottom: 2px;
@@ -1741,7 +1629,7 @@ select {
 .panel-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .panel-table th {
@@ -1750,7 +1638,7 @@ select {
   background: var(--panel);
   color: var(--muted);
   font-weight: 600;
-  text-align: left;
+  text-align: center;
   padding: 4px 8px;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
@@ -1796,7 +1684,7 @@ select {
   border-radius: 3px;
   color: var(--accent);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale, 1));
   line-height: 14px;
   text-transform: uppercase;
 }
@@ -1806,7 +1694,7 @@ select {
   background: var(--btn);
   border-radius: 3px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   line-height: 15px;
 }
 
@@ -1825,13 +1713,13 @@ select {
 
 .info-card-name {
   color: var(--faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   margin-bottom: 2px;
 }
 
 .info-card-value {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1865,7 +1753,7 @@ select {
   margin: 0;
   padding: 10px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1913,7 +1801,7 @@ select {
   border: 1px solid var(--accent-line);
   border-radius: 3px;
   color: var(--accent);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   line-height: 15px;
   white-space: nowrap;
 }
@@ -1923,7 +1811,7 @@ select {
   padding: 1px 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .palette-back:hover {
@@ -1939,7 +1827,7 @@ select {
   border: none;
   outline: none;
   color: var(--ink);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
 }
 
 .palette-list {
@@ -1982,7 +1870,7 @@ select {
 .palette-hint {
   flex: none;
   color: var(--faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2023,14 +1911,14 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .schema-section-count {
   flex: none;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .schema-object-row {
@@ -2053,7 +1941,7 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .conn-switcher {
@@ -2073,7 +1961,7 @@ select {
   border-radius: 12px;
   background: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .conn-switcher-button:hover {
@@ -2117,7 +2005,7 @@ select {
 .conn-state {
   flex: none;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 @keyframes conn-pulse {
@@ -2222,7 +2110,7 @@ input.num-box {
   height: 20px;
   padding: 0 4px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   text-align: right;
 }
 
@@ -2256,7 +2144,7 @@ input.num-box::-webkit-outer-spin-button {
   padding: 5px 8px;
   border-bottom: 1px solid var(--line-soft);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .column-picker-list {
@@ -2290,7 +2178,7 @@ input.num-box::-webkit-outer-spin-button {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .column-picker-row.off .column-picker-name {
@@ -2302,31 +2190,26 @@ input.num-box::-webkit-outer-spin-button {
   flex: none;
   color: var(--warn);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale, 1));
 }
 
 .column-picker-move {
   flex: none;
   display: inline-flex;
   gap: 1px;
-  opacity: 0;
-}
-
-.column-picker-row:hover .column-picker-move {
-  opacity: 1;
 }
 
 .column-picker-move button {
   width: 18px;
   height: 18px;
   padding: 0;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .column-picker-empty {
   padding: 10px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   text-align: center;
 }
 
@@ -2344,7 +2227,7 @@ input.num-box::-webkit-outer-spin-button {
   flex: 1;
   height: 24px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .overview-scroll {
@@ -2356,7 +2239,7 @@ input.num-box::-webkit-outer-spin-button {
 .overview-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .overview-table th {
@@ -2368,7 +2251,7 @@ input.num-box::-webkit-outer-spin-button {
   border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-weight: 500;
-  text-align: left;
+  text-align: center;
   white-space: nowrap;
 }
 
@@ -2417,7 +2300,7 @@ input.num-box::-webkit-outer-spin-button {
   background: transparent;
   border: none;
   color: var(--accent);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   padding: 0 2px;
   cursor: pointer;
 }
@@ -2508,7 +2391,7 @@ td .link-button {
 
 .draft-head {
   color: var(--faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -2522,7 +2405,7 @@ td .link-button {
   height: 24px;
   padding: 0 6px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .draft-row.draft-new input {
@@ -2549,7 +2432,7 @@ td .link-button {
   width: 20px;
   height: 20px;
   padding: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   line-height: 1;
 }
 
@@ -2564,7 +2447,7 @@ td .link-button {
 .draft-add {
   align-self: flex-start;
   margin-top: 2px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .user-modal {
@@ -2606,7 +2489,7 @@ td.user-actions {
   background: var(--btn);
   border: 1px solid var(--line);
   border-radius: 3px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   color: var(--ink);
   cursor: pointer;
 }
@@ -2676,7 +2559,7 @@ td.user-actions {
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 3px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .import-preview {
@@ -2715,7 +2598,7 @@ td.user-actions {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   min-width: 0;
 }
 
@@ -2724,7 +2607,7 @@ td.user-actions {
 }
 
 .job-detail {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2732,7 +2615,7 @@ td.user-actions {
 }
 
 .job-status {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   color: var(--muted);
 }
 
@@ -2745,7 +2628,7 @@ td.user-actions {
 }
 
 .job-time {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .job-bar {
@@ -2766,7 +2649,7 @@ td.user-actions {
 }
 
 .job-meta {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 /* ── M14: 에디터 고도화 ─────────────────────────────────────── */
@@ -2791,11 +2674,6 @@ td.user-actions {
 
 .v-splitter:hover {
   background: var(--accent);
-}
-
-.result-tab.chip {
-  color: var(--accent);
-  border-color: var(--line);
 }
 
 .param-modal {
@@ -2828,24 +2706,10 @@ td.user-actions {
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.menu-keyword {
-  margin-left: 6px;
-  padding: 0 4px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  color: var(--accent);
-  font-size: 10px;
-  font-family: var(--mono);
-}
-
-.menu-input.keyword-input {
-  width: 130px;
 }
 
 /* ── M15: 설정 / 테마 / 잠금 ─────────────────────────────────── */
@@ -2884,7 +2748,7 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
 
 .settings-section h4 {
   margin: 0 0 2px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-weight: 600;
   color: var(--ink);
 }
@@ -2899,14 +2763,14 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
 .settings-label {
   min-width: 96px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .settings-check {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   color: var(--ink);
 }
 
@@ -2915,7 +2779,7 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
   flex-wrap: wrap;
   gap: 4px 10px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   line-height: 1.4;
 }
 
@@ -2984,7 +2848,7 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
 }
 
 .lock-brand {
-  font-size: 20px;
+  font-size: calc(20px * var(--ui-scale, 1));
   font-weight: 700;
   color: var(--accent);
 }
@@ -2992,12 +2856,12 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
 .lock-hint {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .lock-error {
   color: var(--error);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 /* ── M15: 로그 / Activity / Metrics ─────────────────────────── */
@@ -3047,7 +2911,7 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
   border-bottom: 1px solid var(--line-soft);
   background: transparent;
   text-align: left;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   color: var(--ink);
 }
 
@@ -3061,7 +2925,7 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
   padding: 18px;
   text-align: center;
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .activity-kind {
@@ -3099,7 +2963,7 @@ html.hide-scroller .cm-scroller::-webkit-scrollbar {
 }
 
 .metrics-value {
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale, 1));
   font-weight: 600;
   color: var(--ink);
 }
@@ -3287,7 +3151,6 @@ textarea:focus-visible {
 }
 
 .tab-rename,
-.menu-input,
 .schema-search input {
   border-radius: var(--r-sm);
 }
@@ -3441,21 +3304,11 @@ textarea:focus-visible {
   padding: 5px;
 }
 
-.menu-list {
-  padding: 2px;
-}
-
-.menu-row,
 .conn-menu-row,
 .conn-menu-item,
 .fs-entry,
 .palette-item {
   border-radius: var(--r-sm);
-}
-
-.menu-foot,
-.menu-head {
-  background: transparent;
 }
 
 .modal-backdrop {
@@ -3591,7 +3444,7 @@ textarea:focus-visible {
 .theme-name {
   overflow: hidden;
   color: var(--ink);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3616,7 +3469,7 @@ textarea:focus-visible {
   padding: 2px 0 6px;
   background: var(--panel);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -3641,8 +3494,7 @@ textarea:focus-visible {
 }
 
 .badge-nn,
-.tx-badge,
-.menu-keyword {
+.tx-badge {
   border-radius: 999px;
 }
 
@@ -3672,7 +3524,7 @@ textarea:focus-visible {
 }
 
 .schema-section-label {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   letter-spacing: 0.02em;
 }
 
@@ -3694,7 +3546,7 @@ textarea:focus-visible {
 
 .schema-table-name {
   line-height: 28px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .schema-cols {
@@ -4008,8 +3860,7 @@ input[type="color"]::-webkit-color-swatch {
   vertical-align: -1px;
 }
 
-.panel-dim .spinner,
-.menu-empty .spinner {
+.panel-dim .spinner {
   margin-right: 4px;
 }
 
@@ -4059,7 +3910,7 @@ input[type="color"]::-webkit-color-swatch {
   border-bottom: 1px solid var(--line-soft);
   background: color-mix(in srgb, var(--panel) 70%, transparent);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .schema-conn-dot {
@@ -4076,17 +3927,6 @@ input[type="color"]::-webkit-color-swatch {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.schema-empty .spinner + span {
-  margin-left: 6px;
-}
-
-.schema-empty:has(.spinner) {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
 }
 
 .schema-kind-dot {
@@ -4126,7 +3966,7 @@ input[type="color"]::-webkit-color-swatch {
   border-radius: var(--r-sm);
   background: var(--bg);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   line-height: 1.5;
 }
 
@@ -4171,13 +4011,21 @@ input[type="color"]::-webkit-color-swatch {
   background: color-mix(in srgb, var(--panel) 90%, transparent);
   box-shadow: var(--shadow-2);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   backdrop-filter: blur(8px);
-  animation: tablepeek-fade-in var(--motion-fast) ease both;
+  animation: tablepeek-delayed-in var(--motion-fast) ease var(--loading-delay) both;
 }
 
 .result-loading .spinner {
   color: var(--accent);
+}
+
+.result-loading button {
+  height: 20px;
+  margin-right: -5px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4251,7 +4099,7 @@ textarea:focus-visible {
   background: var(--accent);
   color: var(--accent-contrast, #fff);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: calc(8px * var(--ui-scale, 1));
   line-height: 12px;
   text-align: center;
 }
@@ -4270,7 +4118,7 @@ textarea:focus-visible {
   height: 20px;
   padding: 0 5px;
   color: var(--faint);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale, 1));
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -4331,7 +4179,7 @@ textarea:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .sidebar-connection .driver-badge {
@@ -4341,7 +4189,7 @@ textarea:focus-visible {
 .sidebar-connections-empty {
   padding: 6px 5px 2px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .empty-workspace {
@@ -4370,7 +4218,7 @@ textarea:focus-visible {
 .empty-workspace-word {
   color: var(--ink);
   font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
-  font-size: 21px;
+  font-size: calc(21px * var(--ui-scale, 1));
   font-weight: 750;
   letter-spacing: -0.025em;
   opacity: 0.6;
@@ -4379,13 +4227,13 @@ textarea:focus-visible {
 .empty-workspace-title {
   margin-top: 8px;
   color: var(--ink);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
 .empty-workspace-hint {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .empty-workspace-actions {
@@ -4404,7 +4252,7 @@ textarea:focus-visible {
   border-radius: 6px;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
 .empty-workspace-foot {
@@ -4415,7 +4263,7 @@ textarea:focus-visible {
   gap: 5px;
   color: color-mix(in srgb, var(--faint) 74%, transparent);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale, 1));
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -4426,7 +4274,7 @@ textarea:focus-visible {
   border-bottom: 1px solid var(--line-soft);
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4474,7 +4322,7 @@ textarea:focus-visible {
   border-radius: 999px;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale, 1));
   text-transform: uppercase;
 }
 
@@ -4501,7 +4349,7 @@ textarea:focus-visible {
   align-items: center;
   gap: 6px;
   color: var(--ink);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -4518,148 +4366,66 @@ textarea:focus-visible {
   border-radius: 999px;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale, 1));
 }
 
 .structure-hint {
   color: var(--faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
 }
 
-.structure-table-wrap {
-  overflow: auto;
-}
-
-/* Laid out like a result grid, as TablePlus shows structure. */
-.structure-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.structure-table:focus {
-  outline: none;
-}
-
-.structure-table th {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--head);
-  color: var(--muted);
-  font-family: var(--ui);
-  font-size: 11px;
-  font-weight: 500;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.structure-table td {
-  height: 26px;
-  padding: 0 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--line-soft) 68%, transparent);
-  color: var(--ink);
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-.structure-table th + th,
-.structure-table td + td {
-  border-left: 1px solid color-mix(in srgb, var(--line-soft) 68%, transparent);
-}
-
-.structure-table tbody tr:nth-child(even) td {
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
-}
-
-.structure-table tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-.structure-table tbody tr:hover td {
-  background: var(--hover-fill);
-}
-
-.structure-table tbody tr.new td {
-  background: color-mix(in srgb, var(--ok) 9%, transparent);
-}
-
-.structure-table tbody tr.deleted td {
-  background: color-mix(in srgb, var(--error) 12%, transparent);
-  color: var(--error);
-  text-decoration: line-through;
-}
-
-.structure-table tbody tr.deleted td * {
-  color: inherit;
-}
-
-/* Edited cells stay marked over the stripes and the hover until saved. */
-.structure-table tbody tr td.changed {
-  background: color-mix(in srgb, var(--warn) 14%, transparent);
-}
-
-.structure-grid:focus-within td.selected {
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
-
-.structure-table td.readonly {
-  color: var(--muted);
-}
-
-.structure-table td input {
-  width: 100%;
-  min-width: 80px;
-  height: 22px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: 3px;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 11px;
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
-
-.structure-cell {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.structure-cell-text {
-  flex: 1;
-  min-width: 0;
+/* The data grid, sized to its rows; the section card scrolls the page. */
+.structure-grid {
+  position: relative;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-/* The ⇕ that opens a cell's choices, as TablePlus shows on editable cells. */
-.structure-cell-menu {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 18px;
+/* Structure and Index each show one grid filling the panel edge to edge, as
+   the Data tab's does; the DDL panes sit under it. */
+.structure-panel .panel-body.structure-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   padding: 0;
+  overflow: hidden;
+}
+
+.structure-panel .panel-body > .structure-section.fill {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0;
   border: 0;
-  background: transparent;
-  color: var(--faint);
-  opacity: 0.55;
+  border-radius: 0;
 }
 
-.structure-table tr:hover .structure-cell-menu,
-.structure-table td.selected .structure-cell-menu {
-  opacity: 1;
+.structure-grid.fill {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-.structure-cell-menu:hover {
-  background: transparent;
-  color: var(--ink);
+.structure-section.fill > .panel-empty {
+  flex: 1;
 }
 
-.structure-menu {
+.structure-pane {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  max-height: 40%;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.structure-pane > .panel-pre {
+  margin: 0;
+  padding: 10px 12px;
+}
+
+/* The list under a cell editor: types, defaults, YES/NO, as in TablePlus. */
+.cell-menu {
   position: fixed;
   z-index: 60;
   display: flex;
@@ -4673,7 +4439,12 @@ textarea:focus-visible {
   box-shadow: var(--shadow-2);
 }
 
-.structure-menu button {
+.cell-menu[hidden] {
+  display: none;
+}
+
+.cell-menu button {
+  flex: none;
   justify-content: flex-start;
   height: 24px;
   padding: 0 8px;
@@ -4682,123 +4453,39 @@ textarea:focus-visible {
   background: transparent;
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(12px * var(--ui-scale, 1));
   text-align: left;
   white-space: nowrap;
 }
 
-.structure-menu button.active {
+.cell-menu button:hover {
+  background: var(--hover-fill);
+}
+
+.cell-menu button.active {
   background: var(--accent);
   color: var(--accent-contrast);
 }
 
-.structure-num {
-  width: 1%;
-  color: var(--faint);
-  text-align: right;
-}
-
-.structure-table td.structure-num {
-  color: var(--faint);
-}
-
-.structure-type {
-  color: var(--syntax-type);
-}
-
-.structure-table td.structure-type {
-  color: var(--syntax-type);
-}
-
-.structure-flag {
-  color: var(--muted);
-}
-
-.structure-flag.on {
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.structure-null {
-  color: var(--faint);
-}
-
-.structure-default {
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.structure-table td.structure-fk-target {
-  color: var(--accent);
-}
-
-.structure-column-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.structure-pk-icon {
-  color: var(--accent);
+/* A cell picked from its list shows its value without a caret. */
+.cell-editor[readonly] {
+  caret-color: transparent;
+  cursor: default;
 }
 
 .structure-empty {
   padding: 18px 12px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   text-align: center;
 }
 
-.structure-ddl {
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  background: var(--panel);
-  overflow: hidden;
-}
 
-.structure-ddl > summary {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  height: 34px;
-  padding: 0 12px;
-  cursor: pointer;
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 600;
-  list-style: none;
-}
 
-.structure-ddl > summary::-webkit-details-marker {
-  display: none;
-}
 
-.structure-ddl > summary::before {
-  content: "›";
-  color: var(--faint);
-  font-size: 14px;
-  line-height: 1;
-  transform: rotate(0deg);
-  transition: transform var(--motion-fast) ease;
-}
 
-.structure-ddl[open] > summary::before {
-  transform: rotate(90deg);
-}
 
-.structure-ddl > summary:hover {
-  background: var(--hover-fill);
-}
 
-.structure-ddl .panel-code {
-  border: 0;
-  border-top: 1px solid var(--line-soft);
-  border-radius: 0;
-}
 
 .appbar {
   gap: 4px;
@@ -4837,7 +4524,7 @@ textarea:focus-visible {
 .conn-bar-empty {
   padding: 0 8px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   white-space: nowrap;
 }
 
@@ -4904,7 +4591,7 @@ textarea:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
   font-weight: 500;
 }
 
@@ -5099,7 +4786,7 @@ body.col-resizing * {
 
 .settings-pane-head h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -5130,7 +4817,7 @@ body.col-resizing * {
 .settings-pane .settings-section h4 {
   margin-bottom: 3px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -5202,7 +4889,7 @@ body.col-resizing * {
 
 .brand-word {
   font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
-  font-size: 15.5px;
+  font-size: calc(15.5px * var(--ui-scale, 1));
   font-weight: 750;
   letter-spacing: -0.025em;
   line-height: 1;
@@ -5271,7 +4958,7 @@ body.col-resizing * {
   gap: 7px;
   margin-right: 4px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-weight: 600;
   white-space: nowrap;
 }
@@ -5316,12 +5003,27 @@ button.pending-apply {
   border-radius: 7px;
   background: color-mix(in srgb, var(--head) 92%, #000000);
   color: var(--ink);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
   line-height: 1.4;
   white-space: pre-line;
   pointer-events: none;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   animation: hover-tooltip-in 120ms ease-out both;
+}
+
+/* A shortcut in a tooltip reads as keys, apart from the words. */
+.hover-tooltip-keys {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
 @keyframes hover-tooltip-in {
@@ -5450,7 +5152,7 @@ button.pending-apply {
 }
 
 .cm-title {
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale, 1));
   font-weight: 650;
   letter-spacing: -0.01em;
 }
@@ -5460,7 +5162,7 @@ button.pending-apply {
   overflow: hidden;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5487,7 +5189,7 @@ button.cm-close {
   border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
   border-radius: 9px;
   background: color-mix(in srgb, var(--warn) 10%, transparent);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .cm-drivers {
@@ -5535,7 +5237,7 @@ button.cm-driver.active {
 
 .cm-driver-name {
   overflow: hidden;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-weight: 600;
   text-overflow: ellipsis;
 }
@@ -5543,7 +5245,7 @@ button.cm-driver.active {
 .cm-driver-sub {
   overflow: hidden;
   color: var(--faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   text-overflow: ellipsis;
 }
 
@@ -5573,7 +5275,7 @@ button.cm-driver.active {
 
 .cm-label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   text-align: right;
 }
 
@@ -5599,7 +5301,7 @@ button.cm-driver.active {
   height: 30px;
   padding: 0 10px;
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .cm-modal input.invalid {
@@ -5610,7 +5312,7 @@ button.cm-driver.active {
 .cm-inline-label {
   flex: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .cm-modal input.cm-port {
@@ -5725,7 +5427,7 @@ button.cm-swatch.none {
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .cm-segmented button:hover {
@@ -5765,7 +5467,7 @@ button.cm-file-pick {
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 button.cm-file-pick:hover {
@@ -5818,7 +5520,7 @@ button.cm-file-clear:hover {
   align-items: center;
   gap: 8px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .cm-tunnels {
@@ -5835,7 +5537,7 @@ button.cm-tunnel {
   border-radius: 9px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -5852,7 +5554,7 @@ button.cm-tunnel.active {
 
 .cm-tunnel-hint {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .cm-reveal {
@@ -5897,7 +5599,7 @@ button.cm-tunnel.active {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .cm-status.ok {
@@ -5914,7 +5616,7 @@ button.cm-tunnel.active {
 
 .cm-hint {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 /* File picker used by the connection dialog */
@@ -5938,7 +5640,7 @@ button.cm-tunnel.active {
   height: 28px;
   padding: 0 9px;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .picker-hidden {
@@ -5946,7 +5648,7 @@ button.cm-tunnel.active {
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   white-space: nowrap;
 }
 
@@ -5960,7 +5662,7 @@ button.cm-tunnel.active {
 
 .picker-hint {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 @media (max-width: 640px) {
@@ -6043,7 +5745,7 @@ button.safe-mode-button {
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -6079,7 +5781,7 @@ button.safe-mode-button.level-2 {
   gap: 8px;
   padding: 4px 8px 6px;
   color: var(--faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -6144,13 +5846,13 @@ button.safe-mode-option.active {
 }
 
 .safe-mode-option-title {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
 .safe-mode-option-desc {
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
   line-height: 1.45;
 }
 
@@ -6193,13 +5895,13 @@ button.safe-mode-option.active {
 
 .review-mode {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .review-lead {
   margin: 0 0 10px;
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .review-list {
@@ -6230,13 +5932,13 @@ button.safe-mode-option.active {
   align-items: center;
   gap: 7px;
   margin-bottom: 6px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .review-badge {
   padding: 0 7px;
   border-radius: 999px;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--ui-scale, 1));
   font-weight: 700;
   line-height: 18px;
 }
@@ -6268,7 +5970,7 @@ button.safe-mode-option.active {
 
 .review-hint {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 button.primary.danger {
@@ -6290,7 +5992,7 @@ button.primary.danger:hover {
   border-radius: 9px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
 }
 
@@ -6315,7 +6017,7 @@ button.primary.danger:hover {
 
 .shortcut-label {
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .shortcut-bindings {
@@ -6338,7 +6040,7 @@ button.primary.danger:hover {
 
 .shortcut-chip kbd {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   color: var(--ink);
 }
 
@@ -6355,7 +6057,7 @@ button.primary.danger:hover {
   border-radius: 50%;
   background: var(--warn);
   color: #1a1a1a;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-weight: 800;
 }
 
@@ -6382,7 +6084,7 @@ button.shortcut-add {
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 button.shortcut-add.active {
@@ -6409,7 +6111,7 @@ button.shortcut-add.active {
 }
 
 .tab-label {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .tab-close {
@@ -6452,7 +6154,7 @@ button.tabbar-side {
   background: color-mix(in srgb, var(--error) 8%, var(--panel));
   color: var(--ink);
   font-family: var(--ui);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
   text-align: left;
 }
@@ -6509,7 +6211,7 @@ button.error-notice-close {
 .error-notice-label {
   display: block;
   margin-bottom: 2px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
@@ -6533,12 +6235,12 @@ button.error-notice-close {
   height: 26px;
   padding: 0 10px;
   border-radius: 7px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .error-notice-raw {
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .error-notice-raw summary {
@@ -6563,7 +6265,7 @@ button.error-notice-close {
   border-radius: 6px;
   background: var(--bg);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -6571,7 +6273,7 @@ button.error-notice-close {
 .error-notice.compact {
   gap: 4px;
   padding: 8px 10px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .error-notice.toast {
@@ -6616,13 +6318,6 @@ button.error-notice-close {
 
 .palette-error-slot {
   margin: 4px;
-}
-
-.menu-error-slot {
-  flex: none;
-  max-height: 180px;
-  overflow: auto;
-  padding: 6px;
 }
 
 /* Home: a floating start window — actions on the left, connections on the right */
@@ -6708,7 +6403,7 @@ button.home-settings:hover {
 .home-word {
   color: var(--ink);
   font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
-  font-size: 34px;
+  font-size: calc(34px * var(--ui-scale, 1));
   font-weight: 750;
   letter-spacing: -0.03em;
   line-height: 1.1;
@@ -6718,14 +6413,14 @@ button.home-settings:hover {
 .home-tagline {
   margin: 2px 0 0;
   color: var(--muted);
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-scale, 1));
 }
 
 .home-specs {
   margin: 0;
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   letter-spacing: 0.02em;
 }
 
@@ -6739,7 +6434,7 @@ button.home-settings:hover {
   margin: auto 0 0;
   padding: 12px 0 0;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
   list-style: none;
 }
 
@@ -6750,12 +6445,12 @@ button.home-settings:hover {
   border-radius: 5px;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--ui-scale, 1));
 }
 
 .home-loading {
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 /* Short windows keep the start window whole: the extras go first. */
@@ -6786,7 +6481,7 @@ button.launcher-action {
   border-radius: 10px;
   background: color-mix(in srgb, var(--panel) 70%, transparent);
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 button.launcher-action:hover {
@@ -6834,7 +6529,7 @@ button.launcher-action:hover {
   width: 100%;
   height: 32px;
   padding: 0 10px 0 32px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .launcher-load-error {
@@ -6858,7 +6553,7 @@ button.launcher-action:hover {
   gap: 8px;
   padding: 40px 0;
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .launcher-list {
@@ -6923,7 +6618,7 @@ button.launcher-action:hover {
 .launcher-group-name {
   min-width: 0;
   overflow: hidden;
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-scale, 1));
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6934,7 +6629,7 @@ button.launcher-action:hover {
   border-radius: 999px;
   background: var(--hover-fill);
   color: var(--faint);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--ui-scale, 1));
   line-height: 17px;
 }
 
@@ -6982,7 +6677,7 @@ button.launcher-action:hover {
   min-width: 0;
   overflow: hidden;
   color: var(--ink);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7000,7 +6695,7 @@ button.launcher-action:hover {
   min-width: 0;
   overflow: hidden;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -7011,7 +6706,7 @@ button.launcher-action:hover {
   border: 1px solid var(--line);
   border-radius: 4px;
   color: var(--faint);
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--ui-scale, 1));
   font-weight: 600;
   line-height: 14px;
 }
@@ -7028,7 +6723,7 @@ button.launcher-action:hover {
   border-radius: 6px;
   background: color-mix(in srgb, var(--faint) 16%, transparent);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   font-weight: 500;
   line-height: 18px;
   text-overflow: ellipsis;
@@ -7058,7 +6753,7 @@ button.launcher-action:hover {
   align-items: center;
   gap: 5px;
   color: var(--ok);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   white-space: nowrap;
 }
 
@@ -7123,14 +6818,14 @@ button.launcher-action:hover {
 .launcher-welcome-title {
   margin: 6px 0 0;
   color: var(--ink);
-  font-size: 17px;
+  font-size: calc(17px * var(--ui-scale, 1));
   font-weight: 650;
 }
 
 .launcher-welcome-lead {
   margin: -4px 0 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .launcher-welcome-drivers {
@@ -7148,7 +6843,7 @@ button.launcher-action:hover {
   border-radius: 8px;
   background: var(--bg);
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .launcher-welcome-drivers button:hover {
@@ -7163,7 +6858,7 @@ button.launcher-action:hover {
   border-radius: 10px;
   background: var(--bg);
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   text-align: left;
 }
 
@@ -7182,7 +6877,7 @@ button.launcher-action:hover {
 .launcher-welcome-info p {
   margin: 6px 0 0;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .launcher-welcome-actions {
@@ -7197,13 +6892,13 @@ button.launcher-action:hover {
   height: 32px;
   padding: 0 14px;
   border-radius: 9px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .launcher-welcome-note {
   margin: 0;
   color: var(--faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 @media (max-width: 640px) {
@@ -7213,7 +6908,7 @@ button.launcher-action:hover {
   }
 
   .home-word {
-    font-size: 26px;
+    font-size: calc(26px * var(--ui-scale, 1));
   }
 
   .home-specs,
@@ -7235,19 +6930,19 @@ button.launcher-action:hover {
 
 .prompt-label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .prompt-body input {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .prompt-problem {
   color: var(--error);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .export-modal {
@@ -7265,12 +6960,12 @@ button.launcher-action:hover {
 .export-hint {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
 }
 
 .export-hint {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .export-field {
@@ -7283,7 +6978,7 @@ button.launcher-action:hover {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
 .export-include {
@@ -7333,7 +7028,7 @@ button.picker-row:focus-visible {
   gap: 6px;
   padding: 10px 8px 4px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
   font-weight: 700;
 }
 
@@ -7353,7 +7048,7 @@ button.picker-row:focus-visible {
 .launcher-drop-hint {
   padding: 10px 12px;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
   text-align: center;
 }
 
@@ -7371,7 +7066,7 @@ button.picker-row:focus-visible {
   border-radius: 8px;
   background: color-mix(in srgb, var(--ok) 10%, var(--panel));
   color: var(--ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .launcher-notice-ok span {
@@ -7444,7 +7139,7 @@ button.picker-row:focus-visible {
   overflow: auto;
   border-right: 1px solid var(--line-soft);
   outline: none;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
 }
 
 .cell-pop-row {
@@ -7497,7 +7192,7 @@ button.picker-row:focus-visible {
   flex: none;
   min-width: 18px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   font-weight: 700;
   text-align: center;
 }
@@ -7570,7 +7265,7 @@ button.picker-row:focus-visible {
   border: 0;
   background: transparent;
   color: var(--accent);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   text-align: left;
 }
 
@@ -7588,7 +7283,7 @@ button.picker-row:focus-visible {
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .cell-pop-detail-key {
@@ -7614,7 +7309,7 @@ textarea.cell-pop-text {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
   line-height: 1.5;
 }
 
@@ -7633,7 +7328,7 @@ textarea.cell-pop-text {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .cell-pop-where strong {
@@ -7648,8 +7343,369 @@ textarea.cell-pop-text {
 }
 
 /* The table open in the current tab. */
-.schema-table-row.active {
+.schema-table-row.active,
+.schema-table-row.selected {
   background: var(--accent-soft);
+}
+
+.schema-table-row.join-up {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.schema-table-row.join-down {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* The date cell's picker: a month, the time, and Now / NULL / Apply. */
+.date-picker {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 8px);
+  background: var(--panel);
+  box-shadow: var(--shadow-3, 0 12px 32px rgba(0, 0, 0, 0.45));
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.date-picker:focus {
+  outline: none;
+}
+
+.date-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.date-picker-month {
+  font-weight: 600;
+}
+
+.date-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  text-align: center;
+}
+
+.date-picker-weekday {
+  padding: 2px 0;
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.date-picker-day {
+  justify-content: center;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs, 5px);
+  background: transparent;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.date-picker-day:hover {
+  background: var(--hover-fill);
+}
+
+.date-picker-day.today {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.date-picker-day.picked {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+.date-picker-time {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-family: var(--mono);
+}
+
+.date-picker-time-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.date-picker-time input {
+  width: 34px;
+  height: 26px;
+  padding: 0;
+  text-align: center;
+  font-family: var(--mono);
+}
+
+.date-picker-colon,
+.date-picker-fraction {
+  color: var(--muted);
+}
+
+.date-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.date-picker-foot button {
+  height: 26px;
+  padding: 0 10px;
+}
+
+/* TablePlus's alert: a narrow card, the message, two equal buttons. */
+.alert-modal {
+  width: min(300px, calc(100vw - 32px));
+  gap: 10px;
+  padding: 20px 20px 16px;
+}
+
+.alert-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(14px * var(--ui-scale, 1));
+  font-weight: 700;
+}
+
+.alert-message {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(13px * var(--ui-scale, 1));
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.alert-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.alert-actions button {
+  justify-content: center;
+  height: 30px;
+}
+
+/* The default answer shows it is one, as the native alert does. */
+.alert-actions button:focus {
+  box-shadow: 0 0 0 2px var(--accent-line);
+}
+
+/* A temporary tab (opened by a single click) reads in italics until kept. */
+.tab.preview .tab-label {
+  font-style: italic;
+}
+
+/* ── Sidebar tabs (TablePlus: Items · Queries · History) ────── */
+
+.sidebar-tabs {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 8px 0;
+}
+
+.sidebar-tabs button {
+  height: 22px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-xs, 5px);
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.sidebar-tabs button:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.sidebar-tabs button.active {
+  background: var(--btn);
+  color: var(--ink);
+}
+
+.sidebar-body,
+.sidebar-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-body[hidden] {
+  display: none;
+}
+
+.sidebar-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 0 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.schema-list:focus {
+  outline: none;
+}
+
+/* Keyboard focus on a list shows as a faint inner ring. */
+.schema-list:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.schema-section-head.selected {
+  background: var(--accent-soft);
+}
+
+/* History: the time over the statement, newest first under each day. */
+.history-item {
+  margin: 0 2px;
+  padding: 4px 8px 6px 26px;
+  border-radius: var(--r-sm);
+  cursor: default;
+  user-select: none;
+}
+
+.history-item:hover {
+  background: var(--hover-fill);
+}
+
+.history-item.selected {
+  background: var(--accent-soft);
+}
+
+.history-time {
+  color: var(--faint);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  line-height: 16px;
+}
+
+.history-item.failed .history-time {
+  color: var(--error);
+}
+
+.history-sql {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+}
+
+/* Queries: saved queries, ungrouped first, then a group per folder. */
+.queries-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin: 0 2px;
+  padding: 0 8px 0 26px;
+  border-radius: var(--r-sm);
+  cursor: default;
+  user-select: none;
+}
+
+.queries-item:hover {
+  background: var(--hover-fill);
+}
+
+.queries-item.selected {
+  background: var(--accent-soft);
+}
+
+.queries-file-icon,
+.queries-folder-icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.queries-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queries-keyword {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+}
+
+.queries-group.drop {
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+/* The saved query window: name and keyword over the SQL. */
+.saved-query-modal {
+  width: min(760px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 64px));
+  max-height: none;
+}
+
+.saved-query-fields {
+  display: grid;
+  flex: none;
+  gap: 6px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.saved-query-fields label {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.saved-query-fields label > span {
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+  text-align: right;
+}
+
+.saved-query-hint {
+  margin: 0 0 0 74px;
+  color: var(--warn);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.saved-query-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.saved-query-problem {
+  margin: 8px 16px 0;
+  color: var(--error);
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .schema-table-row.active .schema-table-name {
@@ -7716,122 +7772,108 @@ body.row-resizing * {
   background: var(--panel);
 }
 
-.console-head {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.console-title,
-.console-count {
-  flex: none;
-  white-space: nowrap;
-}
-
-.console-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.console-count {
-  font-size: 11px;
-  color: var(--faint);
-}
-
-input.console-search {
-  flex: 0 1 200px;
-  width: 200px;
-  min-width: 80px;
-  height: 24px;
-  font-size: 12px;
-}
-
-button.console-clear {
-  flex: none;
-  height: 24px;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.console-list {
+/* One statement per entry: its stamp line, the SQL, then a blank line. */
+.console-log {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 4px 0;
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.console-row {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 3px 12px;
+  padding: 6px 12px 10px;
   color: var(--ink);
-  cursor: default;
-}
-
-.console-row:hover {
-  background: var(--hover-fill);
-}
-
-.console-time {
-  flex: none;
-  min-width: 64px;
-  color: var(--faint);
-}
-
-.console-ms {
-  flex: none;
-  width: 64px;
-  text-align: right;
-  color: var(--muted);
-}
-
-.console-ms.slow {
-  color: var(--warn);
-}
-
-.console-rows {
-  flex: none;
-  width: 64px;
-  color: var(--muted);
-}
-
-.console-row.failed .console-rows {
-  color: var(--error);
-}
-
-.console-sql {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: var(--editor-font-size, 12px);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   user-select: text;
+  outline: none;
 }
 
-.console-error {
-  margin-left: 10px;
-  color: var(--error);
+.console-entry + .console-entry {
+  margin-top: 1.6em;
 }
 
 .console-empty {
   display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  min-height: 0;
   padding: 16px;
   color: var(--faint);
-  font-family: var(--ui);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale, 1));
   line-height: 1.5;
   text-align: center;
+  word-break: keep-all;
+}
+
+.console-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.console-highlight {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Read-only SQL colouring (console, history), the editor's palette. */
+.sx-keyword {
+  color: var(--syntax-keyword);
+}
+
+.sx-string {
+  color: var(--syntax-string);
+}
+
+.sx-number {
+  color: var(--syntax-number);
+}
+
+.sx-comment {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+.sx-variable {
+  color: var(--syntax-variable);
+}
+
+.sx-type {
+  color: var(--syntax-type);
+}
+
+.sx-operator {
+  color: var(--syntax-operator);
+}
+
+.sx-bool {
+  color: var(--syntax-bool);
+}
+
+.sx-null {
+  color: var(--syntax-null);
+}
+
+.sx-punctuation {
+  color: var(--syntax-punctuation);
+}
+
+.sx-function {
+  color: var(--syntax-function);
+}
+
+.sx-label {
+  color: var(--syntax-label);
 }
 
 /* What an open panel says when it has nothing to show (TablePlus style). */
@@ -7843,9 +7885,11 @@ button.console-clear {
   height: 100%;
   padding: 24px;
   color: var(--faint);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale, 1));
   line-height: 1.5;
   text-align: center;
+  /* Korean wraps between words, not inside them. */
+  word-break: keep-all;
 }
 
 /* ── Field boxes (right panel, cell popover) ────────────────────
@@ -7877,7 +7921,7 @@ button.console-clear {
   border-radius: 0;
   background: transparent;
   color: var(--ink);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
   outline: none;
   box-shadow: none;
 }
@@ -7911,7 +7955,7 @@ button.console-clear {
   align-items: baseline;
   gap: 6px;
   min-width: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .field-box-name {
@@ -7954,7 +7998,7 @@ button.field-box-link {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
@@ -8005,7 +8049,7 @@ button.field-box-copy:hover {
 
 .cell-pop-fields-more {
   color: var(--faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 /* ── Editor bar and tab bar controls (no separate toolbar row) ── */
@@ -8033,11 +8077,7 @@ button.field-box-copy:hover {
 .editor-bar button {
   height: 26px;
   padding: 0 10px;
-  font-size: 12px;
-}
-
-.editor-bar .run-button {
-  gap: 5px;
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 button.tabbar-new {
@@ -8058,25 +8098,10 @@ button.tabbar-new {
   margin-right: 4px;
 }
 
-.tabbar-actions .tx-slot.compact button,
-button.tabbar-tx {
+.tabbar-actions .tx-slot.compact button {
   height: 26px;
   padding: 0 8px;
-  font-size: 11.5px;
-}
-
-button.tabbar-tx {
-  margin-right: 4px;
-  border-color: var(--line-soft);
-  background: transparent;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-button.tabbar-tx:hover:not(:disabled) {
-  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .safe-mode-button.compact {
@@ -8179,7 +8204,722 @@ button.schema-more {
   width: 24px;
   padding: 0;
   justify-content: center;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale, 1));
   line-height: 1;
+}
+
+/* ── Loading: shown only once a wait is long enough to notice ── */
+
+:root {
+  /* A load quicker than this shows no spinner, dimmed button or "Loading…",
+     so switching between tables doesn't make the window blink. */
+  --loading-delay: 200ms;
+}
+
+/* Hidden (so not clickable) through the delay; after it, as its parent is. */
+@keyframes tablepeek-delayed-in {
+  from {
+    opacity: 0;
+    visibility: hidden;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes tablepeek-delayed-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.delayed-in {
+  animation: tablepeek-delayed-in var(--motion-fast) ease-out var(--loading-delay) both;
+}
+
+.loading-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 0;
+  height: 100%;
+  padding: 24px;
+  color: var(--faint);
+  font-size: calc(12px * var(--ui-scale, 1));
+  animation: tablepeek-delayed-in var(--motion-base) var(--ease-out) var(--loading-delay) both;
+}
+
+.loading-state .spinner {
+  color: var(--accent);
+}
+
+.loading-state.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  height: auto;
+  pointer-events: none;
+}
+
+.loading-state.overlay button {
+  pointer-events: auto;
+}
+
+.loading-state.compact {
+  flex: none;
+  flex-direction: row;
+  gap: 8px;
+  height: auto;
+  padding: 16px 10px;
+}
+
+/* A running tab's spinner takes its kind icon's place, so the title doesn't
+   move; both wait out the delay, so a quick load leaves the icon alone. */
+.tab-icon {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-icon .spinner.tab-running {
+  position: absolute;
+  animation:
+    tablepeek-spin 0.72s linear infinite,
+    tablepeek-delayed-in var(--motion-fast) ease-out var(--loading-delay) both;
+}
+
+.tab-icon:has(.tab-running) .tab-kind {
+  animation: tablepeek-delayed-out var(--motion-fast) ease-out var(--loading-delay) both;
+}
+
+/* Buttons disabled only while a load runs dim once it has lasted the delay. */
+.footer-start > button:disabled,
+.footer-end > button:disabled,
+.footer-anchor > button:disabled,
+.data-toolbar .page-nav button:disabled,
+.data-toolbar button.row-range:disabled,
+.structure-footer > button:disabled,
+.tabbar button:disabled {
+  transition: opacity var(--motion-fast) ease var(--loading-delay);
+}
+
+/* ── Grid corner: fit the columns to their contents (TablePlus) ── */
+
+button.grid-fit-button {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--faint);
+}
+
+button.grid-fit-button:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+
+button.grid-fit-button[hidden] {
+  display: none;
+}
+
+/* ── Structure and Index views (TablePlus): a bar over the grid, the
+   view's own buttons in the footer ─────────────────────────────── */
+
+.structure-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
+  height: 40px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.structure-field {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.structure-field-label {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+input.structure-name:not([type="checkbox"]) {
+  width: 240px;
+  height: 26px;
+  padding: 0 9px;
+  font-family: var(--mono);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+input.structure-name:disabled {
+  color: var(--ink);
+  opacity: 0.75;
+}
+
+.structure-primary {
+  flex: 1 1 auto;
+}
+
+.structure-chips {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+
+.structure-chip {
+  flex: none;
+  padding: 1px 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.structure-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  width: 230px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--faint);
+}
+
+.structure-search:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.structure-search input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
+.structure-search input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):focus {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+  outline: none;
+  box-shadow: none;
+}
+
+/* The footer sits under the panel's grid, like the Data view's under its own. */
+.structure-panel > .data-toolbar {
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 0;
+}
+
+/* Text buttons beside the view switch: + Row, + Column, Triggers, DDL… */
+.data-toolbar button.footer-button {
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid var(--line-soft);
+  background: var(--btn);
+  color: var(--ink);
+}
+
+.data-toolbar button.footer-button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.structure-trigger {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.structure-trigger:last-child {
+  border-bottom: 0;
+}
+
+.structure-trigger-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px;
+}
+
+.structure-trigger-name {
+  font-family: var(--mono);
+  font-size: calc(12px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+
+/* The Data footer in three parts, its row range centred between them. */
+.footer-start,
+.footer-end {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.footer-end {
+  justify-content: flex-end;
+}
+
+.footer-middle {
+  display: flex;
+  flex: none;
+  justify-content: center;
+}
+
+.data-toolbar button.row-range,
+.data-toolbar .row-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.data-toolbar button.row-range:hover:not(:disabled) {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+
+.data-toolbar button.row-range:disabled {
+  opacity: 1;
+}
+
+.page-label {
+  min-width: 34px;
+  text-align: center;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Sidebar table card: what a table holds, after a moment's hover ── */
+
+.table-card {
+  position: fixed;
+  z-index: 9000;
+  width: 280px;
+  padding: 10px 12px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--shadow-2, 0 12px 30px rgba(0, 0, 0, 0.3));
+  pointer-events: none;
+  animation: tablepeek-fade-in var(--motion-fast) ease-out both;
+}
+
+.table-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.table-card-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.table-card-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: calc(12.5px * var(--ui-scale, 1));
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.table-card-kind {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(9px * var(--ui-scale, 1));
+  text-transform: uppercase;
+}
+
+.table-card-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.table-card-fact {
+  display: flex;
+  gap: 10px;
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.45;
+}
+
+.table-card-fact dt {
+  flex: none;
+  width: 72px;
+  color: var(--muted);
+}
+
+.table-card-fact dd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.table-card-dim {
+  color: var(--faint);
+}
+
+.table-card-comment {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+/* A footer button with its popover (the column list) opening right above it. */
+.footer-anchor {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.footer-anchor > .column-picker {
+  top: auto;
+  right: 0;
+  bottom: calc(100% + 8px);
+}
+
+/* An open transaction on the tab bar: what state the session is in, and the
+   two ways out of it. */
+.tabbar-actions .tx-slot.compact {
+  gap: 6px;
+  margin-right: 6px;
+}
+
+.tx-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+
+.tx-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.tabbar-actions .tx-slot.compact {
+  width: auto;
+}
+
+/* The column list's ↑ ↓: small, and only on the row under the pointer
+   (a disabled one too, which the base button rule would show at 0.45). */
+button.column-picker-move {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* Only where there's hover to bring them up (not on a touch screen). */
+@media (hover: hover) {
+  .column-picker-row:not(:hover):not(:focus-within) button.column-picker-move {
+    opacity: 0;
+  }
+}
+
+.column-picker-row:hover button.column-picker-move:disabled {
+  opacity: 0.3;
+}
+
+/* A narrow footer keeps every group whole: the side groups keep their width,
+   the row range gives way, and under 680px the icon buttons drop their words. */
+.data-toolbar {
+  container-type: inline-size;
+}
+
+.footer-start,
+.footer-end {
+  min-width: max-content;
+}
+
+.footer-middle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.data-toolbar .row-range {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@container (max-width: 680px) {
+  .data-toolbar .footer-label {
+    display: none;
+  }
+
+  .data-toolbar button.footer-button:has(svg) {
+    padding: 0 7px;
+  }
+}
+
+/* ── Editor bar's right end (TablePlus): limit · Beautify · Run Current ── */
+
+.editor-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+/* One rounded control: the action, a thin rule, then ⌄ for its other choices. */
+.split-button {
+  display: inline-flex;
+  align-items: stretch;
+  height: 26px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm, 6px);
+  background: var(--btn);
+}
+
+button.split-button {
+  gap: 0;
+}
+
+.editor-bar .split-button button {
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* The row limit is one button, framed like the others. */
+.editor-bar button.split-button {
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  background: var(--btn);
+}
+
+.split-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.split-hint {
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.split-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  padding: 0;
+  border-left: 1px solid var(--line-soft);
+  color: var(--muted);
+}
+
+.split-arrow svg {
+  transform: rotate(90deg);
+}
+
+.editor-bar .split-button button:hover:not(:disabled),
+.editor-bar button.split-button:hover .split-main {
+  background: var(--btn-hover);
+}
+
+.split-button.primary {
+  border-color: var(--accent-line);
+  background: var(--accent);
+}
+
+.split-button.primary .split-main,
+.split-button.primary .split-hint,
+.split-button.primary .split-arrow {
+  color: var(--accent-contrast, #fff);
+}
+
+.split-button.primary .split-arrow {
+  border-left-color: color-mix(in srgb, var(--accent-contrast, #fff) 30%, transparent);
+}
+
+.editor-bar .split-button.primary button:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent));
+}
+
+/* ── Several statements' results (TablePlus's Query 1 | Query 2) ─────────
+   Full-width segments, the shown one filled, so a run of several statements
+   can't pass for one result; many of them scroll sideways instead of
+   squeezing. */
+.result-sets {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+  scrollbar-width: thin;
+}
+
+button.result-set {
+  display: inline-flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 96px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+button.result-set:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+
+button.result-set.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.result-set-name {
+  white-space: nowrap;
+}
+
+.result-set-status {
+  overflow: hidden;
+  color: var(--faint);
+  font-weight: 400;
+  font-size: calc(11px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.result-set.failed .result-set-status {
+  color: var(--error);
+}
+
+/* The editor bar's own button padding would squeeze ⌄ out of its slot. */
+.editor-bar .split-arrow {
+  padding: 0;
+}
+
+/* Settings: a font list, and a line written in the font picked. */
+.font-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.font-preview {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(13px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A short note over the window ("nothing to run"), gone in a moment. */
+.flash-toast {
+  position: fixed;
+  bottom: 56px;
+  left: 50%;
+  z-index: 9500;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--shadow-2, 0 12px 30px rgba(0, 0, 0, 0.3));
+  font-size: calc(12px * var(--ui-scale, 1));
+  transform: translateX(-50%);
+  animation: tablepeek-fade-in var(--motion-fast) ease-out both;
+  pointer-events: none;
+}
+
+/* Kept in the page (and the accessibility tree) while empty, so a screen
+   reader hears what lands in it. */
+.flash-toast:empty {
+  opacity: 0;
+  animation: none;
 }
 

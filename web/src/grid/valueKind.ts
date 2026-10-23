@@ -1,8 +1,12 @@
 import type { ValueKind } from "../palette";
+import type { CellKind } from "./columns";
 
 const DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
-const TIME_PATTERN = /^\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+const TIME_PATTERN = /^\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)?$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// What every engine sends in place of a binary value.
+const BINARY_PATTERN = /^<blob \d+ bytes>$/;
 const INTEGER_TEXT = /^-?\d+$/;
 const DECIMAL_TEXT = /^-?\d+\.\d+$/;
 const JSON_PROBE_LIMIT = 4096;
@@ -39,8 +43,17 @@ function classifyJsonText(text: string): ValueKind | null {
 export function classifyValue(value: unknown): ValueKind | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (DATE_PATTERN.test(trimmed) || TIME_PATTERN.test(trimmed)) {
+    if (DATE_PATTERN.test(trimmed)) {
       return "date";
+    }
+    if (TIME_PATTERN.test(trimmed)) {
+      return "time";
+    }
+    if (UUID_PATTERN.test(trimmed)) {
+      return "uuid";
+    }
+    if (BINARY_PATTERN.test(trimmed)) {
+      return "binary";
     }
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       const kind = classifyJsonText(value);
@@ -72,4 +85,27 @@ export function classifyValue(value: unknown): ValueKind | null {
     return "json";
   }
   return null;
+}
+
+// A cell's kind: what its column is declared as when the table says (MySQL's
+// and SQLite's booleans are 1 and 0, an enum's labels are plain text), else
+// what its value looks like.
+export function classifyCell(value: unknown, column: CellKind | undefined): ValueKind | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  switch (column) {
+    case "boolean":
+      return "boolean";
+    case "enum":
+    case "set":
+      return "enum";
+    case "date":
+    case "datetime":
+      return "date";
+    case "time":
+      return "time";
+    default:
+      return classifyValue(value);
+  }
 }

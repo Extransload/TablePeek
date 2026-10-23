@@ -1,6 +1,11 @@
 import type { PkPair, WindowedRowSource } from "./grid/windowSource";
 import { cellToString } from "./rowOps";
-import { TablePeekSocket, TablePeekSocketError, type QueryMeta } from "./net/socket";
+import {
+  TablePeekSocket,
+  TablePeekSocketError,
+  type ConsoleUpdate,
+  type QueryMeta,
+} from "./net/socket";
 import type { DefinitionKind } from "./sqlTools";
 import { t } from "./i18n";
 
@@ -49,6 +54,8 @@ export interface TableDetailColumn {
   not_null: boolean;
   pk: boolean;
   default: string | null;
+  // An enum's (or MySQL set's) labels, in order, when the driver knows them.
+  enum_values?: string[];
 }
 
 export interface TableDetailIndex {
@@ -65,6 +72,14 @@ export interface TableDetailForeignKey {
   ref_columns: string[];
 }
 
+// A trigger on a table; the statement that makes it, when the driver gives it.
+export interface TableDetailTrigger {
+  name: string;
+  timing?: string | null;
+  event?: string | null;
+  definition: string | null;
+}
+
 export interface TableDetail {
   name: string;
   schema: string | null;
@@ -78,6 +93,8 @@ export interface TableDetail {
   indexes: TableDetailIndex[];
   foreign_keys: TableDetailForeignKey[];
   ddl: string | null;
+  // Absent from servers that predate it.
+  triggers?: TableDetailTrigger[];
 }
 
 export interface ServerSession {
@@ -237,8 +254,10 @@ export interface LiveConn {
   meta: EngineMeta;
 }
 
-// One statement run from the editor on a connection; `at` is in seconds.
+// One statement run from the editor, or made by a change committed from the
+// grid, structure or user views, on a connection; `at` is in seconds.
 export interface HistoryEntry {
+  id: string;
   sql: string;
   at: number;
   ms: number;
@@ -247,11 +266,29 @@ export interface HistoryEntry {
   error?: string;
 }
 
+// A saved query (TablePlus's "Queries"), shared by every connection.
 export interface Favorite {
   id: string;
   name: string;
   sql: string;
   keyword?: string | null;
+  folder?: string | null;
+  // Unix seconds.
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FavoriteFolder {
+  id: string;
+  name: string;
+  created_at: number;
+}
+
+export interface FavoriteChanges {
+  name?: string;
+  sql?: string;
+  keyword?: string | null;
+  folder?: string | null;
 }
 
 export interface GridResult {
@@ -521,6 +558,8 @@ async function runQuery(
     const result: GridResult = { queryId, sql, meta, source, conn };
     resultCache.set(source, result);
     inflight.delete(conn);
+    followTx(conn, meta.inTx);
+    txEnded(conn, ownerId, meta.txEnded, meta.invalidated);
     if (isView()) {
       setState({ status: "idle", error: null, info: null, result });
     } else if (state.connId === conn) {
@@ -529,6 +568,10 @@ async function runQuery(
     return { kind: "ok", result };
   } catch (error) {
     inflight.delete(conn);
+    if (error instanceof TablePeekSocketError) {
+      followTx(conn, error.inTx);
+      txEnded(conn, ownerId, error.txEnded, error.invalidated);
+    }
     if (error instanceof TablePeekSocketError && error.cancelled) {
       if (isView()) {
         setState({ status: "idle", error: null, info: t(CANCELLED_INFO) });
@@ -544,6 +587,39 @@ async function runQuery(
       setState({ status: "idle" });
     }
     return { kind: "error", error: message };
+  }
+}
+
+// A statement from the editor ended the transaction: the other tabs' rows on
+// this connection may hold what was rolled back (or be gone on the server).
+function txEnded(
+  conn: string,
+  ownerId: string | undefined,
+  ended: "committed" | "rolledback" | undefined,
+  invalidated: boolean | undefined,
+): void {
+  if (ended === undefined && invalidated !== true) {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent("tablepeek:tx-ended", {
+      detail: { conn, ownerId: ownerId ?? null, rolledBack: ended === "rolledback", invalidated: invalidated === true },
+    }),
+  );
+}
+
+// The TX controls follow BEGIN, COMMIT and ROLLBACK typed in the editor too.
+function followTx(conn: string, inTx: boolean | undefined): void {
+  if (inTx === undefined || state.connId !== conn) {
+    return;
+  }
+  const tx: TxState = inTx ? "active" : "none";
+  if (state.tx !== tx) {
+    setState({ tx });
+    // A transaction the editor committed files its held changes in History.
+    if (tx === "none") {
+      historyChanged(conn);
+    }
   }
 }
 
@@ -738,6 +814,11 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
     }
   } catch (error) {
     let message = messageOf(error);
+    if (error instanceof TablePeekSocketError && error.rolledBack) {
+      // COMMIT found the transaction failed and the server rolled it back.
+      setState({ error: message, tx: ownTx ? state.tx : "none" });
+      return null;
+    }
     if (ownTx && phase !== "begin") {
       try {
         await sock.rollback(conn);
@@ -758,7 +839,14 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
     source.setCell(entry.row, entry.col, entry.value);
   }
   source.discardPending();
+  // The server filed the committed statements under this connection's history.
+  historyChanged(conn);
   return { structural: ops.inserts.length > 0 || ops.deletes.length > 0 };
+}
+
+// The History tab reloads on this; editor runs bump their own version instead.
+function historyChanged(conn: string): void {
+  window.dispatchEvent(new CustomEvent("tablepeek:history-changed", { detail: conn }));
 }
 
 function setActiveRunner(runner: (() => void) | null): void {
@@ -783,9 +871,18 @@ async function beginTx(): Promise<void> {
 
 async function commitTx(): Promise<void> {
   try {
-    await ensureSocket().commit(activeConnOrThrow());
+    const conn = activeConnOrThrow();
+    await ensureSocket().commit(conn);
     setState({ tx: "none" });
+    // Changes held for the transaction go to History now.
+    historyChanged(conn);
   } catch (error) {
+    if (error instanceof TablePeekSocketError && error.rolledBack) {
+      // The server rolled the failed transaction back instead.
+      setState({ tx: "none", status: "error", error: messageOf(error) });
+      state.result?.source.clearWindows();
+      return;
+    }
     setState({ status: "error", error: messageOf(error) });
   }
 }
@@ -1040,11 +1137,20 @@ export interface ExecResult {
   elapsed_ms: number;
 }
 
-async function exec(conn: string, sql: string): Promise<ExecResult> {
-  return api<ExecResult>(`/api/exec?conn=${encodeURIComponent(conn)}`, {
-    method: "POST",
-    body: JSON.stringify({ sql }),
-  });
+// history: file the statement under the connection's history, as a change the
+// user committed from a view (structure, table actions, users).
+async function exec(conn: string, sql: string, options?: { history?: boolean }): Promise<ExecResult> {
+  const history = options?.history ?? false;
+  try {
+    return await api<ExecResult>(`/api/exec?conn=${encodeURIComponent(conn)}`, {
+      method: "POST",
+      body: JSON.stringify({ sql, history }),
+    });
+  } finally {
+    if (history) {
+      historyChanged(conn);
+    }
+  }
 }
 
 async function fetchDefinition(
@@ -1076,6 +1182,29 @@ async function clearHistory(conn: string): Promise<void> {
   await api<{ ok: boolean }>(`/api/history?conn=${encodeURIComponent(conn)}`, { method: "DELETE" });
 }
 
+async function deleteHistoryEntry(conn: string, id: string): Promise<void> {
+  await api<{ ok: boolean }>(
+    `/api/history/${encodeURIComponent(id)}?conn=${encodeURIComponent(conn)}`,
+    { method: "DELETE" },
+  );
+}
+
+async function clearConsole(conn: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/console?conn=${encodeURIComponent(conn)}`, { method: "DELETE" });
+}
+
+function watchConsole(conn: string, since: number | null): Promise<void> {
+  return ensureSocket().watchConsole(conn, since);
+}
+
+function unwatchConsole(conn: string): void {
+  socket?.unwatchConsole(conn);
+}
+
+function onConsole(listener: (update: ConsoleUpdate) => void): () => void {
+  return ensureSocket().onConsole(listener);
+}
+
 // null returns the connection to the app-wide default.
 async function setSafeMode(conn: string, mode: number | null): Promise<void> {
   await api<{ ok: boolean }>("/api/safe-mode", {
@@ -1085,26 +1214,78 @@ async function setSafeMode(conn: string, mode: number | null): Promise<void> {
 }
 
 async function fetchFavorites(): Promise<Favorite[]> {
-  const body = await api<{ favorites: Favorite[] }>("/api/favorites");
-  return body.favorites;
+  return (await fetchSavedQueries()).favorites;
+}
+
+async function fetchSavedQueries(): Promise<{ favorites: Favorite[]; folders: FavoriteFolder[] }> {
+  const body = await api<{ favorites: Favorite[]; folders?: FavoriteFolder[] }>("/api/favorites");
+  return { favorites: body.favorites, folders: body.folders ?? [] };
+}
+
+// Saved queries feed the editor's keyword completion: tell it they changed.
+function favoritesChanged(): void {
+  window.dispatchEvent(new Event("tablepeek:favorites-changed"));
 }
 
 async function createFavorite(
   name: string,
   sql: string,
   keyword?: string,
+  folder?: string | null,
 ): Promise<string> {
   const body = await api<{ id: string }>("/api/favorites", {
     method: "POST",
-    body: JSON.stringify({ name, sql, keyword: keyword ?? null }),
+    body: JSON.stringify({ name, sql, keyword: keyword ?? null, folder: folder ?? null }),
   });
+  favoritesChanged();
   return body.id;
+}
+
+// keepalive: still sent while the page unloads.
+async function updateFavorite(
+  id: string,
+  changes: FavoriteChanges,
+  options?: { keepalive?: boolean },
+): Promise<Favorite> {
+  const updated = await api<Favorite>(`/api/favorites/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(changes),
+    keepalive: options?.keepalive ?? false,
+  });
+  favoritesChanged();
+  return updated;
 }
 
 async function deleteFavorite(id: string): Promise<void> {
   await api<{ ok: boolean }>(`/api/favorites/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+  favoritesChanged();
+}
+
+async function createFavoriteFolder(name: string): Promise<string> {
+  const body = await api<{ id: string }>("/api/favorite-folders", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  favoritesChanged();
+  return body.id;
+}
+
+async function renameFavoriteFolder(id: string, name: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/favorite-folders/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify({ name }),
+  });
+  favoritesChanged();
+}
+
+// Takes the queries inside with it.
+async function deleteFavoriteFolder(id: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/favorite-folders/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  favoritesChanged();
 }
 
 async function listDir(path?: string, hidden = false): Promise<FsListing> {
@@ -1180,8 +1361,18 @@ export const store = {
   killSession,
   fetchHistory,
   clearHistory,
+  deleteHistoryEntry,
+  clearConsole,
+  watchConsole,
+  unwatchConsole,
+  onConsole,
   setSafeMode,
   fetchFavorites,
+  fetchSavedQueries,
   createFavorite,
+  updateFavorite,
   deleteFavorite,
+  createFavoriteFolder,
+  renameFavoriteFolder,
+  deleteFavoriteFolder,
 };

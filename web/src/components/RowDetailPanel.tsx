@@ -1,21 +1,30 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import type { SelectedRows } from "../grid/CanvasGrid";
-import { formatBytes } from "../format";
+import type { RowSource } from "../grid/rowSource";
+import { formatBytes, formatRowEstimate } from "../format";
 import { t } from "../i18n";
-import type { GridResult, TableDetail } from "../store";
+import type { TableDetail } from "../store";
 import { FieldBox } from "./FieldBox";
 import { LinkIcon, SearchIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { LoadingState } from "./Spinner";
 
 interface RowDetailPanelProps {
-  // The grid the current tab shows, if any.
-  result: GridResult | null;
+  // The rows of the grid the current tab shows, if any: a result's, or the
+  // Structure and Index views' columns and indexes.
+  source: RowSource | null;
+  // Its column names, in order.
+  columns: string[];
   // The selected rows; one row shows its values, several show what they share.
   rows: SelectedRows | null;
+  // The rows are the table's own (a result), so their types and foreign keys
+  // apply; a structure row's fields are not the table's columns.
+  tableRows: boolean;
   // The table behind the current tab, if any.
   table: string | null;
   detail: TableDetail | null;
   detailLoading: boolean;
+  // The driver counts rows rather than estimating them (SQLite).
+  exactRows: boolean;
   onOpenReference(row: number, col: number): void;
 }
 
@@ -46,18 +55,18 @@ function sameValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function sharedValues(result: GridResult, rows: SelectedRows): Shared[] {
+function sharedValues(source: RowSource, columns: string[], rows: SelectedRows): Shared[] {
   const span = rows.to - rows.from + 1;
-  return result.meta.columns.map((_, col) => {
+  return columns.map((_, col) => {
     if (span > COMPARE_MAX_ROWS) {
       return "unknown";
     }
-    const first = result.source.cell(rows.from, col);
+    const first = source.cell(rows.from, col);
     if (first === undefined) {
       return "unknown";
     }
     for (let row = rows.from + 1; row <= rows.to; row += 1) {
-      const value = result.source.cell(row, col);
+      const value = source.cell(row, col);
       if (value === undefined) {
         return "unknown";
       }
@@ -69,42 +78,46 @@ function sharedValues(result: GridResult, rows: SelectedRows): Shared[] {
   });
 }
 
-// TablePlus-style right panel: the picked row's fields, or with no row the
+// TablePlus-style right panel: the picked row's fields (a result row, or a
+// column or index of the Structure and Index views), or with no row the
 // table's sizes and comment, or nothing when the tab has no table either.
 export function RowDetailPanel({
-  result,
+  source,
+  columns,
   rows,
+  tableRows,
   table,
   detail,
   detailLoading,
+  exactRows,
   onOpenReference,
 }: RowDetailPanelProps) {
   const [version, setVersion] = useState(0);
   const [query, setQuery] = useState("");
 
-  // Cells still loading arrive through the source's update stream.
+  // Cells still loading, or edits to a structure row, arrive through the
+  // source's update stream.
   useEffect(() => {
-    if (!result) {
+    if (!source) {
       return;
     }
-    return result.source.onUpdate?.(() => setVersion((value) => value + 1));
-  }, [result]);
+    return source.onUpdate?.(() => setVersion((value) => value + 1));
+  }, [source]);
 
-  const showRow =
-    result !== null && rows !== null && rows.from >= 0 && rows.to < result.source.rowCount;
+  const showRow = source !== null && rows !== null && rows.from >= 0 && rows.to < source.rowCount;
   const single = rows !== null && rows.from === rows.to;
   // Recomputed when the selection moves or rows finish loading.
   const shared = useMemo(
-    () => (showRow && result !== null && rows !== null ? sharedValues(result, rows) : []),
-    [showRow, result, rows, version],
+    () => (showRow && source !== null && rows !== null ? sharedValues(source, columns, rows) : []),
+    [showRow, source, columns, rows, version],
   );
   const tableDetail = table !== null ? detail : null;
   // MySQL, SQL Server and SQLite match column names case-insensitively, so a
   // result labelled "ID" still finds the table's "id".
   const types = new Map(
-    (tableDetail?.columns ?? []).map((column) => [column.name.toLowerCase(), column.decl_type]),
+    (tableRows ? (tableDetail?.columns ?? []) : []).map((column) => [column.name.toLowerCase(), column.decl_type]),
   );
-  const foreignKeys = tableDetail?.foreign_keys ?? [];
+  const foreignKeys = tableRows ? (tableDetail?.foreign_keys ?? []) : [];
   const needle = query.trim().toLowerCase();
   const matches = (name: string): boolean => needle === "" || name.toLowerCase().includes(needle);
 
@@ -116,7 +129,7 @@ export function RowDetailPanel({
       </div>,
     ];
   } else if (showRow) {
-    fields = result.meta.columns.flatMap((column, index) => {
+    fields = columns.flatMap((column, index) => {
       if (!matches(column)) {
         return [];
       }
@@ -147,6 +160,7 @@ export function RowDetailPanel({
     });
   } else if (tableDetail !== null) {
     const info: [string, string | null][] = [
+      ["rows", formatRowEstimate(tableDetail.row_count_estimate, exactRows)],
       ["data_size", sizeText(tableDetail.data_bytes)],
       ["index_size", sizeText(tableDetail.index_bytes)],
       ["total_size", sizeText(tableDetail.size_bytes)],
@@ -173,9 +187,7 @@ export function RowDetailPanel({
           <div className="field-list">{fields}</div>
         </>
       ) : table !== null && detailLoading ? (
-        <div className="panel-empty">
-          <Spinner size={14} label={t("불러오는 중…")} />
-        </div>
+        <LoadingState />
       ) : null}
     </aside>
   );

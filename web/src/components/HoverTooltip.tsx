@@ -1,6 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const SHOW_DELAY_MS = 350;
+
+// "New tab (⌘T)" → the label, and the shortcut shown as keys. Titles write a
+// shortcut last, in parentheses, the way shortcutHint() spells it.
+const SHORTCUT_TAIL = /^([\s\S]*?)\s*\(((?:[⌘⌥⇧⌃]|Ctrl\+|Alt\+|Shift\+|Win\+|F\d{1,2}\b)[^()]*)\)\s*$/;
+
+function splitShortcut(text: string): { label: string; keys: string | null } {
+  const match = SHORTCUT_TAIL.exec(text);
+  return match === null ? { label: text, keys: null } : { label: match[1], keys: match[2] };
+}
 const EDGE = 8;
 const GAP = 6;
 
@@ -153,9 +162,11 @@ export function HoverTooltip() {
   if (tip === null) {
     return null;
   }
+  const { label, keys } = splitShortcut(tip.text);
   return (
     <div className="hover-tooltip" role="tooltip" ref={tipRef}>
-      {tip.text}
+      {label}
+      {keys !== null ? <kbd className="hover-tooltip-keys">{keys}</kbd> : null}
     </div>
   );
 }

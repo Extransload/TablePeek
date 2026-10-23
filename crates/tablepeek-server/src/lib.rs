@@ -15,12 +15,14 @@ use futures_util::{SinkExt, StreamExt};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tablepeek_engine::sql_log::{Change, LogEntry};
 use tablepeek_engine::{Engine, EngineError, QueryData};
 use tablepeek_types::{
     ApiError, ConnectRequest, DbObjects, EditTarget, EngineMeta, FsEntry, FsListing,
     ObjectDefinition, PkValue, QueryResult, ServerInfo, TableDetail, TableSchema,
 };
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast, mpsc};
 
 pub mod store;
 pub mod transfer;
@@ -308,7 +310,123 @@ async fn register_slot(
         engine,
     ));
     state.registry.lock().await.insert(slot.clone());
+    record_gui_changes(state, &slot);
     slot
+}
+
+/// Files the data changes that went through on `slot` into its History, as
+/// TablePlus does for changes it commits: GUI cell edits and row inserts or
+/// deletes, and statements the GUI ran asking for History. The engine holds
+/// them back until their transaction commits and drops them on rollback.
+/// Whatever is ready is filed as one batch, one write. Holds the slot weakly
+/// and ends with its engine.
+fn record_gui_changes(state: &AppState, slot: &Arc<ConnSlot>) {
+    let Some(mut changes) = slot.engine.sql_log().take_changes() else {
+        return;
+    };
+    let slot = Arc::downgrade(slot);
+    let store = state.store.clone();
+    tokio::spawn(async move {
+        while let Some(first) = changes.recv().await {
+            let mut batch = vec![first];
+            while let Ok(next) = changes.try_recv() {
+                batch.push(next);
+            }
+            let Some(slot) = slot.upgrade() else {
+                break;
+            };
+            let scope = slot.history_scope();
+            drop(slot);
+            let at = unix_now();
+            let entries = batch
+                .into_iter()
+                .map(|change: Change| store::HistoryEntry {
+                    id: String::new(),
+                    scope: scope.clone(),
+                    sql: change.sql,
+                    at,
+                    ms: change.ms,
+                    ok: true,
+                    rows: change.rows,
+                    error: None,
+                })
+                .collect();
+            let _ = file_history(&store, entries).await;
+        }
+    });
+}
+
+/// A statement the user ran, for History: its time and row count, or the
+/// error it stopped with.
+fn run_entry(
+    scope: String,
+    sql: &str,
+    started: std::time::Instant,
+    outcome: Result<(f64, usize), &EngineError>,
+) -> store::HistoryEntry {
+    let (ms, ok, rows, error) = match outcome {
+        Ok((elapsed_ms, rows)) => (elapsed_ms.round() as u64, true, rows as u64, None),
+        Err(err) => (
+            started.elapsed().as_millis() as u64,
+            false,
+            0,
+            Some(if err.is_interrupted() {
+                "쿼리가 취소되었습니다".to_string()
+            } else {
+                err.to_string()
+            }),
+        ),
+    };
+    store::HistoryEntry {
+        id: String::new(),
+        scope,
+        sql: sql.to_string(),
+        at: unix_now(),
+        ms,
+        ok,
+        rows,
+        error,
+    }
+}
+
+/// Files `entries` (oldest first) unless their saved profile was deleted
+/// meanwhile.
+async fn file_history(
+    store: &tokio::sync::Mutex<store::StoreFile>,
+    entries: Vec<store::HistoryEntry>,
+) -> Result<(), String> {
+    change_history(store, |store| {
+        let mut added = false;
+        for entry in entries {
+            if store.scope_exists(&entry.scope) {
+                added |= store.add_history(entry);
+            }
+        }
+        ((), added)
+    })
+    .await
+}
+
+/// Changes History under the store lock, then writes history.json on the
+/// blocking pool so a large file never stalls an async worker. `change`
+/// returns its result and whether it changed anything (only then is the
+/// file written).
+async fn change_history<R>(
+    store: &tokio::sync::Mutex<store::StoreFile>,
+    change: impl FnOnce(&mut store::StoreFile) -> (R, bool),
+) -> Result<R, String> {
+    let (result, snapshot) = {
+        let mut store = store.lock().await;
+        let (result, changed) = change(&mut store);
+        let snapshot = changed.then(|| store.history_snapshot());
+        (result, snapshot)
+    };
+    if let Some(snapshot) = snapshot {
+        tokio::task::spawn_blocking(move || snapshot.write())
+            .await
+            .map_err(|err| err.to_string())??;
+    }
+    Ok(result)
 }
 
 struct InflightGuard(Arc<AtomicUsize>);
@@ -361,15 +479,30 @@ pub fn app(state: AppState) -> Router {
             delete(connections_delete).put(connections_update),
         )
         .route("/api/connections/{id}/connect", post(connection_connect))
+        .route("/api/console", delete(console_clear))
         .route("/api/history", get(history_list).delete(history_clear))
+        .route("/api/history/{id}", delete(history_delete))
         .route("/api/safe-mode", put(safe_mode_set))
         .route("/api/favorites", get(favorites_list).post(favorites_create))
-        .route("/api/favorites/{id}", delete(favorites_delete))
+        .route(
+            "/api/favorites/{id}",
+            put(favorites_update).delete(favorites_delete),
+        )
+        .route("/api/favorite-folders", post(folders_create))
+        .route(
+            "/api/favorite-folders/{id}",
+            put(folders_update).delete(folders_delete),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .with_state(state)
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
+    // Slots opened before the server (the --db or --demo one) were not
+    // registered through register_slot.
+    for slot in state.registry.lock().await.list() {
+        record_gui_changes(&state, &slot);
+    }
     axum::serve(listener, app(state)).await
 }
 
@@ -427,6 +560,8 @@ fn engine_error(err: EngineError) -> (StatusCode, Json<ApiError>) {
         EngineError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
         EngineError::TableNotFound => (StatusCode::NOT_FOUND, "not_found"),
         EngineError::SessionNotFound => (StatusCode::NOT_FOUND, "not_found"),
+        EngineError::TxRolledBack(_) => (StatusCode::CONFLICT, "tx_rolled_back"),
+        EngineError::TxOutcomeUnknown(_) => (StatusCode::CONFLICT, "tx_outcome_unknown"),
         EngineError::Sqlite(_) => (StatusCode::BAD_REQUEST, "sqlite_error"),
         EngineError::Postgres { .. } => (StatusCode::BAD_REQUEST, "postgres_error"),
         EngineError::MySql(_) => (StatusCode::BAD_REQUEST, "mysql_error"),
@@ -554,6 +689,11 @@ async fn count_route(
 #[derive(Deserialize)]
 struct ExecRequest {
     sql: String,
+    // Record the run in the connection's History if it succeeds (failed
+    // attempts, a DROP retried in dependency order, say, would be noise) and,
+    // inside an open transaction, only once that commits.
+    #[serde(default)]
+    history: bool,
 }
 
 async fn exec_route(
@@ -572,6 +712,14 @@ async fn exec_route(
     let slot = slot_for(&state, params.conn.as_deref()).await?;
     let _guard = InflightGuard::new(slot.inflight.clone());
     let result = slot.engine.execute(sql, 1).await.map_err(engine_error)?;
+    if req.history {
+        let change = Change {
+            sql: sql.to_string(),
+            ms: result.elapsed_ms.round() as u64,
+            rows: result.row_count as u64,
+        };
+        slot.engine.file_change(change).await;
+    }
     Ok(Json(json!({
         "ok": true,
         "columns": result.columns,
@@ -1769,9 +1917,12 @@ async fn conns_delete(
     // An unsaved connection's history has nowhere to come back to.
     let scope = removed.history_scope();
     if scope.starts_with(store::SESSION_PREFIX) {
-        let mut store = state.store.lock().await;
-        let _ = store.clear_history(&scope);
-        let _ = store.set_safe_mode(&scope, None);
+        let _ = change_history(&state.store, |store| {
+            store.forget_history(&scope);
+            let _ = store.set_safe_mode(&scope, None);
+            ((), true)
+        })
+        .await;
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -1947,12 +2098,49 @@ async fn history_clear(
         return Err(unauthorized());
     }
     let scope = slot_for(&state, params.conn.as_deref()).await?.history_scope();
-    state
-        .store
-        .lock()
-        .await
-        .clear_history(&scope)
-        .map_err(store_error)?;
+    change_history(&state.store, |store| {
+        store.forget_history(&scope);
+        ((), true)
+    })
+    .await
+    .map_err(store_error)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn history_delete(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Query(params): Query<HistoryParams>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let scope = slot_for(&state, params.conn.as_deref())
+        .await?
+        .history_scope();
+    let removed = change_history(&state.store, |store| {
+        let removed = store.forget_history_entry(&scope, &id);
+        (removed, removed)
+    })
+    .await
+    .map_err(store_error)?;
+    if !removed {
+        return Err(not_found("기록을 찾을 수 없습니다"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn console_clear(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    slot.engine.sql_log().clear();
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1986,8 +2174,38 @@ async fn safe_mode_set(
 #[derive(Deserialize)]
 struct NewFavoriteRequest {
     name: String,
+    // May be empty: a new query starts out blank, like TablePlus's "Untitled".
+    #[serde(default)]
     sql: String,
     keyword: Option<String>,
+    folder: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FavoriteUpdateRequest {
+    name: Option<String>,
+    sql: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    keyword: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    folder: Option<Option<String>>,
+}
+
+// Tells a field sent as null (Some(None)) from one left out (None).
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+fn trimmed(value: String) -> Option<String> {
+    Some(value.trim().to_string()).filter(|value| !value.is_empty())
+}
+
+fn unknown_folder() -> (StatusCode, Json<ApiError>) {
+    bad_request("invalid_request", "폴더를 찾을 수 없습니다")
 }
 
 async fn favorites_list(
@@ -1997,11 +2215,11 @@ async fn favorites_list(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    let favorites = {
+    let (favorites, folders) = {
         let store = state.store.lock().await;
-        store.favorites()
+        (store.favorites(), store.folders())
     };
-    Ok(Json(json!({ "favorites": favorites })))
+    Ok(Json(json!({ "favorites": favorites, "folders": folders })))
 }
 
 async fn favorites_create(
@@ -2012,28 +2230,73 @@ async fn favorites_create(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    let name = req.name.trim().to_string();
-    let sql = req.sql.trim().to_string();
-    if name.is_empty() || sql.is_empty() {
-        return Err(bad_request("invalid_request", "이름과 SQL이 필요합니다"));
-    }
-    let keyword = req
-        .keyword
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let Some(name) = trimmed(req.name) else {
+        return Err(bad_request("invalid_request", "이름이 필요합니다"));
+    };
+    // Kept as sent, like PUT: an editor tab bound to the new query matches it.
+    let sql = req.sql;
+    let keyword = req.keyword.and_then(trimmed);
+    let folder = req.folder.and_then(trimmed);
     let id = uuid::Uuid::new_v4().simple().to_string();
-    state
-        .store
-        .lock()
-        .await
+    let now = unix_now();
+    let mut store = state.store.lock().await;
+    if folder
+        .as_deref()
+        .is_some_and(|folder| !store.has_folder(folder))
+    {
+        return Err(unknown_folder());
+    }
+    store
         .add_favorite(store::FavoriteEntry {
             id: id.clone(),
             name,
             sql,
             keyword,
+            folder,
+            created_at: now,
+            updated_at: now,
         })
         .map_err(store_error)?;
     Ok(Json(json!({ "id": id })))
+}
+
+// Only the fields sent change; null clears the keyword or moves the query
+// out of its folder. The SQL is kept as sent, untrimmed (as on create).
+async fn favorites_update(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(req): Json<FavoriteUpdateRequest>,
+) -> Result<Json<store::FavoriteEntry>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let name = match req.name {
+        Some(name) => match trimmed(name) {
+            Some(name) => Some(name),
+            None => return Err(bad_request("invalid_request", "이름이 필요합니다")),
+        },
+        None => None,
+    };
+    let patch = store::FavoritePatch {
+        name,
+        sql: req.sql,
+        keyword: req.keyword.map(|keyword| keyword.and_then(trimmed)),
+        folder: req.folder.map(|folder| folder.and_then(trimmed)),
+    };
+    let mut store = state.store.lock().await;
+    if let Some(Some(folder)) = &patch.folder {
+        if !store.has_folder(folder) {
+            return Err(unknown_folder());
+        }
+    }
+    match store
+        .update_favorite(&id, patch, unix_now())
+        .map_err(store_error)?
+    {
+        Some(updated) => Ok(Json(updated)),
+        None => Err(not_found("즐겨찾기를 찾을 수 없습니다")),
+    }
 }
 
 async fn favorites_delete(
@@ -2050,6 +2313,81 @@ async fn favorites_delete(
     };
     if !removed {
         return Err(not_found("즐겨찾기를 찾을 수 없습니다"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct FolderRequest {
+    name: String,
+}
+
+async fn folders_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<FolderRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let Some(name) = trimmed(req.name) else {
+        return Err(bad_request("invalid_request", "폴더 이름이 필요합니다"));
+    };
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    state
+        .store
+        .lock()
+        .await
+        .add_folder(store::FavoriteFolder {
+            id: id.clone(),
+            name,
+            created_at: unix_now(),
+        })
+        .map_err(store_error)?;
+    Ok(Json(json!({ "id": id })))
+}
+
+async fn folders_update(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(req): Json<FolderRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let Some(name) = trimmed(req.name) else {
+        return Err(bad_request("invalid_request", "폴더 이름이 필요합니다"));
+    };
+    let renamed = state
+        .store
+        .lock()
+        .await
+        .rename_folder(&id, name)
+        .map_err(store_error)?;
+    if !renamed {
+        return Err(not_found("폴더를 찾을 수 없습니다"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+// The queries in the folder go with it.
+async fn folders_delete(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let removed = state
+        .store
+        .lock()
+        .await
+        .remove_folder(&id)
+        .map_err(store_error)?;
+    if !removed {
+        return Err(not_found("폴더를 찾을 수 없습니다"));
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -2421,6 +2759,8 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
         tx,
         order: Arc::new(tokio::sync::Mutex::new(())),
     };
+    // Console forwarders by connection id; each holds a Sender clone.
+    let mut consoles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
@@ -2458,6 +2798,10 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
                         handle_row_change(&state, &sender, &value, &conn, RowOp::Delete).await
                     }
                     "tx" => handle_tx(&state, &sender, &value, &conn).await,
+                    "console" => {
+                        handle_console(&state, &sender, &value, &conn, &mut consoles).await
+                    }
+                    "console_unwatch" => stop_console(&mut consoles, &conn),
                     _ => {
                         sender
                             .json(error_json(
@@ -2475,8 +2819,153 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
         }
     }
 
+    // The writer ends once every Sender is gone: the forwarders' (aborted
+    // here), this one, and those of queries still finishing.
+    for console in consoles.values() {
+        console.abort();
+    }
     cancel_all_inflight(&state).await;
+    drop(sender);
     let _ = writer.await;
+}
+
+/// How long a console forwarder waits for more statements to send along.
+const CONSOLE_BATCH: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Replies with the connection's console entries after `since` and, unless
+/// this socket already has one, starts a forwarder that pushes the
+/// statements logged from then on.
+async fn handle_console(
+    state: &AppState,
+    sender: &Sender,
+    value: &Value,
+    conn: &str,
+    consoles: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+) {
+    let slot = match slot_for(state, Some(conn)).await {
+        Ok(slot) => slot,
+        Err((_, Json(err))) => {
+            sender
+                .json(error_json(None, Some(conn), &err.message, false))
+                .await;
+            return;
+        }
+    };
+    let log = slot.engine.sql_log();
+    let watching = consoles.get(conn).is_some_and(|task| !task.is_finished());
+    // Subscribed before the snapshot so nothing logged in between is lost;
+    // the forwarder skips what the reply already carries.
+    let events = (!watching).then(|| log.subscribe());
+    let since = value["since"].as_u64();
+    let (entries, reset) = log.since(since);
+    let newest = match entries.last() {
+        Some(entry) => entry.seq,
+        None if reset => 0,
+        None => since.unwrap_or(0),
+    };
+    sender
+        .json(json!({
+            "type": "console",
+            "conn": conn,
+            "entries": entries,
+            "reset": reset,
+        }))
+        .await;
+    if let Some(events) = events {
+        let forwarder = forward_console(
+            Arc::downgrade(&slot),
+            events,
+            sender.clone(),
+            conn.to_string(),
+            newest,
+        );
+        consoles.insert(conn.to_string(), tokio::spawn(forwarder));
+    }
+}
+
+/// Stops this socket's forwarder for `conn`, if it has one (the console panel
+/// closed); a later "console" message starts a fresh one.
+fn stop_console(consoles: &mut HashMap<String, tokio::task::JoinHandle<()>>, conn: &str) {
+    if let Some(console) = consoles.remove(conn) {
+        console.abort();
+    }
+}
+
+/// Pushes statements newer than `newest` as they are logged, a few
+/// milliseconds' worth per message. Having fallen too far behind it sends
+/// the whole log again with `reset`; when the engine goes away it says so
+/// and ends.
+async fn forward_console(
+    slot: std::sync::Weak<ConnSlot>,
+    mut events: broadcast::Receiver<LogEntry>,
+    sender: Sender,
+    conn: String,
+    mut newest: u64,
+) {
+    loop {
+        let mut batch: Vec<LogEntry> = Vec::new();
+        let mut deadline: Option<tokio::time::Instant> = None;
+        let mut lagged = false;
+        let mut closed = false;
+        loop {
+            let event = match deadline {
+                None => events.recv().await,
+                Some(deadline) => match tokio::time::timeout_at(deadline, events.recv()).await {
+                    Ok(event) => event,
+                    Err(_) => break,
+                },
+            };
+            match event {
+                Ok(entry) if entry.seq > newest => {
+                    newest = entry.seq;
+                    batch.push(entry);
+                    deadline.get_or_insert_with(|| tokio::time::Instant::now() + CONSOLE_BATCH);
+                }
+                Ok(_) => {}
+                Err(RecvError::Lagged(_)) => {
+                    lagged = true;
+                    break;
+                }
+                Err(RecvError::Closed) => {
+                    closed = true;
+                    break;
+                }
+            }
+        }
+        if lagged {
+            if let Some(slot) = slot.upgrade() {
+                let (entries, _) = slot.engine.sql_log().since(None);
+                drop(slot);
+                newest = entries.last().map_or(newest, |entry| entry.seq);
+                sender
+                    .json(json!({
+                        "type": "console",
+                        "conn": conn,
+                        "entries": entries,
+                        "reset": true,
+                    }))
+                    .await;
+                continue;
+            }
+            closed = true;
+        }
+        if !batch.is_empty() {
+            sender
+                .json(json!({
+                    "type": "console",
+                    "conn": conn,
+                    "entries": batch,
+                    "reset": false,
+                }))
+                .await;
+        }
+        if closed {
+            sender
+                .json(json!({ "type": "console_closed", "conn": conn }))
+                .await;
+            return;
+        }
+    }
 }
 
 async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &str) {
@@ -2521,39 +3010,30 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
     tokio::spawn(async move {
         let _inflight = InflightGuard::new(slot.inflight.clone());
         let started = std::time::Instant::now();
+        let mark = slot.engine.sql_log().ends();
         let outcome = slot.engine.query(&sql, max_rows).await;
+        // Statements run here can open or close a transaction (or, failing,
+        // abort one): the page's indicator follows this.
+        let in_tx = slot.engine.in_tx().await.unwrap_or(false);
+        // One this statement ended (COMMIT or ROLLBACK typed here, a failed
+        // COMMIT, a deadlock) settles the cached results as the toolbar's do.
+        let ended = slot.engine.sql_log().ended_since(mark);
+        // An outcome nobody knows (a COMMIT lost with the connection, a
+        // failed batch that also ended the transaction): reload, not revert.
+        let reload = matches!(outcome, Err(EngineError::TxOutcomeUnknown(_)));
+        let invalidate = settle_after_query(&slot, ended, reload).await;
+        let tx_state = ended.map(|committed| if committed { "committed" } else { "rolledback" });
         if let Some(scope) = scope {
-            let (ms, ok, rows, error) = match &outcome {
-                Ok(data) => (data.elapsed_ms.round() as u64, true, data.row_count as u64, None),
-                Err(err) => (
-                    started.elapsed().as_millis() as u64,
-                    false,
-                    0,
-                    Some(if err.is_interrupted() {
-                        "쿼리가 취소되었습니다".to_string()
-                    } else {
-                        err.to_string()
-                    }),
-                ),
-            };
-            let entry = store::HistoryEntry {
-                scope,
-                sql: sql.clone(),
-                at: unix_now(),
-                ms,
-                ok,
-                rows,
-                error,
-            };
-            let mut store = state.store.lock().await;
-            if store.scope_exists(&entry.scope) {
-                let _ = store.record_history(entry);
-            }
+            let summary = outcome
+                .as_ref()
+                .map(|data| (data.elapsed_ms, data.row_count));
+            let entry = run_entry(scope, &sql, started, summary);
+            let _ = file_history(&state.store, vec![entry]).await;
         }
         match outcome {
             Ok(data) => {
                 let data = Arc::new(data);
-                let meta = json!({
+                let mut meta = json!({
                     "type": "meta",
                     "conn": conn,
                     "id": id,
@@ -2564,7 +3044,15 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                     "truncated": data.truncated,
                     "source_table": data.source_table,
                     "pk": data.pk,
+                    "column_kinds": data.column_kinds,
+                    "in_tx": in_tx,
                 });
+                if let Some(state) = tx_state {
+                    meta["tx"] = json!(state);
+                }
+                if invalidate {
+                    meta["invalidate"] = json!(true);
+                }
                 {
                     let _guard = sender.order.lock().await;
                     if sender
@@ -2590,9 +3078,15 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                 } else {
                     err.to_string()
                 };
-                sender
-                    .json(error_json(Some(&id), Some(&conn), &message, cancelled))
-                    .await;
+                let mut body = error_json(Some(&id), Some(&conn), &message, cancelled);
+                body["in_tx"] = json!(in_tx);
+                if let Some(state) = tx_state {
+                    body["tx"] = json!(state);
+                }
+                if invalidate {
+                    body["invalidate"] = json!(true);
+                }
+                sender.json(body).await;
             }
         }
     });
@@ -2940,33 +3434,70 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
             return;
         }
     };
+    // A COMMIT that ended the transaction without committing (an aborted
+    // PostgreSQL transaction, a session a cancel killed), or whose outcome
+    // was lost with the connection: the page sees the transaction closed,
+    // its cells reverted (reloaded when unsure), then why.
+    let (result, action, closed) = match result {
+        Err(EngineError::TxRolledBack(reason)) => {
+            (Ok("rolledback"), "rollback", Some((reason, false)))
+        }
+        Err(EngineError::TxOutcomeUnknown(reason)) => {
+            (Ok("rolledback"), "rollback", Some((reason, true)))
+        }
+        other => (other, action, None),
+    };
+    let reload = closed.as_ref().is_some_and(|(_, unknown)| *unknown);
     match result {
         Ok(state_label) => {
-            let invalidate = if action == "rollback" {
-                let structural = take_structural(&slot).await;
-                if structural {
-                    slot.sessions.lock().await.clear();
-                    true
-                } else {
-                    apply_journal(&slot, action).await;
-                    false
-                }
-            } else {
-                apply_journal(&slot, action).await;
-                slot.sessions.lock().await.reset_structural();
-                false
-            };
+            // BEGIN, like COMMIT, starts the journal afresh.
+            let invalidate = settle_sessions(&slot, action != "rollback", reload).await;
             let mut body = json!({"type": "tx", "conn": conn, "state": state_label});
             if invalidate {
                 body["invalidate"] = json!(true);
             }
             sender.json(body).await;
+            if let Some((reason, _)) = closed {
+                sender
+                    .json(error_json(None, Some(conn), &reason, false))
+                    .await;
+            }
         }
         Err(err) => {
             sender
                 .json(error_json(None, Some(conn), &err.to_string(), false))
                 .await;
         }
+    }
+}
+
+/// What an editor query that ended the transaction (`ended`: whether it
+/// committed), or left its outcome unknown, means for the cached results;
+/// true when they were dropped.
+async fn settle_after_query(slot: &ConnSlot, ended: Option<bool>, unknown: bool) -> bool {
+    match ended {
+        Some(committed) => settle_sessions(slot, committed, unknown).await,
+        None if unknown => settle_sessions(slot, false, true).await,
+        None => false,
+    }
+}
+
+/// What a transaction's end means for the cached results. Committed, their
+/// values stand and the journal starts afresh. Rolled back, edited cells
+/// return to their old values, or, when rows came or went (or `reload`
+/// asks), the results are dropped: true, the page must fetch them again.
+async fn settle_sessions(slot: &ConnSlot, committed: bool, reload: bool) -> bool {
+    if committed {
+        apply_journal(slot, "commit").await;
+        slot.sessions.lock().await.reset_structural();
+        return false;
+    }
+    if take_structural(slot).await || reload {
+        slot.sessions.lock().await.clear();
+        true
+    } else {
+        apply_journal(slot, "rollback").await;
+        false
     }
 }
 
@@ -3024,6 +3555,7 @@ fn error_json(id: Option<&str>, conn: Option<&str>, message: &str, cancelled: bo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tablepeek_engine::sql_log::Dialect;
 
     #[test]
     fn list_dir_sorts_and_skips_hidden() {
@@ -3973,6 +4505,7 @@ mod tests {
 
     fn history_run(scope: &str, sql: &str, at: u64) -> store::HistoryEntry {
         store::HistoryEntry {
+            id: String::new(),
             scope: scope.into(),
             sql: sql.into(),
             at,
@@ -4166,8 +4699,9 @@ mod tests {
             headers.clone(),
             Json(NewFavoriteRequest {
                 name: "사용자 목록".into(),
-                sql: "SELECT * FROM users".into(),
+                sql: "SELECT * FROM users\n".into(),
                 keyword: Some("users".into()),
+                folder: None,
             }),
         )
         .await
@@ -4181,7 +4715,8 @@ mod tests {
         assert_eq!(favorites.len(), 1);
         assert_eq!(favorites[0]["id"], json!(id));
         assert_eq!(favorites[0]["name"], json!("사용자 목록"));
-        assert_eq!(favorites[0]["sql"], json!("SELECT * FROM users"));
+        // Stored as sent, newline and all.
+        assert_eq!(favorites[0]["sql"], json!("SELECT * FROM users\n"));
         assert_eq!(favorites[0]["keyword"], json!("users"));
 
         let empty = favorites_create(
@@ -4191,6 +4726,7 @@ mod tests {
                 name: "  ".into(),
                 sql: "SELECT 1".into(),
                 keyword: None,
+                folder: None,
             }),
         )
         .await
@@ -4205,6 +4741,739 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(again.0, StatusCode::NOT_FOUND);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn favorites_folders_and_partial_updates() {
+        let dir = temp_dir("favorites-folders");
+        let state = test_state(&dir);
+        let headers = test_headers();
+
+        let folder = folders_create(
+            State(state.clone()),
+            headers.clone(),
+            Json(FolderRequest {
+                name: " Reports ".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let folder_id = folder.0["id"].as_str().unwrap().to_string();
+        let blank = folders_create(
+            State(state.clone()),
+            headers.clone(),
+            Json(FolderRequest { name: " ".into() }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(blank.0, StatusCode::BAD_REQUEST);
+
+        // A new query may start out empty, inside a folder.
+        let created = favorites_create(
+            State(state.clone()),
+            headers.clone(),
+            Json(NewFavoriteRequest {
+                name: "Untitled".into(),
+                sql: String::new(),
+                keyword: None,
+                folder: Some(folder_id.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+        let id = created.0["id"].as_str().unwrap().to_string();
+        let stray = favorites_create(
+            State(state.clone()),
+            headers.clone(),
+            Json(NewFavoriteRequest {
+                name: "Stray".into(),
+                sql: String::new(),
+                keyword: None,
+                folder: Some("missing".into()),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(stray.0, StatusCode::BAD_REQUEST);
+
+        let listed = favorites_list(State(state.clone()), headers.clone())
+            .await
+            .unwrap();
+        assert_eq!(listed.0["folders"][0]["id"], json!(folder_id));
+        assert_eq!(listed.0["folders"][0]["name"], json!("Reports"));
+        let favorite = &listed.0["favorites"][0];
+        assert_eq!(favorite["sql"], json!(""));
+        assert_eq!(favorite["folder"], json!(folder_id));
+        assert_eq!(favorite["keyword"], json!(null));
+        assert!(favorite["created_at"].as_u64().unwrap() > 0);
+        assert_eq!(favorite["updated_at"], favorite["created_at"]);
+
+        let update = |body: Value| {
+            let state = state.clone();
+            let headers = headers.clone();
+            let id = id.clone();
+            async move {
+                favorites_update(
+                    State(state),
+                    AxumPath(id),
+                    headers,
+                    Json(serde_json::from_value(body).unwrap()),
+                )
+                .await
+            }
+        };
+        let renamed = update(json!({ "name": "Daily", "sql": "SELECT 1\n", "keyword": "daily" }))
+            .await
+            .unwrap();
+        assert_eq!(renamed.0.name, "Daily");
+        assert_eq!(renamed.0.sql, "SELECT 1\n");
+        assert_eq!(renamed.0.keyword.as_deref(), Some("daily"));
+        assert_eq!(renamed.0.folder.as_deref(), Some(folder_id.as_str()));
+        // Left out keeps a field, null clears it.
+        let moved = update(json!({ "folder": null })).await.unwrap();
+        assert_eq!(moved.0.folder, None);
+        assert_eq!(moved.0.keyword.as_deref(), Some("daily"));
+        let cleared = update(json!({ "keyword": null })).await.unwrap();
+        assert_eq!(cleared.0.keyword, None);
+        assert_eq!(cleared.0.name, "Daily");
+        assert_eq!(
+            update(json!({ "name": "  " })).await.unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            update(json!({ "folder": "missing" })).await.unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        let missing = favorites_update(
+            State(state.clone()),
+            AxumPath("missing".into()),
+            headers.clone(),
+            Json(serde_json::from_value(json!({ "name": "x" })).unwrap()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing.0, StatusCode::NOT_FOUND);
+
+        let renamed_folder = folders_update(
+            State(state.clone()),
+            AxumPath(folder_id.clone()),
+            headers.clone(),
+            Json(FolderRequest {
+                name: "Monthly".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed_folder.0["ok"], json!(true));
+        assert_eq!(
+            folders_update(
+                State(state.clone()),
+                AxumPath("missing".into()),
+                headers.clone(),
+                Json(FolderRequest { name: "x".into() }),
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::NOT_FOUND
+        );
+
+        // Deleting a folder takes its queries along.
+        let moved_back = update(json!({ "folder": folder_id })).await.unwrap();
+        assert_eq!(moved_back.0.folder.as_deref(), Some(folder_id.as_str()));
+        let deleted = folders_delete(
+            State(state.clone()),
+            AxumPath(folder_id.clone()),
+            headers.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted.0["ok"], json!(true));
+        let listed = favorites_list(State(state.clone()), headers.clone())
+            .await
+            .unwrap();
+        assert!(listed.0["favorites"].as_array().unwrap().is_empty());
+        assert!(listed.0["folders"].as_array().unwrap().is_empty());
+        assert_eq!(
+            folders_delete(State(state.clone()), AxumPath(folder_id), headers)
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::NOT_FOUND
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn history_route_deletes_one_entry_of_one_connection() {
+        let dir = temp_dir("history-delete");
+        let state = test_state(&dir);
+        let headers = test_headers();
+        {
+            let mut store = state.store.lock().await;
+            store
+                .record_history(history_run("demo", "SELECT 1", 10))
+                .unwrap();
+            store
+                .record_history(history_run("demo", "SELECT 2", 20))
+                .unwrap();
+            store
+                .record_history(history_run("saved:other", "SELECT 3", 30))
+                .unwrap();
+        }
+        let params = || HistoryParams {
+            conn: Some("main".into()),
+            limit: None,
+        };
+        let listed = history_list(State(state.clone()), headers.clone(), Query(params()))
+            .await
+            .unwrap();
+        let ids: Vec<String> = listed.0["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        let other = state.store.lock().await.history("saved:other", 1)[0]
+            .id
+            .clone();
+
+        let deleted = history_delete(
+            State(state.clone()),
+            AxumPath(ids[0].clone()),
+            headers.clone(),
+            Query(params()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted.0["ok"], json!(true));
+        for id in [ids[0].clone(), other] {
+            let err = history_delete(
+                State(state.clone()),
+                AxumPath(id),
+                headers.clone(),
+                Query(params()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.0, StatusCode::NOT_FOUND);
+        }
+        let left = state.store.lock().await.history("demo", 10);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, ids[1]);
+        assert_eq!(state.store.lock().await.history("saved:other", 10).len(), 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exec_route_records_successes_once_committed() {
+        let dir = temp_dir("exec-history");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        record_gui_changes(&state, &slot);
+        let headers = test_headers();
+        let exec = |sql: &str, history: bool| {
+            let state = state.clone();
+            let headers = headers.clone();
+            let req = ExecRequest {
+                sql: sql.into(),
+                history,
+            };
+            async move {
+                exec_route(
+                    State(state),
+                    headers,
+                    Query(ConnQuery {
+                        conn: None,
+                        system: None,
+                    }),
+                    Json(req),
+                )
+                .await
+            }
+        };
+        let _ = exec("SELECT 1", false).await.unwrap();
+        // A failure still answers with its error but stays out of History.
+        let err = exec("SELECT * FROM nope", true).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1 .0.message.contains("nope"));
+
+        // Inside a transaction a run waits for COMMIT and goes with ROLLBACK.
+        slot.engine.begin_tx().await.unwrap();
+        let _ = exec("DELETE FROM demo WHERE id = 3", true).await.unwrap();
+        slot.engine.rollback_tx().await.unwrap();
+        slot.engine.begin_tx().await.unwrap();
+        let _ = exec("DELETE FROM demo WHERE id = 2", true).await.unwrap();
+        assert!(state.store.lock().await.history("demo", 10).is_empty());
+        slot.engine.commit_tx().await.unwrap();
+
+        let ran = exec(" SELECT name FROM demo ", true).await.unwrap();
+        assert_eq!(ran.0["ok"], json!(true));
+        let history = history_when(&dir, "demo", |history| history.len() >= 2).await;
+        let sqls: Vec<&str> = history.iter().map(|entry| entry.sql.as_str()).collect();
+        assert_eq!(
+            sqls,
+            vec!["SELECT name FROM demo", "DELETE FROM demo WHERE id = 2"]
+        );
+        assert!(history
+            .iter()
+            .all(|entry| entry.ok && entry.error.is_none()));
+        assert_eq!((history[0].rows, history[1].rows), (1, 0));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn gui_changes_land_in_history() {
+        let dir = temp_dir("gui-history");
+        let state = test_state(&dir);
+        let opened = open(
+            State(state.clone()),
+            test_headers(),
+            Json(OpenRequest { path: None }),
+        )
+        .await
+        .unwrap();
+        let slot = slot_for(&state, opened.0["conn"].as_str()).await.unwrap();
+        slot.engine
+            .edit(&EditTarget {
+                table: "demo".into(),
+                pk: vec![PkValue {
+                    column: "id".into(),
+                    value: json!(1),
+                }],
+                column: "name".into(),
+                value: Some("O'Neil".into()),
+            })
+            .await
+            .unwrap();
+        // Plain statements are not History.
+        slot.engine.query("SELECT 1", 1).await.unwrap();
+
+        let history = history_when(&dir, "demo", |history| !history.is_empty()).await;
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].sql,
+            "UPDATE \"demo\" SET \"name\" = 'O''Neil' WHERE \"id\" = 1"
+        );
+        assert!(history[0].ok);
+        assert_eq!(history[0].rows, 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// History for `scope` as written to `dir`, once `done` says so (or after
+    /// 2 s): the recorder files changes and writes the file in the background.
+    async fn history_when(
+        dir: &std::path::Path,
+        scope: &str,
+        done: impl Fn(&[store::HistoryEntry]) -> bool,
+    ) -> Vec<store::HistoryEntry> {
+        let read = || store::StoreFile::load(dir).history(scope, store::HISTORY_CAP);
+        for _ in 0..400 {
+            let history = read();
+            if done(&history) {
+                return history;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        read()
+    }
+
+    #[tokio::test]
+    async fn gui_changes_follow_their_transaction_and_none_are_lost() {
+        let dir = temp_dir("gui-history-tx");
+        let mut state = test_state(&dir);
+        state.demo_rows = 2_000;
+        let opened = open(
+            State(state.clone()),
+            test_headers(),
+            Json(OpenRequest { path: None }),
+        )
+        .await
+        .unwrap();
+        let slot = slot_for(&state, opened.0["conn"].as_str()).await.unwrap();
+        let delete = |id: i64| {
+            let engine = slot.engine.clone();
+            async move {
+                engine
+                    .delete_row(
+                        "demo",
+                        &[PkValue {
+                            column: "id".into(),
+                            value: json!(id),
+                        }],
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Rolled back: never History. A row already gone: no change at all.
+        slot.engine.begin_tx().await.unwrap();
+        assert_eq!(delete(1).await, 1);
+        slot.engine.rollback_tx().await.unwrap();
+        assert_eq!(delete(5_000).await, 0);
+
+        // A bulk delete committed at once: every row reaches History (up to
+        // its cap), in order, newest first.
+        slot.engine.begin_tx().await.unwrap();
+        for id in 1..=2_000 {
+            assert_eq!(delete(id).await, 1);
+        }
+        assert!(state.store.lock().await.history("demo", 1).is_empty());
+        slot.engine.commit_tx().await.unwrap();
+        // Filed as it arrives, possibly over several batches.
+        let last = "DELETE FROM \"demo\" WHERE \"id\" = 2000";
+        let history = history_when(&dir, "demo", |history| {
+            history.first().is_some_and(|entry| entry.sql == last)
+        })
+        .await;
+        assert_eq!(history.len(), store::HISTORY_CAP);
+        assert_eq!(history[0].sql, "DELETE FROM \"demo\" WHERE \"id\" = 2000");
+        assert_eq!(
+            history[store::HISTORY_CAP - 1].sql,
+            "DELETE FROM \"demo\" WHERE \"id\" = 1001"
+        );
+        let in_memory = state.store.lock().await.history("demo", 1);
+        assert_eq!(in_memory[0].sql, last);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn test_sender() -> (Sender, mpsc::Receiver<Message>) {
+        let (tx, rx) = mpsc::channel(64);
+        let sender = Sender {
+            tx,
+            order: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        (sender, rx)
+    }
+
+    async fn next_json(rx: &mut mpsc::Receiver<Message>) -> Value {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("no message within 2s")
+            .expect("channel closed");
+        match message {
+            Message::Text(text) => serde_json::from_str(text.as_str()).unwrap(),
+            other => panic!("unexpected message {other:?}"),
+        }
+    }
+
+    fn console_sqls(message: &Value) -> Vec<&str> {
+        message["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["sql"].as_str().unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn console_replies_then_follows_the_log_until_the_engine_closes() {
+        let dir = temp_dir("console-ws");
+        let state = test_state(&dir);
+        let (sender, mut rx) = test_sender();
+        let mut consoles = HashMap::new();
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        slot.engine.query("SELECT 1", 1).await.unwrap();
+
+        handle_console(
+            &state,
+            &sender,
+            &json!({ "since": null }),
+            "main",
+            &mut consoles,
+        )
+        .await;
+        let reply = next_json(&mut rx).await;
+        assert_eq!(reply["type"], json!("console"));
+        assert_eq!(reply["conn"], json!("main"));
+        assert_eq!(reply["reset"], json!(true));
+        assert_eq!(console_sqls(&reply), vec!["SELECT 1;"]);
+        let first = &reply["entries"][0];
+        assert_eq!(first["seq"], json!(1));
+        assert!(first["at_ms"].as_u64().unwrap() > 0);
+
+        slot.engine.query("SELECT 2", 1).await.unwrap();
+        slot.engine.query("SELECT 3", 1).await.unwrap();
+        let pushed = next_json(&mut rx).await;
+        assert_eq!(pushed["reset"], json!(false));
+        let mut sqls: Vec<String> = console_sqls(&pushed)
+            .into_iter()
+            .map(String::from)
+            .collect();
+        if sqls.len() == 1 {
+            sqls.extend(
+                console_sqls(&next_json(&mut rx).await)
+                    .into_iter()
+                    .map(String::from),
+            );
+        }
+        assert_eq!(sqls, vec!["SELECT 2;", "SELECT 3;"]);
+
+        // Asking again catches up without a second forwarder.
+        handle_console(
+            &state,
+            &sender,
+            &json!({ "since": 3 }),
+            "main",
+            &mut consoles,
+        )
+        .await;
+        let caught_up = next_json(&mut rx).await;
+        assert_eq!(caught_up["reset"], json!(false));
+        assert!(console_sqls(&caught_up).is_empty());
+        assert_eq!(consoles.len(), 1);
+
+        // Clearing over REST; sequence numbers go on.
+        let cleared = console_clear(
+            State(state.clone()),
+            test_headers(),
+            Query(ConnQuery {
+                conn: Some("main".into()),
+                system: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cleared.0["ok"], json!(true));
+        let (entries, reset) = slot.engine.sql_log().since(Some(3));
+        assert!(reset && entries.is_empty());
+        slot.engine.query("SELECT 4", 1).await.unwrap();
+        let pushed = next_json(&mut rx).await;
+        assert_eq!(pushed["entries"][0]["seq"], json!(4));
+
+        // The connection closes: its engine goes, and the page is told.
+        drop(slot);
+        state.registry.lock().await.remove("main");
+        let closed = next_json(&mut rx).await;
+        assert_eq!(closed, json!({ "type": "console_closed", "conn": "main" }));
+
+        handle_console(
+            &state,
+            &sender,
+            &json!({ "since": null }),
+            "main",
+            &mut consoles,
+        )
+        .await;
+        let missing = next_json(&mut rx).await;
+        assert_eq!(missing["type"], json!("error"));
+        assert_eq!(missing["conn"], json!("main"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn console_unwatch_stops_pushes_until_asked_again() {
+        let dir = temp_dir("console-unwatch");
+        let state = test_state(&dir);
+        let (sender, mut rx) = test_sender();
+        let mut consoles = HashMap::new();
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        handle_console(&state, &sender, &json!({}), "main", &mut consoles).await;
+        assert_eq!(next_json(&mut rx).await["reset"], json!(true));
+        slot.engine.query("SELECT 1", 1).await.unwrap();
+        assert_eq!(console_sqls(&next_json(&mut rx).await), vec!["SELECT 1;"]);
+
+        stop_console(&mut consoles, "main");
+        stop_console(&mut consoles, "other");
+        assert!(consoles.is_empty());
+        slot.engine.query("SELECT 2", 1).await.unwrap();
+        let quiet = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(quiet.is_err(), "pushed after unwatch: {quiet:?}");
+
+        // Watching again catches up from the page's newest and follows on.
+        handle_console(
+            &state,
+            &sender,
+            &json!({ "since": 1 }),
+            "main",
+            &mut consoles,
+        )
+        .await;
+        let reply = next_json(&mut rx).await;
+        assert_eq!(reply["reset"], json!(false));
+        assert_eq!(console_sqls(&reply), vec!["SELECT 2;"]);
+        slot.engine.query("SELECT 3", 1).await.unwrap();
+        assert_eq!(console_sqls(&next_json(&mut rx).await), vec!["SELECT 3;"]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The next text message of `kind` ("meta", "error", …), skipping the rest.
+    async fn next_of(rx: &mut mpsc::Receiver<Message>, kind: &str) -> Value {
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("no message within 2s")
+                .expect("channel closed");
+            if let Message::Text(text) = message {
+                let value: Value = serde_json::from_str(text.as_str()).unwrap();
+                if value["type"] == json!(kind) {
+                    return value;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn query_replies_carry_the_transaction_state() {
+        let dir = temp_dir("query-in-tx");
+        let state = test_state(&dir);
+        let (sender, mut rx) = test_sender();
+        let run = |id: &str, sql: &str| json!({ "type": "query", "id": id, "sql": sql });
+
+        handle_query(&state, &sender, &run("q1", "SELECT 1"), "main").await;
+        assert_eq!(next_of(&mut rx, "meta").await["in_tx"], json!(false));
+        handle_query(&state, &sender, &run("q2", "BEGIN"), "main").await;
+        assert_eq!(next_of(&mut rx, "meta").await["in_tx"], json!(true));
+        // A failed statement leaves the transaction open, and says so.
+        handle_query(&state, &sender, &run("q3", "SELECT * FROM nope"), "main").await;
+        let failed = next_of(&mut rx, "error").await;
+        assert_eq!(failed["id"], json!("q3"));
+        assert_eq!(failed["in_tx"], json!(true));
+        handle_query(&state, &sender, &run("q4", "COMMIT"), "main").await;
+        assert_eq!(next_of(&mut rx, "meta").await["in_tx"], json!(false));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_transaction_ended_from_the_editor_settles_cached_results() {
+        let dir = temp_dir("query-tx-end");
+        let state = test_state(&dir);
+        let (sender, mut rx) = test_sender();
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let run = |id: &str, sql: &str| json!({ "type": "query", "id": id, "sql": sql });
+
+        handle_query(&state, &sender, &run("q1", "SELECT * FROM demo"), "main").await;
+        assert!(next_of(&mut rx, "meta").await.get("tx").is_none());
+        handle_query(&state, &sender, &run("q2", "BEGIN"), "main").await;
+        let began = next_of(&mut rx, "meta").await;
+        assert_eq!(
+            (began["in_tx"].clone(), began.get("tx")),
+            (json!(true), None)
+        );
+
+        // A cell edited inside the transaction, as handle_edit records it.
+        slot.engine
+            .edit(&EditTarget {
+                table: "demo".into(),
+                pk: vec![PkValue {
+                    column: "id".into(),
+                    value: json!(1),
+                }],
+                column: "name".into(),
+                value: Some("edited".into()),
+            })
+            .await
+            .unwrap();
+        {
+            let session = slot.sessions.lock().await.get("q1").unwrap();
+            let mut guard = session.lock().await;
+            let old = guard.data.cell_string(0, 1);
+            guard.data.patch_cell(0, 1, Some("edited")).unwrap();
+            guard.journal.push(JournalEntry::Cell {
+                row: 0,
+                col: 1,
+                old,
+            });
+        }
+        handle_query(&state, &sender, &run("q3", "ROLLBACK"), "main").await;
+        let rolled = next_of(&mut rx, "meta").await;
+        assert_eq!(rolled["in_tx"], json!(false));
+        assert_eq!(rolled["tx"], json!("rolledback"));
+        assert!(rolled.get("invalidate").is_none());
+        {
+            let session = slot.sessions.lock().await.get("q1").unwrap();
+            let guard = session.lock().await;
+            assert_eq!(guard.data.cell_string(0, 1).as_deref(), Some("user_1"));
+            assert!(guard.journal.is_empty());
+        }
+
+        // Rows inserted inside a rolled-back transaction: results dropped.
+        handle_query(&state, &sender, &run("q4", "BEGIN"), "main").await;
+        next_of(&mut rx, "meta").await;
+        slot.sessions.lock().await.mark_structural();
+        handle_query(&state, &sender, &run("q5", "ROLLBACK"), "main").await;
+        let dropped = next_of(&mut rx, "meta").await;
+        assert_eq!(dropped["invalidate"], json!(true));
+        assert!(slot.sessions.lock().await.get("q1").is_none());
+
+        handle_query(&state, &sender, &run("q6", "BEGIN"), "main").await;
+        next_of(&mut rx, "meta").await;
+        handle_query(&state, &sender, &run("q7", "COMMIT"), "main").await;
+        assert_eq!(next_of(&mut rx, "meta").await["tx"], json!("committed"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unknown_outcome_drops_cached_results() {
+        let dir = temp_dir("unknown-outcome");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let cache = |id: &str| {
+            let slot = slot.clone();
+            let id = id.to_string();
+            async move {
+                let data = slot.engine.query("SELECT * FROM demo", 10).await.unwrap();
+                slot.sessions.lock().await.insert(id, Arc::new(data));
+            }
+        };
+
+        // Nothing ended and nothing unknown: the results stay.
+        cache("a").await;
+        assert!(!settle_after_query(&slot, None, false).await);
+        assert!(slot.sessions.lock().await.get("a").is_some());
+        // A plain rollback reverts cells but keeps the results.
+        assert!(!settle_after_query(&slot, Some(false), false).await);
+        assert!(slot.sessions.lock().await.get("a").is_some());
+        // Unknown, whether or not an end was counted: reload.
+        assert!(settle_after_query(&slot, Some(false), true).await);
+        assert!(slot.sessions.lock().await.get("a").is_none());
+        cache("b").await;
+        assert!(settle_after_query(&slot, None, true).await);
+        assert!(slot.sessions.lock().await.get("b").is_none());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn console_forwarder_resends_the_log_after_lagging() {
+        let dir = temp_dir("console-lag");
+        let state = test_state(&dir);
+        let (sender, mut rx) = test_sender();
+        let mut consoles = HashMap::new();
+        handle_console(&state, &sender, &json!({}), "main", &mut consoles).await;
+        let reply = next_json(&mut rx).await;
+        assert_eq!(reply["reset"], json!(true));
+
+        // The forwarder has not run yet on this single-threaded runtime, so
+        // these overflow its channel.
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let log = slot.engine.sql_log();
+        for index in 0..1_500 {
+            log.record(&format!("SELECT {index}"), Dialect::Sqlite);
+        }
+        let resent = next_json(&mut rx).await;
+        assert_eq!(resent["reset"], json!(true));
+        let entries = resent["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), tablepeek_engine::sql_log::LOG_CAP);
+        assert_eq!(entries.last().unwrap()["sql"], json!("SELECT 1499;"));
+
+        log.record("SELECT 'after'", Dialect::Sqlite);
+        let pushed = next_json(&mut rx).await;
+        assert_eq!(pushed["reset"], json!(false));
+        assert_eq!(console_sqls(&pushed), vec!["SELECT 'after';"]);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

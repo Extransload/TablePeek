@@ -6,6 +6,7 @@
 
 export type KeyAction =
   | "run"
+  | "runAll"
   | "applyChanges"
   | "newTab"
   | "closeTab"
@@ -23,6 +24,7 @@ export type Keymap = Record<KeyAction, string[]>;
 
 export const KEY_ACTIONS: KeyAction[] = [
   "run",
+  "runAll",
   "applyChanges",
   "newTab",
   "closeTab",
@@ -40,12 +42,16 @@ export const KEY_ACTIONS: KeyAction[] = [
 // Browsers reserve ⌘/Ctrl + W, T, N for themselves, so each of those actions
 // also gets an Alt alternative that pages are allowed to handle.
 export const DEFAULT_KEYMAP: Keymap = {
+  // ⌘↵ runs the statement at the cursor (or the selection), ⇧⌘↵ all of them,
+  // as in TablePlus.
   run: ["Mod+Enter"],
+  runAll: ["Mod+Shift+Enter"],
   applyChanges: ["Mod+s"],
   newTab: ["Mod+t", "Alt+t"],
   closeTab: ["Mod+w", "Alt+w"],
   nextTab: ["Alt+]"],
   prevTab: ["Alt+["],
+  // TablePlus refreshes with ⌘R, but in a browser that key reloads the page.
   refresh: ["F5"],
   toggleSidebar: ["Mod+b"],
   toggleDetail: ["Mod+i"],
@@ -57,7 +63,8 @@ export const DEFAULT_KEYMAP: Keymap = {
 };
 
 export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
-  run: "쿼리 실행",
+  run: "현재 쿼리 실행",
+  runAll: "모든 쿼리 실행",
   applyChanges: "변경사항 적용",
   newTab: "새 쿼리 탭",
   closeTab: "현재 탭 닫기",
@@ -251,6 +258,11 @@ export function shortcutHint(keymap: Keymap, action: KeyAction): string {
   return binding === undefined ? "" : formatBinding(binding);
 }
 
+// A tooltip: the label, then its shortcut in parentheses when it has one.
+export function withHint(label: string, hint: string | undefined): string {
+  return hint ? `${label} (${hint})` : label;
+}
+
 // Stored keymaps from older versions hold one string per action; untouched
 // defaults are upgraded to the current default list.
 const LEGACY_DEFAULTS: Partial<Record<KeyAction, string>> = {
@@ -260,6 +272,23 @@ const LEGACY_DEFAULTS: Partial<Record<KeyAction, string>> = {
   palette: "Mod+p",
   dbSwitch: "Mod+k",
 };
+
+// Bumped when a default changes in a way stored keymaps should pick up once.
+// 2: ⌘R joined Refresh. 3: ⌘R went back to reloading the page.
+export const KEYMAP_VERSION = 3;
+
+// Whole default lists earlier versions stored: on the first load after an
+// upgrade, a stored list still equal to one was never changed, so it follows
+// today's default. Later choices (⌘R recorded again) stay as made.
+const OLD_DEFAULT_LISTS: Partial<Record<KeyAction, string[][]>> = {
+  refresh: [["F5", "Mod+r"]],
+};
+
+function isOldDefault(action: KeyAction, entries: string[]): boolean {
+  return (OLD_DEFAULT_LISTS[action] ?? []).some(
+    (list) => list.length === entries.length && list.every((binding, index) => binding === entries[index]),
+  );
+}
 
 // Only bindings the recorder could produce today: a parseable key with ⌘/Ctrl
 // or Alt, or a function key. Older versions also recorded plain keys.
@@ -284,7 +313,7 @@ function claim(bindings: string[], taken: Set<string>): string[] {
   return kept;
 }
 
-export function normalizeKeymap(raw: unknown): Keymap {
+export function normalizeKeymap(raw: unknown, storedVersion = KEYMAP_VERSION): Keymap {
   const stored = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const custom = new Map<KeyAction, string[]>();
   for (const action of KEY_ACTIONS) {
@@ -294,7 +323,7 @@ export function normalizeKeymap(raw: unknown): Keymap {
       : typeof value === "string" && value !== LEGACY_DEFAULTS[action]
         ? [value]
         : null;
-    if (entries === null) {
+    if (entries === null || (storedVersion < KEYMAP_VERSION && isOldDefault(action, entries))) {
       continue;
     }
     const valid = entries.filter(isValidBinding);

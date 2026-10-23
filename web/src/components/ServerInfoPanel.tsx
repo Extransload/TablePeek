@@ -4,7 +4,7 @@ import { t } from "../i18n";
 import { store, type ServerInfo, type ServerSession } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { LoadingState, Spinner } from "./Spinner";
 
 function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -105,11 +105,12 @@ export function ServerInfoPanel({ conn }: { conn: string }) {
         <span className="panel-title">{t("서버 정보")}</span>
         {info ? <span className="panel-stat">{info.driver}</span> : null}
         <span className="spacer" />
-        {loading ? (
-              <span className="panel-dim">
-                <Spinner size={10} /> {t("불러오는 중…")}
-              </span>
-            ) : null}
+        {/* A refresh of what's shown; a first load shows in the body. */}
+        {loading && info !== null ? (
+          <span className="panel-dim delayed-in">
+            <Spinner size={10} /> {t("불러오는 중…")}
+          </span>
+        ) : null}
         <button
           type="button"
           className="icon-text-button"
@@ -124,9 +125,7 @@ export function ServerInfoPanel({ conn }: { conn: string }) {
       <div className="panel-body">
         {error ? <ErrorNotice message={error} /> : null}
         {info === null ? (
-          error ? null : (
-            <div className="panel-empty">{t("불러오는 중…")}</div>
-          )
+          error ? null : <LoadingState />
         ) : (
           <>
             <div className="info-cards">

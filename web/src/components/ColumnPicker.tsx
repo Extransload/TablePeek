@@ -28,9 +28,10 @@ export function ColumnPicker({
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    // Its parent holds the button that opened it too, which toggles it itself.
     function onPointerDown(event: PointerEvent): void {
-      const root = rootRef.current;
-      if (root && !root.contains(event.target as Node)) {
+      const area = rootRef.current?.parentElement ?? rootRef.current;
+      if (area && !area.contains(event.target as Node)) {
         onClose();
       }
     }

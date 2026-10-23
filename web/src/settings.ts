@@ -8,8 +8,9 @@ import {
   type Theme,
   type ThemeId,
 } from "./palette";
+import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT } from "./fonts";
 import { setLanguage, type Language } from "./i18n";
-import { normalizeKeymap, type Keymap } from "./shortcuts";
+import { KEYMAP_VERSION, normalizeKeymap, type Keymap } from "./shortcuts";
 import {
   syntaxColors,
   syntaxPresetById,
@@ -24,8 +25,15 @@ export interface AppSettings {
   language: Language;
   theme: ThemeMode;
   accent: string;
+  // The code font: SQL editor, console and data grid.
   fontFamily: string;
+  // The app's font: menus, panels, tabs, the sidebar.
+  uiFontFamily: string;
+  // The SQL editor's (and the console's) text size, in px.
   fontSize: number;
+  // Everything else: sidebar, tabs, menus, panels and the data grid, in px
+  // (12 is the size the app is drawn at).
+  uiFontSize: number;
   rowAlt: boolean;
   typeColors: boolean;
   hideScroller: boolean;
@@ -38,16 +46,28 @@ export interface AppSettings {
   // Rows a query run fetches at most.
   maxRows: number;
   keymap: Keymap;
+  // The keymap defaults this was saved under (see KEYMAP_VERSION).
+  keymapVersion: number;
 }
 
 export const MAX_ROWS_LIMIT = 500000;
+export const EDITOR_FONT_MIN = 10;
+export const EDITOR_FONT_MAX = 24;
+export const UI_FONT_MIN = 10;
+export const UI_FONT_MAX = 16;
+
+function clampSize(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   language: "ko",
   theme: "dark",
   accent: "#4082ee",
-  fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+  fontFamily: SYSTEM_CODE_FONT,
+  uiFontFamily: SYSTEM_UI_FONT,
   fontSize: 12,
+  uiFontSize: 12,
   rowAlt: true,
   typeColors: true,
   hideScroller: false,
@@ -59,6 +79,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   csvEncoding: "utf-8",
   maxRows: 10000,
   keymap: normalizeKeymap(null),
+  keymapVersion: KEYMAP_VERSION,
 };
 
 const STORAGE_KEY = "tablepeek.settings";
@@ -82,11 +103,15 @@ function readSettings(): AppSettings {
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
+      fontSize: clampSize(parsed.fontSize, EDITOR_FONT_MIN, EDITOR_FONT_MAX, DEFAULT_SETTINGS.fontSize),
+      uiFontSize: clampSize(parsed.uiFontSize, UI_FONT_MIN, UI_FONT_MAX, DEFAULT_SETTINGS.uiFontSize),
       maxRows:
         typeof parsed.maxRows === "number" && Number.isFinite(parsed.maxRows)
           ? Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(parsed.maxRows)))
           : DEFAULT_SETTINGS.maxRows,
-      keymap: normalizeKeymap(parsed.keymap),
+      // Settings saved before keymapVersion existed count as version 1.
+      keymap: normalizeKeymap(parsed.keymap, typeof parsed.keymapVersion === "number" ? parsed.keymapVersion : 1),
+      keymapVersion: KEYMAP_VERSION,
     };
   } catch {
     return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
@@ -154,7 +179,10 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--scrollbar-hover", palette.muted);
   root.style.setProperty("--hover-fill", palette.hoverFill);
   root.style.setProperty("--mono", settings.fontFamily);
+  root.style.setProperty("--ui", settings.uiFontFamily);
   root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
+  // Every px font size in styles.css is multiplied by this.
+  root.style.setProperty("--ui-scale", String(settings.uiFontSize / DEFAULT_SETTINGS.uiFontSize));
   const syntax = { ...syntaxColors(settings.syntaxPreset, theme.mode) };
   if (settings.syntaxPreset === "tablepeek") {
     Object.assign(syntax, theme.syntax ?? {

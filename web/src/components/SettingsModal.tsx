@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, VALUE_KINDS, palette, themeFromJson } from "../palette";
+import { CODE_FONTS, UI_FONTS, fontInstalled, type FontChoice } from "../fonts";
 import {
   MAX_ROWS_LIMIT,
   getPasscodeHash,
   setPasscodeHash,
   sha256Hex,
+  EDITOR_FONT_MAX,
+  EDITOR_FONT_MIN,
+  UI_FONT_MAX,
+  UI_FONT_MIN,
   type AppSettings,
 } from "../settings";
 import {
@@ -58,15 +63,45 @@ const SETTINGS_CATEGORIES: {
   { id: "security", label: "보안", icon: ShieldIcon },
 ];
 
-const FONT_CHOICES = [
-  {
-    label: "시스템 고정폭",
-    value: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-  },
-  { label: "Menlo", value: "Menlo, Monaco, monospace" },
-  { label: "SF Mono", value: '"SF Mono", ui-monospace, monospace' },
-  { label: "Courier New", value: '"Courier New", Courier, monospace' },
-];
+// A font list with the current pick, a saved list no longer offered shown as
+// "custom"; fonts this machine lacks are marked (they fall back to the system's).
+function FontSelect({
+  choices,
+  value,
+  preview,
+  onChange,
+}: {
+  choices: FontChoice[];
+  value: string;
+  preview: string;
+  onChange(value: string): void;
+}) {
+  const known = choices.some((choice) => choice.value === value);
+  return (
+    <div className="font-select">
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {choices.map((choice) => (
+          <option key={choice.value} value={choice.value}>
+            {choice.family !== undefined && !fontInstalled(choice.family)
+              ? `${t(choice.label)} — ${t("미설치")}`
+              : t(choice.label)}
+          </option>
+        ))}
+        {known ? null : <option value={value}>{t("사용자 지정")}</option>}
+      </select>
+      <span className="font-preview" style={{ fontFamily: value }}>
+        {preview}
+      </span>
+    </div>
+  );
+}
+
+// Whole px sizes to pick from (a list, so a size never lands half typed), plus
+// the current one if older settings saved one off the steps.
+function sizeChoices(min: number, max: number, current: number): number[] {
+  const sizes = Array.from({ length: max - min + 1 }, (_, index) => min + index);
+  return sizes.includes(current) ? sizes : [...sizes, current].sort((a, b) => a - b);
+}
 
 export function SettingsModal({
   settings,
@@ -405,37 +440,52 @@ export function SettingsModal({
                       </div>
                     </div>
                     <div className="settings-row">
-                      <span className="settings-label">{t("폰트")}</span>
-                      <select
+                      <span className="settings-label">{t("앱 글꼴")}</span>
+                      <FontSelect
+                        choices={UI_FONTS}
+                        value={settings.uiFontFamily}
+                        preview={t("가나다 ABC 123 — 테이블과 메뉴")}
+                        onChange={(uiFontFamily) => onChange({ uiFontFamily })}
+                      />
+                    </div>
+                    <div className="settings-row">
+                      <span className="settings-label">{t("에디터 글꼴")}</span>
+                      <FontSelect
+                        choices={CODE_FONTS}
                         value={settings.fontFamily}
-                        onChange={(event) =>
-                          onChange({ fontFamily: event.target.value })
-                        }
+                        preview="SELECT id, name FROM users; -- 0O 1lI"
+                        onChange={(fontFamily) => onChange({ fontFamily })}
+                      />
+                    </div>
+                    <div className="settings-row">
+                      <span className="settings-label">{t("에디터 글자 크기")}</span>
+                      <select
+                        value={settings.fontSize}
+                        onChange={(event) => onChange({ fontSize: Number(event.target.value) })}
                       >
-                        {FONT_CHOICES.map((choice) => (
-                          <option key={choice.value} value={choice.value}>
-                            {t(choice.label)}
+                        {sizeChoices(EDITOR_FONT_MIN, EDITOR_FONT_MAX, settings.fontSize).map((size) => (
+                          <option key={size} value={size}>
+                            {size}px
                           </option>
                         ))}
                       </select>
                     </div>
                     <div className="settings-row">
-                      <span className="settings-label">{t("글자 크기")}</span>
-                      <input
-                        type="number"
-                        min={10}
-                        max={18}
-                        value={settings.fontSize}
-                        onChange={(event) =>
-                          onChange({
-                            fontSize: Math.min(
-                              18,
-                              Math.max(10, Number(event.target.value) || 12),
-                            ),
-                          })
-                        }
-                      />
+                      <span className="settings-label">{t("시스템 글자 크기")}</span>
+                      <select
+                        value={settings.uiFontSize}
+                        onChange={(event) => onChange({ uiFontSize: Number(event.target.value) })}
+                      >
+                        {sizeChoices(UI_FONT_MIN, UI_FONT_MAX, settings.uiFontSize).map((size) => (
+                          <option key={size} value={size}>
+                            {size}px
+                          </option>
+                        ))}
+                      </select>
                     </div>
+                    <p className="helper">
+                      {t("에디터 글꼴은 SQL 에디터·콘솔·데이터 그리드에, 앱 글꼴은 메뉴·패널·탭·사이드바에 쓰입니다. 에디터 글자 크기는 SQL 에디터와 콘솔에, 시스템 글자 크기는 그 밖의 모든 곳(데이터 그리드 포함)에 적용됩니다.")}
+                    </p>
                   </section>
                   <section className="settings-section">
                     <h4>{t("테이블")}</h4>

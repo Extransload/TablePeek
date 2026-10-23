@@ -1,33 +1,35 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FocusEvent,
-  type KeyboardEvent,
-  type ReactNode,
-} from "react";
-import { createPortal } from "react-dom";
-import { UpDownIcon } from "./icons";
+  gridHeaderH,
+  gridRowH,
+  type CanvasGrid,
+  type CellChoices,
+  type GridEditHandlers,
+  type SelectedRows,
+} from "../grid/CanvasGrid";
+import { cellMenuItems } from "../grid/cellMenu";
+import type { CellState, RowSource, RowState } from "../grid/rowSource";
+import { t } from "../i18n";
+import { store } from "../store";
+import { CellInspector, type CellAnchor } from "./CellInspector";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { TableGrid, type TableGridHandle } from "./TableGrid";
+
+export type { CellChoices };
 
 export interface GridColumn {
   header: string;
-  className?: string;
-  render(row: number): ReactNode;
-  // Editable cells: the editor's starting text and how a value is applied.
-  value?(row: number): string;
+  // The cell's text; null shows NULL, as in the data grid.
+  value(row: number): string | null;
   commit?(row: number, value: string): void;
-  // Choices listed under the editor, as TablePlus offers types and values.
-  // A strict cell (YES/NO) takes only these; others also accept typing.
-  options?(row: number): string[];
-  strict?: boolean;
-  // How typing narrows the list and how a picked choice joins the typed text,
-  // for list cells such as an index's columns.
-  query?(value: string): string;
-  pick?(value: string, option: string): string;
+  // The list under the editor, as TablePlus offers types and values.
+  choices?(row: number): CellChoices | null;
+  ink?(row: number): string | null;
   readOnly?(row: number): boolean;
   changed?(row: number): boolean;
   title?(row: number): string | undefined;
+  // Whether clearing the cell (its menu's "set NULL") means something here.
+  nullable?: boolean;
 }
 
 export interface GridFocus {
@@ -38,418 +40,254 @@ export interface GridFocus {
 }
 
 interface StructureGridProps {
-  rowKeys: string[];
+  rowCount: number;
   columns: GridColumn[];
-  numbered?: boolean;
-  rowClassName?(row: number): string;
+  rowState?(row: number): "inserted" | "deleted" | null;
   // Rows that can't be edited, such as one marked for deletion.
   rowReadOnly?(row: number): boolean;
   canDeleteRow?(row: number): boolean;
-  onDeleteRow?(row: number): void;
-  // Opens the editor on a cell, e.g. the name of a row just added.
+  onDeleteRows?(rows: number[]): void;
+  // Opens the editor on a cell, e.g. the name of a row just added; the owner
+  // clears it once handled, so a grid shown again doesn't reopen it.
   focus?: GridFocus | null;
+  onFocusHandled?(): void;
+  // Columns are sized to their contents again when this changes.
+  fitKey?: unknown;
+  // Fill the space it's given and scroll itself, as the Data tab's grid does,
+  // instead of growing to its rows.
+  fill?: boolean;
+  // The picked rows (null for none), with the rows they're read from, for the
+  // right panel.
+  onSelect?(source: RowSource, rows: SelectedRows | null): void;
 }
 
-interface Cell {
-  row: number;
-  col: number;
+const MIN_COLUMN_W = 96;
+// The canvas is as tall as the grid; very tall ones go blank (and cost a lot
+// of memory), so past this height in device pixels the grid scrolls itself.
+const MAX_CANVAS_PX = 8192;
+
+function maxRowsShown(): number {
+  const dpr = window.devicePixelRatio || 1;
+  return Math.max(10, Math.floor((MAX_CANVAS_PX / dpr - gridHeaderH() - 1) / gridRowH()));
 }
 
-interface Editing extends Cell {
-  value: string;
-  // Until something is typed the list shows every choice.
-  typed: boolean;
-  // Highlighted choice in the list, -1 for none.
-  active: number;
+function scrollParent(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node !== null; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && node.scrollHeight > node.clientHeight) {
+      return node;
+    }
+  }
+  return null;
 }
 
-interface MenuBox {
-  left: number;
-  // Below the cell (top) or, near the window's bottom, above it (bottom).
-  top?: number;
-  bottom?: number;
-  width: number;
-  maxHeight: number;
-}
+// Rows read straight from the panel's draft; an update repaints the grid.
+class DraftSource implements RowSource {
+  columns: string[] = [];
+  rowCount = 0;
+  props: StructureGridProps | null = null;
+  private readonly listeners = new Set<() => void>();
 
-const MENU_HEIGHT = 240;
-
-// A spreadsheet-like table, as in the data grid: click selects a cell,
-// double-click, Enter or F2 edits it (cells with choices open a dropdown),
-// typing replaces it, arrows and Tab move, Delete or Backspace removes the row.
-export function StructureGrid({
-  rowKeys,
-  columns,
-  numbered = false,
-  rowClassName,
-  rowReadOnly,
-  canDeleteRow,
-  onDeleteRow,
-  focus,
-}: StructureGridProps) {
-  const tableRef = useRef<HTMLTableElement>(null);
-  const cellRef = useRef<HTMLTableCellElement | null>(null);
-  const [selected, setSelected] = useState<Cell | null>(null);
-  const [editing, setEditing] = useState<Editing | null>(null);
-  const [menuBox, setMenuBox] = useState<MenuBox | null>(null);
-  // Enter, Tab, a click and blur can all end one edit; only the first applies.
-  const editingRef = useRef(editing);
-  editingRef.current = editing;
-
-  const rowCount = rowKeys.length;
-
-  useEffect(() => {
-    if (selected !== null && selected.row >= rowCount) {
-      setSelected(rowCount > 0 ? { row: rowCount - 1, col: selected.col } : null);
+  update(props: StructureGridProps): void {
+    this.props = props;
+    this.columns = props.columns.map((column) => column.header);
+    this.rowCount = props.rowCount;
+    for (const listener of this.listeners) {
+      listener();
     }
-  }, [rowCount, selected]);
-
-  useEffect(() => {
-    if (focus) {
-      setSelected({ row: focus.row, col: focus.col });
-      beginEdit({ row: focus.row, col: focus.col });
-    }
-    // Only a new request opens the editor, not a re-render.
-  }, [focus?.seq]);
-
-  const choices = editing === null ? [] : listChoices(editing);
-
-  // The list floats over the panel, so it follows the cell while it scrolls.
-  useLayoutEffect(() => {
-    if (editing === null || choices.length === 0) {
-      setMenuBox(null);
-      return;
-    }
-    function place(): void {
-      const rect = cellRef.current?.getBoundingClientRect();
-      if (!rect) {
-        return;
-      }
-      const width = Math.max(rect.width, 180);
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-      const below = window.innerHeight - rect.bottom - 10;
-      if (below < Math.min(MENU_HEIGHT, 160) && rect.top > below) {
-        const maxHeight = Math.min(MENU_HEIGHT, rect.top - 10);
-        setMenuBox({ left, bottom: window.innerHeight - rect.top + 2, width, maxHeight });
-      } else {
-        setMenuBox({ left, top: rect.bottom + 2, width, maxHeight: Math.min(MENU_HEIGHT, below) });
-      }
-    }
-    place();
-    window.addEventListener("scroll", place, true);
-    window.addEventListener("resize", place);
-    return () => {
-      window.removeEventListener("scroll", place, true);
-      window.removeEventListener("resize", place);
-    };
-  }, [editing?.row, editing?.col, choices.length]);
-
-  function listChoices(edit: Editing): string[] {
-    const column = columns[edit.col];
-    const all = column?.options?.(edit.row) ?? [];
-    if (column?.strict || !edit.typed) {
-      return all;
-    }
-    const needle = (column?.query?.(edit.value) ?? edit.value).trim().toLowerCase();
-    return needle === "" ? all : all.filter((option) => option.toLowerCase().includes(needle));
   }
 
-  function editable(cell: Cell): boolean {
-    const column = columns[cell.col];
+  cell(row: number, col: number): unknown {
+    return this.props?.columns[col]?.value(row) ?? null;
+  }
+
+  rowState(row: number): RowState {
+    const props = this.props;
+    if (props === null) {
+      return null;
+    }
+    const state = props.rowState?.(row) ?? null;
+    if (state !== null) {
+      return state;
+    }
+    return props.columns.some((column) => column.changed?.(row) ?? false) ? "edited" : null;
+  }
+
+  cellState(row: number, col: number): CellState {
+    return (this.props?.columns[col]?.changed?.(row) ?? false) ? "edited" : null;
+  }
+
+  cellInk(row: number, col: number): string | null {
+    return this.props?.columns[col]?.ink?.(row) ?? null;
+  }
+
+  cellTitle(row: number, col: number): string | undefined {
+    return this.props?.columns[col]?.title?.(row);
+  }
+
+  onUpdate(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    store.setError(t("클립보드에 복사하지 못했습니다"));
+  }
+}
+
+// The Structure tab's columns and indexes on the shared TableGrid, sized to its
+// rows (the panel scrolls). Selection, copy, editing, lists, the cell menu and
+// Quick Look are the Data tab's own.
+export function StructureGrid(props: StructureGridProps) {
+  const tableRef = useRef<TableGridHandle | null>(null);
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  // Filled during the first render, so the grid starts with its columns.
+  const sourceRef = useRef<DraftSource | null>(null);
+  if (sourceRef.current === null) {
+    sourceRef.current = new DraftSource();
+    sourceRef.current.update(props);
+  }
+  const source = sourceRef.current;
+  // Room under the last row for the sideways scrollbar, only while there is one.
+  const [scrollbar, setScrollbar] = useState(0);
+  const [menu, setMenu] = useState<{ x: number; y: number; row: number; col: number } | null>(null);
+  const [quickLook, setQuickLook] = useState<{ row: number; col: number; anchor: CellAnchor | null } | null>(
+    null,
+  );
+
+  // Every render carries the draft's latest rows into the grid.
+  useLayoutEffect(() => {
+    source.update(props);
+  });
+
+  useLayoutEffect(() => {
+    tableRef.current?.grid()?.fitColumns(MIN_COLUMN_W);
+  }, [props.fitKey]);
+
+  // A grid that goes (another view, another tab) leaves nothing picked.
+  useEffect(() => () => propsRef.current.onSelect?.(source, null), []);
+
+  useEffect(() => {
+    const focus = props.focus;
+    if (focus) {
+      tableRef.current?.beginEdit(focus.row, focus.col);
+      props.onFocusHandled?.();
+    }
+    // Only a new request opens the editor, not a re-render.
+  }, [props.focus?.seq]);
+
+  function editableCell(row: number, col: number): boolean {
+    const current = propsRef.current;
+    const column = current.columns[col];
     return (
       column?.commit !== undefined &&
-      !(column.readOnly?.(cell.row) ?? false) &&
-      !(rowReadOnly?.(cell.row) ?? false)
+      !(column.readOnly?.(row) ?? false) &&
+      !(current.rowReadOnly?.(row) ?? false)
     );
   }
 
-  function beginEdit(cell: Cell, typed?: string): void {
-    const column = columns[cell.col];
-    if (column === undefined || !editable(cell)) {
-      return;
-    }
-    const current = column.value?.(cell.row) ?? "";
-    const options = column.options?.(cell.row) ?? [];
-    setEditing({
-      ...cell,
-      value: typed ?? current,
-      typed: typed !== undefined,
-      active: column.strict ? Math.max(0, options.indexOf(current)) : -1,
-    });
-  }
+  const editing: GridEditHandlers = {
+    canEdit: editableCell,
+    onCommit: (row, col, value) => propsRef.current.columns[col]?.commit?.(row, value ?? ""),
+    choices: (row, col) => propsRef.current.columns[col]?.choices?.(row) ?? null,
+  };
 
-  // Keyboard and list endings keep the keyboard in the table; a blur must not
-  // pull focus back, or a click elsewhere (another grid) would lose it.
-  function finishEdit(apply: boolean, options: { value?: string; refocus?: boolean } = {}): void {
-    const current = editingRef.current;
-    if (current === null) {
-      return;
-    }
-    editingRef.current = null;
-    setEditing(null);
-    if (apply) {
-      columns[current.col]?.commit?.(current.row, options.value ?? current.value);
-    }
-    if (options.refocus) {
-      tableRef.current?.focus({ preventScroll: true });
-    }
-  }
-
-  function choose(option: string): void {
-    const current = editingRef.current;
-    if (current === null) {
-      return;
-    }
-    const column = columns[current.col];
-    const value = column?.pick ? column.pick(current.value, option) : option;
-    finishEdit(true, { value, refocus: true });
-  }
-
-  function move(cell: Cell, dRow: number, dCol: number): Cell {
-    const row = Math.min(rowCount - 1, Math.max(0, cell.row + dRow));
-    const col = Math.min(columns.length - 1, Math.max(0, cell.col + dCol));
-    return { row, col };
-  }
-
-  // Up and Down walk the open list; Enter takes the highlighted choice.
-  function menuKey(event: KeyboardEvent): boolean {
-    if (editing === null || choices.length === 0) {
-      return false;
-    }
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const down = event.key === "ArrowDown";
-      const active =
-        editing.active < 0
-          ? down
-            ? 0
-            : choices.length - 1
-          : (editing.active + (down ? 1 : -1) + choices.length) % choices.length;
-      setEditing({ ...editing, active });
-      return true;
-    }
-    if (event.key === "Enter" && editing.active >= 0 && editing.active < choices.length) {
-      event.preventDefault();
-      choose(choices[editing.active]);
-      return true;
-    }
-    return false;
-  }
-
-  function onTableKeyDown(event: KeyboardEvent<HTMLTableElement>): void {
-    // Keys that end a Korean (IME) composition belong to the composition.
-    if (event.metaKey || event.ctrlKey || event.nativeEvent.isComposing || event.keyCode === 229) {
-      return;
-    }
-    if (editing !== null) {
-      // A strict cell has no input: its list is driven from here.
-      if (menuKey(event)) {
+  function onReady(grid: CanvasGrid): () => void {
+    grid.setLayoutListener(() => setScrollbar(grid.horizontalScrollbar()));
+    // The page scrolls this grid, not the grid itself: keep the cursor's row
+    // in view there as the arrow keys move it.
+    grid.setKeyMoveListener((row) => {
+      const panel = scrollParent(grid.hostElement());
+      if (panel === null) {
         return;
       }
-      if (event.key === "Escape" || event.key === "Tab") {
-        event.preventDefault();
-        finishEdit(false, { refocus: true });
+      const { top, bottom } = grid.rowBounds(row);
+      const view = panel.getBoundingClientRect();
+      if (top < view.top) {
+        panel.scrollTop -= view.top - top;
+      } else if (bottom > view.bottom) {
+        panel.scrollTop += bottom - view.bottom;
       }
-      return;
-    }
-    if (selected === null) {
-      return;
-    }
-    const column = columns[selected.col];
-    const step: Record<string, [number, number]> = {
-      ArrowUp: [-1, 0],
-      ArrowDown: [1, 0],
-      ArrowLeft: [0, -1],
-      ArrowRight: [0, 1],
+    });
+    return () => {
+      grid.setLayoutListener(null);
+      grid.setKeyMoveListener(null);
     };
-    if (event.key in step) {
-      event.preventDefault();
-      const [dRow, dCol] = step[event.key];
-      setSelected(move(selected, dRow, dCol));
-    } else if (event.key === "Tab") {
-      event.preventDefault();
-      setSelected(move(selected, 0, event.shiftKey ? -1 : 1));
-    } else if (event.key === "Enter" || event.key === "F2" || event.key === " ") {
-      event.preventDefault();
-      beginEdit(selected);
-    } else if (event.key === "Delete" || event.key === "Backspace") {
-      if (onDeleteRow && (canDeleteRow?.(selected.row) ?? true)) {
-        event.preventDefault();
-        onDeleteRow(selected.row);
-      }
-    } else if (event.key === "Escape") {
-      setSelected(null);
-    } else if (event.key.length === 1 && !event.altKey && column && !column.strict) {
-      event.preventDefault();
-      beginEdit(selected, event.key);
-    }
   }
 
-  function onInputKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
-    event.stopPropagation();
-    if (event.nativeEvent.isComposing || event.keyCode === 229) {
-      return;
+  function menuItems(row: number, col: number): ContextMenuItem[] {
+    const current = propsRef.current;
+    const column = current.columns[col];
+    const editable = editableCell(row, col);
+    const items = cellMenuItems({
+      column: column?.header ?? "",
+      value: () => source.cell(row, col),
+      row: () => current.columns.map((_, index) => source.cell(row, index)),
+      copy: copyText,
+      quickLook: () => setQuickLook({ row, col, anchor: tableRef.current?.cellRect(row, col) ?? null }),
+      edit: editable ? () => tableRef.current?.beginEdit(row, col) : undefined,
+      setValue: editable ? (value) => column?.commit?.(row, value ?? "") : undefined,
+      nullable: column?.nullable ?? false,
+      isNull: source.cell(row, col) === null,
+    });
+    const state = current.rowState?.(row) ?? null;
+    const deletable = current.onDeleteRows !== undefined && (current.canDeleteRow?.(row) ?? true);
+    if (deletable) {
+      items.push({
+        label: state === "inserted" ? t("행 추가 취소") : state === "deleted" ? t("행 삭제 취소") : t("행 삭제"),
+        separatorBefore: true,
+        onSelect: () => current.onDeleteRows?.([row]),
+      });
     }
-    if (menuKey(event)) {
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      finishEdit(true, { refocus: true });
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      finishEdit(false, { refocus: true });
-    } else if (event.key === "Tab" && editing !== null) {
-      event.preventDefault();
-      const next = move(editing, 0, event.shiftKey ? -1 : 1);
-      finishEdit(true, { refocus: true });
-      setSelected(next);
-    }
+    return items;
   }
 
-  // Leaving the table closes a strict cell's list without changing it.
-  function onTableBlur(event: FocusEvent<HTMLTableElement>): void {
-    const next = event.relatedTarget;
-    if (next instanceof Node && tableRef.current?.contains(next)) {
-      return;
-    }
-    if (editingRef.current !== null && columns[editingRef.current.col]?.strict) {
-      finishEdit(false);
-    }
-  }
-
+  const rows = Math.min(props.rowCount, maxRowsShown());
+  const height = gridHeaderH() + rows * gridRowH() + 1 + scrollbar;
   return (
     <>
-      <table
+      <TableGrid
         ref={tableRef}
-        className="structure-table structure-grid"
-        tabIndex={0}
-        onKeyDown={onTableKeyDown}
-        onBlur={onTableBlur}
-      >
-        <thead>
-          <tr>
-            {numbered ? <th className="structure-num">#</th> : null}
-            {columns.map((column) => (
-              <th key={column.header} className={column.className}>
-                {column.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rowKeys.map((key, row) => (
-            <tr key={key} className={rowClassName?.(row)}>
-              {numbered ? <td className="structure-num">{row + 1}</td> : null}
-              {columns.map((column, col) => {
-                const isSelected = selected?.row === row && selected.col === col;
-                const isEditing = editing?.row === row && editing.col === col;
-                const canEdit = editable({ row, col });
-                const hasChoices = canEdit && column.options !== undefined;
-                const classes = [
-                  column.className,
-                  isSelected ? "selected" : "",
-                  column.changed?.(row) ? "changed" : "",
-                  canEdit ? "" : "readonly",
-                ]
-                  .filter(Boolean)
-                  .join(" ");
-                return (
-                  <td
-                    key={column.header}
-                    ref={isEditing ? cellRef : undefined}
-                    className={classes}
-                    title={column.title?.(row)}
-                    onMouseDown={() => {
-                      if (isEditing) {
-                        return;
-                      }
-                      const open = editingRef.current;
-                      if (open !== null && columns[open.col]?.strict) {
-                        finishEdit(false);
-                      }
-                      setSelected({ row, col });
-                    }}
-                    onDoubleClick={() => {
-                      // A double-click inside the open editor selects a word.
-                      if (!isEditing) {
-                        beginEdit({ row, col });
-                      }
-                    }}
-                  >
-                    {isEditing && editing !== null && !column.strict ? (
-                      <input
-                        autoFocus
-                        spellCheck={false}
-                        value={editing.value}
-                        onChange={(event) =>
-                          setEditing({ ...editing, value: event.target.value, typed: true, active: -1 })
-                        }
-                        onKeyDown={onInputKeyDown}
-                        onBlur={() => finishEdit(true)}
-                      />
-                    ) : (
-                      <span className="structure-cell">
-                        <span className="structure-cell-text">{column.render(row)}</span>
-                        {hasChoices ? (
-                          <button
-                            type="button"
-                            tabIndex={-1}
-                            className="structure-cell-menu"
-                            title={column.header}
-                            onMouseDown={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setSelected({ row, col });
-                              tableRef.current?.focus({ preventScroll: true });
-                              if (isEditing) {
-                                finishEdit(false, { refocus: true });
-                              } else {
-                                beginEdit({ row, col });
-                              }
-                            }}
-                          >
-                            <UpDownIcon size={7} />
-                          </button>
-                        ) : null}
-                      </span>
-                    )}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {editing !== null && menuBox !== null && choices.length > 0
-        ? createPortal(
-            <div
-              className="structure-menu"
-              style={{
-                left: menuBox.left,
-                top: menuBox.top,
-                bottom: menuBox.bottom,
-                minWidth: menuBox.width,
-                maxHeight: menuBox.maxHeight,
-              }}
-              onMouseDown={(event) => event.preventDefault()}
-            >
-              {choices.map((option, index) => (
-                <button
-                  type="button"
-                  key={option}
-                  tabIndex={-1}
-                  className={index === editing.active ? "active" : ""}
-                  onMouseEnter={() => setEditing({ ...editing, active: index })}
-                  onClick={() => choose(option)}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>,
-            document.body,
-          )
-        : null}
+        className={props.fill ? "structure-grid fill" : "structure-grid"}
+        style={props.fill ? undefined : { height }}
+        source={source}
+        editing={editing}
+        onDeleteRows={(rows) => {
+          const current = propsRef.current;
+          const allowed = rows.filter((row) => current.canDeleteRow?.(row) ?? true);
+          if (allowed.length > 0) {
+            current.onDeleteRows?.(allowed);
+          }
+        }}
+        onSelectionChange={(row, rows) => propsRef.current.onSelect?.(source, row === null ? null : rows)}
+        onCellContextMenu={(row, col, x, y) => setMenu({ x, y, row, col })}
+        onCellQuickLook={(row, col) =>
+          setQuickLook({ row, col, anchor: tableRef.current?.cellRect(row, col) ?? null })
+        }
+        onReady={onReady}
+      />
+      {menu !== null ? (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.row, menu.col)} onClose={() => setMenu(null)} />
+      ) : null}
+      {quickLook !== null ? (
+        <CellInspector
+          source={source}
+          columns={source.columns}
+          row={quickLook.row}
+          col={quickLook.col}
+          anchor={quickLook.anchor}
+          table={null}
+          onClose={() => {
+            setQuickLook(null);
+            tableRef.current?.focus();
+          }}
+        />
+      ) : null}
     </>
   );
 }

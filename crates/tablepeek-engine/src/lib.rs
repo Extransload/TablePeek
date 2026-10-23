@@ -16,13 +16,17 @@ use serde_json::Value;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MssqlConfig,
     MySqlConfig, ObjectDefinition, PkValue, PostgresConfig, QueryResult, ServerInfo, TableDetail,
-    TableSchema,
+    TableSchema, TriggerInfo,
 };
 
 mod mssql;
 mod mysql;
 mod postgres;
+mod source_cache;
+pub mod sql_log;
 mod sql_parse;
+
+use sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 
 pub const BATCH_CHUNK: usize = 65_536;
 
@@ -62,6 +66,13 @@ pub enum EngineError {
     TableNotFound,
     #[error("세션을 찾을 수 없습니다")]
     SessionNotFound,
+    /// COMMIT did not commit: the transaction was rolled back instead.
+    #[error("{0}")]
+    TxRolledBack(String),
+    /// The transaction is over, but whether its COMMIT went through is not
+    /// known (the connection was lost on the way).
+    #[error("{0}")]
+    TxOutcomeUnknown(String),
     #[error("내부 오류: {0}")]
     Internal(String),
 }
@@ -148,6 +159,10 @@ pub struct QueryData {
     pub truncated: bool,
     pub source_table: Option<String>,
     pub pk: Option<Vec<String>>,
+    /// What the driver says a column holds where its values can't: "boolean"
+    /// for MySQL's TINYINT(1), whose values are 1 and 0. Empty when nothing
+    /// is known.
+    pub column_kinds: Vec<Option<&'static str>>,
 }
 
 impl QueryData {
@@ -162,6 +177,7 @@ impl QueryData {
             truncated: false,
             source_table: None,
             pk: None,
+            column_kinds: Vec::new(),
         }
     }
 
@@ -463,17 +479,115 @@ pub struct SqliteInner {
     interrupt: rusqlite::InterruptHandle,
     path: Option<PathBuf>,
     demo: bool,
+    log: SqlLog,
 }
 
 impl SqliteInner {
-    fn new(conn: Connection, path: Option<PathBuf>, demo: bool) -> Self {
+    fn new(conn: Connection, path: Option<PathBuf>, demo: bool, log: SqlLog) -> Self {
         let interrupt = conn.get_interrupt_handle();
         Self {
             conn: Arc::new(Mutex::new(conn)),
             interrupt,
             path,
             demo,
+            log,
         }
+    }
+}
+
+/// A locked SQLite connection that logs every statement before running it.
+/// It deliberately has no way to reach the bare connection.
+struct SqliteConn<'a> {
+    conn: std::sync::MutexGuard<'a, Connection>,
+    log: &'a SqlLog,
+}
+
+impl SqliteConn<'_> {
+    fn note(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) {
+        if params.is_empty() {
+            self.log.record(sql, Dialect::Sqlite);
+        } else {
+            let shown = inline_params(sql, &sqlite_params(params), Dialect::Sqlite);
+            self.log.record(&shown, Dialect::Sqlite);
+        }
+    }
+
+    /// Prepares a statement that runs without parameters.
+    fn prepare(&self, sql: &str) -> rusqlite::Result<rusqlite::Statement<'_>> {
+        self.log.record(sql, Dialect::Sqlite);
+        self.conn.prepare(sql)
+    }
+
+    /// Prepares a statement the caller runs with exactly `params`.
+    fn prepare_bound(
+        &self,
+        sql: &str,
+        params: &[&dyn rusqlite::ToSql],
+    ) -> rusqlite::Result<rusqlite::Statement<'_>> {
+        self.note(sql, params);
+        self.conn.prepare(sql)
+    }
+
+    fn query_row<T, F>(
+        &self,
+        sql: &str,
+        params: &[&dyn rusqlite::ToSql],
+        f: F,
+    ) -> rusqlite::Result<T>
+    where
+        F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        self.note(sql, params);
+        self.conn.query_row(sql, params, f)
+    }
+
+    fn execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
+        self.log.record(sql, Dialect::Sqlite);
+        self.conn.execute_batch(sql)
+    }
+
+    /// Runs a data change made from the GUI; one that changed rows goes to
+    /// History, at COMMIT when a transaction is open.
+    fn change(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> rusqlite::Result<usize> {
+        let shown = inline_params(sql, &sqlite_params(params), Dialect::Sqlite);
+        self.log.record(&shown, Dialect::Sqlite);
+        let started = Instant::now();
+        let changed = self.conn.execute(sql, params)?;
+        if changed > 0 {
+            let change = Change {
+                sql: shown,
+                ms: started.elapsed().as_millis() as u64,
+                rows: changed as u64,
+            };
+            self.log.changed(change, !self.conn.is_autocommit());
+        }
+        Ok(changed)
+    }
+
+    fn is_autocommit(&self) -> bool {
+        self.conn.is_autocommit()
+    }
+}
+
+fn sqlite_params(params: &[&dyn rusqlite::ToSql]) -> Vec<LogParam> {
+    use rusqlite::types::ToSqlOutput;
+    params
+        .iter()
+        .map(|param| match param.to_sql() {
+            Ok(ToSqlOutput::Borrowed(value)) => value_ref_param(value),
+            Ok(ToSqlOutput::Owned(value)) => value_ref_param((&value).into()),
+            _ => LogParam::Null,
+        })
+        .collect()
+}
+
+fn value_ref_param(value: ValueRef<'_>) -> LogParam {
+    match value {
+        ValueRef::Null => LogParam::Null,
+        ValueRef::Integer(number) => LogParam::Int(number),
+        ValueRef::Real(number) => LogParam::Float(number),
+        ValueRef::Text(bytes) => LogParam::Text(String::from_utf8_lossy(bytes).into_owned()),
+        ValueRef::Blob(bytes) => LogParam::Blob(bytes.to_vec()),
     }
 }
 
@@ -509,22 +623,27 @@ pub struct Engine {
     // Bumped by every statement and backend swap: anything derived from the
     // schema (table counts, …) is only known current while this hasn't moved.
     epoch: AtomicU64,
+    // Every statement sent, across backend swaps (a database switch keeps it).
+    log: SqlLog,
 }
 
 impl Engine {
     pub fn open_demo(rows: usize) -> Result<Self, EngineError> {
-        Ok(Self::from_inner(build_demo_inner(rows)?))
+        let log = SqlLog::new();
+        Ok(Self::from_inner(build_demo_inner(rows, log.clone())?, log))
     }
 
     pub fn open_file(path: &Path) -> Result<Self, EngineError> {
-        Ok(Self::from_inner(open_file_inner(path)?))
+        let log = SqlLog::new();
+        Ok(Self::from_inner(open_file_inner(path, log.clone())?, log))
     }
 
-    fn from_inner(inner: Arc<SqliteInner>) -> Self {
+    fn from_inner(inner: Arc<SqliteInner>, log: SqlLog) -> Self {
         Self {
             backend: RwLock::new(Backend::Sqlite { inner }),
             active: Mutex::new(None),
             epoch: AtomicU64::new(0),
+            log,
         }
     }
 
@@ -533,12 +652,26 @@ impl Engine {
         self.epoch.load(Ordering::SeqCst)
     }
 
+    /// The console log of every statement this engine sent.
+    pub fn sql_log(&self) -> &SqlLog {
+        &self.log
+    }
+
+    /// Hands a statement the GUI ran with History asked for to History once
+    /// it is durable: now, or when the open transaction commits.
+    pub async fn file_change(&self, change: Change) {
+        let in_tx = self.in_tx().await.unwrap_or(false);
+        self.log.changed(change, in_tx);
+    }
+
     fn replace_backend(&self, backend: Backend) -> Result<(), EngineError> {
         let mut guard = self
             .backend
             .write()
             .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
         *guard = backend;
+        // The old connection's open transaction goes with it.
+        self.log.settle(false);
         self.epoch.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -560,14 +693,15 @@ impl Engine {
     }
 
     pub async fn swap_to_file(&self, path: &Path) -> Result<EngineMeta, EngineError> {
-        let inner = open_file_inner(path)?;
+        let inner = open_file_inner(path, self.log.clone())?;
         let meta = meta_sync(&inner, false)?;
         self.replace_backend(Backend::Sqlite { inner })?;
         Ok(meta)
     }
 
     pub async fn swap_to_demo(&self, rows: usize) -> Result<EngineMeta, EngineError> {
-        let inner = tokio::task::spawn_blocking(move || build_demo_inner(rows))
+        let log = self.log.clone();
+        let inner = tokio::task::spawn_blocking(move || build_demo_inner(rows, log))
             .await
             .map_err(|e| EngineError::Internal(e.to_string()))??;
         let meta = meta_sync(&inner, false)?;
@@ -579,7 +713,7 @@ impl Engine {
         &self,
         config: &PostgresConfig,
     ) -> Result<EngineMeta, EngineError> {
-        let inner = postgres::connect(config, "postgres").await?;
+        let inner = postgres::connect(config, "postgres", self.log.clone()).await?;
         let meta = postgres::meta(&inner, false).await?;
         self.replace_backend(Backend::Postgres { inner })?;
         Ok(meta)
@@ -589,21 +723,21 @@ impl Engine {
         &self,
         config: &PostgresConfig,
     ) -> Result<EngineMeta, EngineError> {
-        let inner = postgres::connect(config, "cockroach").await?;
+        let inner = postgres::connect(config, "cockroach", self.log.clone()).await?;
         let meta = postgres::meta(&inner, false).await?;
         self.replace_backend(Backend::Postgres { inner })?;
         Ok(meta)
     }
 
     pub async fn swap_to_mysql(&self, config: &MySqlConfig) -> Result<EngineMeta, EngineError> {
-        let inner = mysql::connect(config).await?;
+        let inner = mysql::connect(config, self.log.clone()).await?;
         let meta = mysql::meta(&inner, false).await?;
         self.replace_backend(Backend::MySql { inner })?;
         Ok(meta)
     }
 
     pub async fn swap_to_mssql(&self, config: &MssqlConfig) -> Result<EngineMeta, EngineError> {
-        let inner = mssql::connect(config).await?;
+        let inner = mssql::connect(config, self.log.clone()).await?;
         let meta = mssql::meta(&inner, false).await?;
         self.replace_backend(Backend::Mssql { inner })?;
         Ok(meta)
@@ -903,6 +1037,8 @@ impl Engine {
                         ));
                     }
                     "COMMIT" | "ROLLBACK" if conn.is_autocommit() => {
+                        // Gone already (an error rolled it back): so is its work.
+                        conn.log.settle(false);
                         return Err(EngineError::Internal(
                             "진행 중인 트랜잭션이 없습니다".into(),
                         ));
@@ -911,6 +1047,12 @@ impl Engine {
                     _ => {}
                 }
                 conn.execute_batch(statement)?;
+                if statement == "BEGIN" {
+                    // Whatever an earlier, untracked transaction left.
+                    conn.log.settle(false);
+                } else {
+                    conn.log.ended(statement == "COMMIT");
+                }
                 Ok(())
             })
             .await
@@ -922,27 +1064,34 @@ impl Engine {
     }
 }
 
-fn lock_conn(inner: &SqliteInner) -> Result<std::sync::MutexGuard<'_, Connection>, EngineError> {
-    inner
+fn lock_conn(inner: &SqliteInner) -> Result<SqliteConn<'_>, EngineError> {
+    let conn = inner
         .conn
         .lock()
-        .map_err(|_| EngineError::Internal("커넥션 잠금 실패".into()))
+        .map_err(|_| EngineError::Internal("커넥션 잠금 실패".into()))?;
+    Ok(SqliteConn {
+        conn,
+        log: &inner.log,
+    })
 }
 
-fn build_demo_inner(rows: usize) -> Result<Arc<SqliteInner>, EngineError> {
+// The demo's own seeding is not logged: it builds the fixture (also the
+// placeholder engine a server connection starts from), not a statement the
+// user's work sent.
+fn build_demo_inner(rows: usize, log: SqlLog) -> Result<Arc<SqliteInner>, EngineError> {
     let conn = Connection::open_in_memory()?;
     seed_demo(&conn, rows)?;
-    Ok(Arc::new(SqliteInner::new(conn, None, true)))
+    Ok(Arc::new(SqliteInner::new(conn, None, true, log)))
 }
 
-fn open_file_inner(path: &Path) -> Result<Arc<SqliteInner>, EngineError> {
+fn open_file_inner(path: &Path, log: SqlLog) -> Result<Arc<SqliteInner>, EngineError> {
     if !path.is_file() {
         return Err(EngineError::NotFound(path.display().to_string()));
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    let valid = conn
-        .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-        .is_ok();
+    const CHECK_SQL: &str = "SELECT count(*) FROM sqlite_master";
+    log.record(CHECK_SQL, Dialect::Sqlite);
+    let valid = conn.query_row(CHECK_SQL, [], |_| Ok(())).is_ok();
     if !valid {
         return Err(EngineError::NotAFile(path.display().to_string()));
     }
@@ -950,6 +1099,7 @@ fn open_file_inner(path: &Path) -> Result<Arc<SqliteInner>, EngineError> {
         conn,
         Some(path.to_path_buf()),
         false,
+        log,
     )))
 }
 
@@ -975,7 +1125,7 @@ fn seed_demo(conn: &Connection, rows: usize) -> Result<(), EngineError> {
 }
 
 fn sqlite_table_names(
-    conn: &rusqlite::Connection,
+    conn: &SqliteConn<'_>,
     include_system: bool,
 ) -> Result<Vec<String>, EngineError> {
     let sql = if include_system {
@@ -1016,6 +1166,7 @@ fn schema_sync(inner: &SqliteInner, include_system: bool) -> Result<Vec<TableSch
                     not_null: row.get::<_, i64>(3)? != 0,
                     pk: row.get::<_, i64>(5)? > 0,
                     default: row.get(4)?,
+                    enum_values: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1029,7 +1180,7 @@ fn table_count_sync(inner: &SqliteInner, name: &str) -> Result<i64, EngineError>
     let trimmed = name.trim_matches(|c| matches!(c, '"' | '\'' | '`' | '[' | ']'));
     let count: i64 = conn.query_row(
         &format!("SELECT COUNT(*) FROM {}", quote_ident(trimmed)),
-        [],
+        &[],
         |row| row.get(0),
     )?;
     Ok(count)
@@ -1042,6 +1193,7 @@ fn run_query_sync(
 ) -> Result<QueryData, EngineError> {
     let started = Instant::now();
     let conn = lock_conn(inner)?;
+    let was_in_tx = !conn.is_autocommit();
 
     let mut stmt = conn.prepare(sql)?;
     let columns: Vec<String> = stmt
@@ -1068,6 +1220,19 @@ fn run_query_sync(
         }
     }
     drop(stmt);
+    // A transaction the editor ended (COMMIT, ROLLBACK) settles the GUI
+    // changes made inside it; changes still held outside any transaction
+    // belong to one an error rolled back.
+    if conn.is_autocommit() && (was_in_tx || conn.log.has_pending()) {
+        let keyword = sql
+            .trim_start()
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        let committed = was_in_tx && matches!(keyword.as_str(), "COMMIT" | "END" | "RELEASE");
+        conn.log.ended(committed);
+    }
 
     let (schema, batches) = build_arrow(&columns, column_values, count)?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1083,6 +1248,9 @@ fn run_query_sync(
         truncated,
         source_table,
         pk,
+        // A BOOLEAN column's 1 and 0 show as booleans once the table's
+        // structure is known; the result alone doesn't say.
+        column_kinds: Vec::new(),
     })
 }
 
@@ -1168,7 +1336,7 @@ fn build_column(values: Vec<Value>) -> (DataType, ArrayRef) {
 }
 
 fn detect_source(
-    conn: &Connection,
+    conn: &SqliteConn<'_>,
     sql: &str,
     columns: &[String],
 ) -> (Option<String>, Option<Vec<String>>) {
@@ -1202,7 +1370,7 @@ fn detect_source(
     let exists = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            [&name],
+            &[&name],
             |row| row.get::<_, i64>(0),
         )
         .map(|c| c > 0)
@@ -1266,8 +1434,15 @@ fn edit_sync(inner: &SqliteInner, target: &EditTarget) -> Result<u64, EngineErro
         params.push(json_to_sql(&pk.value));
     }
 
-    let changed = conn.execute(&sql, rusqlite::params_from_iter(params))?;
+    let changed = conn.change(&sql, &sqlite_refs(&params))?;
     Ok(changed as u64)
+}
+
+fn sqlite_refs(params: &[rusqlite::types::Value]) -> Vec<&dyn rusqlite::ToSql> {
+    params
+        .iter()
+        .map(|param| param as &dyn rusqlite::ToSql)
+        .collect()
 }
 
 fn json_to_sql(v: &Value) -> rusqlite::types::Value {
@@ -1294,9 +1469,9 @@ fn insert_sync(
 ) -> Result<u64, EngineError> {
     let conn = lock_conn(inner)?;
     let changed = if values.is_empty() {
-        conn.execute(
+        conn.change(
             &format!("INSERT INTO {} DEFAULT VALUES", quote_ident(table)),
-            [],
+            &[],
         )?
     } else {
         let columns = values
@@ -1319,7 +1494,7 @@ fn insert_sync(
                 None => rusqlite::types::Value::Null,
             })
             .collect();
-        conn.execute(&sql, rusqlite::params_from_iter(params))?
+        conn.change(&sql, &sqlite_refs(&params))?
     };
     Ok(changed as u64)
 }
@@ -1342,7 +1517,7 @@ fn delete_sync(inner: &SqliteInner, table: &str, pk: &[PkValue]) -> Result<u64, 
     }
     let params: Vec<rusqlite::types::Value> =
         pk.iter().map(|item| json_to_sql(&item.value)).collect();
-    let changed = conn.execute(&sql, rusqlite::params_from_iter(params))?;
+    let changed = conn.change(&sql, &sqlite_refs(&params))?;
     Ok(changed as u64)
 }
 
@@ -1353,7 +1528,7 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
         .to_string();
     let exists: bool = conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type IN ('table','view') AND name = ?1",
-        [&name],
+        &[&name],
         |row| row.get::<_, i64>(0),
     )? > 0;
     if !exists {
@@ -1369,6 +1544,7 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
             not_null: row.get::<_, i64>(3)? != 0,
             pk: row.get::<_, i64>(5)? > 0,
             default: row.get(4)?,
+            enum_values: None,
         })
     })? {
         columns.push(row?);
@@ -1443,10 +1619,11 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
     }
 
     let mut ddl_parts: Vec<String> = Vec::new();
-    if let Ok(mut ddl_stmt) = conn.prepare(
+    if let Ok(mut ddl_stmt) = conn.prepare_bound(
         "SELECT sql FROM sqlite_master WHERE tbl_name = ?1 AND type IN ('table','index')
          AND sql IS NOT NULL
          ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name",
+        &[&name],
     ) {
         if let Ok(rows) = ddl_stmt.query_map([&name], |row| row.get::<_, String>(0)) {
             for row in rows.flatten() {
@@ -1454,6 +1631,24 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
             }
         }
     }
+    let mut triggers: Vec<TriggerInfo> = Vec::new();
+    if let Ok(mut trigger_stmt) = conn.prepare_bound(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1
+         ORDER BY name",
+        &[&name],
+    ) {
+        if let Ok(rows) = trigger_stmt.query_map([&name], |row| {
+            Ok(TriggerInfo {
+                name: row.get(0)?,
+                timing: None,
+                event: None,
+                definition: row.get(1)?,
+            })
+        }) {
+            triggers.extend(rows.flatten());
+        }
+    }
+
     let ddl = if ddl_parts.is_empty() {
         None
     } else {
@@ -1463,7 +1658,7 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
     let row_count_estimate = conn
         .query_row(
             &format!("SELECT count(*) FROM {}", quote_ident(&name)),
-            [],
+            &[],
             |row| row.get::<_, i64>(0),
         )
         .ok();
@@ -1476,7 +1671,7 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
     let database_bytes = conn
         .query_row(
             "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-            [],
+            &[],
             |row| row.get::<_, i64>(0),
         )
         .unwrap_or(i64::MAX);
@@ -1487,7 +1682,7 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
         }
         conn.query_row(
             "SELECT SUM(pgsize) FROM dbstat WHERE name = ?1 AND aggregate = TRUE",
-            [object],
+            &[&object],
             |row| row.get::<_, Option<i64>>(0),
         )
         .ok()
@@ -1513,6 +1708,7 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
         columns,
         indexes,
         foreign_keys,
+        triggers,
         ddl,
         schema: None,
     })
@@ -1524,9 +1720,9 @@ const DBSTAT_MAX_BYTES: i64 = 256 * 1024 * 1024;
 
 fn server_info_sync(inner: &SqliteInner) -> Result<ServerInfo, EngineError> {
     let conn = lock_conn(inner)?;
-    let version: String = conn.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
-    let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
-    let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+    let version: String = conn.query_row("SELECT sqlite_version()", &[], |row| row.get(0))?;
+    let page_count: i64 = conn.query_row("PRAGMA page_count", &[], |row| row.get(0))?;
+    let page_size: i64 = conn.query_row("PRAGMA page_size", &[], |row| row.get(0))?;
     Ok(ServerInfo {
         driver: "sqlite".into(),
         version: Some(version),
@@ -1585,7 +1781,7 @@ fn object_definition_sync(
     let ddl = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
-            rusqlite::params![kind, &name],
+            &[&kind, &name],
             |row| row.get::<_, Option<String>>(0),
         )
         .ok()
@@ -1594,7 +1790,7 @@ fn object_definition_sync(
         && conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
-                rusqlite::params![kind, &name],
+                &[&kind, &name],
                 |row| row.get::<_, i64>(0),
             )
             .map(|count| count > 0)
@@ -1769,6 +1965,231 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_statements_and_changes_reach_the_log() {
+        let path = temp_db("sql-log");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE people(id INTEGER PRIMARY KEY, name TEXT);
+                 INSERT INTO people(id, name) VALUES (1, 'Ann');",
+            )
+            .unwrap();
+        }
+        let engine = Engine::open_file(&path).unwrap();
+        let log = engine.sql_log().clone();
+        let mut changes = log.take_changes().unwrap();
+        let sqls = |after: Option<u64>| -> Vec<String> {
+            let (entries, reset) = log.since(after);
+            assert_eq!(reset, after.is_none());
+            entries.into_iter().map(|entry| entry.sql).collect()
+        };
+        let newest = || log.since(None).0.last().map_or(0, |entry| entry.seq);
+        // Opening the file checks it is a database.
+        assert_eq!(sqls(None), vec!["SELECT count(*) FROM sqlite_master;"]);
+
+        engine.schema(false).await.unwrap();
+        engine.table_detail("people").await.unwrap();
+        let mark = newest();
+        engine.query("SELECT * FROM people", 100).await.unwrap();
+        let logged = sqls(None);
+        assert!(logged.contains(&"PRAGMA table_info(\"people\");".to_string()));
+        assert!(logged.contains(
+            &"SELECT count(*) FROM sqlite_master WHERE type IN ('table','view') AND name = 'people';"
+                .to_string()
+        ));
+        // The user's statement, then the hidden lookups for its table and key.
+        assert_eq!(
+            sqls(Some(mark)),
+            vec![
+                "SELECT * FROM people;",
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'people';",
+                "PRAGMA table_info(\"people\");",
+            ]
+        );
+
+        let mark = newest();
+        let update = "UPDATE \"people\" SET \"name\" = 'O''Neil' WHERE \"id\" = 1";
+        let insert = "INSERT INTO \"people\" (\"id\", \"name\") VALUES ('2', NULL)";
+        let delete = "DELETE FROM \"people\" WHERE \"id\" = 2";
+        let failed = "INSERT INTO \"people\" (\"nope\") VALUES ('x')";
+        engine.begin_tx().await.unwrap();
+        engine
+            .edit(&EditTarget {
+                table: "people".into(),
+                pk: vec![PkValue {
+                    column: "id".into(),
+                    value: Value::from(1),
+                }],
+                column: "name".into(),
+                value: Some("O'Neil".into()),
+            })
+            .await
+            .unwrap();
+        engine
+            .insert_row(
+                "people",
+                &[("id".into(), Some("2".into())), ("name".into(), None)],
+            )
+            .await
+            .unwrap();
+        engine
+            .delete_row(
+                "people",
+                &[PkValue {
+                    column: "id".into(),
+                    value: Value::from(2),
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(engine
+            .insert_row("people", &[("nope".into(), Some("x".into()))])
+            .await
+            .is_err());
+        engine.commit_tx().await.unwrap();
+        assert_eq!(
+            sqls(Some(mark)),
+            vec![
+                "BEGIN;".to_string(),
+                format!("{update};"),
+                format!("{insert};"),
+                format!("{delete};"),
+                format!("{failed};"),
+                "COMMIT;".to_string(),
+            ]
+        );
+        // Only changes that went through reach History, once committed.
+        let changed: Vec<String> = std::iter::from_fn(|| changes.try_recv().ok())
+            .map(|change| change.sql)
+            .collect();
+        assert_eq!(changed, vec![update, insert, delete]);
+
+        // A backend swap keeps the log and its numbering.
+        let mark = newest();
+        engine.swap_to_demo(3).await.unwrap();
+        let (entries, reset) = log.since(Some(mark));
+        assert!(!reset);
+        assert_eq!(entries[0].seq, mark + 1);
+        assert_eq!(
+            entries[0].sql,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    fn people_db(name: &str) -> PathBuf {
+        let path = temp_db(name);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE people(id INTEGER PRIMARY KEY, name TEXT);
+             INSERT INTO people(id, name) VALUES (1, 'Ann'), (2, 'Bo');",
+        )
+        .unwrap();
+        path
+    }
+
+    fn rename(id: i64, name: &str) -> EditTarget {
+        EditTarget {
+            table: "people".into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(id),
+            }],
+            column: "name".into(),
+            value: Some(name.into()),
+        }
+    }
+
+    fn drain_changes(
+        changes: &mut tokio::sync::mpsc::UnboundedReceiver<sql_log::Change>,
+    ) -> Vec<sql_log::Change> {
+        std::iter::from_fn(|| changes.try_recv().ok()).collect()
+    }
+
+    #[tokio::test]
+    async fn changes_reach_history_only_once_committed() {
+        let path = people_db("tx-changes");
+        let engine = Engine::open_file(&path).unwrap();
+        let mut changes = engine.sql_log().take_changes().unwrap();
+
+        // Outside a transaction a change goes out at once, with its count.
+        assert_eq!(engine.edit(&rename(1, "A1")).await.unwrap(), 1);
+        let now = drain_changes(&mut changes);
+        assert_eq!(now.len(), 1);
+        assert_eq!(
+            now[0].sql,
+            "UPDATE \"people\" SET \"name\" = 'A1' WHERE \"id\" = 1"
+        );
+        assert_eq!(now[0].rows, 1);
+
+        // A row that is not there changes nothing and is not History.
+        assert_eq!(engine.edit(&rename(99, "nobody")).await.unwrap(), 0);
+        assert!(drain_changes(&mut changes).is_empty());
+
+        // Held until COMMIT.
+        engine.begin_tx().await.unwrap();
+        engine.edit(&rename(1, "A2")).await.unwrap();
+        engine
+            .delete_row(
+                "people",
+                &[PkValue {
+                    column: "id".into(),
+                    value: Value::from(2),
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+        engine.commit_tx().await.unwrap();
+        let committed: Vec<u64> = drain_changes(&mut changes)
+            .iter()
+            .map(|change| change.rows)
+            .collect();
+        assert_eq!(committed, vec![1, 1]);
+
+        // Dropped on ROLLBACK.
+        engine.begin_tx().await.unwrap();
+        engine.edit(&rename(1, "rolled back")).await.unwrap();
+        engine.rollback_tx().await.unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+
+        // A statement the GUI ran asking for History follows the same rule.
+        let ran = || sql_log::Change {
+            sql: "DROP TABLE gone".into(),
+            ms: 3,
+            rows: 0,
+        };
+        engine.file_change(ran()).await;
+        assert_eq!(drain_changes(&mut changes), vec![ran()]);
+        engine.begin_tx().await.unwrap();
+        engine.file_change(ran()).await;
+        assert!(drain_changes(&mut changes).is_empty());
+        engine.rollback_tx().await.unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+
+        // A transaction the editor opens and ends counts too.
+        engine.query("BEGIN", 1).await.unwrap();
+        engine.edit(&rename(1, "A3")).await.unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+        engine.query("COMMIT", 1).await.unwrap();
+        assert_eq!(drain_changes(&mut changes).len(), 1);
+        engine.query("BEGIN", 1).await.unwrap();
+        engine.edit(&rename(1, "A4")).await.unwrap();
+        engine.query("ROLLBACK", 1).await.unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+
+        // A backend swap abandons the open transaction's changes.
+        engine.begin_tx().await.unwrap();
+        engine.edit(&rename(1, "A5")).await.unwrap();
+        engine.swap_to_demo(1).await.unwrap();
+        engine.sql_log().settle(true);
+        assert!(drain_changes(&mut changes).is_empty());
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[tokio::test]
     async fn in_tx_reflects_autocommit_state() {
         let engine = Engine::open_demo(3).unwrap();
         assert!(!engine.in_tx().await.unwrap());
@@ -1859,6 +2280,179 @@ mod tests {
             ssl_client_cert: None,
             ssl_client_key: None,
         })
+    }
+
+    #[tokio::test]
+    async fn pg_a_table_swapped_or_rekeyed_elsewhere_is_not_edited_blindly() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        let elsewhere = Engine::open_demo(1).unwrap();
+        elsewhere.swap_to_postgres(&config).await.unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS tp_swap, tp_swap_old, tp_swap_new",
+            "CREATE TABLE tp_swap (id int PRIMARY KEY, note text)",
+            "CREATE TABLE tp_swap_new (id int PRIMARY KEY, note text)",
+            "INSERT INTO tp_swap VALUES (1, 'old')",
+            "INSERT INTO tp_swap_new VALUES (1, 'new')",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let data = engine.query("SELECT * FROM tp_swap", 10).await.unwrap();
+        assert_eq!(data.source_table.as_deref(), Some("tp_swap"));
+
+        // Another session swaps the tables: the one just read is tp_swap_old now.
+        elsewhere
+            .execute("ALTER TABLE tp_swap RENAME TO tp_swap_old", 1)
+            .await
+            .unwrap();
+        elsewhere
+            .execute("ALTER TABLE tp_swap_new RENAME TO tp_swap", 1)
+            .await
+            .unwrap();
+        let data = engine.query("SELECT * FROM tp_swap_old", 10).await.unwrap();
+        assert_eq!(data.source_table.as_deref(), Some("tp_swap_old"));
+        assert_eq!(data.pk, Some(vec!["id".to_string()]));
+
+        // …and widens its key, so id alone matches two rows.
+        for sql in [
+            "ALTER TABLE tp_swap_old ADD COLUMN rev int NOT NULL DEFAULT 0",
+            "ALTER TABLE tp_swap_old DROP CONSTRAINT tp_swap_pkey, ADD PRIMARY KEY (id, rev)",
+            "INSERT INTO tp_swap_old VALUES (1, 'twin', 1)",
+        ] {
+            elsewhere.execute(sql, 1).await.unwrap();
+        }
+        let target = EditTarget {
+            table: "tp_swap_old".into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: "note".into(),
+            value: Some("edited".into()),
+        };
+        let err = engine.edit(&target).await.unwrap_err();
+        assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
+        let err = engine
+            .delete_row("tp_swap_old", &target.pk)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
+        let notes = engine
+            .query("SELECT note FROM tp_swap_old ORDER BY rev", 10)
+            .await
+            .unwrap();
+        assert_eq!(notes.cell_string(0, 0).as_deref(), Some("old"));
+        assert_eq!(notes.cell_string(1, 0).as_deref(), Some("twin"));
+        let data = engine.query("SELECT * FROM tp_swap_old", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string(), "rev".to_string()]));
+
+        // A key dropped inside a transaction that is rolled back comes back.
+        engine.begin_tx().await.unwrap();
+        engine
+            .execute("ALTER TABLE tp_swap DROP CONSTRAINT tp_swap_new_pkey", 1)
+            .await
+            .unwrap();
+        let data = engine.query("SELECT * FROM tp_swap", 10).await.unwrap();
+        assert_eq!(data.pk, None);
+        engine.rollback_tx().await.unwrap();
+        let data = engine.query("SELECT * FROM tp_swap", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string()]));
+
+        engine
+            .execute("DROP TABLE tp_swap, tp_swap_old", 1)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pg_commit_of_an_aborted_transaction_rolls_back() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        let mut changes = engine.sql_log().take_changes().unwrap();
+        engine
+            .execute("DROP TABLE IF EXISTS tp_abort", 1)
+            .await
+            .unwrap();
+        engine
+            .execute("CREATE TABLE tp_abort (id int PRIMARY KEY, note text)", 1)
+            .await
+            .unwrap();
+        engine
+            .execute("INSERT INTO tp_abort VALUES (1, 'a'), (2, 'b')", 1)
+            .await
+            .unwrap();
+        let target = |id: i64, column: &str, value: &str| EditTarget {
+            table: "tp_abort".into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(id),
+            }],
+            column: column.into(),
+            value: Some(value.into()),
+        };
+
+        // The third edit hits the key; the user then clicks Commit.
+        engine.begin_tx().await.unwrap();
+        engine.edit(&target(1, "note", "x")).await.unwrap();
+        engine.edit(&target(2, "note", "y")).await.unwrap();
+        assert!(engine.edit(&target(2, "id", "1")).await.is_err());
+        let err = engine.commit_tx().await.unwrap_err();
+        assert!(matches!(err, EngineError::TxRolledBack(_)), "{err}");
+        assert!(!engine.in_tx().await.unwrap());
+        assert!(drain_changes(&mut changes).is_empty());
+        let note = engine
+            .execute("SELECT note FROM tp_abort WHERE id = 1", 1)
+            .await
+            .unwrap();
+        assert_eq!(note.rows[0][0], Value::from("a"));
+
+        // The same COMMIT typed in the editor says so too.
+        engine.execute("BEGIN", 1).await.unwrap();
+        engine.edit(&target(1, "note", "w")).await.unwrap();
+        assert!(engine.execute("SELECT 1/0", 1).await.is_err());
+        let err = engine.execute("COMMIT", 1).await.unwrap_err();
+        assert!(matches!(err, EngineError::TxRolledBack(_)), "{err}");
+        assert!(!engine.in_tx().await.unwrap());
+        assert!(drain_changes(&mut changes).is_empty());
+
+        // A transaction opened and ended from the editor holds changes too.
+        engine.execute("BEGIN", 1).await.unwrap();
+        assert!(engine.in_tx().await.unwrap());
+        engine.edit(&target(1, "note", "z")).await.unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+        engine.execute("COMMIT", 1).await.unwrap();
+        assert!(!engine.in_tx().await.unwrap());
+        assert_eq!(drain_changes(&mut changes).len(), 1);
+
+        // A COMMIT that never ran (refused at Parse) leaves it open.
+        engine.execute("BEGIN", 1).await.unwrap();
+        assert!(engine.execute("COMMIT; SELECT 1", 1).await.is_err());
+        assert!(engine.in_tx().await.unwrap());
+        engine.rollback_tx().await.unwrap();
+
+        // A COMMIT that fails (a deferred foreign key) ends the transaction.
+        for sql in [
+            "DROP TABLE IF EXISTS tp_child",
+            "CREATE TABLE tp_child (id int, parent int REFERENCES tp_abort (id) \
+             DEFERRABLE INITIALLY DEFERRED)",
+            "BEGIN",
+            "INSERT INTO tp_child VALUES (1, 99)",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        engine.edit(&target(1, "note", "v")).await.unwrap();
+        assert!(engine.execute("COMMIT", 1).await.is_err());
+        assert!(!engine.in_tx().await.unwrap());
+        assert!(drain_changes(&mut changes).is_empty());
+
+        engine.execute("DROP TABLE tp_child", 1).await.unwrap();
+        engine.execute("DROP TABLE tp_abort", 1).await.unwrap();
     }
 
     #[tokio::test]
@@ -2328,6 +2922,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mysql_an_edit_checks_the_key_again() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        let elsewhere = Engine::open_demo(1).unwrap();
+        elsewhere.swap_to_mysql(&config).await.unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS tp_key",
+            "CREATE TABLE tp_key (id INT NOT NULL, rev INT NOT NULL DEFAULT 0, \
+             note VARCHAR(20), PRIMARY KEY (id))",
+            "INSERT INTO tp_key VALUES (1, 0, 'a')",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let data = engine.query("SELECT * FROM tp_key", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string()]));
+
+        // Another session widens the key, so id alone matches two rows.
+        for sql in [
+            "ALTER TABLE tp_key DROP PRIMARY KEY, ADD PRIMARY KEY (id, rev)",
+            "INSERT INTO tp_key VALUES (1, 1, 'b')",
+        ] {
+            elsewhere.execute(sql, 1).await.unwrap();
+        }
+        // The kept lookup still says id…
+        let data = engine.query("SELECT * FROM tp_key", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string()]));
+        // …but a write asks again, refuses, and forgets it.
+        let target = |table: &str| EditTarget {
+            table: table.into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: "note".into(),
+            value: Some("edited".into()),
+        };
+        let err = engine.edit(&target("tp_key")).await.unwrap_err();
+        assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
+        let err = engine
+            .delete_row("tp_key", &target("tp_key").pk)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
+        let notes = engine
+            .query("SELECT note FROM tp_key ORDER BY rev", 10)
+            .await
+            .unwrap();
+        assert_eq!(notes.cell_string(0, 0).as_deref(), Some("a"));
+        assert_eq!(notes.cell_string(1, 0).as_deref(), Some("b"));
+        let data = engine.query("SELECT * FROM tp_key", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string(), "rev".to_string()]));
+
+        // A table dropped elsewhere says so, not that its key changed.
+        elsewhere.execute("DROP TABLE tp_key", 1).await.unwrap();
+        let err = engine.edit(&target("tp_key")).await.unwrap_err();
+        assert!(matches!(err, EngineError::TableNotFound), "{err}");
+    }
+
+    #[tokio::test]
+    async fn mysql_editor_transactions_and_ddl_settle_history() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        let mut changes = engine.sql_log().take_changes().unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS tp_tx",
+            "DROP TABLE IF EXISTS tp_tx_other",
+            "CREATE TABLE tp_tx (id INT PRIMARY KEY, note VARCHAR(20))",
+            "INSERT INTO tp_tx VALUES (1, 'a')",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let rename = |note: &str| EditTarget {
+            table: "tp_tx".into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: "note".into(),
+            value: Some(note.into()),
+        };
+
+        engine.execute("START TRANSACTION", 1).await.unwrap();
+        assert!(engine.in_tx().await.unwrap());
+        engine.edit(&rename("b")).await.unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+        // DDL commits the open transaction first.
+        engine
+            .execute("CREATE TABLE tp_tx_other (id INT)", 1)
+            .await
+            .unwrap();
+        assert!(!engine.in_tx().await.unwrap());
+        assert_eq!(drain_changes(&mut changes).len(), 1);
+
+        // DDL that fails has still committed the open transaction.
+        engine.execute("START TRANSACTION", 1).await.unwrap();
+        engine.edit(&rename("d")).await.unwrap();
+        assert!(engine
+            .execute("ALTER TABLE tp_tx_missing ADD c INT", 1)
+            .await
+            .is_err());
+        assert!(!engine.in_tx().await.unwrap());
+        assert_eq!(drain_changes(&mut changes).len(), 1);
+
+        engine.execute("BEGIN", 1).await.unwrap();
+        engine.edit(&rename("c")).await.unwrap();
+        engine.execute("ROLLBACK", 1).await.unwrap();
+        assert!(!engine.in_tx().await.unwrap());
+        assert!(drain_changes(&mut changes).is_empty());
+
+        engine.execute("DROP TABLE tp_tx", 1).await.unwrap();
+        engine.execute("DROP TABLE tp_tx_other", 1).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn mysql_query_edit_tx_roundtrip() {
         let Some(config) = mysql_config() else {
             return;
@@ -2532,6 +3246,66 @@ mod tests {
             database: "tablepeek_test".into(),
             encrypt: false,
         })
+    }
+
+    #[tokio::test]
+    async fn mssql_an_edit_checks_the_key_again() {
+        let Some(config) = mssql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mssql(&config).await.unwrap();
+        let elsewhere = Engine::open_demo(1).unwrap();
+        elsewhere.swap_to_mssql(&config).await.unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS tp_key",
+            "CREATE TABLE tp_key (id INT NOT NULL, rev INT NOT NULL DEFAULT 0, \
+             note NVARCHAR(20), CONSTRAINT tp_key_pk PRIMARY KEY (id))",
+            "INSERT INTO tp_key VALUES (1, 0, 'a')",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let data = engine.query("SELECT * FROM tp_key", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string()]));
+
+        // Another session widens the key, so id alone matches two rows.
+        for sql in [
+            "ALTER TABLE tp_key DROP CONSTRAINT tp_key_pk",
+            "ALTER TABLE tp_key ADD CONSTRAINT tp_key_pk PRIMARY KEY (id, rev)",
+            "INSERT INTO tp_key VALUES (1, 1, 'b')",
+        ] {
+            elsewhere.execute(sql, 1).await.unwrap();
+        }
+        // The kept lookup still says id…
+        let data = engine.query("SELECT * FROM tp_key", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string()]));
+        // …but a write asks again, refuses, and forgets it.
+        let target = EditTarget {
+            table: "tp_key".into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: "note".into(),
+            value: Some("edited".into()),
+        };
+        let err = engine.edit(&target).await.unwrap_err();
+        assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
+        let err = engine.delete_row("tp_key", &target.pk).await.unwrap_err();
+        assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
+        let notes = engine
+            .query("SELECT note FROM tp_key ORDER BY rev", 10)
+            .await
+            .unwrap();
+        assert_eq!(notes.cell_string(0, 0).as_deref(), Some("a"));
+        assert_eq!(notes.cell_string(1, 0).as_deref(), Some("b"));
+        let data = engine.query("SELECT * FROM tp_key", 10).await.unwrap();
+        assert_eq!(data.pk, Some(vec!["id".to_string(), "rev".to_string()]));
+
+        // A table dropped elsewhere says so, not that its key changed.
+        elsewhere.execute("DROP TABLE tp_key", 1).await.unwrap();
+        let err = engine.edit(&target).await.unwrap_err();
+        assert!(matches!(err, EngineError::TableNotFound), "{err}");
     }
 
     #[tokio::test]
@@ -2762,6 +3536,48 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, EngineError::NotEditable(_)));
+    }
+
+    #[tokio::test]
+    async fn sqlite_table_detail_lists_triggers() {
+        let db = temp_db("triggers");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE jobs (id INTEGER PRIMARY KEY, state TEXT);
+                 CREATE TABLE audit (note TEXT);
+                 CREATE TRIGGER jobs_ai AFTER INSERT ON jobs
+                 BEGIN INSERT INTO audit VALUES ('in'); END;
+                 CREATE TRIGGER jobs_bd BEFORE DELETE ON jobs
+                 BEGIN INSERT INTO audit VALUES ('out'); END;",
+            )
+            .unwrap();
+        }
+
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_file(&db).await.unwrap();
+
+        let detail = engine.table_detail("jobs").await.unwrap();
+        let names: Vec<&str> = detail.triggers.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["jobs_ai", "jobs_bd"]);
+        assert!(detail.triggers[0]
+            .definition
+            .as_deref()
+            .unwrap()
+            .contains("AFTER INSERT ON jobs"));
+        assert!(engine.table_detail("audit").await.unwrap().triggers.is_empty());
+    }
+
+    #[test]
+    fn trigger_timing_event_parses_pg_definition() {
+        let parsed = crate::postgres::trigger_timing_event(
+            "CREATE TRIGGER t BEFORE INSERT OR UPDATE OF a, b ON public.x FOR EACH ROW EXECUTE FUNCTION f()",
+        );
+        assert_eq!(parsed, (Some("BEFORE".into()), Some("INSERT OR UPDATE".into())));
+        let parsed = crate::postgres::trigger_timing_event(
+            "CREATE TRIGGER t INSTEAD OF DELETE ON v FOR EACH ROW EXECUTE FUNCTION f()",
+        );
+        assert_eq!(parsed, (Some("INSTEAD OF".into()), Some("DELETE".into())));
     }
 
     #[tokio::test]

@@ -223,6 +223,13 @@ export function buildDataSql(input: DataSqlInput): string {
   return parts.join(" ");
 }
 
+// What a table view's total counts: its rows under the same filter.
+export function buildCountSql(input: Pick<DataSqlInput, "kind" | "table" | "filter">): string {
+  const kind = input.kind ?? "postgres";
+  const where = buildWhere(input.filter, kind);
+  return `SELECT COUNT(*) FROM ${quoteIdentifier(input.table, kind)}${where === null ? "" : ` WHERE ${where}`}`;
+}
+
 export function buildDataSqlUnlimited(input: Omit<DataSqlInput, "limit" | "offset">): string {
   const kind = input.kind ?? "postgres";
   const parts = [`SELECT ${selectList(input.columns, kind)} FROM ${quoteIdentifier(input.table, kind)}`];

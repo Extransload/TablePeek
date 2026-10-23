@@ -9,30 +9,280 @@ use rustls::RootCertStore;
 use serde_json::Value;
 use tokio_postgres::config::SslMode as PgSslMode;
 use tokio_postgres::types::{FromSqlOwned, ToSql, Type};
-use tokio_postgres::{Client, NoTls, Row};
+use tokio_postgres::{Client, NoTls, Row, Statement};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, ObjectDefinition,
     PkValue, PostgresConfig, ServerInfo, ServerSession, SslMode, TableDetail, TableSchema,
+    TriggerInfo,
 };
 
+use crate::source_cache::{key_unchanged, KEY_CHANGED};
+use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
+use crate::sql_parse::{tx_controls, TxControl};
 use crate::{build_arrow, humanize_uptime_ko, postgres_message, EngineError, QueryData};
 
 pub struct PostgresInner {
-    pub(crate) client: Arc<tokio::sync::Mutex<Client>>,
+    client: Arc<tokio::sync::Mutex<Client>>,
     cancel: tokio_postgres::CancelToken,
     tls: Option<MakeRustlsConnect>,
     label: String,
-    in_tx: AtomicBool,
+    tx: TxState,
     kind: &'static str,
     backend_pid: i32,
+    log: SqlLog,
+}
+
+/// The session's transaction as far as the engine can tell: open (from the
+/// toolbar or a BEGIN run in the editor) and aborted by a failed statement,
+/// after which PostgreSQL refuses all but ROLLBACK and answers COMMIT with a
+/// rollback.
+#[derive(Default)]
+struct TxState {
+    open: AtomicBool,
+    aborted: AtomicBool,
+}
+
+impl TxState {
+    fn is_open(&self) -> bool {
+        self.open.load(Ordering::SeqCst)
+    }
+
+    fn is_aborted(&self) -> bool {
+        self.aborted.load(Ordering::SeqCst)
+    }
+
+    /// A statement failed: inside a transaction, that aborts it.
+    fn failed(&self) {
+        if self.is_open() {
+            self.aborted.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// ROLLBACK TO SAVEPOINT went through: the transaction is usable again.
+    fn recovered(&self) {
+        self.aborted.store(false, Ordering::SeqCst);
+    }
+
+    fn begin(&self, log: &SqlLog) {
+        if !self.open.swap(true, Ordering::SeqCst) {
+            self.aborted.store(false, Ordering::SeqCst);
+            // Whatever an earlier, untracked transaction left behind.
+            log.settle(false);
+        }
+    }
+
+    /// Ends the transaction; its work counts as committed only when `commit`
+    /// asked for it and nothing had aborted it. History follows.
+    fn end(&self, commit: bool, log: &SqlLog) -> bool {
+        let was_open = self.open.swap(false, Ordering::SeqCst);
+        let kept = commit && !self.aborted.swap(false, Ordering::SeqCst);
+        if was_open {
+            log.ended(kept);
+        } else {
+            log.settle(false);
+        }
+        kept
+    }
+
+    /// Follows the transaction statements run from the editor; true when a
+    /// COMMIT among them rolled back instead (the transaction had aborted).
+    fn track(&self, controls: &[TxControl], log: &SqlLog) -> bool {
+        let mut refused = false;
+        for control in controls {
+            match control {
+                TxControl::Begin => self.begin(log),
+                TxControl::Commit => refused |= !self.end(true, log),
+                TxControl::Rollback => {
+                    self.end(false, log);
+                }
+                TxControl::RollbackToSavepoint => self.recovered(),
+                TxControl::ImplicitCommit => {}
+            }
+        }
+        refused
+    }
+}
+
+const ABORTED: &str = "트랜잭션이 오류로 중단되어 롤백했습니다";
+
+/// Whether an error leaves an open transaction aborted: anything the server
+/// raised, or a lost connection (the server drops what it had). One the
+/// client raised (no row where one was expected, a value that would not
+/// convert) does not.
+fn aborts_transaction(err: &tokio_postgres::Error) -> bool {
+    err.as_db_error().is_some()
+        || err.is_closed()
+        || std::error::Error::source(err).is_some_and(|source| source.is::<std::io::Error>())
+}
+
+/// A bound parameter that the console can also show.
+pub(crate) trait PgParam: ToSql + Sync {
+    fn log_param(&self) -> LogParam;
+}
+
+impl PgParam for String {
+    fn log_param(&self) -> LogParam {
+        LogParam::Text(self.clone())
+    }
+}
+
+impl PgParam for &str {
+    fn log_param(&self) -> LogParam {
+        LogParam::Text((*self).to_string())
+    }
+}
+
+impl PgParam for Option<String> {
+    fn log_param(&self) -> LogParam {
+        self.clone().map_or(LogParam::Null, LogParam::Text)
+    }
+}
+
+impl PgParam for u32 {
+    fn log_param(&self) -> LogParam {
+        LogParam::UInt(u64::from(*self))
+    }
+}
+
+impl PgParam for i32 {
+    fn log_param(&self) -> LogParam {
+        LogParam::Int(i64::from(*self))
+    }
+}
+
+impl PgParam for i64 {
+    fn log_param(&self) -> LogParam {
+        LogParam::Int(*self)
+    }
+}
+
+/// The locked client; every method logs its statement before sending it.
+/// It deliberately has no way to reach the bare client.
+pub(crate) struct PgConn<'a> {
+    client: tokio::sync::MutexGuard<'a, Client>,
+    log: &'a SqlLog,
+    tx: &'a TxState,
+}
+
+impl PgConn<'_> {
+    fn shown(sql: &str, params: &[&dyn PgParam]) -> String {
+        if params.is_empty() {
+            return sql.to_string();
+        }
+        let values: Vec<LogParam> = params.iter().map(|param| param.log_param()).collect();
+        inline_params(sql, &values, Dialect::Postgres)
+    }
+
+    fn note(&self, sql: &str, params: &[&dyn PgParam]) {
+        self.log
+            .record(&Self::shown(sql, params), Dialect::Postgres);
+    }
+
+    /// Notes a failure, which aborts an open transaction.
+    fn watch<T>(
+        &self,
+        result: Result<T, tokio_postgres::Error>,
+    ) -> Result<T, tokio_postgres::Error> {
+        if result.as_ref().is_err_and(aborts_transaction) {
+            self.tx.failed();
+        }
+        result
+    }
+
+    fn bind<'p>(params: &'p [&'p dyn PgParam]) -> Vec<&'p (dyn ToSql + Sync)> {
+        params
+            .iter()
+            .map(|param| *param as &(dyn ToSql + Sync))
+            .collect()
+    }
+
+    async fn query(
+        &self,
+        sql: &str,
+        params: &[&dyn PgParam],
+    ) -> Result<Vec<Row>, tokio_postgres::Error> {
+        self.note(sql, params);
+        self.watch(self.client.query(sql, &Self::bind(params)).await)
+    }
+
+    async fn query_one(
+        &self,
+        sql: &str,
+        params: &[&dyn PgParam],
+    ) -> Result<Row, tokio_postgres::Error> {
+        self.note(sql, params);
+        self.watch(self.client.query_one(sql, &Self::bind(params)).await)
+    }
+
+    async fn query_opt(
+        &self,
+        sql: &str,
+        params: &[&dyn PgParam],
+    ) -> Result<Option<Row>, tokio_postgres::Error> {
+        self.note(sql, params);
+        self.watch(self.client.query_opt(sql, &Self::bind(params)).await)
+    }
+
+    async fn batch_execute(&self, sql: &str) -> Result<(), tokio_postgres::Error> {
+        self.log.record(sql, Dialect::Postgres);
+        self.watch(self.client.batch_execute(sql).await)
+    }
+
+    /// Logged here, once: `query_prepared` then runs it.
+    async fn prepare(&self, sql: &str) -> Result<Statement, tokio_postgres::Error> {
+        self.log.record(sql, Dialect::Postgres);
+        self.watch(self.client.prepare(sql).await)
+    }
+
+    async fn query_prepared(
+        &self,
+        statement: &Statement,
+    ) -> Result<tokio_postgres::RowStream, tokio_postgres::Error> {
+        self.watch(
+            self.client
+                .query_raw(statement, std::iter::empty::<i32>())
+                .await,
+        )
+    }
+
+    /// Runs a data change made from the GUI; one that changed rows goes to
+    /// History, at COMMIT when a transaction is open.
+    async fn change(
+        &self,
+        sql: &str,
+        params: &[&dyn PgParam],
+    ) -> Result<u64, tokio_postgres::Error> {
+        let shown = Self::shown(sql, params);
+        self.log.record(&shown, Dialect::Postgres);
+        let started = Instant::now();
+        let changed = self.watch(self.client.execute(sql, &Self::bind(params)).await)?;
+        if changed > 0 {
+            let change = Change {
+                sql: shown,
+                ms: started.elapsed().as_millis() as u64,
+                rows: changed,
+            };
+            self.log.changed(change, self.tx.is_open());
+        }
+        Ok(changed)
+    }
 }
 
 impl PostgresInner {
     pub(crate) fn in_tx(&self) -> bool {
-        self.in_tx.load(Ordering::SeqCst)
+        self.tx.is_open()
     }
 
+    async fn conn(&self) -> PgConn<'_> {
+        PgConn {
+            client: self.client.lock().await,
+            log: &self.log,
+            tx: &self.tx,
+        }
+    }
+
+    // The cancel request is a protocol message, not SQL: nothing to log.
     pub(crate) fn cancel(&self) {
         let token = self.cancel.clone();
         if let Some(tls) = self.tls.clone() {
@@ -144,6 +394,7 @@ fn tls_connector(config: &PostgresConfig) -> Result<MakeRustlsConnect, EngineErr
 pub(crate) async fn connect(
     config: &PostgresConfig,
     kind: &'static str,
+    log: SqlLog,
 ) -> Result<Arc<PostgresInner>, EngineError> {
     let mut pg = tokio_postgres::Config::new();
     pg.host(&config.host)
@@ -186,8 +437,10 @@ pub(crate) async fn connect(
             (client, cancel, Some(connector))
         }
     };
+    const PID_SQL: &str = "SELECT pg_backend_pid()::bigint";
+    log.record(PID_SQL, Dialect::Postgres);
     let backend_pid: i32 = client
-        .query_one("SELECT pg_backend_pid()::bigint", &[])
+        .query_one(PID_SQL, &[])
         .await
         .ok()
         .and_then(|row| row.get::<_, Option<i64>>(0))
@@ -200,9 +453,10 @@ pub(crate) async fn connect(
             "{}@{}:{}/{}",
             config.user, config.host, config.port, config.database
         ),
-        in_tx: AtomicBool::new(false),
+        tx: TxState::default(),
         kind,
         backend_pid,
+        log,
     }))
 }
 
@@ -210,7 +464,7 @@ pub(crate) async fn meta(
     inner: &PostgresInner,
     include_system: bool,
 ) -> Result<EngineMeta, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let rows = client
         .query(&table_list_sql(inner.kind, include_system), &[])
         .await?;
@@ -230,7 +484,7 @@ pub(crate) async fn schema(
     inner: &PostgresInner,
     include_system: bool,
 ) -> Result<Vec<TableSchema>, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     // One query for every table and its columns (rows arrive grouped by table)
     // instead of a separate column query per table.
     let rows = client
@@ -261,6 +515,7 @@ pub(crate) async fn schema(
                 not_null: row.get::<_, Option<bool>>(4).unwrap_or(false),
                 pk: row.get(5),
                 default: row.get(6),
+                enum_values: None,
             });
         }
     }
@@ -273,30 +528,38 @@ pub(crate) async fn query(
     max_rows: usize,
 ) -> Result<QueryData, EngineError> {
     let started = Instant::now();
-    let client = inner.client.lock().await;
-    let statement = client.prepare(sql).await?;
-    let columns: Vec<String> = statement
-        .columns()
-        .iter()
-        .map(|col| col.name().to_string())
-        .collect();
-    let col_types: Vec<Type> = statement
-        .columns()
-        .iter()
-        .map(|col| col.type_().clone())
-        .collect();
-    let col_count = columns.len();
-    let mut column_values: Vec<Vec<Value>> = vec![Vec::new(); col_count];
-    let mut count = 0usize;
-    let mut truncated = false;
-
-    {
+    let controls = tx_controls(sql, Dialect::Postgres);
+    let client = inner.conn().await;
+    // Errors carry whether the statement got past Parse: one that never
+    // ran cannot have ended a transaction.
+    let read = async {
+        let statement = client.prepare(sql).await.map_err(|err| (err, false))?;
+        let columns: Vec<String> = statement
+            .columns()
+            .iter()
+            .map(|col| col.name().to_string())
+            .collect();
+        let col_types: Vec<Type> = statement
+            .columns()
+            .iter()
+            .map(|col| col.type_().clone())
+            .collect();
+        let col_count = columns.len();
+        let mut column_values: Vec<Vec<Value>> = vec![Vec::new(); col_count];
+        let mut count = 0usize;
+        let mut truncated = false;
         let stream = client
-            .query_raw(&statement, std::iter::empty::<i32>())
-            .await?;
+            .query_prepared(&statement)
+            .await
+            .map_err(|err| (err, true))?;
         futures_util::pin_mut!(stream);
         while let Some(row) = stream.next().await {
-            let row: Row = row?;
+            let row: Row = row.map_err(|err| {
+                if aborts_transaction(&err) {
+                    client.tx.failed();
+                }
+                (err, true)
+            })?;
             if count >= max_rows {
                 truncated = true;
                 break;
@@ -306,8 +569,25 @@ pub(crate) async fn query(
             }
             count += 1;
         }
+        Ok::<_, (tokio_postgres::Error, bool)>((
+            statement,
+            columns,
+            column_values,
+            count,
+            truncated,
+        ))
     }
+    .await;
+    let (statement, columns, column_values, count, truncated) = match read {
+        Ok(read) => read,
+        Err((err, ran)) => return Err(statement_failed(inner, &controls, err, ran)),
+    };
 
+    // BEGIN, COMMIT and the like run from the editor move the transaction;
+    // a COMMIT PostgreSQL turned into a rollback is reported as one.
+    if inner.tx.track(&controls, &inner.log) {
+        return Err(EngineError::TxRolledBack(ABORTED.into()));
+    }
     let (source_table, pk) = detect_source(&client, &statement, &columns).await;
     let (schema, batches) = build_arrow(&columns, column_values, count)?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -321,7 +601,40 @@ pub(crate) async fn query(
         truncated,
         source_table,
         pk,
+        // Booleans arrive as true and false.
+        column_kinds: Vec::new(),
     })
+}
+
+/// The error a failed editor statement reports. A COMMIT or ROLLBACK among
+/// `controls` that `ran` (got past Parse) has ended the transaction anyway
+/// (PostgreSQL closes the block even when its COMMIT fails, on a deferred
+/// constraint or a serialization failure), so History drops what it held; a
+/// COMMIT lost with the connection may or may not have gone through.
+fn statement_failed(
+    inner: &PostgresInner,
+    controls: &[TxControl],
+    err: tokio_postgres::Error,
+    ran: bool,
+) -> EngineError {
+    if failure_ends_tx(controls, ran) && inner.tx.is_open() {
+        inner.tx.end(false, &inner.log);
+        if controls.contains(&TxControl::Commit) && err.as_db_error().is_none() {
+            return EngineError::TxOutcomeUnknown(format!(
+                "연결이 끊겨 커밋되었는지 알 수 없습니다: {}",
+                postgres_message(&err)
+            ));
+        }
+    }
+    err.into()
+}
+
+/// Whether a failed editor statement ended the transaction: a COMMIT or
+/// ROLLBACK that got past Parse did, whatever went wrong after.
+fn failure_ends_tx(controls: &[TxControl], ran: bool) -> bool {
+    ran && controls
+        .iter()
+        .any(|control| matches!(control, TxControl::Commit | TxControl::Rollback))
 }
 
 pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u64, EngineError> {
@@ -330,8 +643,9 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
             "기본 키가 없어 편집할 수 없습니다".into(),
         ));
     }
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let table = qualified_from_display(&target.table);
+    check_key(&client, &table, &target.pk).await?;
     let column_type = column_type_of(&client, &table, &target.column).await?;
 
     let mut sql = format!(
@@ -359,11 +673,8 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
         params.push(pk_value_string(&pk.value));
     }
 
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    let changed = client.execute(&sql, &refs).await?;
+    let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
+    let changed = client.change(&sql, &refs).await?;
     Ok(changed)
 }
 
@@ -372,7 +683,7 @@ pub(crate) async fn insert_row(
     table: &str,
     values: &[(String, Option<String>)],
 ) -> Result<u64, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let table_ref = qualified_from_display(table);
     let sql = if values.is_empty() {
         format!("INSERT INTO {table_ref} DEFAULT VALUES")
@@ -393,11 +704,8 @@ pub(crate) async fn insert_row(
         )
     };
     let params: Vec<Option<String>> = values.iter().map(|(_, value)| value.clone()).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    let changed = client.execute(&sql, &refs).await?;
+    let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
+    let changed = client.change(&sql, &refs).await?;
     Ok(changed)
 }
 
@@ -409,8 +717,9 @@ pub(crate) async fn delete_row(
     if pk.is_empty() {
         return Err(EngineError::BadRequest("PK 조건이 필요합니다".into()));
     }
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let table_ref = qualified_from_display(table);
+    check_key(&client, &table_ref, pk).await?;
     let mut sql = format!("DELETE FROM {table_ref} WHERE ");
     let mut params: Vec<Option<String>> = Vec::with_capacity(pk.len());
     for (index, condition) in pk.iter().enumerate() {
@@ -432,11 +741,8 @@ pub(crate) async fn delete_row(
         }
         params.push(pk_value_string(&condition.value));
     }
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    let changed = client.execute(&sql, &refs).await?;
+    let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
+    let changed = client.change(&sql, &refs).await?;
     Ok(changed)
 }
 
@@ -446,7 +752,7 @@ pub(crate) async fn table_detail(
     inner: &PostgresInner,
     name: &str,
 ) -> Result<TableDetail, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     // The lookups below may fail on servers that lack a catalog view or
     // function (CockroachDB has no pg_table_size, say). Inside the user's open
     // transaction one failed statement aborts it, and a later COMMIT quietly
@@ -477,16 +783,19 @@ pub(crate) async fn table_detail(
 
 // After a failed lookup inside the fence, return to the savepoint so the
 // transaction stays usable for the next statement.
-async fn recover(client: &Client, fenced: bool) {
-    if fenced {
-        let _ = client
+async fn recover(client: &PgConn<'_>, fenced: bool) {
+    if fenced
+        && client
             .batch_execute(&format!("ROLLBACK TO SAVEPOINT {DETAIL_SAVEPOINT}"))
-            .await;
+            .await
+            .is_ok()
+    {
+        client.tx.recovered();
     }
 }
 
 async fn ok_or_recover<T>(
-    client: &Client,
+    client: &PgConn<'_>,
     fenced: bool,
     result: Result<T, tokio_postgres::Error>,
 ) -> Option<T> {
@@ -499,8 +808,37 @@ async fn ok_or_recover<T>(
     }
 }
 
+/// Splits "CREATE TRIGGER n BEFORE INSERT OR UPDATE ON t ..." into timing and event.
+pub(crate) fn trigger_timing_event(definition: &str) -> (Option<String>, Option<String>) {
+    let upper = definition.to_uppercase();
+    let words: Vec<&str> = upper.split_whitespace().collect();
+    let Some(start) = words
+        .iter()
+        .position(|word| matches!(*word, "BEFORE" | "AFTER" | "INSTEAD"))
+    else {
+        return (None, None);
+    };
+    let (timing, rest) = if words[start] == "INSTEAD" {
+        ("INSTEAD OF", words.get(start + 2..).unwrap_or(&[]))
+    } else {
+        (words[start], words.get(start + 1..).unwrap_or(&[]))
+    };
+    let mut events: Vec<&str> = Vec::new();
+    for word in rest {
+        match *word {
+            "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" => events.push(word),
+            "OR" => {}
+            "OF" if events.last() == Some(&"UPDATE") => {}
+            "ON" => break,
+            _ => {}
+        }
+    }
+    let event = (!events.is_empty()).then(|| events.join(" OR "));
+    (Some(timing.to_string()), event)
+}
+
 async fn table_detail_in(
-    client: &Client,
+    client: &PgConn<'_>,
     inner: &PostgresInner,
     name: &str,
     fenced: bool,
@@ -521,7 +859,7 @@ async fn table_detail_in(
     let oid: u32 = row.get(0);
     let qualified_ref = qualified(&schema_name, &table_name);
 
-    let columns = client
+    let mut columns = client
         .query(COLUMN_SQL, &[&qualified_ref])
         .await?
         .iter()
@@ -531,8 +869,30 @@ async fn table_detail_in(
             not_null: col.get(2),
             pk: col.get(3),
             default: col.get(4),
+            enum_values: None,
         })
         .collect::<Vec<_>>();
+    // Enum columns' values in their declared order; a server without
+    // pg_enum leaves them out.
+    let enums = client
+        .query(
+            "SELECT a.attname, array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
+             FROM pg_attribute a
+             JOIN pg_enum e ON e.enumtypid = a.atttypid
+             WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
+             GROUP BY a.attname",
+            &[&oid],
+        )
+        .await;
+    for row in ok_or_recover(client, fenced, enums)
+        .await
+        .unwrap_or_default()
+    {
+        let name: String = row.get(0);
+        if let Some(column) = columns.iter_mut().find(|column| column.name == name) {
+            column.enum_values = row.get(1);
+        }
+    }
 
     let mut indexes: Vec<IndexInfo> = Vec::new();
     if let Ok(index_rows) = client
@@ -678,6 +1038,36 @@ async fn table_detail_in(
     .and_then(|row| row.get::<_, Option<String>>(0))
     .filter(|text| !text.is_empty());
 
+    // CockroachDB has no pg_trigger; a failed lookup just shows no triggers.
+    let triggers = ok_or_recover(
+        client,
+        fenced,
+        client
+            .query(
+                "SELECT t.tgname, pg_get_triggerdef(t.oid) FROM pg_trigger t \
+                 WHERE t.tgrelid = $1 AND NOT t.tgisinternal ORDER BY t.tgname",
+                &[&oid],
+            )
+            .await,
+    )
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|row| {
+        let definition: Option<String> = row.get(1);
+        let (timing, event) = definition
+            .as_deref()
+            .map(trigger_timing_event)
+            .unwrap_or((None, None));
+        TriggerInfo {
+            name: row.get(0),
+            timing,
+            event,
+            definition,
+        }
+    })
+    .collect();
+
     Ok(TableDetail {
         name: display_name(&schema_name, &table_name),
         row_count_estimate,
@@ -689,12 +1079,13 @@ async fn table_detail_in(
         columns,
         indexes,
         foreign_keys,
+        triggers,
         schema: Some(schema_name.clone()),
     })
 }
 
 pub(crate) async fn server_info(inner: &PostgresInner) -> Result<ServerInfo, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let version: String = client.query_one("SELECT version()", &[]).await?.get(0);
     let database: Option<String> = client
         .query_opt("SELECT current_database()", &[])
@@ -739,7 +1130,10 @@ pub(crate) async fn server_info(inner: &PostgresInner) -> Result<ServerInfo, Eng
     })
 }
 
-async fn pg_sessions(client: &Client, backend_pid: i32) -> Result<Vec<ServerSession>, EngineError> {
+async fn pg_sessions(
+    client: &PgConn<'_>,
+    backend_pid: i32,
+) -> Result<Vec<ServerSession>, EngineError> {
     let rows = client
         .query(
             "SELECT pid, usename, datname, state, query,
@@ -772,7 +1166,7 @@ pub(crate) async fn objects(
     inner: &PostgresInner,
     include_system: bool,
 ) -> Result<DbObjects, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let system_filter = if include_system {
         "('')"
     } else if inner.kind == "cockroach" {
@@ -884,7 +1278,7 @@ pub(crate) async fn objects(
 }
 
 pub(crate) async fn table_count(inner: &PostgresInner, name: &str) -> Result<i64, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let row = client
         .query_one(
             &format!("SELECT COUNT(*) FROM {}", qualified_from_display(name)),
@@ -895,7 +1289,7 @@ pub(crate) async fn table_count(inner: &PostgresInner, name: &str) -> Result<i64
 }
 
 pub(crate) async fn databases(inner: &PostgresInner) -> Result<Vec<String>, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     if inner.kind == "cockroach" {
         let rows = client.query("SHOW DATABASES", &[]).await?;
         return Ok(rows
@@ -922,7 +1316,7 @@ pub(crate) async fn object_definition(
     kind: &str,
     name: &str,
 ) -> Result<Option<ObjectDefinition>, EngineError> {
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let (schema_name, object_name) = split_display(name);
     let found: Option<Option<String>> = match kind {
         "view" => match client
@@ -1052,7 +1446,7 @@ const PG_SEQUENCE_EXISTS: &str = "SELECT 1 FROM pg_class c
      JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'S' LIMIT 1";
 
-async fn exists_in(client: &Client, sql: &str, schema_name: &str, object_name: &str) -> bool {
+async fn exists_in(client: &PgConn<'_>, sql: &str, schema_name: &str, object_name: &str) -> bool {
     client
         .query_opt(sql, &[&schema_name, &object_name])
         .await
@@ -1067,7 +1461,7 @@ pub(crate) async fn kill_session(inner: &PostgresInner, id: u64) -> Result<(), E
             "자신의 연결은 종료할 수 없습니다".into(),
         ));
     }
-    let client = inner.client.lock().await;
+    let client = inner.conn().await;
     let terminated = client
         .query_opt("SELECT pg_terminate_backend($1::int)", &[&(id as i32)])
         .await?;
@@ -1137,10 +1531,40 @@ pub(crate) async fn tx(inner: &PostgresInner, statement: &str) -> Result<(), Eng
         }
         _ => {}
     }
-    let client = inner.client.lock().await;
-    client.batch_execute(statement).await?;
-    drop(client);
-    inner.in_tx.store(statement == "BEGIN", Ordering::SeqCst);
+    // Everything below runs under the lock, so no change slips between the
+    // statement and the bookkeeping.
+    let client = inner.conn().await;
+    // PostgreSQL answers COMMIT of an aborted transaction with a rollback:
+    // say so rather than report a commit.
+    if statement == "COMMIT" && inner.tx.is_aborted() {
+        let _ = client.batch_execute("ROLLBACK").await;
+        inner.tx.end(false, &inner.log);
+        return Err(EngineError::TxRolledBack(ABORTED.into()));
+    }
+    match client.batch_execute(statement).await {
+        Ok(()) if statement == "BEGIN" => inner.tx.begin(&inner.log),
+        Ok(()) => {
+            inner.tx.end(statement == "COMMIT", &inner.log);
+        }
+        // A COMMIT the server refused (a deferred constraint, say) ended the
+        // transaction rolled back; one lost with the connection may or may
+        // not have committed. Either way it is over, and History keeps none
+        // of it.
+        Err(err) if statement == "COMMIT" => {
+            inner.tx.end(false, &inner.log);
+            let message = postgres_message(&err);
+            return Err(if err.as_db_error().is_some() {
+                EngineError::TxRolledBack(format!(
+                    "커밋하지 못해 트랜잭션을 롤백했습니다: {message}"
+                ))
+            } else {
+                EngineError::TxOutcomeUnknown(format!(
+                    "연결이 끊겨 커밋되었는지 알 수 없습니다: {message}"
+                ))
+            });
+        }
+        Err(err) => return Err(err.into()),
+    }
     Ok(())
 }
 
@@ -1212,15 +1636,31 @@ const COLUMN_SQL: &str = "SELECT a.attname,
        AND NOT a.attisdropped
      ORDER BY a.attnum";
 
-const PK_SQL: &str = "SELECT a.attname
-     FROM pg_index i
-     JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
-     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-     WHERE i.indrelid = $1 AND i.indisprimary
+/// A SELECT's table by the oid its columns carry, and its primary key
+/// columns in key order: one row per key column, or one with a NULL name for
+/// a table without a key.
+const SOURCE_SQL: &str = "SELECT n.nspname, c.relname, a.attname::text
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary
+     LEFT JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+     LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+     WHERE c.oid = $1
      ORDER BY k.ord";
 
+/// A table's primary key columns now, by name.
+const KEY_SQL: &str = "SELECT a.attname::text
+     FROM pg_index i
+     JOIN LATERAL unnest(i.indkey) AS k(attnum) ON true
+     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+     WHERE i.indrelid = $1::text::regclass AND i.indisprimary";
+
+/// The table a SELECT read and its primary key, when the result holds every
+/// key column: one catalog query per SELECT, never kept. A kept name could
+/// outlive a rename in another session (a table swapped for another under
+/// the same name) and send edits to the wrong table.
 async fn detect_source(
-    client: &Client,
+    client: &PgConn<'_>,
     statement: &tokio_postgres::Statement,
     columns: &[String],
 ) -> (Option<String>, Option<Vec<String>>) {
@@ -1235,38 +1675,39 @@ async fn detect_source(
     let Some(oid) = oid else {
         return (None, None);
     };
-
-    let source_table = match client
-        .query_opt(
-            "SELECT n.nspname, c.relname FROM pg_class c
-             JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $1",
-            &[&oid],
-        )
-        .await
-    {
-        Ok(Some(row)) => Some(display_name(
-            &row.get::<_, String>(0),
-            &row.get::<_, String>(1),
-        )),
-        _ => None,
+    let Ok(rows) = client.query(SOURCE_SQL, &[&oid]).await else {
+        return (None, None);
     };
-
-    let pk = match client.query(PK_SQL, &[&oid]).await {
-        Ok(rows) => {
-            let names: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
-            if names.is_empty() || !names.iter().all(|name| columns.contains(name)) {
-                None
-            } else {
-                Some(names)
-            }
-        }
-        Err(_) => None,
+    let Some(first) = rows.first() else {
+        return (None, None);
     };
-
-    (source_table, pk)
+    let source_table = display_name(&first.get::<_, String>(0), &first.get::<_, String>(1));
+    let names: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.get::<_, Option<String>>(2))
+        .collect();
+    let pk =
+        (!names.is_empty() && names.iter().all(|name| columns.contains(name))).then_some(names);
+    (Some(source_table), pk)
 }
 
-async fn column_type_of(client: &Client, table: &str, column: &str) -> Result<String, EngineError> {
+/// Refuses a write keyed on columns that aren't the table's primary key now
+/// (see `key_unchanged`).
+async fn check_key(client: &PgConn<'_>, table: &str, pk: &[PkValue]) -> Result<(), EngineError> {
+    let rows = client.query(KEY_SQL, &[&table]).await?;
+    let current: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
+    if key_unchanged(&current, pk, false) {
+        Ok(())
+    } else {
+        Err(EngineError::NotEditable(KEY_CHANGED.into()))
+    }
+}
+
+async fn column_type_of(
+    client: &PgConn<'_>,
+    table: &str,
+    column: &str,
+) -> Result<String, EngineError> {
     let row = client
         .query_opt(
             "SELECT format_type(a.atttypid, a.atttypmod)
@@ -1369,5 +1810,106 @@ where
         Ok(Some(value)) => convert(value),
         Ok(None) => Value::Null,
         Err(_) => Value::from(format!("<{}>", dtype.name())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(sql: &str) -> Change {
+        Change {
+            sql: sql.into(),
+            ms: 0,
+            rows: 1,
+        }
+    }
+
+    fn drain(changes: &mut tokio::sync::mpsc::UnboundedReceiver<Change>) -> Vec<String> {
+        std::iter::from_fn(|| changes.try_recv().ok())
+            .map(|change| change.sql)
+            .collect()
+    }
+
+    /// Whether PostgreSQL turned a COMMIT in `sql` into a rollback.
+    fn run(tx: &TxState, sql: &str, log: &SqlLog) -> bool {
+        tx.track(&tx_controls(sql, Dialect::Postgres), log)
+    }
+
+    #[test]
+    fn only_a_transaction_statement_that_ran_ends_it_on_failure() {
+        let controls = |sql: &str| tx_controls(sql, Dialect::Postgres);
+        // Refused at Parse (an unsplit "COMMIT; SELECT 1"): never ran.
+        assert!(!failure_ends_tx(&controls("COMMIT; SELECT 1"), false));
+        // A COMMIT that failed while running (a deferred constraint).
+        assert!(failure_ends_tx(&controls("COMMIT"), true));
+        assert!(failure_ends_tx(&controls("ROLLBACK"), true));
+        assert!(!failure_ends_tx(&controls("ROLLBACK TO SAVEPOINT s"), true));
+        assert!(!failure_ends_tx(&controls("BEGIN"), true));
+        assert!(!failure_ends_tx(&controls("SELECT 1/0"), true));
+    }
+
+    #[test]
+    fn an_aborted_transaction_never_commits_its_changes() {
+        let log = SqlLog::new();
+        let mut changes = log.take_changes().unwrap();
+        let tx = TxState::default();
+
+        // A failure outside a transaction aborts nothing.
+        tx.failed();
+        assert!(!tx.is_aborted());
+
+        // The toolbar's COMMIT after a failed statement.
+        tx.begin(&log);
+        log.changed(change("A"), tx.is_open());
+        tx.failed();
+        assert!(tx.is_aborted());
+        assert!(!tx.end(true, &log));
+        assert!(drain(&mut changes).is_empty());
+        assert!(!tx.is_open() && !tx.is_aborted());
+
+        // ROLLBACK TO SAVEPOINT makes the transaction usable again.
+        tx.begin(&log);
+        log.changed(change("B"), tx.is_open());
+        tx.failed();
+        tx.recovered();
+        assert!(tx.end(true, &log));
+        assert_eq!(drain(&mut changes), vec!["B"]);
+
+        // The same from the editor.
+        run(&tx, "BEGIN", &log);
+        assert!(tx.is_open());
+        log.changed(change("C"), tx.is_open());
+        assert!(!run(&tx, "commit", &log));
+        assert!(!tx.is_open());
+        assert_eq!(drain(&mut changes), vec!["C"]);
+
+        run(&tx, "START TRANSACTION", &log);
+        log.changed(change("D"), tx.is_open());
+        tx.failed();
+        run(&tx, "ROLLBACK TO SAVEPOINT s", &log);
+        run(&tx, "END", &log);
+        assert_eq!(drain(&mut changes), vec!["D"]);
+
+        // PostgreSQL answers this COMMIT with a rollback.
+        run(&tx, "BEGIN", &log);
+        log.changed(change("E"), tx.is_open());
+        tx.failed();
+        assert!(run(&tx, "COMMIT", &log));
+        assert!(drain(&mut changes).is_empty());
+
+        // COMMIT AND CHAIN starts the next transaction straight away.
+        run(&tx, "BEGIN", &log);
+        log.changed(change("G"), tx.is_open());
+        assert!(!run(&tx, "COMMIT AND CHAIN", &log));
+        assert!(tx.is_open());
+        assert_eq!(drain(&mut changes), vec!["G"]);
+        run(&tx, "ROLLBACK", &log);
+
+        run(&tx, "BEGIN", &log);
+        log.changed(change("F"), tx.is_open());
+        run(&tx, "ROLLBACK", &log);
+        assert!(!tx.is_open());
+        assert!(drain(&mut changes).is_empty());
     }
 }

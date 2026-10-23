@@ -50,7 +50,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
     setError(null);
     try {
       for (const statement of result.statements) {
-        await store.exec(conn, statement);
+        await store.exec(conn, statement, { history: true });
       }
       store.setInfo(t("테이블을 생성했습니다: {name}", { name: name.trim() }));
       onCreated(name.trim());

@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use tablepeek_types::{HttpTunnelConfig, MssqlConfig, MySqlConfig, PostgresConfig, SshConfig};
 
 /// Runs kept per connection; the oldest fall off first.
-pub const HISTORY_CAP: usize = 200;
+pub const HISTORY_CAP: usize = 1_000;
 /// Runs kept across all connections, so forgotten files and sessions stay bounded.
-const HISTORY_TOTAL_CAP: usize = 2_000;
+const HISTORY_TOTAL_CAP: usize = 10_000;
 /// Longer statements are kept clipped, with a trailing "…".
 const HISTORY_SQL_CAP: usize = 10_000;
 const HISTORY_FILE: &str = "history.json";
@@ -97,10 +98,15 @@ pub struct SavedConnection {
     pub last_used: u64,
 }
 
-/// One statement run from the editor. `scope` names the connection it ran on
-/// (see `saved_scope`), so each connection keeps its own history.
+/// One statement run from the editor, or a data change committed from the
+/// GUI. `scope` names the connection it ran on (see `saved_scope`), so each
+/// connection keeps its own history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
+    /// Stable handle for deleting one entry; given on record (or on load,
+    /// for entries written before ids existed) when empty.
+    #[serde(default)]
+    pub id: String,
     pub scope: String,
     pub sql: String,
     pub at: u64,
@@ -119,6 +125,7 @@ pub fn saved_scope(id: &str) -> String {
     format!("{SAVED_PREFIX}{id}")
 }
 
+/// A saved query ("Queries"), shared by every connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FavoriteEntry {
     pub id: String,
@@ -126,6 +133,35 @@ pub struct FavoriteEntry {
     pub sql: String,
     #[serde(default)]
     pub keyword: Option<String>,
+    /// The folder's id; None keeps the query at the top level.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Unix seconds. Entries saved before these existed get the time they
+    /// were first loaded.
+    #[serde(default)]
+    pub created_at: u64,
+    /// Last change to the name, SQL or keyword (moving folders is not one).
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// What to change in a saved query; a None field stays as it is.
+#[derive(Debug, Default)]
+pub struct FavoritePatch {
+    pub name: Option<String>,
+    pub sql: Option<String>,
+    /// Some(None) clears the keyword.
+    pub keyword: Option<Option<String>>,
+    /// Some(None) moves the query to the top level.
+    pub folder: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FavoriteFolder {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -134,6 +170,8 @@ pub struct StoreData {
     pub connections: Vec<SavedConnection>,
     #[serde(default)]
     pub favorites: Vec<FavoriteEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub favorite_folders: Vec<FavoriteFolder>,
     /// Safe mode (0 off, 1 risky only, 2 every change) chosen per connection scope.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub safe_modes: BTreeMap<String, u8>,
@@ -144,6 +182,47 @@ pub struct StoreFile {
     data: StoreData,
     // Newest first. Kept in its own file so a query never rewrites store.json.
     history: Vec<HistoryEntry>,
+    // Bumped by every snapshot; the newest snapshot written so far, so an
+    // older one finishing late never overwrites it.
+    history_version: u64,
+    history_written: Arc<Mutex<u64>>,
+}
+
+/// History as it stood, ready to be written: `write` it where blocking is
+/// fine (the async server uses spawn_blocking); it serializes there too.
+pub struct HistorySnapshot {
+    dir: PathBuf,
+    entries: Vec<HistoryEntry>,
+    version: u64,
+    written: Arc<Mutex<u64>>,
+}
+
+impl HistorySnapshot {
+    /// Replaces history.json (0600, atomically) unless a newer snapshot is
+    /// already there.
+    pub fn write(self) -> Result<(), String> {
+        let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        if *written >= self.version {
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&self.entries)
+            .map_err(|err| format!("실행 기록을 직렬화할 수 없습니다: {err}"))?;
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|err| format!("저장 폴더를 만들 수 없습니다: {err}"))?;
+        let temp = self.dir.join(format!("{HISTORY_FILE}.tmp"));
+        std::fs::write(&temp, bytes).map_err(|err| format!("기록 파일을 쓸 수 없습니다: {err}"))?;
+        // Statements can carry literals worth keeping private (passwords in
+        // CREATE USER, personal data in WHERE clauses).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&temp, self.dir.join(HISTORY_FILE))
+            .map_err(|err| format!("기록 파일을 교체할 수 없습니다: {err}"))?;
+        *written = self.version;
+        Ok(())
+    }
 }
 
 impl StoreFile {
@@ -160,11 +239,35 @@ impl StoreFile {
         // its history and safe mode can never be reached again.
         history.retain(|entry| !entry.scope.starts_with(SESSION_PREFIX));
         data.safe_modes.retain(|scope, _| !scope.starts_with(SESSION_PREFIX));
-        Self {
+        // Files from before ids and timestamps: fill them in once, for good.
+        let mut history_ids = false;
+        for entry in history.iter_mut().filter(|entry| entry.id.is_empty()) {
+            entry.id = new_id();
+            history_ids = true;
+        }
+        let now = unix_now();
+        let mut favorite_times = false;
+        for favorite in data.favorites.iter_mut().filter(|f| f.created_at == 0) {
+            favorite.created_at = now;
+            if favorite.updated_at == 0 {
+                favorite.updated_at = now;
+            }
+            favorite_times = true;
+        }
+        let mut store = Self {
             dir: dir.to_path_buf(),
             data,
             history,
+            history_version: 0,
+            history_written: Arc::new(Mutex::new(0)),
+        };
+        if history_ids {
+            let _ = store.persist_history();
         }
+        if favorite_times {
+            let _ = store.persist();
+        }
+        store
     }
 
     pub fn load_home() -> Self {
@@ -240,10 +343,22 @@ impl StoreFile {
             .find(|connection| connection.id == id)
     }
 
-    pub fn record_history(&mut self, mut entry: HistoryEntry) -> Result<(), String> {
+    pub fn record_history(&mut self, entry: HistoryEntry) -> Result<(), String> {
+        if self.add_history(entry) {
+            self.persist_history()?;
+        }
+        Ok(())
+    }
+
+    /// Adds an entry in memory only; false for a blank statement. Persist
+    /// with `history_snapshot`.
+    pub fn add_history(&mut self, mut entry: HistoryEntry) -> bool {
         let sql = entry.sql.trim();
         if sql.is_empty() {
-            return Ok(());
+            return false;
+        }
+        if entry.id.is_empty() {
+            entry.id = new_id();
         }
         entry.sql = match sql.char_indices().nth(HISTORY_SQL_CAP) {
             Some((cut, _)) => format!("{}…", &sql[..cut]),
@@ -260,7 +375,7 @@ impl StoreFile {
             kept <= HISTORY_CAP
         });
         self.history.truncate(HISTORY_TOTAL_CAP);
-        self.persist_history()
+        true
     }
 
     pub fn history(&self, scope: &str, limit: usize) -> Vec<HistoryEntry> {
@@ -273,8 +388,43 @@ impl StoreFile {
     }
 
     pub fn clear_history(&mut self, scope: &str) -> Result<(), String> {
-        self.history.retain(|entry| entry.scope != scope);
+        self.forget_history(scope);
         self.persist_history()
+    }
+
+    /// Drops a scope's entries in memory only. Persist with `history_snapshot`.
+    pub fn forget_history(&mut self, scope: &str) {
+        self.history.retain(|entry| entry.scope != scope);
+    }
+
+    /// Removes one entry of `scope`; false, writing nothing, when it has none
+    /// with that id.
+    pub fn remove_history(&mut self, scope: &str, id: &str) -> Result<bool, String> {
+        if !self.forget_history_entry(scope, id) {
+            return Ok(false);
+        }
+        self.persist_history()?;
+        Ok(true)
+    }
+
+    /// Drops one entry of `scope` in memory only; false when it has none with
+    /// that id. Persist with `history_snapshot`.
+    pub fn forget_history_entry(&mut self, scope: &str, id: &str) -> bool {
+        let before = self.history.len();
+        self.history
+            .retain(|entry| entry.scope != scope || entry.id != id);
+        self.history.len() != before
+    }
+
+    /// History as it stands now, to write off this thread.
+    pub fn history_snapshot(&mut self) -> HistorySnapshot {
+        self.history_version += 1;
+        HistorySnapshot {
+            dir: self.dir.clone(),
+            entries: self.history.clone(),
+            version: self.history_version,
+            written: self.history_written.clone(),
+        }
     }
 
     /// False for a saved profile that was deleted while its connection stayed
@@ -318,6 +468,90 @@ impl StoreFile {
         self.data.favorites.clone()
     }
 
+    /// Applies `patch`, bumping `updated_at` to `at` when the name, SQL or
+    /// keyword actually changes. None, writing nothing, for an unknown id.
+    pub fn update_favorite(
+        &mut self,
+        id: &str,
+        patch: FavoritePatch,
+        at: u64,
+    ) -> Result<Option<FavoriteEntry>, String> {
+        let Some(favorite) = self
+            .data
+            .favorites
+            .iter_mut()
+            .find(|favorite| favorite.id == id)
+        else {
+            return Ok(None);
+        };
+        let mut edited = false;
+        if let Some(name) = patch.name {
+            edited |= favorite.name != name;
+            favorite.name = name;
+        }
+        if let Some(sql) = patch.sql {
+            edited |= favorite.sql != sql;
+            favorite.sql = sql;
+        }
+        if let Some(keyword) = patch.keyword {
+            edited |= favorite.keyword != keyword;
+            favorite.keyword = keyword;
+        }
+        if let Some(folder) = patch.folder {
+            favorite.folder = folder;
+        }
+        if edited {
+            favorite.updated_at = at;
+        }
+        let updated = favorite.clone();
+        self.persist()?;
+        Ok(Some(updated))
+    }
+
+    pub fn folders(&self) -> Vec<FavoriteFolder> {
+        self.data.favorite_folders.clone()
+    }
+
+    pub fn has_folder(&self, id: &str) -> bool {
+        self.data
+            .favorite_folders
+            .iter()
+            .any(|folder| folder.id == id)
+    }
+
+    pub fn add_folder(&mut self, folder: FavoriteFolder) -> Result<(), String> {
+        self.data.favorite_folders.push(folder);
+        self.persist()
+    }
+
+    pub fn rename_folder(&mut self, id: &str, name: String) -> Result<bool, String> {
+        let Some(folder) = self
+            .data
+            .favorite_folders
+            .iter_mut()
+            .find(|folder| folder.id == id)
+        else {
+            return Ok(false);
+        };
+        folder.name = name;
+        self.persist()?;
+        Ok(true)
+    }
+
+    /// Removes a folder together with the queries in it.
+    pub fn remove_folder(&mut self, id: &str) -> Result<bool, String> {
+        let before = self.data.favorite_folders.len();
+        self.data.favorite_folders.retain(|folder| folder.id != id);
+        if self.data.favorite_folders.len() == before {
+            return Ok(false);
+        }
+        self.data
+            .favorites
+            .retain(|favorite| favorite.folder.as_deref() != Some(id));
+        self.persist()?;
+        Ok(true)
+    }
+
     fn persist(&self) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|err| format!("저장 폴더를 만들 수 없습니다: {err}"))?;
@@ -330,24 +564,20 @@ impl StoreFile {
         Ok(())
     }
 
-    fn persist_history(&self) -> Result<(), String> {
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|err| format!("저장 폴더를 만들 수 없습니다: {err}"))?;
-        let json = serde_json::to_vec(&self.history)
-            .map_err(|err| format!("실행 기록을 직렬화할 수 없습니다: {err}"))?;
-        let temp = self.dir.join(format!("{HISTORY_FILE}.tmp"));
-        std::fs::write(&temp, json).map_err(|err| format!("기록 파일을 쓸 수 없습니다: {err}"))?;
-        // Statements can carry literals worth keeping private (passwords in
-        // CREATE USER, personal data in WHERE clauses).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::rename(&temp, self.dir.join(HISTORY_FILE))
-            .map_err(|err| format!("기록 파일을 교체할 수 없습니다: {err}"))?;
-        Ok(())
+    fn persist_history(&mut self) -> Result<(), String> {
+        self.history_snapshot().write()
     }
+}
+
+fn new_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn migrate_legacy_dir(base: &Path, dir: &Path) {
@@ -722,6 +952,9 @@ mod tests {
                 name: "사용자 목록".into(),
                 sql: "SELECT * FROM users".into(),
                 keyword: None,
+                folder: None,
+                created_at: 1,
+                updated_at: 1,
             })
             .unwrap();
 
@@ -807,6 +1040,7 @@ mod tests {
 
     fn run(scope: &str, sql: &str, at: u64) -> HistoryEntry {
         HistoryEntry {
+            id: String::new(),
             scope: scope.into(),
             sql: sql.into(),
             at,
@@ -1000,6 +1234,223 @@ mod tests {
     }
 
     #[test]
+    fn history_entries_get_ids_and_can_be_removed_one_by_one() {
+        let dir = temp_dir("history-ids");
+        let mut store = StoreFile::load(&dir);
+        store.record_history(run("saved:a", "SELECT 1", 1)).unwrap();
+        store.record_history(run("saved:a", "SELECT 2", 2)).unwrap();
+        store.record_history(run("saved:b", "SELECT 3", 3)).unwrap();
+        let a = store.history("saved:a", 10);
+        assert!(a.iter().all(|entry| entry.id.len() == 32));
+        assert_ne!(a[0].id, a[1].id);
+        // Ids survive a reload.
+        assert_eq!(StoreFile::load(&dir).history("saved:a", 10)[0].id, a[0].id);
+
+        // Another scope's entry is out of reach even with its id.
+        let b_id = store.history("saved:b", 1)[0].id.clone();
+        assert!(!store.remove_history("saved:a", &b_id).unwrap());
+        assert!(store.remove_history("saved:a", &a[1].id).unwrap());
+        assert!(!store.remove_history("saved:a", &a[1].id).unwrap());
+        let reloaded = StoreFile::load(&dir);
+        let left = reloaded.history("saved:a", 10);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].sql, "SELECT 2");
+        assert_eq!(reloaded.history("saved:b", 10).len(), 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_late_older_snapshot_never_replaces_a_newer_one() {
+        let dir = temp_dir("history-snapshots");
+        let mut store = StoreFile::load(&dir);
+        assert!(store.add_history(run("demo", "SELECT 1", 1)));
+        assert!(!store.add_history(run("demo", "  ", 2)));
+        let older = store.history_snapshot();
+        assert!(store.add_history(run("demo", "SELECT 2", 3)));
+        let newer = store.history_snapshot();
+        newer.write().unwrap();
+        older.write().unwrap();
+        let sqls: Vec<String> = StoreFile::load(&dir)
+            .history("demo", 10)
+            .into_iter()
+            .map(|entry| entry.sql)
+            .collect();
+        assert_eq!(sqls, vec!["SELECT 2", "SELECT 1"]);
+
+        store.forget_history("demo");
+        assert!(store.history("demo", 10).is_empty());
+        store.history_snapshot().write().unwrap();
+        assert!(StoreFile::load(&dir).history("demo", 10).is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_history_and_favorites_are_filled_in_once() {
+        let dir = temp_dir("legacy-ids");
+        std::fs::write(
+            dir.join(HISTORY_FILE),
+            r#"[{"scope":"demo","sql":"SELECT 1","at":5,"ms":1,"ok":true,"rows":1}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(STORE_FILE),
+            r#"{"connections":[],"favorites":[{"id":"f1","name":"전체","sql":"SELECT 1","keyword":null}]}"#,
+        )
+        .unwrap();
+        let store = StoreFile::load(&dir);
+        let id = store.history("demo", 1)[0].id.clone();
+        assert_eq!(id.len(), 32);
+        let favorite = &store.favorites()[0];
+        assert!(favorite.created_at > 0);
+        assert_eq!(favorite.updated_at, favorite.created_at);
+        assert_eq!(favorite.folder, None);
+        assert!(store.folders().is_empty());
+
+        // Written back, so the next load sees the same values.
+        let again = StoreFile::load(&dir);
+        assert_eq!(again.history("demo", 1)[0].id, id);
+        assert_eq!(again.favorites()[0].created_at, favorite.created_at);
+        let raw = std::fs::read_to_string(dir.join(STORE_FILE)).unwrap();
+        assert!(!raw.contains("favorite_folders"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn favorite(id: &str, folder: Option<&str>) -> FavoriteEntry {
+        FavoriteEntry {
+            id: id.into(),
+            name: format!("query {id}"),
+            sql: "SELECT 1".into(),
+            keyword: None,
+            folder: folder.map(str::to_string),
+            created_at: 10,
+            updated_at: 10,
+        }
+    }
+
+    #[test]
+    fn favorites_update_only_what_is_sent() {
+        let dir = temp_dir("favorite-update");
+        let mut store = StoreFile::load(&dir);
+        store
+            .add_folder(FavoriteFolder {
+                id: "dir".into(),
+                name: "Reports".into(),
+                created_at: 1,
+            })
+            .unwrap();
+        store.add_favorite(favorite("q", None)).unwrap();
+
+        // A pure folder move keeps updated_at.
+        let moved = store
+            .update_favorite(
+                "q",
+                FavoritePatch {
+                    folder: Some(Some("dir".into())),
+                    ..Default::default()
+                },
+                20,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.folder.as_deref(), Some("dir"));
+        assert_eq!(moved.updated_at, 10);
+
+        // Sending what is already there changes nothing either.
+        let same = store
+            .update_favorite(
+                "q",
+                FavoritePatch {
+                    sql: Some("SELECT 1".into()),
+                    ..Default::default()
+                },
+                30,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(same.updated_at, 10);
+
+        let edited = store
+            .update_favorite(
+                "q",
+                FavoritePatch {
+                    name: Some("Daily".into()),
+                    keyword: Some(Some("daily".into())),
+                    ..Default::default()
+                },
+                40,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(edited.name, "Daily");
+        assert_eq!(edited.keyword.as_deref(), Some("daily"));
+        assert_eq!(edited.sql, "SELECT 1");
+        assert_eq!(edited.updated_at, 40);
+        assert_eq!(edited.created_at, 10);
+
+        let cleared = store
+            .update_favorite(
+                "q",
+                FavoritePatch {
+                    keyword: Some(None),
+                    folder: Some(None),
+                    ..Default::default()
+                },
+                50,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.keyword, None);
+        assert_eq!(cleared.folder, None);
+        assert_eq!(cleared.updated_at, 50);
+
+        assert!(store
+            .update_favorite("missing", FavoritePatch::default(), 60)
+            .unwrap()
+            .is_none());
+        let reloaded = StoreFile::load(&dir);
+        assert_eq!(reloaded.favorites()[0].name, "Daily");
+        assert_eq!(reloaded.favorites()[0].updated_at, 50);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_folder_removes_its_queries() {
+        let dir = temp_dir("favorite-folders");
+        let mut store = StoreFile::load(&dir);
+        for id in ["a", "b"] {
+            store
+                .add_folder(FavoriteFolder {
+                    id: id.into(),
+                    name: format!("folder {id}"),
+                    created_at: 1,
+                })
+                .unwrap();
+        }
+        store.add_favorite(favorite("in-a", Some("a"))).unwrap();
+        store.add_favorite(favorite("in-b", Some("b"))).unwrap();
+        store.add_favorite(favorite("top", None)).unwrap();
+        assert!(store.has_folder("a"));
+
+        assert!(store.rename_folder("a", "Renamed".into()).unwrap());
+        assert!(!store.rename_folder("missing", "x".into()).unwrap());
+        assert!(store.remove_folder("a").unwrap());
+        assert!(!store.remove_folder("a").unwrap());
+
+        let reloaded = StoreFile::load(&dir);
+        let folders = reloaded.folders();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, "b");
+        let ids: Vec<String> = reloaded.favorites().into_iter().map(|f| f.id).collect();
+        assert_eq!(ids, vec!["in-b", "top"]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn connections_and_favorites_crud() {
         let dir = temp_dir("crud");
         let mut store = StoreFile::load(&dir);
@@ -1019,6 +1470,9 @@ mod tests {
                 name: "전체".into(),
                 sql: "SELECT 1".into(),
                 keyword: None,
+                folder: None,
+                created_at: 1,
+                updated_at: 1,
             })
             .unwrap();
         assert!(store.remove_favorite("fav-1").unwrap());
