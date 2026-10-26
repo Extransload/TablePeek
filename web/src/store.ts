@@ -907,9 +907,22 @@ async function ownTx(conn: string, action: "begin" | "commit" | "rollback"): Pro
       throw new Error(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
     }
     await sock.begin(conn);
+    ownTxConns.add(conn);
     return;
   }
-  await (action === "commit" ? sock.commit(conn) : sock.rollback(conn));
+  try {
+    await (action === "commit" ? sock.commit(conn) : sock.rollback(conn));
+  } finally {
+    ownTxConns.delete(conn);
+  }
+}
+
+// Connections inside such a transaction. A statement run there now would join
+// it, and a COMMIT or ROLLBACK would end it under the import.
+const ownTxConns = new Set<string>();
+
+function inOwnTx(conn: string): boolean {
+  return ownTxConns.has(conn);
 }
 
 function activate(
@@ -1347,6 +1360,7 @@ export const store = {
   commitTx,
   rollbackTx,
   ownTx,
+  inOwnTx,
   openDb,
   listDir,
   statPath,

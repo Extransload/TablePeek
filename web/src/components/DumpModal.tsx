@@ -3,7 +3,7 @@ import { createTableSql, draftsFromDetail, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
 import { t } from "../i18n";
 import { decodeText, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
-import { startJob } from "../jobs";
+import { cancelJob, startJob } from "../jobs";
 import { getSettings } from "../settings";
 import { splitSqlRanges } from "../sqlSplit";
 import { store, type EngineMeta, type TableDetail } from "../store";
@@ -47,7 +47,8 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
   const [restoreBytes, setRestoreBytes] = useState<ArrayBuffer | null>(null);
   const [restoreEncoding, setRestoreEncoding] = useState<string>(() => getSettings().csvEncoding);
   const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
-  const restoreAbortRef = useRef<AbortController | null>(null);
+  // The running restore's job: Stop here and in the jobs queue both cancel it.
+  const restoreJobRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const restoreText = useMemo(
     () => (restoreBytes === null ? "" : decodeText(restoreBytes, restoreEncoding)),
@@ -205,9 +206,12 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
       setError(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
       return;
     }
-    const controller = new AbortController();
-    restoreAbortRef.current = controller;
-    const job = startJob(t("복원"), restoreFile, statements.length);
+    if (store.inOwnTx(conn)) {
+      setError(t("가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요."));
+      return;
+    }
+    const job = startJob(t("복원"), restoreFile, statements.length, { cancellable: true });
+    restoreJobRef.current = job.id;
     setBusy(true);
     setError(null);
     setInfo(null);
@@ -223,7 +227,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     let executed = 0;
     try {
       for (const statement of statements) {
-        if (controller.signal.aborted) {
+        if (job.signal.aborted) {
           break;
         }
         await store.exec(conn, statement.text);
@@ -256,7 +260,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         true,
       );
     } finally {
-      restoreAbortRef.current = null;
+      restoreJobRef.current = null;
       if (mountedRef.current) {
         setBusy(false);
         setRestoreProgress(null);
@@ -433,7 +437,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
               <button type="button" onClick={onClose}>
                 {t("백그라운드에서 계속")}
               </button>
-              <button type="button" onClick={() => restoreAbortRef.current?.abort()}>
+              <button type="button" onClick={() => restoreJobRef.current !== null && cancelJob(restoreJobRef.current)}>
                 <StopIcon size={10} />
                 {t("중지")}
               </button>

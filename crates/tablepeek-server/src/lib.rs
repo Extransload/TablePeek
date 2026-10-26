@@ -3024,9 +3024,11 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
         let invalidate = settle_after_query(&slot, ended, reload).await;
         let tx_state = ended.map(|committed| if committed { "committed" } else { "rolledback" });
         if let Some(scope) = scope {
-            let summary = outcome
-                .as_ref()
-                .map(|data| (data.elapsed_ms, data.row_count));
+            // A statement that changes rows is filed with how many it changed.
+            let summary = outcome.as_ref().map(|data| {
+                let rows = data.rows_affected.map_or(data.row_count, |n| n as usize);
+                (data.elapsed_ms, rows)
+            });
             let entry = run_entry(scope, &sql, started, summary);
             let _ = file_history(&state.store, vec![entry]).await;
         }

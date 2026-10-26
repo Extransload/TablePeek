@@ -63,7 +63,6 @@ const EN: Record<string, string> = {
   "행 상세": "Row detail",
   "행 상세 패널": "Row detail panel",
   "결과 내보내기": "Export result",
-  "그리드": "Grid",
   "메시지": "Messages",
   "계획": "Plan",
   "메시지가 없습니다": "No messages",
@@ -1202,6 +1201,7 @@ const EN: Record<string, string> = {
   "결과 {count}": "Result {count}",
   "{count}행 영향": "{count} rows affected",
   // Import
+  "가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요.": "An import is running. Run this again once it finishes.",
   "가져오지 않음": "Do not import",
   "데이터 타입": "Data type",
   "{line}번째 줄": "line {line}",

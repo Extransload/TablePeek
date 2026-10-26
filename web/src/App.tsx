@@ -1467,6 +1467,10 @@ export default function App() {
   }
 
   function startRun(conn: string, tabId: string, sqlText: string): void {
+    if (store.inOwnTx(conn)) {
+      store.setError(t("가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요."));
+      return;
+    }
     const dialect = meta?.kind ?? "";
     const statements = splitSqlStatements(sqlText, dialect);
     // Every statement is checked, not just the first one.

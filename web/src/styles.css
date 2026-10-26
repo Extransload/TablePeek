@@ -411,54 +411,6 @@ select {
   flex-direction: column;
 }
 
-.result-tabs {
-  flex: none;
-  display: flex;
-  align-items: center;
-  height: 26px;
-  padding: 0 6px;
-  gap: 2px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-}
-
-.result-tab {
-  position: relative;
-  height: 100%;
-  padding: 0 12px;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  color: var(--muted);
-  font-size: calc(12px * var(--ui-scale, 1));
-}
-
-.result-tab:hover {
-  background: transparent;
-  color: var(--ink);
-}
-
-.result-tab.active {
-  color: var(--ink);
-}
-
-.result-tab.active::after {
-  content: "";
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  bottom: -1px;
-  height: 2px;
-  background: var(--accent);
-}
-
-.result-tab .dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
 .result-body {
   flex: 1;
   min-height: 0;
@@ -3160,33 +3112,6 @@ textarea:focus-visible {
   border-right-color: var(--line-soft);
 }
 
-.result-tabs {
-  height: 32px;
-  gap: 4px;
-  padding: 4px 8px;
-  border-bottom-color: var(--line-soft);
-}
-
-.result-tab {
-  height: 24px;
-  padding: 0 12px;
-  border-radius: var(--r-sm);
-  transition: background-color 0.14s ease, color 0.14s ease;
-}
-
-.result-tab:hover {
-  background: var(--hover-fill);
-}
-
-.result-tab.active {
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-.result-tab.active::after {
-  display: none;
-}
-
 .data-toolbar {
   height: 34px;
   padding: 0 10px;
@@ -4441,13 +4366,6 @@ textarea:focus-visible {
   font-size: calc(11px * var(--ui-scale, 1));
   text-align: center;
 }
-
-
-
-
-
-
-
 
 .appbar {
   gap: 4px;

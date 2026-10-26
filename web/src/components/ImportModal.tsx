@@ -23,7 +23,7 @@ import {
   type InsertMode,
 } from "../importSql";
 import { asBoolean, profileColumn, textProfile, typeChoices, typeName, wantsBoolean } from "../importTypes";
-import { startJob } from "../jobs";
+import { cancelJob, startJob } from "../jobs";
 import { palette } from "../palette";
 import { getSettings } from "../settings";
 import { store, type TableDetail } from "../store";
@@ -168,7 +168,8 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
   const [renaming, setRenaming] = useState<number | null>(null);
   const [running, setRunning] = useState<Running | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  // The running import's job: Stop here and in the jobs queue both cancel it.
+  const jobRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pointerRef = useRef({ x: 0, y: 0 });
   const tableRef = useRef<TableGridHandle | null>(null);
@@ -430,9 +431,10 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
           return importLiteral(column.boolean ? asBoolean(value) : value, kind);
         }),
     };
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const job = startJob(t("가져오기: {table}", { table: destination }), fileName, rows.length);
+    const job = startJob(t("가져오기: {table}", { table: destination }), fileName, rows.length, {
+      cancellable: true,
+    });
+    jobRef.current = job.id;
     setRunning({ done: 0, total: rows.length, locating: false });
     const where = (row: number): string => {
       const at = parsed.at[row] ?? row + 1;
@@ -449,7 +451,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
           commit: () => store.ownTx(conn, "commit"),
           rollback: () => store.ownTx(conn, "rollback"),
         },
-        controller.signal,
+        job.signal,
         (done, locating = false) => {
           job.update(done, locating ? t("오류가 난 행을 찾는 중…") : undefined);
           if (mountedRef.current) {
@@ -481,7 +483,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
         store.setError(message);
       }
     } finally {
-      abortRef.current = null;
+      jobRef.current = null;
       if (mountedRef.current) {
         setRunning(null);
       }
@@ -796,7 +798,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                 <button type="button" onClick={onClose}>
                   {t("백그라운드에서 계속")}
                 </button>
-                <button type="button" onClick={() => abortRef.current?.abort()}>
+                <button type="button" onClick={() => jobRef.current !== null && cancelJob(jobRef.current)}>
                   <StopIcon size={10} />
                   {t("중지")}
                 </button>
