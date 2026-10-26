@@ -2535,44 +2535,6 @@ td.user-actions {
   gap: 12px;
 }
 
-.import-map {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 220px;
-  overflow: auto;
-  padding: 2px;
-}
-
-.import-map-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-}
-
-.import-map-row select {
-  min-width: 0;
-  height: 24px;
-  padding: 0 7px;
-  background: var(--bg);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  font-size: calc(12px * var(--ui-scale, 1));
-}
-
-.import-preview {
-  max-height: 200px;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-}
-
-.import-preview .panel-table {
-  width: 100%;
-}
-
 .dump-tables {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -8975,4 +8937,84 @@ button.result-set.failed .result-set-status {
 .result-message .error-notice {
   max-width: 760px;
   margin-top: 6px;
+}
+
+/* ── Import: CSV / JSON wizard and SQL dump ─────────────────── */
+
+.import-modal {
+  width: min(880px, 94vw);
+  max-width: none;
+}
+
+.import-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 14px;
+}
+
+.import-options .check-row {
+  height: 24px;
+}
+
+.import-pair {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.field .import-char {
+  width: 48px;
+  text-align: center;
+}
+
+.import-file {
+  max-width: 420px;
+  height: 24px;
+  line-height: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* The preview is the shared table grid; it needs a box of its own size. */
+.import-grid {
+  position: relative;
+  height: 300px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.import-drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 140px;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  color: var(--faint);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+/* A table with many columns lists them all: the menu scrolls instead of
+   running off the window. */
+.import-header-menu .context-menu[data-level="0"] {
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+}
+
+.dump-sql-preview {
+  max-height: 260px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1.5;
+  white-space: pre;
 }

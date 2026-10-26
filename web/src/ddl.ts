@@ -71,6 +71,11 @@ export function quoteIdent(kind: string, name: string): string {
     .join(".");
 }
 
+// A column's name, never schema-qualified: a dot in it is part of the name.
+export function quoteName(kind: string, name: string): string {
+  return quotePart(kind, name.trim());
+}
+
 export function splitList(text: string): string[] {
   return text
     .split(",")
@@ -79,7 +84,7 @@ export function splitList(text: string): string[] {
 }
 
 function columnDef(kind: string, column: ColumnDraft): string {
-  const parts = [quoteIdent(kind, column.name), column.type.trim()];
+  const parts = [quoteName(kind, column.name), column.type.trim()];
   if (column.notNull) {
     parts.push("NOT NULL");
   }

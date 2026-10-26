@@ -40,7 +40,7 @@ import type { RowSource } from "./grid/rowSource";
 import { HomeScreen, type NewConnectionOptions } from "./components/HomeScreen";
 import { HoverTooltip } from "./components/HoverTooltip";
 import { t, tServer, tTableCount } from "./i18n";
-import { ImportModal } from "./components/ImportModal";
+import { ImportModal, type ImportFormat } from "./components/ImportModal";
 import { JobsModal } from "./components/JobsModal";
 import { ParamModal } from "./components/ParamModal";
 import { ReviewModal } from "./components/ReviewModal";
@@ -566,7 +566,8 @@ export default function App() {
     proceed(): void;
   } | null>(null);
   const [dbMenu, setDbMenu] = useState<DbMenuState | null>(null);
-  const [importTarget, setImportTarget] = useState<{ kind: string; table: string } | null>(null);
+  // The import wizard: the format, and the destination when one was picked.
+  const [importTarget, setImportTarget] = useState<{ format: ImportFormat; table: string | null } | null>(null);
   const [dumpTab, setDumpTab] = useState<"backup" | "restore" | null>(null);
   // Home's backup/restore: choosing which connection, then waiting for it to open.
   const [dumpPicker, setDumpPicker] = useState<{ kind: "backup" | "restore"; saved: SavedConnection[] } | null>(
@@ -2997,8 +2998,8 @@ export default function App() {
       await writeClipboard(tables.map((name) => `${truncateTableSql(kind, name)};`).join("\n"));
       return;
     }
-    if (action === "import") {
-      setImportTarget({ kind, table });
+    if (action === "importCsv" || action === "importJson" || action === "importSql") {
+      openImport(action === "importCsv" ? "csv" : action === "importJson" ? "json" : "sql", table);
       return;
     }
     if (action === "rename") {
@@ -3446,6 +3447,16 @@ export default function App() {
     } catch {}
   }
 
+  // File → Import, as TablePlus has it: CSV and JSON open the wizard (on the
+  // table, when one was picked); an SQL dump runs from the dump window.
+  function openImport(format: ImportFormat | "sql", table: string | null): void {
+    if (format === "sql") {
+      setDumpTab("restore");
+      return;
+    }
+    setImportTarget({ format, table });
+  }
+
   function paletteActions(): PaletteAction[] {
     const result = store.getState().result;
     const active = currentTab();
@@ -3497,14 +3508,22 @@ export default function App() {
       { id: "open-file", label: t("SQLite 파일 열기"), run: () => setFsOpen(true) },
       { id: "create-table", label: t("새 테이블 생성"), run: () => setCreateTableOpen(true) },
       {
-        id: "import-data",
-        label: t("데이터 가져오기"),
-        disabled: active === null || active.kind !== "data",
-        run: () => {
-          if (active !== null && active.kind === "data") {
-            setImportTarget({ kind: meta?.kind ?? "", table: active.table });
-          }
-        },
+        id: "import-csv",
+        label: t("CSV에서 가져오기"),
+        disabled: meta === null,
+        run: () => openImport("csv", active !== null && active.kind === "data" ? active.table : null),
+      },
+      {
+        id: "import-json",
+        label: t("JSON에서 가져오기"),
+        disabled: meta === null,
+        run: () => openImport("json", active !== null && active.kind === "data" ? active.table : null),
+      },
+      {
+        id: "import-sql",
+        label: t("SQL 덤프에서 가져오기"),
+        disabled: meta === null,
+        run: () => openImport("sql", null),
       },
       {
         id: "dump-backup",
@@ -4698,6 +4717,7 @@ export default function App() {
                   onTogglePin={togglePin}
                   onTableAction={(action, tables) => void tableAction(action, tables)}
                   onOpenCreateTable={() => setCreateTableOpen(true)}
+                  onImport={(format) => openImport(format, null)}
                   onOpenSql={openSqlTab}
                   onOpenUsers={() => setUserMgrOpen(true)}
                   onSwitchDatabase={serverConn ? (x, y) => void openDbMenu(x, y) : undefined}
@@ -5340,13 +5360,13 @@ export default function App() {
               onSelect: openExport,
             },
             {
-              label: t("데이터 가져오기…"),
-              disabled: activeDataTab === null,
-              onSelect: () => {
-                if (activeDataTab !== null) {
-                  setImportTarget({ kind: meta?.kind ?? "", table: activeDataTab.table });
-                }
-              },
+              label: t("가져오기"),
+              disabled: meta === null,
+              submenu: [
+                { label: t("CSV에서…"), onSelect: () => openImport("csv", activeDataTab?.table ?? null) },
+                { label: t("JSON에서…"), onSelect: () => openImport("json", activeDataTab?.table ?? null) },
+                { label: t("SQL 덤프에서…"), onSelect: () => openImport("sql", null) },
+              ],
             },
             {
               label: t("백업 (SQL 덤프)…"),
@@ -5451,11 +5471,26 @@ export default function App() {
           onClose={() => setExportTarget(null)}
         />
       )}
-      {importTarget !== null && activeConnId !== null && (
+      {importTarget !== null && activeConnId !== null && meta !== null && (
         <ImportModal
           conn={activeConnId}
-          kind={importTarget.kind}
+          kind={meta.kind}
+          format={importTarget.format}
+          tables={meta.tables}
           table={importTarget.table}
+          onImported={(table) => {
+            // Row counts, and a new table in the list; an open tab on the
+            // table shows what came in (the import may finish in the background).
+            const conn = activeConnId;
+            forgetTableDetails();
+            setMetaNonce((value) => value + 1);
+            void refreshActiveMeta();
+            const ws = workspacesRef.current[conn];
+            const tab = ws !== undefined ? activeTabOf(ws.tabs) : null;
+            if (tab !== null && tab.kind === "data" && tab.table === table) {
+              runDataWith(conn, tab, dataSpecOf(tab, 0, tab.pageSize));
+            }
+          }}
           onClose={() => setImportTarget(null)}
         />
       )}
