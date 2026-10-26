@@ -897,6 +897,21 @@ async function rollbackTx(): Promise<void> {
   }
 }
 
+// A transaction a view runs for itself (an import), on the connection's one
+// session as applyPending's is; the TX controls don't show it. Refused while
+// the user has one open, which its COMMIT or ROLLBACK would end too.
+async function ownTx(conn: string, action: "begin" | "commit" | "rollback"): Promise<void> {
+  const sock = ensureSocket();
+  if (action === "begin") {
+    if (state.connId === conn && state.tx === "active") {
+      throw new Error(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
+    }
+    await sock.begin(conn);
+    return;
+  }
+  await (action === "commit" ? sock.commit(conn) : sock.rollback(conn));
+}
+
 function activate(
   conn: string | null,
   meta: EngineMeta | null,
@@ -1331,6 +1346,7 @@ export const store = {
   beginTx,
   commitTx,
   rollbackTx,
+  ownTx,
   openDb,
   listDir,
   statPath,

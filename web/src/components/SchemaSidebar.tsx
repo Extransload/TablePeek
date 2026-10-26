@@ -39,7 +39,9 @@ export type TableAction =
   | "duplicate"
   | "truncate"
   | "delete"
-  | "import";
+  | "importCsv"
+  | "importJson"
+  | "importSql";
 
 interface SchemaSidebarProps {
   conn: string;
@@ -61,6 +63,8 @@ interface SchemaSidebarProps {
   // Copies, truncates and drops take every picked table; the rest take one.
   onTableAction(action: TableAction, tables: string[]): void;
   onOpenCreateTable(): void;
+  // File → Import, with no table picked: the wizard asks for one.
+  onImport(format: "csv" | "json" | "sql"): void;
   onOpenSql(sql: string, title: string): void;
   onOpenUsers(): void;
   // Offered only for servers that hold several databases.
@@ -172,6 +176,7 @@ export function SchemaSidebar({
   onTogglePin,
   onTableAction,
   onOpenCreateTable,
+  onImport,
   onOpenSql,
   onOpenUsers,
   onSwitchDatabase,
@@ -625,7 +630,15 @@ export function SchemaSidebar({
       { label: t("Laravel 스키마 복사"), onSelect: act("copyLaravel") },
       { label: t("이름 변경…"), separatorBefore: true, onSelect: act("rename") },
       { label: t("테이블 복제…"), onSelect: act("duplicate") },
-      { label: t("데이터 가져오기…"), separatorBefore: true, onSelect: act("import") },
+      {
+        label: t("가져오기"),
+        separatorBefore: true,
+        submenu: [
+          { label: t("CSV에서…"), onSelect: act("importCsv") },
+          { label: t("JSON에서…"), onSelect: act("importJson") },
+          { label: t("SQL 덤프에서…"), onSelect: act("importSql") },
+        ],
+      },
       { label: t("테이블 비우기 (TRUNCATE)"), onSelect: act("truncate") },
       { label: t("테이블 삭제"), onSelect: act("delete") },
     ];
@@ -992,6 +1005,14 @@ export function SchemaSidebar({
               ? [{ label: t("데이터베이스 전환…"), onSelect: () => onSwitchDatabase(moreMenu.x, moreMenu.y) }]
               : []),
             { label: t("새 테이블 생성"), separatorBefore: true, onSelect: onOpenCreateTable },
+            {
+              label: t("가져오기"),
+              submenu: [
+                { label: t("CSV에서…"), onSelect: () => onImport("csv") },
+                { label: t("JSON에서…"), onSelect: () => onImport("json") },
+                { label: t("SQL 덤프에서…"), onSelect: () => onImport("sql") },
+              ],
+            },
             { label: t("테이블 개요"), onSelect: onOpenOverview },
             { label: t("서버 정보"), onSelect: onOpenServer },
             { label: t("사용자 관리"), onSelect: onOpenUsers },
