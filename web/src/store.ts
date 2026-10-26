@@ -610,7 +610,8 @@ function txEnded(
 
 // The TX controls follow BEGIN, COMMIT and ROLLBACK typed in the editor too.
 function followTx(conn: string, inTx: boolean | undefined): void {
-  if (inTx === undefined || state.connId !== conn) {
+  // A job's transaction (an import's) is its own: it never becomes the user's.
+  if (inTx === undefined || state.connId !== conn || inOwnTx(conn)) {
     return;
   }
   const tx: TxState = inTx ? "active" : "none";
@@ -766,6 +767,11 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
   if (applying || table === null || !source.hasPending()) {
     return applying ? null : { structural: false };
   }
+  if (inOwnTx(result.conn)) {
+    // The changes would go into the import's transaction, and be undone with it.
+    setState({ error: t(BUSY_ERROR) });
+    return null;
+  }
   const ops = source.pendingOps();
   const pkNames = new Set(meta.pk ?? []);
   const conn = result.conn;
@@ -873,6 +879,9 @@ function activeConnOrThrow(): string {
 }
 
 async function beginTx(): Promise<void> {
+  if (refuseWhileJob()) {
+    return;
+  }
   try {
     await ensureSocket().begin(activeConnOrThrow());
     setState({ tx: "active" });
@@ -882,6 +891,9 @@ async function beginTx(): Promise<void> {
 }
 
 async function commitTx(): Promise<void> {
+  if (refuseWhileJob()) {
+    return;
+  }
   try {
     const conn = activeConnOrThrow();
     await ensureSocket().commit(conn);
@@ -900,6 +912,9 @@ async function commitTx(): Promise<void> {
 }
 
 async function rollbackTx(): Promise<void> {
+  if (refuseWhileJob()) {
+    return;
+  }
   try {
     await ensureSocket().rollback(activeConnOrThrow());
     setState({ tx: "none" });
@@ -909,32 +924,68 @@ async function rollbackTx(): Promise<void> {
   }
 }
 
-// A transaction a view runs for itself (an import), on the connection's one
-// session as applyPending's is; the TX controls don't show it. Refused while
-// the user has one open, which its COMMIT or ROLLBACK would end too.
-async function ownTx(conn: string, action: "begin" | "commit" | "rollback"): Promise<void> {
-  const sock = ensureSocket();
-  if (action === "begin") {
-    if (state.connId === conn && state.tx === "active") {
-      throw new Error(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
-    }
-    await sock.begin(conn);
-    ownTxConns.add(conn);
-    return;
-  }
-  try {
-    await (action === "commit" ? sock.commit(conn) : sock.rollback(conn));
-  } finally {
-    ownTxConns.delete(conn);
-  }
-}
-
-// Connections inside such a transaction. A statement run there now would join
-// it, and a COMMIT or ROLLBACK would end it under the import.
+// Connections a background job (an import, a restore) holds, from its first
+// statement to its last. Its statements share the connection's one session
+// with the page's, so while it runs nothing else may write there: a write
+// would join an import's transaction (and be undone with it), its COMMIT or
+// ROLLBACK would end that transaction, and MySQL's DDL would commit it. The
+// page's reads carry on.
 const ownTxConns = new Set<string>();
+
+const BUSY_ERROR = "가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요.";
 
 function inOwnTx(conn: string): boolean {
   return ownTxConns.has(conn);
+}
+
+// The TX controls act on the active connection.
+function refuseWhileJob(): boolean {
+  if (state.connId !== null && inOwnTx(state.connId)) {
+    setState({ status: "error", error: t(BUSY_ERROR) });
+    return true;
+  }
+  return false;
+}
+
+// Before a job's first statement. Refused while the user has a transaction
+// open there (the job's COMMIT or ROLLBACK, or MySQL's CREATE TABLE, would
+// end it) or another job holds the connection.
+function claimConn(conn: string): void {
+  if (state.connId === conn && state.tx === "active") {
+    throw new Error(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
+  }
+  if (inOwnTx(conn)) {
+    throw new Error(t(BUSY_ERROR));
+  }
+  ownTxConns.add(conn);
+}
+
+function releaseConn(conn: string): void {
+  ownTxConns.delete(conn);
+}
+
+// A claimed job's own transaction, on the connection's one session as
+// applyPending's is; the TX controls don't show it. A ROLLBACK that fails
+// (refused, the socket gone) may leave it open: it becomes the user's to
+// see in the TX controls and end there, once the job lets go.
+async function ownTx(conn: string, action: "begin" | "commit" | "rollback"): Promise<void> {
+  const sock = ensureSocket();
+  if (action === "begin") {
+    await sock.begin(conn, true);
+    return;
+  }
+  if (action === "commit") {
+    await sock.commit(conn, true);
+    return;
+  }
+  try {
+    await sock.rollback(conn, true);
+  } catch (error) {
+    if (state.connId === conn) {
+      setState({ tx: "active" });
+    }
+    throw error;
+  }
 }
 
 function activate(
@@ -1163,6 +1214,10 @@ async function switchDatabase(
   conn: string,
   database: string,
 ): Promise<LiveConn> {
+  // The switch reconnects the session the job is running on.
+  if (inOwnTx(conn)) {
+    throw new Error(t(BUSY_ERROR));
+  }
   return api<LiveConn>(`/api/switch-db?conn=${encodeURIComponent(conn)}`, {
     method: "POST",
     body: JSON.stringify({ database }),
@@ -1179,12 +1234,18 @@ export interface ExecResult {
 
 // history: file the statement under the connection's history, as a change the
 // user committed from a view (structure, table actions, users).
-async function exec(conn: string, sql: string, options?: { history?: boolean }): Promise<ExecResult> {
+// job: a claimed job's own statement (see claimConn); anything else is
+// refused while a job holds the connection.
+async function exec(conn: string, sql: string, options?: { history?: boolean; job?: boolean }): Promise<ExecResult> {
   const history = options?.history ?? false;
+  const job = options?.job ?? false;
+  if (!job && inOwnTx(conn)) {
+    throw new Error(t(BUSY_ERROR));
+  }
   try {
     return await api<ExecResult>(`/api/exec?conn=${encodeURIComponent(conn)}`, {
       method: "POST",
-      body: JSON.stringify({ sql, history }),
+      body: JSON.stringify({ sql, history, ...(job ? { job: true } : {}) }),
     });
   } finally {
     if (history) {
@@ -1374,6 +1435,8 @@ export const store = {
   rollbackTx,
   ownTx,
   inOwnTx,
+  claimConn,
+  releaseConn,
   openDb,
   listDir,
   statPath,

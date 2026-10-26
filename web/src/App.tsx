@@ -1304,9 +1304,10 @@ export default function App() {
     }
     const kind = meta?.kind ?? "";
     const countKey = buildWhere(tab.filter ?? null, kind) ?? "";
-    if (!asked && workspacesRef.current[conn]?.tx === "active") {
+    if (!asked && (workspacesRef.current[conn]?.tx === "active" || store.inOwnTx(conn))) {
       // Inside a transaction a count cut short by the next query would abort
       // it (Postgres), so none runs on its own; the one shown may be stale.
+      // While an import or restore holds the connection, likewise.
       if (tab.count !== undefined && current !== null) {
         setTabsFor(conn, patchTab(current, tabId, { count: undefined, countFilter: undefined }));
       }
@@ -2865,6 +2866,11 @@ export default function App() {
     const conn = activeConnIdRef.current;
     const tab = currentTab();
     if (conn === null || !tab || store.getState().status === "running") {
+      return;
+    }
+    // An EXPLAIN written out (EXPLAIN ANALYZE …) runs its statement.
+    if (store.inOwnTx(conn)) {
+      store.setError(t("가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요."));
       return;
     }
     let sqlText: string;

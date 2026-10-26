@@ -145,11 +145,15 @@ export class ImportFailure extends Error {
   // The failing row, from 0, when it could be told.
   readonly row: number | null;
   readonly stopped: boolean;
+  // Why the import couldn't be undone (a ROLLBACK that failed, MySQL's new
+  // table that wouldn't drop), else null: the table is as it was.
+  readonly undoError: string | null;
 
-  constructor(message: string, row: number | null, stopped = false) {
+  constructor(message: string, row: number | null, stopped = false, undoError: string | null = null) {
     super(message);
     this.row = row;
     this.stopped = stopped;
+    this.undoError = undoError;
   }
 }
 
@@ -175,6 +179,9 @@ function chunkSql(plan: ImportPlan, from: number, to: number): string {
 // the table is as it was. The failing row is found afterwards by trying the
 // failed chunk's rows one at a time, first by themselves and, if none fails
 // alone (a key repeated from an earlier chunk), after the chunks before them.
+// A ROLLBACK (or MySQL's DROP of the new table) that fails is never passed
+// off as undone: the failure carries why, and the transaction may be open.
+// The stop signal is not looked at once the COMMIT is sent.
 export async function runImport(
   plan: ImportPlan,
   session: ImportSession,
@@ -184,12 +191,26 @@ export async function runImport(
   const { dialect } = plan.spec;
   const created = plan.create.length > 0;
   const stopped = (): ImportFailure => new ImportFailure("stopped", null, true);
-  const dropCreated = async (): Promise<void> => {
-    if (created && !ddlInTransaction(dialect)) {
-      await session.exec(`DROP TABLE ${quoteIdent(dialect, plan.spec.table)}`).catch(() => undefined);
+  // Each returns why it couldn't, or null.
+  const dropCreated = async (): Promise<string | null> => {
+    if (!created || ddlInTransaction(dialect)) {
+      return null;
+    }
+    try {
+      await session.exec(`DROP TABLE ${quoteIdent(dialect, plan.spec.table)}`);
+      return null;
+    } catch (error) {
+      return messageOf(error);
     }
   };
-  const rollback = (): Promise<void> => session.rollback().catch(() => undefined);
+  const rollback = async (): Promise<string | null> => {
+    try {
+      await session.rollback();
+      return null;
+    } catch (error) {
+      return messageOf(error);
+    }
+  };
 
   if (created && !ddlInTransaction(dialect)) {
     for (const statement of plan.create) {
@@ -199,8 +220,8 @@ export async function runImport(
   try {
     await session.begin();
   } catch (error) {
-    await dropCreated();
-    throw error;
+    const undoError = await dropCreated();
+    throw undoError === null ? error : new ImportFailure(messageOf(error), null, false, undoError);
   }
   let failedAt = -1;
   try {
@@ -222,24 +243,44 @@ export async function runImport(
       throw stopped();
     }
   } catch (error) {
-    await rollback();
+    const rollbackError = await rollback();
+    if (rollbackError !== null) {
+      // Nothing more is tried on a transaction that may still be open.
+      throw new ImportFailure(
+        error instanceof ImportFailure && error.stopped ? "stopped" : messageOf(error),
+        failedAt >= 0 ? failedAt : null,
+        error instanceof ImportFailure && error.stopped,
+        rollbackError,
+      );
+    }
     if (error instanceof ImportFailure || failedAt < 0) {
-      await dropCreated();
+      const undoError = await dropCreated();
+      if (undoError !== null) {
+        const stop = error instanceof ImportFailure && error.stopped;
+        throw new ImportFailure(stop ? "stopped" : messageOf(error), null, stop, undoError);
+      }
       throw error;
     }
     const found = await locate(plan, session, signal, failedAt, onProgress);
-    await dropCreated();
-    if (found === null) {
-      throw new ImportFailure(messageOf(error), failedAt);
+    const undoError = found.undoError ?? (await dropCreated());
+    if (found.row === null) {
+      throw new ImportFailure(messageOf(error), failedAt, false, undoError);
     }
-    throw new ImportFailure(messageOf(found.error), found.row);
+    throw new ImportFailure(messageOf(found.error), found.row, false, undoError);
   }
   try {
     await session.commit();
   } catch (error) {
-    await dropCreated();
-    throw error;
+    const undoError = await dropCreated();
+    throw undoError === null ? error : new ImportFailure(messageOf(error), null, false, undoError);
   }
+}
+
+interface Located {
+  row: number | null;
+  error: unknown;
+  // A probe's ROLLBACK that failed: its rows may still be in an open transaction.
+  undoError: string | null;
 }
 
 async function locate(
@@ -248,19 +289,22 @@ async function locate(
   signal: AbortSignal,
   from: number,
   onProgress: ImportProgress,
-): Promise<{ row: number; error: unknown } | null> {
+): Promise<Located> {
   const to = Math.min(plan.rowCount, from + plan.chunkRows);
   const passes = from === 0 ? [false] : [false, true];
+  const none: Located = { row: null, error: null, undoError: null };
   for (const afterEarlier of passes) {
     if (signal.aborted) {
-      return null;
+      return none;
     }
     onProgress(from, true);
     try {
       await session.begin();
     } catch {
-      return null;
+      return none;
     }
+    let found: Located | null = null;
+    let replayFailed = false;
     try {
       if (plan.create.length > 0 && ddlInTransaction(plan.spec.dialect)) {
         for (const statement of plan.create) {
@@ -268,26 +312,32 @@ async function locate(
         }
       }
       if (afterEarlier) {
-        for (let start = 0; start < from; start += plan.chunkRows) {
-          if (signal.aborted) {
-            return null;
-          }
+        for (let start = 0; start < from && !signal.aborted; start += plan.chunkRows) {
           await session.exec(chunkSql(plan, start, Math.min(from, start + plan.chunkRows)));
         }
       }
-      for (let row = from; row < to; row += 1) {
+      for (let row = from; row < to && !signal.aborted && found === null; row += 1) {
         try {
           await session.exec(insertStatement(plan.spec, [plan.literals(row)]));
         } catch (error) {
-          return { row, error };
+          found = { row, error, undoError: null };
         }
       }
     } catch {
       // The rows before the failed chunk didn't go in again: nothing to tell.
-      return null;
-    } finally {
-      await session.rollback().catch(() => undefined);
+      replayFailed = true;
+    }
+    try {
+      await session.rollback();
+    } catch (error) {
+      return { ...(found ?? none), undoError: messageOf(error) };
+    }
+    if (found !== null) {
+      return found;
+    }
+    if (replayFailed || signal.aborted) {
+      return none;
     }
   }
-  return null;
+  return none;
 }
