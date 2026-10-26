@@ -65,12 +65,15 @@ export interface DelimitedRows {
 
 // RFC 4180 with the delimiter and quote of the caller's choosing: a quote
 // opens a quoted field only at the field's start, a doubled quote inside one
-// is a quote, and line breaks inside one are data. Blank lines are no rows.
+// is a quote, and line breaks inside one are data. Blank lines are no rows,
+// unless every row has one field: there an empty line is an empty value (a
+// one-column export writes NULL so), and only the end of the last line ends it.
 export function parseDelimited(text: string, options: DelimitedOptions): DelimitedRows {
   const delimiter = options.delimiter === "" ? "," : options.delimiter;
   const quote = options.quote.slice(0, 1);
   const rows: string[][] = [];
   const lines: number[] = [];
+  const blank: boolean[] = [];
   let row: string[] = [];
   let field = "";
   let quoted = false;
@@ -82,10 +85,9 @@ export function parseDelimited(text: string, options: DelimitedOptions): Delimit
 
   function endRow(): void {
     row.push(field);
-    if (!(row.length === 1 && row[0] === "" && !rowQuoted)) {
-      rows.push(row);
-      lines.push(rowLine);
-    }
+    rows.push(row);
+    lines.push(rowLine);
+    blank.push(row.length === 1 && row[0] === "" && !rowQuoted);
     row = [];
     field = "";
     fieldStart = true;
@@ -141,7 +143,14 @@ export function parseDelimited(text: string, options: DelimitedOptions): Delimit
   if (field !== "" || row.length > 0 || rowQuoted) {
     endRow();
   }
-  return { rows, lines };
+  if (blank.every(Boolean)) {
+    return { rows: [], lines: [] };
+  }
+  if (rows.every((entry) => entry.length <= 1)) {
+    return { rows, lines };
+  }
+  const kept = rows.map((_, index) => index).filter((index) => !blank[index]);
+  return { rows: kept.map((index) => rows[index]), lines: kept.map((index) => lines[index]) };
 }
 
 // Header names as columns: blanks get colN, repeats (in any case, since
@@ -193,10 +202,218 @@ export function parseCsv(text: string, options: CsvOptions): ParsedImport {
   };
 }
 
+// A JSON number a double can't hold exactly: an integer past 2^53, or a
+// decimal with more significant digits than a double keeps. It stays as the
+// file wrote it, so ids and amounts go in unchanged, and reads as that text.
+export class JsonNumber {
+  readonly text: string;
+
+  constructor(text: string) {
+    this.text = text;
+  }
+
+  toString(): string {
+    return this.text;
+  }
+
+  // Exact inside nested JSON where the engine can write raw JSON; a double elsewhere.
+  toJSON(): unknown {
+    const raw = (JSON as unknown as { rawJSON?: (text: string) => unknown }).rawJSON;
+    return raw === undefined ? Number(this.text) : raw(this.text);
+  }
+}
+
+// Whether Number(source) would change a number literal's value.
+function inexact(source: string): boolean {
+  const value = Number(source);
+  if (/^-?\d+$/.test(source)) {
+    return !Number.isSafeInteger(value);
+  }
+  // Past a double's range (1e400) or below it (1e-400).
+  const digits = source.replace(/^-/, "").split(/[eE]/)[0].replace(".", "").replace(/^0+/, "").replace(/0+$/, "");
+  return digits.length > 15 || !Number.isFinite(value) || (value === 0 && digits !== "");
+}
+
+// Sixteen digits in a row (a point between them aside) or a three-digit
+// exponent: without either every number literal is exact as a double, and
+// JSON.parse alone will do.
+const LONG_NUMBER = /(?:\d\.?){16}|\d[eE][+-]?\d{3}/;
+
+// JSON.parse hands a reviver each literal's source text (Chrome 114+, Node 21+).
+const SOURCE_TEXT = (() => {
+  let source: unknown;
+  try {
+    JSON.parse("1", (_key: string, value: unknown, context?: { source?: string }) => {
+      source = context?.source;
+      return value;
+    });
+  } catch {
+    return false;
+  }
+  return source === "1";
+})();
+
+const NUMBER_TOKEN = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+const WORDS: [string, unknown][] = [
+  ["true", true],
+  ["false", false],
+  ["null", null],
+];
+
+// JSON read by hand, for engines whose JSON.parse gives no source text:
+// number literals arrive as written, strings still go through JSON.parse.
+class ExactJsonReader {
+  private readonly text: string;
+  private at = 0;
+
+  constructor(text: string) {
+    this.text = text;
+  }
+
+  document(): unknown {
+    const value = this.value();
+    this.space();
+    if (this.at < this.text.length) {
+      this.fail();
+    }
+    return value;
+  }
+
+  private fail(): never {
+    const found = this.text[this.at];
+    throw new SyntaxError(
+      found === undefined
+        ? "Unexpected end of JSON input"
+        : `Unexpected token '${found}' in JSON at position ${this.at}`,
+    );
+  }
+
+  private space(): void {
+    while (this.at < this.text.length && " \t\n\r".includes(this.text[this.at])) {
+      this.at += 1;
+    }
+  }
+
+  private expect(ch: string): void {
+    this.space();
+    if (this.text[this.at] !== ch) {
+      this.fail();
+    }
+    this.at += 1;
+  }
+
+  private value(): unknown {
+    this.space();
+    const ch = this.text[this.at];
+    if (ch === "{") {
+      return this.object();
+    }
+    if (ch === "[") {
+      return this.array();
+    }
+    if (ch === '"') {
+      return this.string();
+    }
+    if (ch === "-" || (ch >= "0" && ch <= "9")) {
+      NUMBER_TOKEN.lastIndex = this.at;
+      const match = NUMBER_TOKEN.exec(this.text);
+      if (match === null) {
+        this.fail();
+      }
+      this.at += match[0].length;
+      return inexact(match[0]) ? new JsonNumber(match[0]) : Number(match[0]);
+    }
+    for (const [word, value] of WORDS) {
+      if (this.text.startsWith(word, this.at)) {
+        this.at += word.length;
+        return value;
+      }
+    }
+    return this.fail();
+  }
+
+  private string(): string {
+    const start = this.at;
+    this.at += 1;
+    while (this.at < this.text.length) {
+      const ch = this.text[this.at];
+      if (ch === '"') {
+        this.at += 1;
+        return JSON.parse(this.text.slice(start, this.at)) as string;
+      }
+      this.at += ch === "\\" ? 2 : 1;
+    }
+    return this.fail();
+  }
+
+  private object(): Record<string, unknown> {
+    const item: Record<string, unknown> = {};
+    this.at += 1;
+    this.space();
+    if (this.text[this.at] === "}") {
+      this.at += 1;
+      return item;
+    }
+    for (;;) {
+      this.space();
+      if (this.text[this.at] !== '"') {
+        this.fail();
+      }
+      const key = this.string();
+      this.expect(":");
+      // As JSON.parse does: "__proto__" is a key like any other.
+      Object.defineProperty(item, key, { value: this.value(), enumerable: true, writable: true, configurable: true });
+      this.space();
+      if (this.text[this.at] === "}") {
+        this.at += 1;
+        return item;
+      }
+      this.expect(",");
+    }
+  }
+
+  private array(): unknown[] {
+    const items: unknown[] = [];
+    this.at += 1;
+    this.space();
+    if (this.text[this.at] === "]") {
+      this.at += 1;
+      return items;
+    }
+    for (;;) {
+      items.push(this.value());
+      this.space();
+      if (this.text[this.at] === "]") {
+        this.at += 1;
+        return items;
+      }
+      this.expect(",");
+    }
+  }
+}
+
+// JSON.parse, except that numbers a double would change come back as JsonNumber.
+export function parseJsonExact(text: string): unknown {
+  if (!LONG_NUMBER.test(text)) {
+    return JSON.parse(text) as unknown;
+  }
+  if (SOURCE_TEXT) {
+    return JSON.parse(text, (_key: string, value: unknown, context?: { source?: string }) =>
+      typeof value === "number" && context?.source !== undefined && inexact(context.source)
+        ? new JsonNumber(context.source)
+        : value,
+    ) as unknown;
+  }
+  return new ExactJsonReader(text).document();
+}
+
 // Nested objects and arrays go in as their JSON text.
 function scalar(value: unknown): unknown {
   if (value === undefined) {
     return null;
+  }
+  if (value instanceof JsonNumber) {
+    return value;
   }
   if (value !== null && typeof value === "object") {
     return JSON.stringify(value);
@@ -251,7 +468,7 @@ function fromRecords(items: unknown[], at: number[], unit: ParsedImport["unit"])
 export function parseJsonImport(text: string): ParsedImport {
   let data: unknown;
   try {
-    data = JSON.parse(text) as unknown;
+    data = parseJsonExact(text);
   } catch (error) {
     const items: unknown[] = [];
     const at: number[] = [];
@@ -262,7 +479,7 @@ export function parseJsonImport(text: string): ParsedImport {
         continue;
       }
       try {
-        items.push(JSON.parse(lineText) as unknown);
+        items.push(parseJsonExact(lineText));
       } catch {
         // Not JSON Lines either: what JSON.parse said of the whole file reads best.
         if (items.length === 0) {

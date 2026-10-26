@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createTableSql, draftsFromDetail, quoteIdent } from "../ddl";
+import { createTableSql, dependencyOrder, draftsFromDetail, foreignKeySql, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
 import { t } from "../i18n";
 import { decodeText, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
@@ -105,17 +105,36 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         `-- Created: ${new Date().toISOString()}`,
         "",
       ];
-      let tableIndex = 0;
+      // Structures first: tables go parents first, so creates and inserts find
+      // what they reference, and foreign keys are added after all the rows
+      // (the servers' CREATE TABLE text has none; SQLite's carries them).
+      const details = new Map<string, TableDetail>();
+      const failures = new Map<string, unknown>();
       for (const table of tables) {
+        try {
+          details.set(table, await store.fetchTableDetail(conn, table));
+        } catch (err) {
+          failures.set(table, err);
+        }
+      }
+      const keysAfter = includeDdl && meta.kind !== "sqlite";
+      const relaxKeys = meta.kind === "mysql";
+      if (relaxKeys) {
+        parts.push("SET FOREIGN_KEY_CHECKS = 0;", "");
+      }
+      // As SQLite's own .dump starts: its keys can't be added after the rows.
+      if (meta.kind === "sqlite") {
+        parts.push("PRAGMA foreign_keys = OFF;", "");
+      }
+      let tableIndex = 0;
+      for (const table of dependencyOrder(tables, (name) => details.get(name)?.foreign_keys.map((fk) => fk.ref_table) ?? [])) {
         tableIndex += 1;
         job.update(tableIndex - 1, table);
-        let detail: TableDetail;
-        try {
-          detail = await store.fetchTableDetail(conn, table);
-        } catch (err) {
+        const detail = details.get(table);
+        if (detail === undefined) {
           parts.push(
             // A multi-line reason would leave the comment and run as SQL on restore.
-            `-- ${table}: skipped (${errorOf(err, "could not read the structure").replace(/\s+/g, " ")})`,
+            `-- ${table}: skipped (${errorOf(failures.get(table), "could not read the structure").replace(/\s+/g, " ")})`,
           );
           parts.push("");
           job.update(tableIndex, t("{table} 건너뜀", { table }));
@@ -126,10 +145,11 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
           if (detail.ddl !== null) {
             parts.push(`${detail.ddl.trim().replace(/;?$/, ";")}`);
           } else {
+            const drafts = draftsFromDetail(detail);
             const created = createTableSql(
               meta.kind,
               table,
-              draftsFromDetail(detail),
+              keysAfter ? { ...drafts, foreignKeys: [] } : drafts,
             );
             for (const statement of created.statements) {
               parts.push(`${statement};`);
@@ -170,6 +190,15 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         }
         parts.push("");
         job.update(tableIndex, table);
+      }
+      const keys = keysAfter
+        ? tables.flatMap((table) => details.get(table)?.foreign_keys.map((fk) => `${foreignKeySql(meta.kind, table, fk)};`) ?? [])
+        : [];
+      if (keys.length > 0) {
+        parts.push("-- Foreign keys", ...keys, "");
+      }
+      if (relaxKeys) {
+        parts.push("SET FOREIGN_KEY_CHECKS = 1;", "");
       }
       const text = parts.join("\n");
       downloadBlob(suggestFilename(`${baseName(meta)}_backup`, "sql"), text, EXPORT_MIME.sql);

@@ -1,3 +1,5 @@
+import { JsonNumber } from "./importParse";
+
 // Column types for a table made from an imported file, guessed from its
 // values: integer, decimal, boolean, date or datetime when every non-empty
 // value reads as one, else text. Numbers with leading zeros (zip codes,
@@ -113,6 +115,10 @@ function readValue(value: unknown): ValueReading | null {
   }
   if (typeof value === "boolean") {
     return { kind: "boolean", intDigits: 0, scale: 0, fraction: 0 };
+  }
+  // Read as written: a 19-digit id is a bigint, not a double.
+  if (value instanceof JsonNumber) {
+    return readText(value.text);
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
@@ -268,9 +274,14 @@ export function typeChoices(dialect: string, guessed: string): string[] {
 // What a destination column's declared type wants from text values: booleans
 // written as true/false or yes/no become the engine's TRUE/FALSE (MySQL's
 // TINYINT(1) and SQLite won't read the word), the rest go in as written.
-export function wantsBoolean(declType: string | null): boolean {
+// BIT is a flag only in SQL Server and MySQL; PostgreSQL's bit(n) is a bit
+// string, which takes '1' and refuses TRUE.
+export function wantsBoolean(declType: string | null, dialect = ""): boolean {
   const type = (declType ?? "").trim().toLowerCase();
-  return /^(bool|boolean|bit)\b/.test(type) || /^tinyint\s*\(\s*1\s*\)/.test(type);
+  if (/^bit\b/.test(type)) {
+    return dialect === "mssql" || dialect === "mysql";
+  }
+  return /^(bool|boolean)\b/.test(type) || /^tinyint\s*\(\s*1\s*\)/.test(type);
 }
 
 const TRUE_RE = /^(?:true|t|yes|y|on|1)$/i;

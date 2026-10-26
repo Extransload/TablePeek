@@ -1,5 +1,6 @@
 import { quoteIdent, quoteName } from "./ddl";
 import { quoteLiteral } from "./export";
+import { JsonNumber } from "./importParse";
 
 // How rows that collide with an existing key are handled. TablePlus offers
 // these for PostgreSQL and MySQL/MariaDB; SQLite has the same two, spelled
@@ -40,6 +41,17 @@ function stringLiteral(text: string, dialect: string): string {
 export function importLiteral(value: unknown, dialect: string): string {
   if (value === null || value === undefined) {
     return "NULL";
+  }
+  if (value instanceof JsonNumber) {
+    // Written as the file has it. SQLite would round anything but a 64-bit
+    // integer to a REAL and SQL Server refuses numerics past 38 digits, so
+    // there the digits go in as text, which the column converts.
+    const integer = /^-?\d+$/.test(value.text);
+    const digits = value.text.replace(/^-/, "").split(/[eE]/)[0].replace(".", "").replace(/^0+/, "").length;
+    const quoted =
+      (dialect === "sqlite" && !(integer && BigInt(value.text) >= -(2n ** 63n) && BigInt(value.text) < 2n ** 63n)) ||
+      (dialect === "mssql" && digits > 38);
+    return quoted ? stringLiteral(value.text, dialect) : value.text;
   }
   if (typeof value === "boolean") {
     if (dialect === "mssql") {
