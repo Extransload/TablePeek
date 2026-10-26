@@ -125,11 +125,11 @@ import {
 import { forgetSchema, loadSchema } from "./schemaCache";
 import { splitSqlStatements } from "./sqlSplit";
 import { loadAutoSave } from "./savedQueries";
-import { specsForTable, withResultKinds } from "./grid/columns";
+import { isDateKind, specsForTable, withResultKinds } from "./grid/columns";
 import { cellMenuItems, deleteRowsLabel, type CellValueChoice } from "./grid/cellMenu";
 import { IS_MAC, actionForEvent, formatBinding, matchesBinding, shortcutHint, withHint, type KeyAction } from "./shortcuts";
 import type { GridSelection, SortIndicator } from "./grid/CanvasGrid";
-import { subscribePendingChanges, type WindowedRowSource } from "./grid/windowSource";
+import { subscribePendingChanges, type StagedExpr, type WindowedRowSource } from "./grid/windowSource";
 import {
   ApiRequestError,
   missingSecretOf,
@@ -309,6 +309,8 @@ interface MenuState {
   y: number;
   // What the menu acts on; the clicked cell is inside it.
   selection: GridSelection;
+  // The rows it was opened on: another result closes it.
+  result: GridResult;
 }
 
 interface Workspace {
@@ -795,6 +797,8 @@ export default function App() {
   const shortcutRef = useRef<(action: KeyAction) => void>(() => {});
   // Whether the app takes a key that is only its own in some places.
   const claimsKeyRef = useRef<(action: KeyAction, target: Element | null) => boolean>(() => true);
+  // A result dropped by the server while changes were being applied.
+  const missedInvalidateRef = useRef(false);
   const lastSelectionRef = useRef<SelectedRows | null>(null);
   // A drag changes the selection many times a frame; the panel follows once per frame.
   const selectionFrameRef = useRef(0);
@@ -970,6 +974,10 @@ export default function App() {
     });
     // ensureDetail and the tab helpers read refs; the tab's id is what matters.
   }, [activeConnId, activeDataTab?.id, missingDetail]);
+  // A menu belongs to the rows it was opened on.
+  useEffect(() => {
+    setMenu((current) => (current !== null && current.result !== state.result ? null : current));
+  }, [state.result]);
   const gridSpecs = useMemo(
     () =>
       state.result === null
@@ -2450,16 +2458,30 @@ export default function App() {
       const row = from + offset;
       const fromInsert = source.isInserted(row);
       const staged = new Map<number, string | null>();
+      const exprs: [number, StagedExpr][] = [];
       result.meta.columns.forEach((column, index) => {
-        // Columns still at DEFAULT on a staged row stay DEFAULT on the copy.
+        // Columns still at DEFAULT on a staged row stay DEFAULT on the copy,
+        // and a staged DEFAULT or NOW() stays that, not its label.
         const untouched = fromInsert && source.cellState(row, index) === "default";
-        if (!pkNames.has(column) && !untouched) {
+        const expr = source.stagedExpr(row, index);
+        if (pkNames.has(column) || untouched) {
+          return;
+        }
+        if (expr !== null) {
+          exprs.push([index, expr]);
+        } else {
           staged.set(index, cellToString(values[offset][index]));
         }
       });
       const created = store.stageInsert(staged);
       if (created === null) {
         break;
+      }
+      for (const [index, expr] of exprs) {
+        // DEFAULT on a new row is the column left out.
+        if (expr.expr === "now") {
+          store.setCellExpr(created, index, expr);
+        }
       }
       first ??= created;
       last = created;
@@ -2568,11 +2590,14 @@ export default function App() {
     const tabId = tabsOf(conn)?.activeId ?? null;
     applyingRef.current = true;
     setApplying(true);
+    missedInvalidateRef.current = false;
+    let failed = true;
     try {
       const outcome = await store.applyPending(result);
       if (outcome === null) {
         return;
       }
+      failed = false;
       const latest = tabsOf(conn);
       const tab = latest !== null && tabId !== null ? tabById(latest, tabId) : null;
       const sameResult =
@@ -2598,6 +2623,13 @@ export default function App() {
     } finally {
       applyingRef.current = false;
       setApplying(false);
+      // A failed batch the server rolled back may have dropped the results
+      // (rows added or removed, a DEFAULT or NOW() written): the notice it
+      // sent meanwhile is acted on now. A successful one reads its rows anyway.
+      if (failed && missedInvalidateRef.current) {
+        missedInvalidateRef.current = false;
+        invalidateRef.current();
+      }
     }
   }
 
@@ -2605,6 +2637,8 @@ export default function App() {
   // reload the active data tab; a query tab is not re-run automatically.
   invalidateRef.current = () => {
     if (store.isApplying()) {
+      // Settled once the apply ends (a failed one leaves the rows as they were).
+      missedInvalidateRef.current = true;
       return;
     }
     const conn = activeConnIdRef.current;
@@ -3809,17 +3843,24 @@ export default function App() {
     }
     const conn = activeConnIdRef.current;
     const tab = currentTab();
-    if (conn !== null && tab && tab.kind === "data") {
-      void ensureDetail(conn, tab.table);
+    const table = tab && tab.kind === "data" ? tab.table : state.result.meta.sourceTable;
+    const opened: MenuState = { row, col, x, y, selection, result: state.result };
+    setMenu(opened);
+    // Set Value and the referenced row follow the table's columns (defaults,
+    // date types, foreign keys). Read in the background, which can wait
+    // behind a running query; the same menu, still open, then shows them.
+    if (conn !== null && table !== null && !detailCacheRef.current.has(`${conn}:${table}`)) {
+      void ensureDetail(conn, table).then(() =>
+        setMenu((current) => (current === opened ? { ...opened } : current)),
+      );
     }
-    setMenu({ row, col, x, y, selection });
   }
 
   // The data and results grids' cell menu, in TablePlus's order. It acts on
   // the whole selection; column and cell entries on the cell clicked.
   function menuItems(menuState: MenuState): ContextMenuItem[] {
-    const result = state.result;
-    if (!result) {
+    const result = menuState.result;
+    if (result !== state.result) {
       return [];
     }
     const source = result.source;
@@ -3861,15 +3902,19 @@ export default function App() {
     }
     const single = selection.r0 === selection.r1 && selection.c0 === selection.c1;
     const value = source.cell(row, col);
+    const nowLabel = dialect === "mssql" ? "GETDATE()" : dialect === "sqlite" ? "CURRENT_TIMESTAMP" : "NOW()";
     const setValue = (choice: CellValueChoice): void => {
       for (let r = selection.r0; r <= lastRow; r += 1) {
         if (!editableRow(r) || source.cell(r, selection.c0) === undefined) {
           continue;
         }
         for (const c of selectedCols) {
-          if (choice === "default") {
+          if (choice === "default" && source.isInserted(r)) {
             // A new row's cell back at DEFAULT: left out of its INSERT.
             store.revertCell(r, c);
+          } else if (choice === "default" || choice === "now") {
+            // Written by the database (UPDATE … SET col = DEFAULT / NOW()).
+            store.setCellExpr(r, c, choice === "now" ? { expr: "now", label: nowLabel } : { expr: "default", label: "DEFAULT" });
           } else {
             void store.editCell(r, c, choice === "null" ? null : "");
           }
@@ -3927,9 +3972,16 @@ export default function App() {
       allowsEmpty: specsOf.every(
         (spec) => spec === null || spec.kind === "text" || spec.kind === "enum" || spec.kind === "set",
       ),
-      // DEFAULT for a row already in the table needs the server to write
-      // DEFAULT into its UPDATE; a new row's cell simply stays out of its INSERT.
-      allowsDefault: allInserted,
+      // As TablePlus: DEFAULT where the column has a default or may be NULL
+      // (unknown without the table's structure, so offered); the time only on
+      // date and time columns.
+      // A new row's DEFAULT is the column left out, which every column takes
+      // (an identity or auto-increment one has no declared default).
+      allowsDefault:
+        allInserted ||
+        specsOf.every((spec) => spec === null || spec.hasDefault === true || spec.nullable === true),
+      allowsNow: specsOf.every((spec) => spec !== null && isDateKind(spec.kind)),
+      nowLabel,
       isNull: single && (value === undefined || (value === null && !source.isInserted(row))),
     });
 
@@ -5391,7 +5443,7 @@ export default function App() {
       {state.error !== null && !errorInline ? (
         <ErrorNotice message={state.error} variant="toast" onClose={() => store.setError(null)} />
       ) : null}
-      {menu !== null ? (
+      {menu !== null && menu.result === state.result ? (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu)} onClose={() => setMenu(null)} />
       ) : null}
       {createTableOpen && activeConnId !== null && meta !== null ? (

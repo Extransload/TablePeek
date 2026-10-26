@@ -3,7 +3,7 @@ import type { CopyFormat } from "../copyFormats";
 import { t } from "../i18n";
 
 // What Set Value puts in the selected cells, as TablePlus names them.
-export type CellValueChoice = "empty" | "null" | "default";
+export type CellValueChoice = "empty" | "null" | "default" | "now";
 
 export interface CellMenuTarget {
   // The clicked cell's column.
@@ -30,6 +30,9 @@ export interface CellMenuTarget {
   nullable?: boolean;
   allowsEmpty?: boolean;
   allowsDefault?: boolean;
+  // The current time: NOW(), GETDATE() on SQL Server, as `nowLabel` names it.
+  allowsNow?: boolean;
+  nowLabel?: string;
   // Every selected cell is NULL already.
   isNull?: boolean;
 }
@@ -93,6 +96,9 @@ export function cellMenuItems(target: CellMenuTarget): ContextMenuItem[] {
     }
     if (target.allowsDefault) {
       values.push({ label: "DEFAULT", onSelect: () => setValue("default") });
+    }
+    if (target.allowsNow) {
+      values.push({ label: target.nowLabel ?? "NOW()", onSelect: () => setValue("now") });
     }
     if (values.length > 0) {
       items.push({ label: t("값 설정"), separatorBefore: target.edit === undefined, submenu: values });

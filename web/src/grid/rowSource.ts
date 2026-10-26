@@ -8,6 +8,9 @@ export interface RowSource {
   onUpdate?(listener: () => void): () => void;
   rowState?(row: number): RowState;
   cellState?(row: number, col: number): CellState;
+  // The label of a value the database will write itself (DEFAULT, NOW()),
+  // shown faint in the cell until the change is applied.
+  cellExpr?(row: number, col: number): string | null;
   // A text colour in place of the value's type colour.
   cellInk?(row: number, col: number): string | null;
   // Shown as the tooltip while the pointer is over the cell.

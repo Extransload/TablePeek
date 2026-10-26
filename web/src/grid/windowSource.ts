@@ -21,26 +21,44 @@ export interface PendingSummary {
   total: number;
 }
 
+// A value the database writes itself (TablePlus's Set Value ▸ DEFAULT and
+// NOW()), named for the server; `label` is what the cell shows until applied.
+export type ValueExpr = "default" | "now";
+
+export interface StagedExpr {
+  expr: ValueExpr;
+  label: string;
+}
+
+export interface PendingCell {
+  col: number;
+  value: string | null;
+  expr?: ValueExpr;
+}
+
 export interface PendingEditOp {
   row: number;
   key: PkPair[];
-  cells: { col: number; value: string | null }[];
+  cells: PendingCell[];
 }
 
 export interface PendingOps {
   edits: PendingEditOp[];
-  inserts: { col: number; value: string | null }[][];
+  inserts: PendingCell[][];
   deletes: { row: number; key: PkPair[] }[];
 }
 
 interface PendingEditRow {
   key: PkPair[];
+  // An expression's cell holds its label.
   cells: Map<number, string | null>;
+  exprs: Map<number, ValueExpr>;
 }
 
 interface PendingInsertRow {
   values: (string | null)[];
   touched: boolean[];
+  exprs: (ValueExpr | null)[];
 }
 
 const DEFAULT_MAX_WINDOWS = 64;
@@ -156,6 +174,22 @@ export class WindowedRowSource implements RowSource {
     return this.edits.has(row) ? "edited" : null;
   }
 
+  // The expression staged in a cell, if one is.
+  stagedExpr(row: number, col: number): StagedExpr | null {
+    if (this.isInserted(row)) {
+      const insert = this.inserts[row - this.baseRowCount];
+      const expr = insert.exprs[col] ?? null;
+      return expr === null ? null : { expr, label: insert.values[col] ?? "" };
+    }
+    const entry = this.edits.get(row);
+    const expr = entry?.exprs.get(col);
+    return expr === undefined ? null : { expr, label: entry?.cells.get(col) ?? "" };
+  }
+
+  cellExpr(row: number, col: number): string | null {
+    return this.stagedExpr(row, col)?.label ?? null;
+  }
+
   cellState(row: number, col: number): CellState {
     if (this.isInserted(row)) {
       return this.inserts[row - this.baseRowCount].touched[col] ? "edited" : "default";
@@ -171,6 +205,7 @@ export class WindowedRowSource implements RowSource {
       const insert = this.inserts[row - this.baseRowCount];
       insert.values[col] = value;
       insert.touched[col] = true;
+      insert.exprs[col] = null;
       this.changed();
       return true;
     }
@@ -181,6 +216,7 @@ export class WindowedRowSource implements RowSource {
     const entry = this.edits.get(row);
     if (base !== undefined && cellToString(base) === value) {
       if (entry !== undefined && entry.cells.delete(col)) {
+        entry.exprs.delete(col);
         if (entry.cells.size === 0) {
           this.edits.delete(row);
         }
@@ -190,8 +226,42 @@ export class WindowedRowSource implements RowSource {
     }
     if (entry !== undefined) {
       entry.cells.set(col, value);
+      entry.exprs.delete(col);
     } else if (key !== null) {
-      this.edits.set(row, { key, cells: new Map([[col, value]]) });
+      this.edits.set(row, { key, cells: new Map([[col, value]]), exprs: new Map() });
+    } else {
+      return false;
+    }
+    this.changed();
+    return true;
+  }
+
+  // DEFAULT or the current time, written by the database when applied.
+  stageExpr(row: number, col: number, staged: StagedExpr, key: PkPair[] | null): boolean {
+    if (col < 0 || col >= this.columns.length) {
+      return false;
+    }
+    if (this.isInserted(row)) {
+      const insert = this.inserts[row - this.baseRowCount];
+      insert.values[col] = staged.label;
+      insert.touched[col] = true;
+      insert.exprs[col] = staged.expr;
+      this.changed();
+      return true;
+    }
+    if (!Number.isInteger(row) || row < 0 || row >= this.baseRowCount) {
+      return false;
+    }
+    const entry = this.edits.get(row);
+    if (entry !== undefined) {
+      entry.cells.set(col, staged.label);
+      entry.exprs.set(col, staged.expr);
+    } else if (key !== null) {
+      this.edits.set(row, {
+        key,
+        cells: new Map([[col, staged.label]]),
+        exprs: new Map([[col, staged.expr]]),
+      });
     } else {
       return false;
     }
@@ -204,11 +274,13 @@ export class WindowedRowSource implements RowSource {
       const insert = this.inserts[row - this.baseRowCount];
       insert.values[col] = null;
       insert.touched[col] = false;
+      insert.exprs[col] = null;
       this.changed();
       return;
     }
     const entry = this.edits.get(row);
     if (entry !== undefined && entry.cells.delete(col)) {
+      entry.exprs.delete(col);
       if (entry.cells.size === 0) {
         this.edits.delete(row);
       }
@@ -221,6 +293,7 @@ export class WindowedRowSource implements RowSource {
     const row: PendingInsertRow = {
       values: new Array<string | null>(count).fill(null),
       touched: new Array<boolean>(count).fill(false),
+      exprs: new Array<ValueExpr | null>(count).fill(null),
     };
     if (values !== undefined) {
       for (const [col, value] of values) {
@@ -302,12 +375,18 @@ export class WindowedRowSource implements RowSource {
       edits.push({
         row,
         key: entry.key,
-        cells: [...entry.cells].map(([col, value]) => ({ col, value })),
+        cells: [...entry.cells].map(([col, value]) => {
+          const expr = entry.exprs.get(col);
+          return expr === undefined ? { col, value } : { col, value: null, expr };
+        }),
       });
     }
     const inserts = this.inserts.map((insert) =>
       insert.values
-        .map((value, col) => ({ col, value }))
+        .map((value, col): PendingCell => {
+          const expr = insert.exprs[col];
+          return expr === null ? { col, value } : { col, value: null, expr };
+        })
         .filter((entry) => insert.touched[entry.col]),
     );
     const deletes = [...this.deletes].map(([row, key]) => ({ row, key }));

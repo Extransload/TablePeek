@@ -1,4 +1,4 @@
-import type { PkPair, WindowedRowSource } from "./grid/windowSource";
+import type { PkPair, StagedExpr, WindowedRowSource } from "./grid/windowSource";
 import { cellToString } from "./rowOps";
 import {
   TablePeekSocket,
@@ -719,6 +719,27 @@ async function runDetached(
   return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW });
 }
 
+// DEFAULT or the current time for a cell, written by the database on apply.
+function setCellExpr(row: number, col: number, staged: StagedExpr): boolean {
+  const result = state.result;
+  if (!result || !result.meta.sourceTable) {
+    setState({ info: t("편집할 수 없는 결과입니다") });
+    return false;
+  }
+  if (stagingBlocked(result)) {
+    return false;
+  }
+  const source = result.source;
+  if (source.isDeleted(row)) {
+    return false;
+  }
+  if (source.isInserted(row)) {
+    return source.stageExpr(row, col, staged, null);
+  }
+  const key = rowKey(result, row);
+  return key !== null && source.stageExpr(row, col, staged, key);
+}
+
 // A staged cell back to what it was: an edited cell to its value, a new row's
 // cell to DEFAULT (left out of the INSERT).
 function revertCell(row: number, col: number): void {
@@ -770,6 +791,7 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
   const sock = ensureSocket();
   const ownTx = !(state.connId === conn && state.tx === "active");
   const applied: { row: number; col: number; value: string | null }[] = [];
+  let expressions = false;
   let phase: "begin" | "write" | "commit" = "begin";
   applying = true;
   try {
@@ -779,11 +801,12 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
     phase = "write";
     for (const edit of ops.edits) {
       let key = edit.key;
-      // Key columns go last so the other edits still find the row by its original key.
-      const cells = [...edit.cells].sort(
-        (a, b) =>
-          Number(pkNames.has(meta.columns[a.col])) - Number(pkNames.has(meta.columns[b.col])),
-      );
+      // Key columns go last so the other edits still find the row by its
+      // original key; a key set to DEFAULT or NOW() goes after those, since
+      // only the database knows the key it leaves.
+      const order = (cell: { col: number; expr?: string }): number =>
+        pkNames.has(meta.columns[cell.col]) ? (cell.expr !== undefined ? 2 : 1) : 0;
+      const cells = [...edit.cells].sort((a, b) => order(a) - order(b));
       for (const cell of cells) {
         const column = meta.columns[cell.col];
         const outcome = await sock.edit(conn, {
@@ -792,10 +815,16 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
           pk: key,
           column,
           value: cell.value,
+          ...(cell.expr !== undefined ? { expr: cell.expr } : {}),
           row: edit.row,
           col: cell.col,
         });
         requireRow(outcome.rowsAffected);
+        // What DEFAULT or the time became is read back with the rows.
+        if (cell.expr !== undefined) {
+          expressions = true;
+          continue;
+        }
         applied.push({ row: edit.row, col: cell.col, value: cell.value });
         if (pkNames.has(column)) {
           key = key.map((pair) => (pair.column === column ? { column, value: cell.value } : pair));
@@ -815,7 +844,11 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
       await sock.insertRow(conn, {
         session: result.queryId,
         table,
-        values: values.map((entry) => ({ column: meta.columns[entry.col], value: entry.value })),
+        values: values.map((entry) => ({
+          column: meta.columns[entry.col],
+          value: entry.value,
+          ...(entry.expr !== undefined ? { expr: entry.expr } : {}),
+        })),
       });
     }
     if (ownTx) {
@@ -851,7 +884,9 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
   source.discardPending();
   // The server filed the committed statements under this connection's history.
   historyChanged(conn);
-  return { structural: ops.inserts.length > 0 || ops.deletes.length > 0 };
+  // Rows added, removed, or holding values only the database knows yet are
+  // read again.
+  return { structural: ops.inserts.length > 0 || ops.deletes.length > 0 || expressions };
 }
 
 // The History tab reloads on this; editor runs bump their own version instead.
@@ -1333,6 +1368,7 @@ export const store = {
   runDetached,
   cancelQuery,
   editCell,
+  setCellExpr,
   revertCell,
   stageInsert,
   stageDelete,

@@ -1060,6 +1060,7 @@ export class CanvasGrid {
       this.charW = ctx.measureText("0").width;
     }
     const inkOf = src.cellInk ? (r: number, c: number) => src.cellInk!(r, c) : null;
+    const exprOf = src.cellExpr ? (r: number, c: number) => src.cellExpr!(r, c) : null;
     for (let c = startCol; c < endCol; c++) {
       const x = gutterW + this.offsets[c] - virtualX;
       const cw = this.widths[c];
@@ -1079,10 +1080,16 @@ export class CanvasGrid {
         }
         const y = HEADER_H + r * ROW_H - virtualY + ROW_H / 2;
         const state = rowStates[r - first];
-        if (cellStateOf && state === "inserted" && cellStateOf(r, c) === "default") {
+        // A new row's DEFAULT, or a DEFAULT or NOW() staged for the database
+        // to write: faint, as TablePlus shows them until saved.
+        const label =
+          cellStateOf && state === "inserted" && cellStateOf(r, c) === "default"
+            ? "DEFAULT"
+            : (exprOf?.(r, c) ?? null);
+        if (label !== null) {
           ctx.fillStyle = palette.faint;
           ctx.textAlign = "left";
-          ctx.fillText("DEFAULT", x + CELL_PAD, y);
+          ctx.fillText(this.fitText(label, cw - CELL_PAD * 2), x + CELL_PAD, y);
           continue;
         }
         const accessory = state === "deleted" ? null : this.accessoryAt(r, c, v);
