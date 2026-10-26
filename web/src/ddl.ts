@@ -1,5 +1,5 @@
 import { t } from "./i18n";
-import type { TableDetail } from "./store";
+import type { TableDetail, TableDetailForeignKey } from "./store";
 
 export interface ColumnDraft {
   key: string;
@@ -692,6 +692,59 @@ export function renameTableSql(
 
 export function dropTableSql(kind: string, table: string): string {
   return `DROP TABLE ${quoteIdent(kind, table)}`;
+}
+
+// Tables ordered so each comes after the ones it references among them:
+// parents are created and filled before their children. A cycle is broken
+// where it is met; otherwise the given order stands.
+export function dependencyOrder(names: string[], references: (name: string) => string[]): string[] {
+  const known = new Set(names);
+  const placed = new Set<string>();
+  const order: string[] = [];
+  const visit = (name: string): void => {
+    if (placed.has(name)) {
+      return;
+    }
+    placed.add(name);
+    for (const parent of references(name)) {
+      if (parent !== name && known.has(parent)) {
+        visit(parent);
+      }
+    }
+    order.push(name);
+  };
+  names.forEach(visit);
+  return order;
+}
+
+// A foreign key added once every table exists and holds its rows, as a dump
+// does: rows then go in any order, and a table may reference itself or be
+// one of two that reference each other. SQLite can't add one this way; its
+// CREATE TABLE already carries them.
+export function foreignKeySql(kind: string, table: string, fk: TableDetailForeignKey): string {
+  const list = (columns: string[]): string => columns.map((column) => quoteIdent(kind, column)).join(", ");
+  const name = fk.name.trim() === "" ? "" : `CONSTRAINT ${quoteIdent(kind, fk.name)} `;
+  return `ALTER TABLE ${quoteIdent(kind, table)} ADD ${name}FOREIGN KEY (${list(fk.columns)}) REFERENCES ${quoteIdent(kind, fk.ref_table)} (${list(fk.ref_columns)})`;
+}
+
+// Two tables that reference each other can't be dropped in either order, so
+// the reference goes first. MySQL drops with its key checks off and SQLite
+// doesn't hold DROP to them, so they need none (null).
+export function dropForeignKeySql(kind: string, table: string, fk: TableDetailForeignKey): string | null {
+  if (fk.name.trim() === "") {
+    return null;
+  }
+  const name = quoteIdent(kind, fk.name);
+  if (kind === "postgres" || kind === "cockroach") {
+    return `ALTER TABLE IF EXISTS ${quoteIdent(kind, table)} DROP CONSTRAINT IF EXISTS ${name}`;
+  }
+  if (kind === "mssql") {
+    // A constraint is named within its table's schema.
+    const dot = table.lastIndexOf(".");
+    const qualified = dot < 0 ? name : `${quoteIdent(kind, table.slice(0, dot))}.${name}`;
+    return `IF OBJECT_ID(N'${qualified.replace(/'/g, "''")}', N'F') IS NOT NULL ALTER TABLE ${quoteIdent(kind, table)} DROP CONSTRAINT ${name}`;
+  }
+  return null;
 }
 
 // What an export's "Drop" writes before CREATE, so the file runs again on a

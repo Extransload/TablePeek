@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildOrderBy, buildWhere } from "../dataQuery";
-import { createTableSql, draftsFromDetail, dropIfExistsSql } from "../ddl";
+import {
+  createTableSql,
+  dependencyOrder,
+  draftsFromDetail,
+  dropForeignKeySql,
+  dropIfExistsSql,
+  foreignKeySql,
+} from "../ddl";
 import {
   csvHead,
   csvLines,
@@ -26,7 +33,7 @@ import { t } from "../i18n";
 import { cancelJob, startJob, subscribeJobs, type Job, type JobHandle } from "../jobs";
 import { getSettings } from "../settings";
 import { classifyStatement } from "../sqlTools";
-import { store, type EngineMeta, type GridResult, type TableDetail } from "../store";
+import { store, type EngineMeta, type GridResult, type TableDetail, type TableDetailForeignKey } from "../store";
 import { countFor, type DataTab } from "../tabs";
 import { XlsxWriter } from "../xlsx";
 import { ZipWriter } from "../zip";
@@ -333,8 +340,12 @@ interface Section {
   expected: number;
   numeric(columns: string[]): boolean[];
   drop: string | null;
+  // References dropped before any table is, where dropped tables form a cycle.
+  unlink: string[];
   structure: (() => Promise<string[]>) | null;
   data: boolean;
+  // ALTER TABLE … ADD CONSTRAINT, written once every table holds its rows.
+  foreignKeys: string[];
   open(signal: AbortSignal): Promise<Feed>;
 }
 
@@ -403,13 +414,26 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
     if (relaxKeys) {
       out.push("SET FOREIGN_KEY_CHECKS = 0;\n\n");
     }
+    // As SQLite's own .dump starts: its keys can't be added after the rows.
+    if (plan.dump && plan.kind === "sqlite") {
+      out.push("PRAGMA foreign_keys = OFF;\n\n");
+    }
+    // Sections come parents first, so children (and views) are dropped before
+    // the tables they depend on.
+    for (const statement of sections.flatMap((section) => section.unlink)) {
+      out.push(`${statement};\n`);
+    }
+    const drops = sections.filter((section) => section.drop !== null).reverse();
+    for (const section of drops) {
+      out.push(`${section.drop};\n`);
+    }
+    if (drops.length > 0) {
+      out.push("\n");
+    }
     for (const [index, section] of sections.entries()) {
       signal.throwIfAborted();
       report(section.name);
       out.push(`-- ${oneLine(section.table)}\n`);
-      if (section.drop !== null) {
-        out.push(`${section.drop};\n`);
-      }
       if (section.structure !== null) {
         for (const statement of await section.structure()) {
           out.push(`${statement}\n`);
@@ -431,6 +455,10 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
         }
       }
       out.push("\n");
+    }
+    const keys = sections.flatMap((section) => section.foreignKeys);
+    if (keys.length > 0) {
+      out.push(`-- Foreign keys\n${keys.map((statement) => `${statement};\n`).join("")}\n`);
     }
     if (relaxKeys) {
       out.push("SET FOREIGN_KEY_CHECKS = 1;\n");
@@ -493,7 +521,9 @@ async function structureSql(conn: string, kind: string, item: Item, detail: Tabl
   if (detail.ddl !== null) {
     return [detail.ddl.trim().replace(/;?$/, ";")];
   }
-  const created = createTableSql(kind, item.name, draftsFromDetail(detail));
+  // Foreign keys follow the data (see tableSections); SQLite keeps them inline.
+  const drafts = draftsFromDetail(detail);
+  const created = createTableSql(kind, item.name, kind === "sqlite" ? drafts : { ...drafts, foreignKeys: [] });
   return created.statements.length > 0
     ? created.statements.map((statement) => `${statement};`)
     : unavailable(created.errors.join("; "));
@@ -509,7 +539,10 @@ async function detailOrNull(conn: string, table: string): Promise<TableDetail | 
 }
 
 // The tables' sections; each one's structure (key, types, DDL) is read once
-// the job runs.
+// the job runs. For SQL, tables come parents first and views after them, and
+// a created table's foreign keys are added after all the rows: the servers'
+// CREATE TABLE text carries none, and this way self-references and cycles
+// load too.
 function tableSections(
   conn: string,
   kind: string,
@@ -521,22 +554,54 @@ function tableSections(
   const sql = format === "sql";
   return async (signal) => {
     const sections: Section[] = [];
+    const foreign = new Map<string, TableDetailForeignKey[]>();
     for (const [index, item] of items.entries()) {
       signal.throwIfAborted();
       const flag = flags[index];
       const detail = item.kind === "table" ? await detailOrNull(conn, item.name) : null;
+      const keys = detail?.foreign_keys ?? [];
+      foreign.set(item.name, keys);
       sections.push({
         name: item.name,
         table: item.name,
         expected: detail?.row_count_estimate ?? 0,
         numeric: (names) => numericFlags(names, detail, kind),
         drop: sql && flag.drop ? dropIfExistsSql(kind, item.name, item.kind) : null,
+        unlink: [],
         structure: sql && flag.structure ? () => structureSql(conn, kind, item, detail) : null,
         data: !sql || flag.data,
+        foreignKeys:
+          sql && flag.structure && kind !== "sqlite" ? keys.map((fk) => foreignKeySql(kind, item.name, fk)) : [],
         open: (sig) => tableFeed(conn, kind, item, detail, columns, sig),
       });
     }
-    return sections;
+    if (!sql) {
+      return sections;
+    }
+    const byName = new Map(sections.map((section) => [section.name, section]));
+    const parents = (name: string): string[] => (foreign.get(name) ?? []).map((fk) => fk.ref_table);
+    const dropped = new Set(sections.filter((section) => section.drop !== null).map((section) => section.name));
+    // Whether `to` is reachable from `from` through references among dropped tables.
+    const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+      if (from === to) {
+        return true;
+      }
+      seen.add(from);
+      return parents(from).some((next) => dropped.has(next) && !seen.has(next) && reaches(next, to, seen));
+    };
+    for (const section of sections) {
+      if (section.drop === null) {
+        continue;
+      }
+      section.unlink = (foreign.get(section.name) ?? []).flatMap((fk) => {
+        const closes = fk.ref_table !== section.name && dropped.has(fk.ref_table) && reaches(fk.ref_table, section.name);
+        const statement = closes ? dropForeignKeySql(kind, section.name, fk) : null;
+        return statement === null ? [] : [statement];
+      });
+    }
+    const tables = items.filter((item) => item.kind === "table").map((item) => item.name);
+    const views = items.filter((item) => item.kind === "view").map((item) => item.name);
+    return [...dependencyOrder(tables, parents), ...views].map((name) => byName.get(name) as Section);
   };
 }
 
@@ -580,8 +645,10 @@ function resultSections(
         expected,
         numeric: (columns) => numericFlags(columns, detail, kind),
         drop: null,
+        unlink: [],
         structure: null,
         data: true,
+        foreignKeys: [],
         open,
       });
     }
@@ -807,7 +874,8 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
         label: entry.label,
         result: entry.result,
         pick: null,
-        table: entry.result.meta.sourceTable ?? entry.label,
+        // The label is the UI's ("결과 1"); a table name comes from the result.
+        table: entry.result.meta.sourceTable ?? "exported",
       }));
     }
     return [{ label: target.title, result: target.result, pick, table: insertTable.trim() || "exported" }];
