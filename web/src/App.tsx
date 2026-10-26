@@ -3218,21 +3218,44 @@ export default function App() {
     setActiveConnId(live.conn);
   }
 
+  // Entering a connection, or connecting a saved one, while under way, by id:
+  // the two clicks of a double-click share one. Two would each build a
+  // workspace, the second replacing the first (its query tab "Query 2").
+  const enteringRef = useRef(new Map<string, Promise<boolean>>());
+  const connectingRef = useRef(new Map<string, Promise<"entered" | "asking" | "failed">>());
+
+  function shared<T>(calls: Map<string, Promise<T>>, id: string, start: () => Promise<T>): Promise<T> {
+    const pending = calls.get(id);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const call = start().finally(() => calls.delete(id));
+    calls.set(id, call);
+    return call;
+  }
+
   // Resolves false when the connection could not be entered.
-  async function enterConn(id: string): Promise<boolean> {
+  function enterConn(id: string): Promise<boolean> {
+    return shared(enteringRef.current, id, () => enterConnNow(id));
+  }
+
+  async function enterConnNow(id: string): Promise<boolean> {
     if (workspacesRef.current[id] !== undefined) {
       setActiveConnId(id);
       return true;
     }
     try {
       const nextMeta = await store.refreshMeta(id);
-      const fresh = firstTabOf(id, nextMeta);
-      const ws: Workspace = {
-        tabs: { tabs: [fresh], activeId: fresh.id },
-        meta: nextMeta,
-        tx: "none",
-      };
-      commitWorkspaces({ ...workspacesRef.current, [id]: ws });
+      // Opened another way meanwhile: keep that workspace.
+      if (workspacesRef.current[id] === undefined) {
+        const fresh = firstTabOf(id, nextMeta);
+        const ws: Workspace = {
+          tabs: { tabs: [fresh], activeId: fresh.id },
+          meta: nextMeta,
+          tx: "none",
+        };
+        commitWorkspaces({ ...workspacesRef.current, [id]: ws });
+      }
       setActiveConnId(id);
       return true;
     } catch (err) {
@@ -3283,7 +3306,13 @@ export default function App() {
   // "asking": the connection dialog now asks for a password. A profile that keeps
   // its password connects at once; one that doesn't asks first, since a try
   // without the password only logs a failed login.
-  async function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
+  // A second call while the first is connecting shares it (busySaved, the
+  // state that hides a second click, isn't set until the next render).
+  function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
+    return shared(connectingRef.current, id, () => connectSavedNow(id));
+  }
+
+  async function connectSavedNow(id: string): Promise<"entered" | "asking" | "failed"> {
     const existing = conns.find((conn) => conn.saved_id === id);
     if (existing !== undefined) {
       return (await enterConn(existing.id)) ? "entered" : "failed";
