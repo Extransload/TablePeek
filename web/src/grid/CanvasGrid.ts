@@ -61,6 +61,8 @@ export function gridHeaderH(): number {
 // Room at a cell's right for its button: ⌃⌄ (a list, a date picker) or →
 // (a foreign key's row).
 const ACCESSORY_W = 16;
+// Room a header keeps beside its name for the sort arrow.
+const SORT_W = 14;
 // The corner button's icon: columns pushed apart to fit.
 const FIT_ICON =
   '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" ' +
@@ -1169,16 +1171,20 @@ export class CanvasGrid {
         }
       }
       const sort = this.sortAt(c);
-      // Headers sit in the middle of their column; a sort arrow keeps the
-      // same room free on both sides so the name stays centred.
-      const reserved = sort ? 14 : 0;
-      const maxTextW = Math.max(0, cw - CELL_PAD * 2 - reserved * 2);
+      // Headers sit in the middle of their column, clear of the sort arrow on
+      // the right. A name too wide to stay centred past it moves left into
+      // the arrow's mirror room before it is cut short.
+      const room = Math.max(0, cw - CELL_PAD * 2 - (sort ? SORT_W : 0));
+      const name = src.columns[c];
+      const centred = !sort || ctx.measureText(name).width <= room - SORT_W;
+      const textLeft = x + CELL_PAD + (sort && centred ? SORT_W : 0);
+      const textW = sort && centred ? room - SORT_W : room;
       ctx.save();
       ctx.beginPath();
-      ctx.rect(x + CELL_PAD + reserved, 0, maxTextW, HEADER_H);
+      ctx.rect(textLeft, 0, textW, HEADER_H);
       ctx.clip();
       ctx.fillStyle = sort ? palette.accent : palette.ink;
-      ctx.fillText(this.fitText(src.columns[c], maxTextW), x + cw / 2, HEADER_H / 2);
+      ctx.fillText(this.fitText(name, textW), textLeft + textW / 2, HEADER_H / 2);
       ctx.restore();
       if (sort) {
         const ax = x + cw - CELL_PAD - 7;
@@ -1816,7 +1822,8 @@ export class CanvasGrid {
     const maxChars = Math.ceil(cap / MIN_CHAR_W) + 1;
     const ctx = this.ctx;
     ctx.font = FONT_HEADER;
-    let maxW = ctx.measureText(src.columns[col]).width;
+    // The header keeps room for a sort arrow, so sorting never cuts it short.
+    let maxW = ctx.measureText(src.columns[col]).width + SORT_W;
     ctx.font = FONT;
     let mark = 0;
     let seen = 0;
