@@ -4119,6 +4119,12 @@ export default function App() {
         document.querySelector(".modal-backdrop") !== null
       );
     }
+    // Escape closes the right panel unless something else takes it. An open
+    // menu or dialog is seen here, in the capture phase, before it closes
+    // itself; what a focused text field does with the key (the SQL editor
+    // closing its autocomplete or search, an input cancelling an edit) shows
+    // only once the event is through, as its default prevented.
+    let panelEscape: KeyboardEvent | null = null;
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
         // An open dialog owns Escape; don't also close panels behind it.
@@ -4136,10 +4142,7 @@ export default function App() {
         ) {
           return;
         }
-        // The cell popover counts as a dialog and closes itself.
-        if (detailPanelOpenRef.current) {
-          setDetailPanelOpen(false);
-        }
+        panelEscape = event;
         return;
       }
       if (event.metaKey && event.ctrlKey && (event.key === "[" || event.key === "]")) {
@@ -4217,9 +4220,27 @@ export default function App() {
       event.stopPropagation();
       shortcutRef.current(action);
     }
+    function onEscape(event: KeyboardEvent): void {
+      if (event !== panelEscape) {
+        return;
+      }
+      panelEscape = null;
+      const target = event.target instanceof Element ? event.target : null;
+      const field = target?.closest("input, textarea, select, [contenteditable], .cm-editor") != null;
+      // A Hangul (or other IME) composition is cancelled by it, too.
+      if (event.isComposing || (field && event.defaultPrevented)) {
+        return;
+      }
+      // The cell popover counts as a dialog and closes itself.
+      if (detailPanelOpenRef.current) {
+        setDetailPanelOpen(false);
+      }
+    }
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keydown", onEscape);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keydown", onEscape);
     };
   }, []);
 
