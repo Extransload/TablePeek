@@ -1526,11 +1526,9 @@ fn edit_sync(inner: &SqliteInner, target: &EditTarget) -> Result<u64, EngineErro
     let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(target.pk.len() + 1);
     let value_sql = match target.expr {
         Some(ValueExpr::Now) => SQLITE_NOW.to_string(),
-        Some(ValueExpr::Default) => sqlite_default_sql(sqlite_column_default(
-            &conn,
-            &target.table,
-            &target.column,
-        )?),
+        Some(ValueExpr::Default) => {
+            sqlite_default_sql(sqlite_column_default(&conn, &target.table, &target.column)?)?
+        }
         None => {
             params.push(match &target.value {
                 Some(s) => rusqlite::types::Value::Text(s.clone()),
@@ -1563,25 +1561,118 @@ const SQLITE_NOW: &str = "CURRENT_TIMESTAMP";
 // as the schema declares it: SQLite's own text from CREATE TABLE, which it
 // limits to a constant expression, never anything from the client. A column
 // without one defaults to NULL, as an INSERT leaving it out would.
-fn sqlite_default_sql(declared: Option<String>) -> String {
-    match declared {
-        // `DEFAULT "x"` is the string x in CREATE TABLE, but in an UPDATE it
-        // would name a column x if there is one: written as a string here.
-        Some(expr) if is_double_quoted(&expr) => {
-            let text = expr[1..expr.len() - 1].replace("\"\"", "\"");
-            format!("'{}'", text.replace('\'', "''"))
-        }
-        Some(expr) => format!("({expr})"),
-        None => "NULL".into(),
+fn sqlite_default_sql(declared: Option<String>) -> Result<String, EngineError> {
+    let Some(expr) = declared else {
+        return Ok("NULL".into());
+    };
+    // `DEFAULT active`, `DEFAULT "x"`, `[x]` and `` `x` `` are strings in
+    // CREATE TABLE, but in an UPDATE they would name a column: written as
+    // the string they are.
+    if let Some(text) = sqlite_default_name(expr.trim()) {
+        return Ok(format!("'{}'", text.replace('\'', "''")));
     }
+    // A hand-edited schema could hold one; it would take this statement's own.
+    if has_bind_parameter(&expr) {
+        return Err(EngineError::BadRequest(
+            "기본값에 바인드 매개변수가 있어 DEFAULT로 쓸 수 없습니다".into(),
+        ));
+    }
+    // pragma_table_info drops the outer parentheses but keeps a trailing
+    // `-- comment`, which would swallow the closing one: it ends a line here.
+    Ok(if expr.contains("--") {
+        format!("({expr}\n)")
+    } else {
+        format!("({expr})")
+    })
 }
 
-// One "…" token, its own quotes doubled inside.
-fn is_double_quoted(expr: &str) -> bool {
-    expr.len() >= 2
-        && expr.starts_with('"')
-        && expr.ends_with('"')
-        && !expr[1..expr.len() - 1].replace("\"\"", "").contains('"')
+// Bare words SQLite reads in a DEFAULT as values, not as strings.
+const SQLITE_DEFAULT_WORDS: [&str; 6] = [
+    "null",
+    "true",
+    "false",
+    "current_time",
+    "current_date",
+    "current_timestamp",
+];
+
+// The text of a default spelled as one name: a bare word, "…" or `…` with
+// their quotes doubled inside, or […].
+fn sqlite_default_name(expr: &str) -> Option<String> {
+    for quote in ['"', '`'] {
+        if let Some(inner) = expr
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            let doubled = format!("{quote}{quote}");
+            if inner.replace(&doubled, "").contains(quote) {
+                return None;
+            }
+            return Some(inner.replace(&doubled, &quote.to_string()));
+        }
+    }
+    if let Some(inner) = expr
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        return (!inner.contains(']')).then(|| inner.to_string());
+    }
+    let mut chars = expr.chars();
+    let first = chars.next()?;
+    let bare = (first.is_ascii_alphabetic() || first == '_' || !first.is_ascii())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || !ch.is_ascii());
+    (bare && !SQLITE_DEFAULT_WORDS.contains(&expr.to_ascii_lowercase().as_str()))
+        .then(|| expr.to_string())
+}
+
+// Whether an expression holds a bind parameter (`?`, `?1`, `:x`, `@x`, `$x`)
+// outside its strings, quoted names and comments. Unclosed ones count.
+fn has_bind_parameter(sql: &str) -> bool {
+    let chars: Vec<char> = sql.chars().collect();
+    let word = |ch: char| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || !ch.is_ascii();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        let close = match ch {
+            '\'' | '"' | '`' => Some(ch),
+            '[' => Some(']'),
+            _ => None,
+        };
+        if let Some(close) = close {
+            match chars[i + 1..].iter().position(|&c| c == close) {
+                // A doubled quote is two strings side by side.
+                Some(offset) => i += offset + 2,
+                None => return true,
+            }
+            continue;
+        }
+        if ch == '-' && chars.get(i + 1) == Some(&'-') {
+            match chars[i..].iter().position(|&c| c == '\n') {
+                Some(offset) => i += offset + 1,
+                None => return false,
+            }
+            continue;
+        }
+        if ch == '/' && chars.get(i + 1) == Some(&'*') {
+            match chars[i + 2..]
+                .windows(2)
+                .position(|pair| pair == ['*', '/'])
+            {
+                Some(offset) => i += offset + 4,
+                None => return true,
+            }
+            continue;
+        }
+        let starts_name = chars
+            .get(i + 1)
+            .is_some_and(|&next| word(next) && next != '$');
+        let after_word = i > 0 && word(chars[i - 1]);
+        if ch == '?' || (matches!(ch, ':' | '@' | '$') && starts_name && !after_word) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn sqlite_column_default(
@@ -2152,15 +2243,54 @@ mod tests {
 
     #[test]
     fn sqlite_defaults_are_written_as_declared() {
-        assert_eq!(sqlite_default_sql(None), "NULL");
-        assert_eq!(sqlite_default_sql(Some("'new'".into())), "('new')");
-        assert_eq!(sqlite_default_sql(Some("2 + 5".into())), "(2 + 5)");
-        assert_eq!(sqlite_default_sql(Some("CURRENT_TIMESTAMP".into())), "(CURRENT_TIMESTAMP)");
-        // A double-quoted default is a string, its quotes undone and redone.
-        assert_eq!(sqlite_default_sql(Some("\"note\"".into())), "'note'");
-        assert_eq!(sqlite_default_sql(Some("\"say \"\"hi\"\" it's\"".into())), "'say \"hi\" it''s'");
-        // Not one quoted token: left as the expression it is.
-        assert_eq!(sqlite_default_sql(Some("\"a\" || \"b\"".into())), "(\"a\" || \"b\")");
+        let sql = |declared: &str| sqlite_default_sql(Some(declared.into())).unwrap();
+        assert_eq!(sqlite_default_sql(None).unwrap(), "NULL");
+        assert_eq!(sql("'new'"), "('new')");
+        assert_eq!(sql("2 + 5"), "(2 + 5)");
+        assert_eq!(sql("-5"), "(-5)");
+        assert_eq!(sql("x'41'"), "(x'41')");
+        // Bare words SQLite reads as values stay values, in any case.
+        assert_eq!(sql("CURRENT_TIMESTAMP"), "(CURRENT_TIMESTAMP)");
+        assert_eq!(sql("current_date"), "(current_date)");
+        assert_eq!(sql("NULL"), "(NULL)");
+        assert_eq!(sql("true"), "(true)");
+        // A default spelled as one name is a string, its quotes undone and redone.
+        assert_eq!(sql("\"note\""), "'note'");
+        assert_eq!(sql("\"say \"\"hi\"\" it's\""), "'say \"hi\" it''s'");
+        assert_eq!(sql("active"), "'active'");
+        assert_eq!(sql("a$b"), "'a$b'");
+        assert_eq!(sql("한글"), "'한글'");
+        assert_eq!(sql("[b2]"), "'b2'");
+        assert_eq!(sql("`c2`"), "'c2'");
+        assert_eq!(sql("`it``s`"), "'it`s'");
+        // Not one name: left as the expression it is.
+        assert_eq!(sql("\"a\" || \"b\""), "(\"a\" || \"b\")");
+        // A trailing comment ends its line before the closing parenthesis.
+        assert_eq!(sql("'x' -- trailing note"), "('x' -- trailing note\n)");
+        // Bind parameters outside strings, names and comments are refused.
+        for declared in ["?", "?1 + 1", "1 + :x", "@x", "$x", "('a' || ?)"] {
+            assert!(
+                matches!(
+                    sqlite_default_sql(Some(declared.into())),
+                    Err(EngineError::BadRequest(_))
+                ),
+                "{declared}"
+            );
+        }
+        for declared in [
+            "'?'",
+            "'it''s ?'",
+            "\"a?\" || 1",
+            "[x?]",
+            "1 -- why?",
+            "1 /* :x */",
+            "strftime('%s', 'now')",
+        ] {
+            assert!(
+                sqlite_default_sql(Some(declared.into())).is_ok(),
+                "{declared}"
+            );
+        }
     }
 
     fn expr_target(id: i64, column: &str, expr: ValueExpr) -> EditTarget {
@@ -2174,6 +2304,49 @@ mod tests {
             value: None,
             expr: Some(expr),
         }
+    }
+
+    #[tokio::test]
+    async fn sqlite_default_names_are_strings_not_columns() {
+        let path = temp_db("default-names");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE items(
+                    id INTEGER PRIMARY KEY,
+                    active TEXT, b2 TEXT, c2 TEXT, d2 TEXT,
+                    status TEXT DEFAULT active,
+                    b TEXT DEFAULT [b2],
+                    c TEXT DEFAULT `c2`,
+                    d TEXT DEFAULT \"d2\",
+                    f TEXT DEFAULT ('x' -- trailing note
+                    )
+                 );
+                 INSERT INTO items VALUES (1, 'SECRET', 'B2', 'C2', 'D2', 'old', 'old', 'old', 'old', 'old');",
+            )
+            .unwrap();
+        }
+        let engine = Engine::open_file(&path).unwrap();
+        // Each reads as SQLite's own INSERT would fill it, never another column.
+        for column in ["status", "b", "c", "d", "f"] {
+            assert_eq!(
+                engine
+                    .edit(&expr_target(1, column, ValueExpr::Default))
+                    .await
+                    .unwrap(),
+                1,
+                "{column}"
+            );
+        }
+        let row = engine
+            .execute("SELECT status, b, c, d, f FROM items WHERE id = 1", 1)
+            .await
+            .unwrap();
+        let expected: Vec<Value> = ["active", "b2", "c2", "d2", "x"]
+            .into_iter()
+            .map(Value::from)
+            .collect();
+        assert_eq!(row.rows[0], expected);
     }
 
     #[tokio::test]

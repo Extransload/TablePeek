@@ -4152,19 +4152,24 @@ export default function App() {
               const statements: string[] = [];
               const detail = dialect === "sqlite" ? await ensureDetail(result.conn, table) : null;
               // SQLite's UPDATE takes no DEFAULT: the column's declared one instead.
-              const asSql = (value: unknown, c: number): unknown =>
-                detail !== null && value instanceof SqlExpression && value.expr === "default"
-                  ? new SqlExpression(
-                      "default",
-                      sqliteDefaultSql(detail.columns.find((column) => column.name === columns[c])?.default ?? null),
-                    )
-                  : value;
+              const asSql = (value: unknown, c: number): unknown => {
+                if (detail === null || !(value instanceof SqlExpression) || value.expr !== "default") {
+                  return value;
+                }
+                const declared = sqliteDefaultSql(detail.columns.find((column) => column.name === columns[c])?.default ?? null);
+                if (declared === null) {
+                  throw new Error(t("기본값에 바인드 매개변수가 있어 DEFAULT로 쓸 수 없습니다"));
+                }
+                return new SqlExpression("default", declared);
+              };
               for (let r = selection.r0; r < selection.r0 + Math.min(rowCount, COPY_MAX_ROWS); r += 1) {
                 if (source.isInserted(r)) {
                   continue;
                 }
                 const values = (await rowValues(source, r, true)).map(asSql);
-                const sql = buildUpdateSql(table, columns, values, result.meta.pk ?? [], dialect);
+                // The row is found by the key the database has; a staged key goes in SET.
+                const original = columns.map((_, c) => source.baseCell(r, c) ?? null);
+                const sql = buildUpdateSql(table, columns, values, result.meta.pk ?? [], dialect, original);
                 if (sql === null) {
                   store.setError(t("기본 키가 없어 UPDATE 문을 만들 수 없습니다"));
                   return;

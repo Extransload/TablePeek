@@ -1309,6 +1309,7 @@ const EN: Record<string, string> = {
   "ZIP 파일에 넣을 수 있는 파일 수를 넘었습니다": "Too many files for one ZIP",
   "ZIP 파일이 4GB를 넘어 만들 수 없습니다": "The ZIP would be over 4 GB, which it can't hold",
   "Excel 시트에는 열을 {count}개까지 넣을 수 있습니다": "An Excel sheet holds at most {count} columns",
+  "기본값에 바인드 매개변수가 있어 DEFAULT로 쓸 수 없습니다": "The default holds a bind parameter, so DEFAULT can't be written",
   // Grid polish
   "행 복사 형식": "Copy Rows As",
   "선택한 셀 복사 형식": "Copy Selected Cells As",

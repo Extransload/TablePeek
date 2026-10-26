@@ -252,12 +252,15 @@ export function toSqlInserts(
   return chunks.join("\n");
 }
 
+// `original`, when given, is the row as the database has it: the key it
+// names finds the row, and a key column staged to something else is set.
 export function buildUpdateSql(
   table: string,
   columns: string[],
   row: unknown[],
   pk: string[],
   kind = "postgres",
+  original?: unknown[],
 ): string | null {
   if (pk.length === 0) {
     return null;
@@ -265,17 +268,18 @@ export function buildUpdateSql(
   const pkSet = new Set(pk);
   const sets: string[] = [];
   for (let c = 0; c < columns.length; c += 1) {
-    if (!pkSet.has(columns[c])) {
+    if (!pkSet.has(columns[c]) || (original !== undefined && row[c] !== original[c])) {
       sets.push(`${escapeSqlIdentifier(columns[c], kind)} = ${sqlLiteral(row[c], kind)}`);
     }
   }
   if (sets.length === 0) {
     return null;
   }
+  const keyRow = original ?? row;
   const wheres: string[] = [];
   for (const key of pk) {
     const index = columns.indexOf(key);
-    wheres.push(`${escapeSqlIdentifier(key, kind)} = ${sqlLiteral(index >= 0 ? row[index] : null, kind)}`);
+    wheres.push(`${escapeSqlIdentifier(key, kind)} = ${sqlLiteral(index >= 0 ? keyRow[index] : null, kind)}`);
   }
   return `UPDATE ${quoteIdentifier(table, kind)} SET ${sets.join(", ")} WHERE ${wheres.join(" AND ")};`;
 }
