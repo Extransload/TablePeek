@@ -200,19 +200,27 @@ pub fn open(file: &str, passphrase: &str) -> Result<Vec<u8>, OpenError> {
     }
     let version = value.get("version").and_then(Value::as_u64);
     if version != Some(u64::from(VERSION)) {
-        return Err(OpenError::Unsupported("지원하지 않는 연결 파일 버전입니다".into()));
+        return Err(OpenError::Unsupported(
+            "지원하지 않는 연결 파일 버전입니다".into(),
+        ));
     }
     let envelope: Envelope =
         serde_json::from_value(value).map_err(|_| OpenError::WrongPassphraseOrDamaged)?;
     if envelope.kdf.name != KDF_NAME || envelope.cipher != CIPHER {
-        return Err(OpenError::Unsupported("지원하지 않는 암호화 방식입니다".into()));
+        return Err(OpenError::Unsupported(
+            "지원하지 않는 암호화 방식입니다".into(),
+        ));
     }
-    let out_of_range = || OpenError::Unsupported("연결 파일의 암호화 설정이 허용 범위를 벗어났습니다".into());
+    let out_of_range =
+        || OpenError::Unsupported("연결 파일의 암호화 설정이 허용 범위를 벗어났습니다".into());
     let kdf = envelope.kdf.params();
     if kdf.m_kib > MAX_M_KIB || kdf.t == 0 || kdf.t > MAX_T || kdf.p == 0 || kdf.p > MAX_P {
         return Err(out_of_range());
     }
-    let decode = |text: &str| B64.decode(text).map_err(|_| OpenError::WrongPassphraseOrDamaged);
+    let decode = |text: &str| {
+        B64.decode(text)
+            .map_err(|_| OpenError::WrongPassphraseOrDamaged)
+    };
     let salt = decode(&envelope.kdf.salt)?;
     let nonce_bytes = decode(&envelope.nonce)?;
     let data = decode(&envelope.data)?;
@@ -222,7 +230,12 @@ pub fn open(file: &str, passphrase: &str) -> Result<Vec<u8>, OpenError> {
     let nonce = <&Nonce<Aes256Gcm>>::try_from(nonce_bytes.as_slice())
         .map_err(|_| OpenError::WrongPassphraseOrDamaged)?;
     let cipher = derive_key(passphrase, &salt, kdf).map_err(|_| out_of_range())?;
-    let aad = associated_data(envelope.version, &envelope.kdf, &envelope.cipher, &envelope.nonce);
+    let aad = associated_data(
+        envelope.version,
+        &envelope.kdf,
+        &envelope.cipher,
+        &envelope.nonce,
+    );
     cipher
         .decrypt(
             nonce,
@@ -323,7 +336,11 @@ pub fn prepare_import(
             name,
             connect,
             persist_password: carries_secret,
-            color: if is_hex_color(&entry.color) { entry.color } else { String::new() },
+            color: if is_hex_color(&entry.color) {
+                entry.color
+            } else {
+                String::new()
+            },
             tags: entry.tags,
             group: entry.group,
         });
@@ -337,7 +354,11 @@ mod tests {
     use serde_json::json;
 
     // Cheap enough for tests; the real cost is DEFAULT_KDF.
-    const FAST: KdfParams = KdfParams { m_kib: 64, t: 1, p: 1 };
+    const FAST: KdfParams = KdfParams {
+        m_kib: 64,
+        t: 1,
+        p: 1,
+    };
 
     fn saved_mysql() -> SavedConnection {
         serde_json::from_value(json!({
@@ -378,7 +399,10 @@ mod tests {
     #[test]
     fn wrong_passphrase_is_refused() {
         let file = seal(b"x", "correct horse", FAST).unwrap();
-        assert_eq!(open(&file, "wrong horse"), Err(OpenError::WrongPassphraseOrDamaged));
+        assert_eq!(
+            open(&file, "wrong horse"),
+            Err(OpenError::WrongPassphraseOrDamaged)
+        );
     }
 
     #[test]
@@ -388,24 +412,43 @@ mod tests {
 
         let mut data = envelope.clone();
         let text = data["data"].as_str().unwrap().to_string();
-        let flipped = if text.starts_with('A') { format!("B{}", &text[1..]) } else { format!("A{}", &text[1..]) };
+        let flipped = if text.starts_with('A') {
+            format!("B{}", &text[1..])
+        } else {
+            format!("A{}", &text[1..])
+        };
         data["data"] = json!(flipped);
-        assert_eq!(open(&data.to_string(), "correct horse"), Err(OpenError::WrongPassphraseOrDamaged));
+        assert_eq!(
+            open(&data.to_string(), "correct horse"),
+            Err(OpenError::WrongPassphraseOrDamaged)
+        );
 
         // The cost is authenticated too: lowering it can't be used to open the file another way.
         let mut cost = envelope.clone();
         cost["kdf"]["t"] = json!(2);
-        assert_eq!(open(&cost.to_string(), "correct horse"), Err(OpenError::WrongPassphraseOrDamaged));
+        assert_eq!(
+            open(&cost.to_string(), "correct horse"),
+            Err(OpenError::WrongPassphraseOrDamaged)
+        );
     }
 
     #[test]
     fn other_files_and_versions_are_told_apart() {
-        assert_eq!(open("not json", "correct horse"), Err(OpenError::NotConnectionsFile));
-        assert_eq!(open("{\"format\":\"other\"}", "correct horse"), Err(OpenError::NotConnectionsFile));
+        assert_eq!(
+            open("not json", "correct horse"),
+            Err(OpenError::NotConnectionsFile)
+        );
+        assert_eq!(
+            open("{\"format\":\"other\"}", "correct horse"),
+            Err(OpenError::NotConnectionsFile)
+        );
         let file = seal(b"x", "correct horse", FAST).unwrap();
         let mut newer: Value = serde_json::from_str(&file).unwrap();
         newer["version"] = json!(2);
-        assert!(matches!(open(&newer.to_string(), "correct horse"), Err(OpenError::Unsupported(_))));
+        assert!(matches!(
+            open(&newer.to_string(), "correct horse"),
+            Err(OpenError::Unsupported(_))
+        ));
     }
 
     #[test]
@@ -413,7 +456,10 @@ mod tests {
         let file = seal(b"x", "correct horse", FAST).unwrap();
         let mut heavy: Value = serde_json::from_str(&file).unwrap();
         heavy["kdf"]["m_kib"] = json!(64 * 1024 * 1024);
-        assert!(matches!(open(&heavy.to_string(), "correct horse"), Err(OpenError::Unsupported(_))));
+        assert!(matches!(
+            open(&heavy.to_string(), "correct horse"),
+            Err(OpenError::Unsupported(_))
+        ));
     }
 
     #[test]
@@ -422,7 +468,11 @@ mod tests {
         for salt in ["", "AAAA"] {
             let mut broken: Value = serde_json::from_str(&file).unwrap();
             broken["kdf"]["salt"] = json!(salt);
-            assert_eq!(open(&broken.to_string(), "correct horse"), Err(OpenError::WrongPassphraseOrDamaged), "salt {salt:?}");
+            assert_eq!(
+                open(&broken.to_string(), "correct horse"),
+                Err(OpenError::WrongPassphraseOrDamaged),
+                "salt {salt:?}"
+            );
         }
     }
 
@@ -433,13 +483,17 @@ mod tests {
         newer["version"] = json!(2);
         assert_eq!(
             open(&newer.to_string(), "correct horse"),
-            Err(OpenError::Unsupported("지원하지 않는 연결 파일 버전입니다".into()))
+            Err(OpenError::Unsupported(
+                "지원하지 않는 연결 파일 버전입니다".into()
+            ))
         );
         let mut other: Value = serde_json::from_str(&file).unwrap();
         other["cipher"] = json!("chacha20-poly1305");
         assert_eq!(
             open(&other.to_string(), "correct horse"),
-            Err(OpenError::Unsupported("지원하지 않는 암호화 방식입니다".into()))
+            Err(OpenError::Unsupported(
+                "지원하지 않는 암호화 방식입니다".into()
+            ))
         );
     }
 
@@ -473,7 +527,10 @@ mod tests {
 
     #[test]
     fn names_get_numbered_when_taken() {
-        let taken: HashSet<String> = ["rf-web", "rf-web (가져옴)"].into_iter().map(String::from).collect();
+        let taken: HashSet<String> = ["rf-web", "rf-web (가져옴)"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         assert_eq!(unique_name("fresh", &taken, "가져옴"), "fresh");
         assert_eq!(unique_name("rf-web", &HashSet::new(), "가져옴"), "rf-web");
         assert_eq!(unique_name("rf-web", &taken, "가져옴"), "rf-web (가져옴 2)");
@@ -502,7 +559,9 @@ mod tests {
 
     #[test]
     fn prepare_import_names_and_marks_secrets() {
-        let with_pw = export_connect(&saved_mysql(), |kind| (kind == "mysql").then(|| "db-pw".to_string()));
+        let with_pw = export_connect(&saved_mysql(), |kind| {
+            (kind == "mysql").then(|| "db-pw".to_string())
+        });
         let without = export_connect(&saved_mysql(), |_| None);
         let taken: HashSet<String> = ["prod".to_string()].into();
         let items = prepare_import(
@@ -512,8 +571,15 @@ mod tests {
         )
         .unwrap();
         let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
-        assert_eq!(names, ["prod (가져옴)", "prod (가져옴 2)", "other"], "later items see earlier names too");
-        assert!(items[0].persist_password, "a carried password goes to the keychain");
+        assert_eq!(
+            names,
+            ["prod (가져옴)", "prod (가져옴 2)", "other"],
+            "later items see earlier names too"
+        );
+        assert!(
+            items[0].persist_password,
+            "a carried password goes to the keychain"
+        );
         assert!(!items[1].persist_password);
         assert_eq!(items[0].group, "CiteWell");
         assert_eq!(items[0].tags, ["prod"]);
@@ -525,12 +591,23 @@ mod tests {
         let cases = [
             entry("  ", good.clone()),
             entry("x", json!({ "driver": "oracle" })),
-            entry("x", json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "database": "d" } })),
-            entry("x", json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "user": "u", "database": "d", "ssl_mode": "verify-full" } })),
+            entry(
+                "x",
+                json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "database": "d" } }),
+            ),
+            entry(
+                "x",
+                json!({ "driver": "mysql", "mysql": { "host": "h", "port": 3306, "user": "u", "database": "d", "ssl_mode": "verify-full" } }),
+            ),
             entry("x", json!({ "driver": "mysql" })),
         ];
         for (index, bad) in cases.into_iter().enumerate() {
-            let error = prepare_import(vec![entry("ok", good.clone()), bad], &HashSet::new(), "가져옴").unwrap_err();
+            let error = prepare_import(
+                vec![entry("ok", good.clone()), bad],
+                &HashSet::new(),
+                "가져옴",
+            )
+            .unwrap_err();
             assert!(error.starts_with("2번째 연결"), "case {index}: {error}");
         }
     }

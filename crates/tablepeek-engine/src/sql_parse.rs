@@ -257,7 +257,9 @@ pub fn is_read_only(sql: &str) -> bool {
 }
 
 const READ_ONLY_PREFIXES: [&str; 6] = ["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"];
-const FORBIDDEN_WORDS: [&str; 7] = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "DROP", "ALTER"];
+const FORBIDDEN_WORDS: [&str; 7] = [
+    "INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "DROP", "ALTER",
+];
 
 fn contains_word(text: &str, word: &str) -> bool {
     text.match_indices(word).any(|(index, _)| {

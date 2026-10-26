@@ -316,7 +316,12 @@ impl ConnSlot {
     /// is running when the request arrives. Whether a transaction the
     /// statement leaves open is a job's is settled here too, before the next
     /// statement can start.
-    pub async fn gated<T>(&self, holder: Holder, job: bool, run: impl std::future::Future<Output = T>) -> T {
+    pub async fn gated<T>(
+        &self,
+        holder: Holder,
+        job: bool,
+        run: impl std::future::Future<Output = T>,
+    ) -> T {
         let _gate = self.gate.lock().await;
         self.engine.cancels_settled(CANCEL_SETTLE).await;
         let before = self.engine.in_tx().await.unwrap_or(false);
@@ -324,7 +329,10 @@ impl ConnSlot {
         let _reset = HolderReset(self);
         let outcome = run.await;
         let after = self.engine.in_tx().await.unwrap_or(false);
-        let mut owner = self.job_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner = self
+            .job_tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !after {
             *owner = None;
         } else if job && (!before || owner.is_some()) {
@@ -339,14 +347,20 @@ impl ConnSlot {
     /// after JOB_LEASE, so its leftover transaction can be ended from the
     /// TX controls.
     pub fn job_tx_open(&self) -> bool {
-        let last = *self.job_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let last = *self
+            .job_tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         last.is_some_and(|at| self.holder() == Holder::Job || at.elapsed() < JOB_LEASE)
     }
 
     /// The job is done (or its page gave up on it): an open transaction it
     /// leaves is the user's now.
     pub fn end_job(&self) {
-        *self.job_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .job_tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Cancels the page's statement running now, if one is. Not a job's,
@@ -398,7 +412,8 @@ impl ConnSlot {
         if !tablepeek_engine::is_read_only(sql) {
             return Err(EngineError::BadRequest(JOB_BUSY.into()));
         }
-        if !(self.engine.failure_aborts_transaction() && self.engine.in_tx().await.unwrap_or(false)) {
+        if !(self.engine.failure_aborts_transaction() && self.engine.in_tx().await.unwrap_or(false))
+        {
             return self.engine.query(sql, max_rows).await;
         }
         self.engine.query("SAVEPOINT tablepeek_page", 1).await?;
@@ -411,7 +426,10 @@ impl ConnSlot {
                 .await
                 .is_ok();
         if usable {
-            let _ = self.engine.query("RELEASE SAVEPOINT tablepeek_page", 1).await;
+            let _ = self
+                .engine
+                .query("RELEASE SAVEPOINT tablepeek_page", 1)
+                .await;
         }
         outcome
     }
@@ -946,7 +964,11 @@ async fn exec_route(
     }
     let slot = slot_for(&state, params.conn.as_deref()).await?;
     let _guard = InflightGuard::new(slot.inflight.clone());
-    let holder = if req.job { Holder::Job } else { Holder::Foreground };
+    let holder = if req.job {
+        Holder::Job
+    } else {
+        Holder::Foreground
+    };
     // The page's own (a count, a structure change): while a job's
     // transaction is open, a read runs beside it and a write is refused.
     let result = slot
@@ -1546,13 +1568,22 @@ fn validate_connect_request(connect: &ConnectRequest) -> Result<(), (StatusCode,
 // What keeps a connect request from being saved or opened: (error code, message).
 fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, &'static str)> {
     let missing = match connect.driver.as_str() {
-        "postgres" => connect.postgres.is_none().then_some("PostgreSQL 접속 정보가 없습니다"),
+        "postgres" => connect
+            .postgres
+            .is_none()
+            .then_some("PostgreSQL 접속 정보가 없습니다"),
         "cockroach" => connect
             .cockroach
             .is_none()
             .then_some("CockroachDB 접속 정보가 없습니다"),
-        "mysql" => connect.mysql.is_none().then_some("MySQL 접속 정보가 없습니다"),
-        "mssql" => connect.mssql.is_none().then_some("SQL Server 접속 정보가 없습니다"),
+        "mysql" => connect
+            .mysql
+            .is_none()
+            .then_some("MySQL 접속 정보가 없습니다"),
+        "mssql" => connect
+            .mssql
+            .is_none()
+            .then_some("SQL Server 접속 정보가 없습니다"),
         _ => return Some(("unsupported_driver", "지원하지 않는 드라이버입니다")),
     };
     if let Some(message) = missing {
@@ -1582,9 +1613,15 @@ fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, &'static s
 fn request_db_password(connect: &ConnectRequest) -> Option<&str> {
     match connect.driver.as_str() {
         "mysql" => connect.mysql.as_ref().and_then(|c| c.password.as_deref()),
-        "cockroach" => connect.cockroach.as_ref().and_then(|c| c.password.as_deref()),
+        "cockroach" => connect
+            .cockroach
+            .as_ref()
+            .and_then(|c| c.password.as_deref()),
         "mssql" => connect.mssql.as_ref().and_then(|c| c.password.as_deref()),
-        _ => connect.postgres.as_ref().and_then(|c| c.password.as_deref()),
+        _ => connect
+            .postgres
+            .as_ref()
+            .and_then(|c| c.password.as_deref()),
     }
     .filter(|password| !password.is_empty())
 }
@@ -1741,7 +1778,9 @@ async fn save_connection(
             delete_connection_passwords(id);
         }
     } else if had_secrets {
-        let moved = written.iter().any(|(account, _)| account == &password_account);
+        let moved = written
+            .iter()
+            .any(|(account, _)| account == &password_account);
         if let Some(old) = previous.filter(|old| old.driver != req.connect.driver) {
             if moved {
                 store::delete_password(&store::connection_account(id, &old.driver));
@@ -1825,11 +1864,18 @@ async fn connections_export(
         return Err(unauthorized());
     }
     if req.passphrase.chars().count() < transfer::MIN_PASSPHRASE_CHARS {
-        return Err(bad_request("weak_passphrase", "파일 암호는 8자 이상이어야 합니다"));
+        return Err(bad_request(
+            "weak_passphrase",
+            "파일 암호는 8자 이상이어야 합니다",
+        ));
     }
     // Each profile once, in the order asked.
     let mut seen = HashSet::new();
-    let ids: Vec<String> = req.ids.into_iter().filter(|id| seen.insert(id.clone())).collect();
+    let ids: Vec<String> = req
+        .ids
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
     let saved = {
         let store = state.store.lock().await;
         ids.iter()
@@ -1864,7 +1910,9 @@ async fn connections_export(
                 let carried = std::cell::Cell::new(false);
                 let connect = transfer::export_connect(connection, |kind| {
                     let secret = with_secrets
-                        .then(|| store::get_password(&store::connection_account(&connection.id, kind)))
+                        .then(|| {
+                            store::get_password(&store::connection_account(&connection.id, kind))
+                        })
                         .flatten()
                         .filter(|secret| !secret.is_empty());
                     carried.set(carried.get() || secret.is_some());
@@ -1890,8 +1938,11 @@ async fn connections_export(
             })
             .collect();
         let count = connections.len();
-        let plaintext = serde_json::to_vec(&transfer::Bundle { groups, connections })
-            .map_err(|err| err.to_string())?;
+        let plaintext = serde_json::to_vec(&transfer::Bundle {
+            groups,
+            connections,
+        })
+        .map_err(|err| err.to_string())?;
         let file = transfer::seal(&plaintext, &passphrase, transfer::DEFAULT_KDF)?;
         Ok::<_, String>((file, count, secrets))
     })
@@ -1899,7 +1950,9 @@ async fn connections_export(
     .map_err(|err| internal_error(err.to_string()))?;
     let (file, count, secrets) = sealed.map_err(internal_error)?;
     // secrets: how many profiles carried a password into the file.
-    Ok(Json(json!({ "file": file, "count": count, "secrets": secrets })))
+    Ok(Json(
+        json!({ "file": file, "count": count, "secrets": secrets }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -2130,7 +2183,12 @@ async fn conns_list(
     let mut conns = Vec::with_capacity(slots.len());
     for slot in slots {
         let (kind, path, demo, table_count) = match slot.summary() {
-            Some(summary) => (summary.kind, summary.path, summary.demo, summary.table_count),
+            Some(summary) => (
+                summary.kind,
+                summary.path,
+                summary.demo,
+                summary.table_count,
+            ),
             None => {
                 let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
                 (meta.kind, meta.path, meta.demo, meta.tables.len())
@@ -2335,7 +2393,9 @@ async fn history_list(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    let scope = slot_for(&state, params.conn.as_deref()).await?.history_scope();
+    let scope = slot_for(&state, params.conn.as_deref())
+        .await?
+        .history_scope();
     let limit = params.limit.unwrap_or(50).clamp(1, store::HISTORY_CAP);
     let history = {
         let store = state.store.lock().await;
@@ -2352,7 +2412,9 @@ async fn history_clear(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    let scope = slot_for(&state, params.conn.as_deref()).await?.history_scope();
+    let scope = slot_for(&state, params.conn.as_deref())
+        .await?
+        .history_scope();
     change_history(&state.store, |store| {
         store.forget_history(&scope);
         ((), true)
@@ -2415,7 +2477,10 @@ async fn safe_mode_set(
         return Err(unauthorized());
     }
     if req.mode.is_some_and(|mode| mode > 2) {
-        return Err(bad_request("invalid_request", "안전 모드는 0, 1, 2 중 하나입니다"));
+        return Err(bad_request(
+            "invalid_request",
+            "안전 모드는 0, 1, 2 중 하나입니다",
+        ));
     }
     let scope = slot_for(&state, req.conn.as_deref()).await?.history_scope();
     let mut store = state.store.lock().await;
@@ -2669,15 +2734,17 @@ async fn fs_list(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    list_dir(params.path.as_deref(), params.hidden).map(Json).map_err(|err| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                code: "fs_error".into(),
-                message: err.to_string(),
-            }),
-        )
-    })
+    list_dir(params.path.as_deref(), params.hidden)
+        .map(Json)
+        .map_err(|err| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    code: "fs_error".into(),
+                    message: err.to_string(),
+                }),
+            )
+        })
 }
 
 #[derive(Deserialize)]
@@ -2794,13 +2861,15 @@ async fn query(
     let max_rows = req.max_rows.unwrap_or(10_000).clamp(1, 500_000);
     let _inflight = InflightGuard::new(slot.inflight.clone());
     slot.gated(Holder::Foreground, false, async {
-        slot.foreground_query(&req.sql, max_rows).await.map(|data| QueryResult {
-            columns: data.columns.clone(),
-            row_count: data.row_count,
-            rows: data.rows_json(),
-            elapsed_ms: data.elapsed_ms,
-            truncated: data.truncated,
-        })
+        slot.foreground_query(&req.sql, max_rows)
+            .await
+            .map(|data| QueryResult {
+                columns: data.columns.clone(),
+                row_count: data.row_count,
+                rows: data.rows_json(),
+                elapsed_ms: data.elapsed_ms,
+                truncated: data.truncated,
+            })
     })
     .await
     .map(Json)
@@ -3088,12 +3157,24 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
                                     match value["type"].as_str().unwrap_or("") {
                                         "edit" => handle_edit(&state, &sender, &value, &conn).await,
                                         "insert_row" => {
-                                            handle_row_change(&state, &sender, &value, &conn, RowOp::Insert)
-                                                .await
+                                            handle_row_change(
+                                                &state,
+                                                &sender,
+                                                &value,
+                                                &conn,
+                                                RowOp::Insert,
+                                            )
+                                            .await
                                         }
                                         "delete_row" => {
-                                            handle_row_change(&state, &sender, &value, &conn, RowOp::Delete)
-                                                .await
+                                            handle_row_change(
+                                                &state,
+                                                &sender,
+                                                &value,
+                                                &conn,
+                                                RowOp::Delete,
+                                            )
+                                            .await
                                         }
                                         _ => handle_tx(&state, &sender, &value, &conn).await,
                                     }
@@ -3341,29 +3422,38 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
         // Read inside the gate, so a transaction another statement ends (a
         // job's COMMIT queued before this one) isn't put down to this one.
         let ran = slot
-            .gated(if job { Holder::Job } else { Holder::Foreground }, job, async {
-                if superseded() {
-                    return None;
-                }
-                let mark = slot.engine.sql_log().ends();
-                let outcome = if job {
-                    slot.engine.query(&sql, max_rows).await
-                } else {
-                    slot.foreground_query(&sql, max_rows).await
-                };
-                // Statements run here can open or close a transaction (or,
-                // failing, abort one): the page's indicator follows this.
-                let in_tx = slot.engine.in_tx().await.unwrap_or(false);
-                // One this statement ended (COMMIT or ROLLBACK typed here, a
-                // failed COMMIT, a deadlock) settles the cached results as
-                // the toolbar's do.
-                let ended = slot.engine.sql_log().ended_since(mark);
-                Some((outcome, in_tx, ended))
-            })
+            .gated(
+                if job { Holder::Job } else { Holder::Foreground },
+                job,
+                async {
+                    if superseded() {
+                        return None;
+                    }
+                    let mark = slot.engine.sql_log().ends();
+                    let outcome = if job {
+                        slot.engine.query(&sql, max_rows).await
+                    } else {
+                        slot.foreground_query(&sql, max_rows).await
+                    };
+                    // Statements run here can open or close a transaction (or,
+                    // failing, abort one): the page's indicator follows this.
+                    let in_tx = slot.engine.in_tx().await.unwrap_or(false);
+                    // One this statement ended (COMMIT or ROLLBACK typed here, a
+                    // failed COMMIT, a deadlock) settles the cached results as
+                    // the toolbar's do.
+                    let ended = slot.engine.sql_log().ended_since(mark);
+                    Some((outcome, in_tx, ended))
+                },
+            )
             .await;
         let Some((outcome, in_tx, ended)) = ran else {
             sender
-                .json(error_json(Some(&id), Some(&conn), "쿼리가 취소되었습니다", true))
+                .json(error_json(
+                    Some(&id),
+                    Some(&conn),
+                    "쿼리가 취소되었습니다",
+                    true,
+                ))
                 .await;
             return;
         };
@@ -3608,7 +3698,11 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
                 let mut store = slot.sessions.lock().await;
                 store.mark_structural();
                 if let Some(session_arc) = store.get(&session_id) {
-                    session_arc.lock().await.journal.push(JournalEntry::Structural);
+                    session_arc
+                        .lock()
+                        .await
+                        .journal
+                        .push(JournalEntry::Structural);
                 }
             }
             sender
@@ -4018,7 +4112,11 @@ mod tests {
         assert_eq!(listing.entries[2].size, Some(2));
 
         let with_hidden = list_dir(Some(base.to_str().unwrap()), true).unwrap();
-        let names: Vec<&str> = with_hidden.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = with_hidden
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         assert_eq!(names, vec!["adir", "zdir", ".hidden", "note.txt"]);
         assert!(listing.parent.is_some());
 
@@ -4072,7 +4170,10 @@ mod tests {
             .query("CREATE TABLE summary_extra (x INTEGER)", 10)
             .await
             .unwrap();
-        assert!(slot.summary().is_none(), "a statement may have changed the schema");
+        assert!(
+            slot.summary().is_none(),
+            "a statement may have changed the schema"
+        );
 
         slot.refresh_summary(false).await.unwrap();
         assert_eq!(slot.summary().unwrap().table_count, tables + 1);
@@ -4343,7 +4444,11 @@ mod tests {
         }
     }
 
-    async fn create_test_connection(state: &AppState, name: &str, connect: ConnectRequest) -> String {
+    async fn create_test_connection(
+        state: &AppState,
+        name: &str,
+        connect: ConnectRequest,
+    ) -> String {
         let created = connections_create(
             State(state.clone()),
             test_headers(),
@@ -4375,44 +4480,75 @@ mod tests {
         let mut request = export_request(vec![pg.clone(), my.clone()], "correct horse");
         request.meta.insert(
             my.clone(),
-            transfer::ExportMeta { color: "#22c55e".into(), tags: vec!["production".into()], group: "CiteWell".into() },
+            transfer::ExportMeta {
+                color: "#22c55e".into(),
+                tags: vec!["production".into()],
+                group: "CiteWell".into(),
+            },
         );
-        request.groups = vec![transfer::BundleGroup { name: "CiteWell".into(), color: "#f59e0b".into() }];
+        request.groups = vec![transfer::BundleGroup {
+            name: "CiteWell".into(),
+            color: "#f59e0b".into(),
+        }];
         request.include_passwords = true; // nothing is in the keychain for these profiles
         let exported = connections_export(State(source.clone()), test_headers(), Json(request))
             .await
             .unwrap();
         assert_eq!(exported.0["count"], json!(2));
-        assert_eq!(exported.0["secrets"], json!(0), "asked for passwords, but none was stored");
+        assert_eq!(
+            exported.0["secrets"],
+            json!(0),
+            "asked for passwords, but none was stored"
+        );
         let file = exported.0["file"].as_str().unwrap().to_string();
         for hidden in ["분석 DB", "db.internal", "bastion", "CiteWell", "password"] {
             assert!(!file.contains(hidden), "{hidden} visible in the file");
         }
-        let inside: Value = serde_json::from_slice(&transfer::open(&file, "correct horse").unwrap()).unwrap();
-        assert!(!inside.to_string().contains("password"), "no secret was stored, so none is exported");
+        let inside: Value =
+            serde_json::from_slice(&transfer::open(&file, "correct horse").unwrap()).unwrap();
+        assert!(
+            !inside.to_string().contains("password"),
+            "no secret was stored, so none is exported"
+        );
 
         let target = test_state(&temp_dir("import-target"));
-        let imported = connections_import(State(target.clone()), test_headers(), Json(import_request(&file, "correct horse")))
-            .await
-            .unwrap();
+        let imported = connections_import(
+            State(target.clone()),
+            test_headers(),
+            Json(import_request(&file, "correct horse")),
+        )
+        .await
+        .unwrap();
         let created = imported.0["connections"].as_array().unwrap();
         assert_eq!(created.len(), 2);
         assert_eq!(created[1]["name"], json!("prod"));
         assert_eq!(created[1]["color"], json!("#22c55e"));
         assert_eq!(created[1]["tags"], json!(["production"]));
         assert_eq!(created[1]["group"], json!("CiteWell"));
-        assert_eq!(imported.0["groups"], json!([{ "name": "CiteWell", "color": "#f59e0b" }]));
+        assert_eq!(
+            imported.0["groups"],
+            json!([{ "name": "CiteWell", "color": "#f59e0b" }])
+        );
         let store = target.store.lock().await;
-        let saved = store.find_connection(created[1]["id"].as_str().unwrap()).unwrap();
+        let saved = store
+            .find_connection(created[1]["id"].as_str().unwrap())
+            .unwrap();
         assert_eq!(saved.mysql.as_ref().unwrap().host, "db.internal");
-        assert_eq!(saved.ssh.as_ref().unwrap().private_key_path.as_deref(), Some("/k/id"));
+        assert_eq!(
+            saved.ssh.as_ref().unwrap().private_key_path.as_deref(),
+            Some("/k/id")
+        );
         assert!(!saved.persist_password);
         drop(store);
 
         // A second import names the copies apart.
-        let again = connections_import(State(target.clone()), test_headers(), Json(import_request(&file, "correct horse")))
-            .await
-            .unwrap();
+        let again = connections_import(
+            State(target.clone()),
+            test_headers(),
+            Json(import_request(&file, "correct horse")),
+        )
+        .await
+        .unwrap();
         assert_eq!(again.0["connections"][1]["name"], json!("prod (가져옴)"));
     }
 
@@ -4420,11 +4556,18 @@ mod tests {
     async fn connections_export_counts_each_profile_once() {
         let state = test_state(&temp_dir("export-dedupe"));
         let id = create_test_connection(&state, "a", test_connect_request("postgres")).await;
-        let exported = connections_export(State(state.clone()), test_headers(), Json(export_request(vec![id.clone(), id], "correct horse")))
-            .await
-            .unwrap();
+        let exported = connections_export(
+            State(state.clone()),
+            test_headers(),
+            Json(export_request(vec![id.clone(), id], "correct horse")),
+        )
+        .await
+        .unwrap();
         assert_eq!(exported.0["count"], json!(1));
-        let inside: Value = serde_json::from_slice(&transfer::open(exported.0["file"].as_str().unwrap(), "correct horse").unwrap()).unwrap();
+        let inside: Value = serde_json::from_slice(
+            &transfer::open(exported.0["file"].as_str().unwrap(), "correct horse").unwrap(),
+        )
+        .unwrap();
         assert_eq!(inside["connections"].as_array().unwrap().len(), 1);
     }
 
@@ -4432,18 +4575,30 @@ mod tests {
     async fn connections_export_rejects_short_passphrase_and_unknown_ids() {
         let state = test_state(&temp_dir("export-checks"));
         let id = create_test_connection(&state, "a", test_connect_request("postgres")).await;
-        let short = connections_export(State(state.clone()), test_headers(), Json(export_request(vec![id.clone()], "seven77")))
-            .await
-            .unwrap_err();
+        let short = connections_export(
+            State(state.clone()),
+            test_headers(),
+            Json(export_request(vec![id.clone()], "seven77")),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(short.0, StatusCode::BAD_REQUEST);
         assert_eq!(short.1.code, "weak_passphrase");
-        let missing = connections_export(State(state.clone()), test_headers(), Json(export_request(vec!["nope".into()], "correct horse")))
-            .await
-            .unwrap_err();
+        let missing = connections_export(
+            State(state.clone()),
+            test_headers(),
+            Json(export_request(vec!["nope".into()], "correct horse")),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(missing.0, StatusCode::NOT_FOUND);
-        let unauthorized = connections_export(State(state.clone()), HeaderMap::new(), Json(export_request(vec![id], "correct horse")))
-            .await
-            .unwrap_err();
+        let unauthorized = connections_export(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(export_request(vec![id], "correct horse")),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(unauthorized.0, StatusCode::UNAUTHORIZED);
     }
 
@@ -4451,13 +4606,21 @@ mod tests {
     async fn connections_import_tells_wrong_passphrase_from_other_files() {
         let state = test_state(&temp_dir("import-errors"));
         let file = transfer::seal(b"{}", "correct horse", transfer::DEFAULT_KDF).unwrap();
-        let wrong = connections_import(State(state.clone()), test_headers(), Json(import_request(&file, "wrong horse")))
-            .await
-            .unwrap_err();
+        let wrong = connections_import(
+            State(state.clone()),
+            test_headers(),
+            Json(import_request(&file, "wrong horse")),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(wrong.1.code, "wrong_passphrase");
-        let other = connections_import(State(state.clone()), test_headers(), Json(import_request("{\"a\":1}", "correct horse")))
-            .await
-            .unwrap_err();
+        let other = connections_import(
+            State(state.clone()),
+            test_headers(),
+            Json(import_request("{\"a\":1}", "correct horse")),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(other.1.code, "not_connections_file");
     }
 
@@ -4472,13 +4635,29 @@ mod tests {
                 { "name": "second", "connect": { "driver": "postgres", "postgres": { "host": "db/prod", "port": 5432, "user": "u", "database": "d" } } }
             ]
         });
-        let file = transfer::seal(bundle.to_string().as_bytes(), "correct horse", transfer::DEFAULT_KDF).unwrap();
-        let error = connections_import(State(state.clone()), test_headers(), Json(import_request(&file, "correct horse")))
-            .await
-            .unwrap_err();
+        let file = transfer::seal(
+            bundle.to_string().as_bytes(),
+            "correct horse",
+            transfer::DEFAULT_KDF,
+        )
+        .unwrap();
+        let error = connections_import(
+            State(state.clone()),
+            test_headers(),
+            Json(import_request(&file, "correct horse")),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert!(error.1.message.starts_with("2번째 연결"), "{}", error.1.message);
-        assert!(state.store.lock().await.data().connections.is_empty(), "nothing saved");
+        assert!(
+            error.1.message.starts_with("2번째 연결"),
+            "{}",
+            error.1.message
+        );
+        assert!(
+            state.store.lock().await.data().connections.is_empty(),
+            "nothing saved"
+        );
     }
 
     #[tokio::test]
@@ -4593,7 +4772,10 @@ mod tests {
         assert_eq!(connections[0]["id"], json!(id));
         assert_eq!(connections[0]["name"], json!("바뀐 이름"));
         assert_eq!(connections[0]["driver"], json!("mysql"));
-        assert_eq!(connections[0]["mysql"]["host"], json!("db.example.internal"));
+        assert_eq!(
+            connections[0]["mysql"]["host"],
+            json!("db.example.internal")
+        );
         assert!(connections[0].get("postgres").is_none());
         assert!(connections[0]["mysql"].get("password").is_none());
         assert_eq!(connections[0]["last_used"], json!(1234));
@@ -4741,7 +4923,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(updated.0["id"], json!(ids[0]));
-        let listed = connections_list(State(state.clone()), headers).await.unwrap();
+        let listed = connections_list(State(state.clone()), headers)
+            .await
+            .unwrap();
         let names: Vec<&str> = listed.0["connections"]
             .as_array()
             .unwrap()
@@ -4963,8 +5147,12 @@ mod tests {
         // The test state's default slot is the in-memory demo.
         {
             let mut store = state.store.lock().await;
-            store.record_history(history_run("demo", "SELECT 1", 10)).unwrap();
-            store.record_history(history_run("demo", "SELECT 2", 20)).unwrap();
+            store
+                .record_history(history_run("demo", "SELECT 1", 10))
+                .unwrap();
+            store
+                .record_history(history_run("demo", "SELECT 2", 20))
+                .unwrap();
             store
                 .record_history(history_run("saved:other", "SELECT 3", 30))
                 .unwrap();
@@ -5050,7 +5238,13 @@ mod tests {
         );
         assert_eq!(unsaved.history_scope(), "session:s2");
 
-        let demo = ConnSlot::new("s3".into(), "데모".into(), None, None, Engine::open_demo(1).unwrap());
+        let demo = ConnSlot::new(
+            "s3".into(),
+            "데모".into(),
+            None,
+            None,
+            Engine::open_demo(1).unwrap(),
+        );
         assert_eq!(demo.history_scope(), "demo");
 
         let sqlite = ConnSlot::new(
@@ -5061,7 +5255,10 @@ mod tests {
             Engine::open_file(&file).unwrap(),
         );
         let canonical = std::fs::canonicalize(&file).unwrap();
-        assert_eq!(sqlite.history_scope(), format!("file:{}", canonical.display()));
+        assert_eq!(
+            sqlite.history_scope(),
+            format!("file:{}", canonical.display())
+        );
 
         // The same file reached by another spelling of its path shares the scope.
         let roundabout = dir.join("sub").join("..").join("app.db");
@@ -5084,7 +5281,9 @@ mod tests {
         let state = test_state(&dir);
         let headers = test_headers();
 
-        let listed = conns_list(State(state.clone()), headers.clone()).await.unwrap();
+        let listed = conns_list(State(state.clone()), headers.clone())
+            .await
+            .unwrap();
         assert_eq!(listed.0["conns"][0]["safe_mode"], Value::Null);
 
         let set = safe_mode_set(
@@ -5099,7 +5298,9 @@ mod tests {
         .unwrap();
         assert_eq!(set.0["mode"], json!(2));
         assert_eq!(state.store.lock().await.safe_mode("demo"), Some(2));
-        let listed = conns_list(State(state.clone()), headers.clone()).await.unwrap();
+        let listed = conns_list(State(state.clone()), headers.clone())
+            .await
+            .unwrap();
         assert_eq!(listed.0["conns"][0]["safe_mode"], json!(2));
 
         let bad = safe_mode_set(
@@ -5776,10 +5977,14 @@ mod tests {
         ]))
         .unwrap();
         let exprs: Vec<Option<ValueExpr>> = values.iter().map(|value| value.expr).collect();
-        assert_eq!(exprs, vec![Some(ValueExpr::Now), Some(ValueExpr::Default), None]);
+        assert_eq!(
+            exprs,
+            vec![Some(ValueExpr::Now), Some(ValueExpr::Default), None]
+        );
         assert_eq!(values[2].value.as_deref(), Some("x"));
         for bad in [json!("now(); DROP TABLE demo"), json!("NOW"), json!(1)] {
-            let refused = parse_insert_values(&json!([{ "column": "seen", "value": null, "expr": bad }]));
+            let refused =
+                parse_insert_values(&json!([{ "column": "seen", "value": null, "expr": bad }]));
             assert!(refused.is_err(), "{bad}");
         }
     }
@@ -5809,7 +6014,10 @@ mod tests {
 
         handle_edit(&state, &sender, &now_edit, "main").await;
         let edited = next_of(&mut rx, "edited").await;
-        assert_eq!((edited["expr"].clone(), edited["value"].clone()), (json!("now"), Value::Null));
+        assert_eq!(
+            (edited["expr"].clone(), edited["value"].clone()),
+            (json!("now"), Value::Null)
+        );
         assert_eq!(edited["rows_affected"], json!(1));
         {
             // The cached cell keeps what it read; the page reads the row again.
@@ -6222,13 +6430,18 @@ mod tests {
         for (holder, cancelled) in [(Holder::Foreground, true), (Holder::Job, false)] {
             let running = slot.clone();
             let task = tokio::spawn(async move {
-                running.gated(holder, holder == Holder::Job, running.engine.query(SLOW, 1)).await
+                running
+                    .gated(holder, holder == Holder::Job, running.engine.query(SLOW, 1))
+                    .await
             });
             until_held(&slot, holder).await;
             slot.cancel_if_inflight();
             let outcome = task.await.unwrap();
             assert_eq!(
-                outcome.as_ref().err().is_some_and(EngineError::is_interrupted),
+                outcome
+                    .as_ref()
+                    .err()
+                    .is_some_and(EngineError::is_interrupted),
                 cancelled,
                 "{holder:?}: {:?}",
                 outcome.as_ref().err()
@@ -6243,11 +6456,16 @@ mod tests {
         *slot.job_tx.lock().unwrap() = Some(std::time::Instant::now());
         let running = slot.clone();
         let task = tokio::spawn(async move {
-            running.gated(Holder::Foreground, false, running.engine.query(SLOW, 1)).await
+            running
+                .gated(Holder::Foreground, false, running.engine.query(SLOW, 1))
+                .await
         });
         until_held(&slot, Holder::Foreground).await;
         slot.cancel_if_inflight();
-        assert!(task.await.unwrap().is_ok(), "the page's statement ran to its end");
+        assert!(
+            task.await.unwrap().is_ok(),
+            "the page's statement ran to its end"
+        );
     }
 
     #[tokio::test]
@@ -6255,7 +6473,9 @@ mod tests {
         let slot = gate_slot();
         let job = slot.clone();
         let job_task = tokio::spawn(async move {
-            let outcome = job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await;
+            let outcome = job
+                .gated(Holder::Job, true, job.engine.query(SLOW, 1))
+                .await;
             (outcome.is_ok(), std::time::Instant::now())
         });
         until_held(&slot, Holder::Job).await;
@@ -6263,13 +6483,18 @@ mod tests {
         slot.cancel_if_inflight();
         let page = slot.clone();
         let page_task = tokio::spawn(async move {
-            let outcome = page.gated(Holder::Foreground, false, page.engine.query("SELECT 1", 1)).await;
+            let outcome = page
+                .gated(Holder::Foreground, false, page.engine.query("SELECT 1", 1))
+                .await;
             (outcome.is_ok(), std::time::Instant::now())
         });
         let (job_ok, job_done) = job_task.await.unwrap();
         let (page_ok, page_done) = page_task.await.unwrap();
         assert!(job_ok && page_ok);
-        assert!(page_done >= job_done, "the page's statement ran after the job's");
+        assert!(
+            page_done >= job_done,
+            "the page's statement ran after the job's"
+        );
     }
 
     #[tokio::test]
@@ -6279,13 +6504,19 @@ mod tests {
         let slot = slot_for(&state, Some("main")).await.unwrap();
         let (sender, mut rx) = test_sender();
         let job = slot.clone();
-        let held = tokio::spawn(async move { job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await });
+        let held = tokio::spawn(async move {
+            job.gated(Holder::Job, true, job.engine.query(SLOW, 1))
+                .await
+        });
         until_held(&slot, Holder::Job).await;
         // Two of the page's queries queue behind the job; the second replaces the first.
         let run = |id: &str, sql: &str| json!({ "type": "query", "id": id, "sql": sql });
         handle_query(&state, &sender, &run("old", "SELECT 1"), "main").await;
         handle_query(&state, &sender, &run("new", "SELECT 2"), "main").await;
-        assert!(held.await.unwrap().is_ok(), "the job's statement ran to its end");
+        assert!(
+            held.await.unwrap().is_ok(),
+            "the job's statement ran to its end"
+        );
         let mut replies = HashMap::new();
         while replies.len() < 2 {
             let message = next_json(&mut rx).await;
@@ -6301,23 +6532,42 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    async fn exec_as(state: &AppState, sql: &str, job: bool) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    async fn exec_as(
+        state: &AppState,
+        sql: &str,
+        job: bool,
+    ) -> Result<Value, (StatusCode, Json<ApiError>)> {
         exec_route(
             State(state.clone()),
             test_headers(),
-            Query(ConnQuery { conn: None, system: None }),
-            Json(ExecRequest { sql: sql.into(), history: false, job }),
+            Query(ConnQuery {
+                conn: None,
+                system: None,
+            }),
+            Json(ExecRequest {
+                sql: sql.into(),
+                history: false,
+                job,
+            }),
         )
         .await
         .map(|Json(value)| value)
     }
 
-    async fn job_action(state: &AppState, action: &str) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    async fn job_action(
+        state: &AppState,
+        action: &str,
+    ) -> Result<Value, (StatusCode, Json<ApiError>)> {
         job_route(
             State(state.clone()),
             test_headers(),
-            Query(ConnQuery { conn: None, system: None }),
-            Json(JobRequest { action: action.into() }),
+            Query(ConnQuery {
+                conn: None,
+                system: None,
+            }),
+            Json(JobRequest {
+                action: action.into(),
+            }),
         )
         .await
         .map(|Json(value)| value)
@@ -6345,16 +6595,25 @@ mod tests {
     #[tokio::test]
     async fn a_jobs_stop_reaches_its_own_statement_and_nothing_else() {
         let slot = gate_slot();
-        for (holder, cancelled) in [(Holder::Job, true), (Holder::Foreground, false), (Holder::Protected, false)] {
+        for (holder, cancelled) in [
+            (Holder::Job, true),
+            (Holder::Foreground, false),
+            (Holder::Protected, false),
+        ] {
             let running = slot.clone();
             let task = tokio::spawn(async move {
-                running.gated(holder, holder == Holder::Job, running.engine.query(SLOW, 1)).await
+                running
+                    .gated(holder, holder == Holder::Job, running.engine.query(SLOW, 1))
+                    .await
             });
             until_held(&slot, holder).await;
             slot.cancel_job();
             let outcome = task.await.unwrap();
             assert_eq!(
-                outcome.as_ref().err().is_some_and(EngineError::is_interrupted),
+                outcome
+                    .as_ref()
+                    .err()
+                    .is_some_and(EngineError::is_interrupted),
                 cancelled,
                 "{holder:?}"
             );
@@ -6362,7 +6621,9 @@ mod tests {
         // Nor does the page's cancel reach a transaction command or an edit.
         let running = slot.clone();
         let task = tokio::spawn(async move {
-            running.gated(Holder::Protected, false, running.engine.query(SLOW, 1)).await
+            running
+                .gated(Holder::Protected, false, running.engine.query(SLOW, 1))
+                .await
         });
         until_held(&slot, Holder::Protected).await;
         slot.cancel_if_inflight();
@@ -6373,18 +6634,32 @@ mod tests {
     async fn whose_transaction_it_is_is_settled_before_the_next_statement_starts() {
         let slot = gate_slot();
         let job = slot.clone();
-        let held = tokio::spawn(async move { job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await });
+        let held = tokio::spawn(async move {
+            job.gated(Holder::Job, true, job.engine.query(SLOW, 1))
+                .await
+        });
         until_held(&slot, Holder::Job).await;
         let job = slot.clone();
-        let begin = tokio::spawn(async move { job.gated(Holder::Protected, true, job.engine.begin_tx()).await });
+        let begin = tokio::spawn(async move {
+            job.gated(Holder::Protected, true, job.engine.begin_tx())
+                .await
+        });
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         // The page's statement queued right behind the job's BEGIN.
         let page = slot.clone();
-        let seen = tokio::spawn(async move { page.gated(Holder::Foreground, false, async { page.job_tx_open() }).await });
+        let seen = tokio::spawn(async move {
+            page.gated(Holder::Foreground, false, async { page.job_tx_open() })
+                .await
+        });
         held.await.unwrap().unwrap();
         begin.await.unwrap().unwrap();
-        assert!(seen.await.unwrap(), "the page's statement saw the job's transaction as the job's");
-        slot.gated(Holder::Protected, true, slot.engine.rollback_tx()).await.unwrap();
+        assert!(
+            seen.await.unwrap(),
+            "the page's statement saw the job's transaction as the job's"
+        );
+        slot.gated(Holder::Protected, true, slot.engine.rollback_tx())
+            .await
+            .unwrap();
         assert!(!slot.job_tx_open());
     }
 
@@ -6396,13 +6671,22 @@ mod tests {
         let (sender, mut rx) = test_sender();
         exec_as(&state, "BEGIN", true).await.unwrap();
         let job = slot.clone();
-        let held = tokio::spawn(async move { job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await });
+        let held = tokio::spawn(async move {
+            job.gated(Holder::Job, true, job.engine.query(SLOW, 1))
+                .await
+        });
         until_held(&slot, Holder::Job).await;
         // The job's COMMIT queues first, then the page's query.
         let commit_state = state.clone();
         let commit = tokio::spawn(async move { exec_as(&commit_state, "COMMIT", true).await });
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        handle_query(&state, &sender, &json!({ "type": "query", "id": "page", "sql": "SELECT 1" }), "main").await;
+        handle_query(
+            &state,
+            &sender,
+            &json!({ "type": "query", "id": "page", "sql": "SELECT 1" }),
+            "main",
+        )
+        .await;
         held.await.unwrap().unwrap();
         commit.await.unwrap().unwrap();
         let meta = next_of(&mut rx, "meta").await;
@@ -6419,24 +6703,54 @@ mod tests {
         let (sender, mut rx) = test_sender();
         exec_as(&state, "BEGIN", true).await.unwrap();
         // Another tab's exec: a read runs, a write is refused.
-        exec_as(&state, "SELECT COUNT(*) FROM demo", false).await.unwrap();
-        let refused = exec_as(&state, "DELETE FROM demo", false).await.unwrap_err();
+        exec_as(&state, "SELECT COUNT(*) FROM demo", false)
+            .await
+            .unwrap();
+        let refused = exec_as(&state, "DELETE FROM demo", false)
+            .await
+            .unwrap_err();
         assert_eq!(refused.1 .0.message, JOB_BUSY);
         // Its transaction commands, queries that write, and row changes.
-        handle_tx(&state, &sender, &json!({ "type": "tx", "action": "commit" }), "main").await;
+        handle_tx(
+            &state,
+            &sender,
+            &json!({ "type": "tx", "action": "commit" }),
+            "main",
+        )
+        .await;
         assert_eq!(next_of(&mut rx, "error").await["message"], json!(JOB_BUSY));
-        handle_query(&state, &sender, &json!({ "type": "query", "id": "w", "sql": "UPDATE demo SET name = 'x'" }), "main").await;
+        handle_query(
+            &state,
+            &sender,
+            &json!({ "type": "query", "id": "w", "sql": "UPDATE demo SET name = 'x'" }),
+            "main",
+        )
+        .await;
         let write = next_of(&mut rx, "error").await;
-        assert_eq!((write["id"].clone(), write["message"].clone()), (json!("w"), json!(JOB_BUSY)));
-        handle_query(&state, &sender, &json!({ "type": "query", "id": "r", "sql": "SELECT * FROM demo" }), "main").await;
+        assert_eq!(
+            (write["id"].clone(), write["message"].clone()),
+            (json!("w"), json!(JOB_BUSY))
+        );
+        handle_query(
+            &state,
+            &sender,
+            &json!({ "type": "query", "id": "r", "sql": "SELECT * FROM demo" }),
+            "main",
+        )
+        .await;
         assert_eq!(next_of(&mut rx, "meta").await["id"], json!("r"));
         let delete = json!({ "type": "delete_row", "id": "d", "session": "none", "table": "demo", "pk": [{ "column": "id", "value": 1 }] });
         handle_row_change(&state, &sender, &delete, "main", RowOp::Delete).await;
         assert_eq!(next_of(&mut rx, "error").await["message"], json!(JOB_BUSY));
         // Starting another job is refused too.
-        assert_eq!(job_action(&state, "start").await.unwrap_err().1 .0.message, JOB_BUSY);
+        assert_eq!(
+            job_action(&state, "start").await.unwrap_err().1 .0.message,
+            JOB_BUSY
+        );
         exec_as(&state, "COMMIT", true).await.unwrap();
-        exec_as(&state, "DELETE FROM demo WHERE id = -1", false).await.unwrap();
+        exec_as(&state, "DELETE FROM demo WHERE id = -1", false)
+            .await
+            .unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -6454,7 +6768,10 @@ mod tests {
         exec_as(&state, "BEGIN", true).await.unwrap();
         assert!(slot.job_tx_open());
         job_action(&state, "end").await.unwrap();
-        assert!(!slot.job_tx_open(), "the leftover transaction is the user's now");
+        assert!(
+            !slot.job_tx_open(),
+            "the leftover transaction is the user's now"
+        );
         exec_as(&state, "ROLLBACK", false).await.unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -6465,7 +6782,13 @@ mod tests {
         let state = test_state(&dir);
         let slot = slot_for(&state, Some("main")).await.unwrap();
         let (sender, mut rx) = test_sender();
-        handle_query(&state, &sender, &json!({ "type": "query", "id": "page-1", "sql": "SELECT 1", "job": true }), "main").await;
+        handle_query(
+            &state,
+            &sender,
+            &json!({ "type": "query", "id": "page-1", "sql": "SELECT 1", "job": true }),
+            "main",
+        )
+        .await;
         let meta = next_of(&mut rx, "meta").await;
         assert_eq!(meta["id"], json!("page-1"));
         // A release sent the moment the meta arrives finds it.
@@ -6481,7 +6804,9 @@ mod tests {
         let (sender, mut rx) = test_sender();
         let job = slot.clone();
         let held = tokio::spawn(async move {
-            let outcome = job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await;
+            let outcome = job
+                .gated(Holder::Job, true, job.engine.query(SLOW, 1))
+                .await;
             (outcome, std::time::Instant::now())
         });
         until_held(&slot, Holder::Job).await;
@@ -6489,13 +6814,23 @@ mod tests {
         let change_state = state.clone();
         let change_sender = sender.clone();
         let change = tokio::spawn(async move {
-            handle_row_change(&change_state, &change_sender, &delete, "main", RowOp::Delete).await;
+            handle_row_change(
+                &change_state,
+                &change_sender,
+                &delete,
+                "main",
+                RowOp::Delete,
+            )
+            .await;
             std::time::Instant::now()
         });
         let (outcome, job_done) = held.await.unwrap();
         assert!(outcome.is_ok());
         let change_done = change.await.unwrap();
-        assert!(change_done >= job_done, "the row change ran after the job's statement");
+        assert!(
+            change_done >= job_done,
+            "the row change ran after the job's statement"
+        );
         assert_eq!(next_of(&mut rx, "row_change").await["id"], json!("d"));
         std::fs::remove_dir_all(&dir).unwrap();
     }

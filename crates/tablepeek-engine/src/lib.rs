@@ -941,7 +941,12 @@ impl Engine {
                 }
                 landed.await;
             }
-            let quiet = self.cancels.quiet_until.lock().ok().and_then(|quiet| *quiet);
+            let quiet = self
+                .cancels
+                .quiet_until
+                .lock()
+                .ok()
+                .and_then(|quiet| *quiet);
             if let Some(until) = quiet {
                 tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
             }
@@ -2375,16 +2380,28 @@ mod tests {
 
         // DEFAULT: the declared default (an expression too), else NULL.
         for column in ["status", "qty", "note"] {
-            let changed = engine.edit(&expr_target(1, column, ValueExpr::Default)).await.unwrap();
+            let changed = engine
+                .edit(&expr_target(1, column, ValueExpr::Default))
+                .await
+                .unwrap();
             assert_eq!(changed, 1, "{column}");
         }
         // `DEFAULT "note"` is the string, not the column note; names match
         // without case.
-        engine.edit(&expr_target(1, "KIND", ValueExpr::Default)).await.unwrap();
-        let kind = engine.execute("SELECT kind FROM items WHERE id = 1", 1).await.unwrap();
+        engine
+            .edit(&expr_target(1, "KIND", ValueExpr::Default))
+            .await
+            .unwrap();
+        let kind = engine
+            .execute("SELECT kind FROM items WHERE id = 1", 1)
+            .await
+            .unwrap();
         assert_eq!(kind.rows[0][0], Value::from("note"));
         // NOW(): SQLite's CURRENT_TIMESTAMP.
-        engine.edit(&expr_target(1, "seen", ValueExpr::Now)).await.unwrap();
+        engine
+            .edit(&expr_target(1, "seen", ValueExpr::Now))
+            .await
+            .unwrap();
         let row = engine
             .execute(
                 "SELECT status, qty, note, seen IS NOT NULL, \
@@ -2395,36 +2412,101 @@ mod tests {
             .unwrap();
         assert_eq!(
             row.rows[0],
-            vec![Value::from("new"), Value::from(7), Value::Null, Value::from(1), Value::from(1)]
+            vec![
+                Value::from("new"),
+                Value::from(7),
+                Value::Null,
+                Value::from(1),
+                Value::from(1)
+            ]
         );
-        let logged: Vec<String> = log.since(Some(mark)).0.into_iter().map(|entry| entry.sql).collect();
-        assert!(logged.contains(&"UPDATE \"items\" SET \"status\" = ('new') WHERE \"id\" = 1;".to_string()), "{logged:?}");
+        let logged: Vec<String> = log
+            .since(Some(mark))
+            .0
+            .into_iter()
+            .map(|entry| entry.sql)
+            .collect();
+        assert!(
+            logged.contains(
+                &"UPDATE \"items\" SET \"status\" = ('new') WHERE \"id\" = 1;".to_string()
+            ),
+            "{logged:?}"
+        );
         // PRAGMA gives `(2 + 5)` as `2 + 5`: the parentheses keep it one value.
-        assert!(logged.contains(&"UPDATE \"items\" SET \"qty\" = (2 + 5) WHERE \"id\" = 1;".to_string()), "{logged:?}");
-        assert!(logged.contains(&"UPDATE \"items\" SET \"note\" = NULL WHERE \"id\" = 1;".to_string()), "{logged:?}");
-        assert!(logged.contains(&"UPDATE \"items\" SET \"seen\" = CURRENT_TIMESTAMP WHERE \"id\" = 1;".to_string()), "{logged:?}");
+        assert!(
+            logged
+                .contains(&"UPDATE \"items\" SET \"qty\" = (2 + 5) WHERE \"id\" = 1;".to_string()),
+            "{logged:?}"
+        );
+        assert!(
+            logged.contains(&"UPDATE \"items\" SET \"note\" = NULL WHERE \"id\" = 1;".to_string()),
+            "{logged:?}"
+        );
+        assert!(
+            logged.contains(
+                &"UPDATE \"items\" SET \"seen\" = CURRENT_TIMESTAMP WHERE \"id\" = 1;".to_string()
+            ),
+            "{logged:?}"
+        );
 
         // A new row: DEFAULT is left out, NOW() written, values bound after it.
         let values = vec![
-            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
-            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
-            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+            InsertValue {
+                column: "id".into(),
+                value: Some("2".into()),
+                expr: None,
+            },
+            InsertValue {
+                column: "status".into(),
+                value: None,
+                expr: Some(ValueExpr::Default),
+            },
+            InsertValue {
+                column: "seen".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "note".into(),
+                value: Some("n".into()),
+                expr: None,
+            },
         ];
         assert_eq!(engine.insert_values("items", &values).await.unwrap(), 1);
         let row = engine
-            .execute("SELECT status, qty, note, seen IS NOT NULL FROM items WHERE id = 2", 1)
+            .execute(
+                "SELECT status, qty, note, seen IS NOT NULL FROM items WHERE id = 2",
+                1,
+            )
             .await
             .unwrap();
-        assert_eq!(row.rows[0], vec![Value::from("new"), Value::from(7), Value::from("n"), Value::from(1)]);
-        let logged: Vec<String> = log.since(None).0.into_iter().map(|entry| entry.sql).collect();
+        assert_eq!(
+            row.rows[0],
+            vec![
+                Value::from("new"),
+                Value::from(7),
+                Value::from("n"),
+                Value::from(1)
+            ]
+        );
+        let logged: Vec<String> = log
+            .since(None)
+            .0
+            .into_iter()
+            .map(|entry| entry.sql)
+            .collect();
         assert!(logged.contains(
             &"INSERT INTO \"items\" (\"id\", \"seen\", \"note\") VALUES ('2', CURRENT_TIMESTAMP, 'n');".to_string()
         ), "{logged:?}");
 
         // A column the table doesn't have is refused, not guessed.
-        let missing = engine.edit(&expr_target(1, "nope", ValueExpr::Default)).await;
-        assert!(matches!(missing, Err(EngineError::BadRequest(_))), "{missing:?}");
+        let missing = engine
+            .edit(&expr_target(1, "nope", ValueExpr::Default))
+            .await;
+        assert!(
+            matches!(missing, Err(EngineError::BadRequest(_))),
+            "{missing:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2930,9 +3012,15 @@ mod tests {
         };
         let engine = Engine::open_demo(1).unwrap();
         engine.swap_to_postgres(&config).await.unwrap();
-        engine.execute("DROP TABLE IF EXISTS tp_detail_tx", 1).await.unwrap();
         engine
-            .execute("CREATE TABLE tp_detail_tx (id int PRIMARY KEY, note text)", 1)
+            .execute("DROP TABLE IF EXISTS tp_detail_tx", 1)
+            .await
+            .unwrap();
+        engine
+            .execute(
+                "CREATE TABLE tp_detail_tx (id int PRIMARY KEY, note text)",
+                1,
+            )
             .await
             .unwrap();
         engine
@@ -2957,7 +3045,10 @@ mod tests {
         let release = engine
             .execute("RELEASE SAVEPOINT tablepeek_detail", 1)
             .await;
-        assert!(release.is_err(), "the detail savepoint should already be released");
+        assert!(
+            release.is_err(),
+            "the detail savepoint should already be released"
+        );
         engine.rollback_tx().await.unwrap();
 
         engine.begin_tx().await.unwrap();
@@ -3148,19 +3239,64 @@ mod tests {
             ("seen", ValueExpr::Now),
             ("day", ValueExpr::Now),
         ] {
-            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+            assert_eq!(
+                engine.edit(&target(column, expr)).await.unwrap(),
+                1,
+                "{column}"
+            );
         }
         let values = vec![
-            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
-            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
-            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+            InsertValue {
+                column: "id".into(),
+                value: Some("2".into()),
+                expr: None,
+            },
+            InsertValue {
+                column: "status".into(),
+                value: None,
+                expr: Some(ValueExpr::Default),
+            },
+            InsertValue {
+                column: "seen".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "day".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "note".into(),
+                value: Some("n".into()),
+                expr: None,
+            },
         ];
         assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
         let rows = engine.execute(&format!("SELECT id, status, note, abs(extract(epoch FROM now() - seen)) < 60, day = current_date FROM {table} ORDER BY id"), 2).await.unwrap();
-        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from("true"), Value::from("true")], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from("true"), Value::from("true")]]);
-        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
+        assert_eq!(
+            rows.rows,
+            vec![
+                vec![
+                    Value::from(1),
+                    Value::from("new"),
+                    Value::Null,
+                    Value::from("true"),
+                    Value::from("true")
+                ],
+                vec![
+                    Value::from(2),
+                    Value::from("new"),
+                    Value::from("n"),
+                    Value::from("true"),
+                    Value::from("true")
+                ]
+            ]
+        );
+        engine
+            .execute(&format!("DROP TABLE {table}"), 1)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3235,19 +3371,64 @@ mod tests {
             ("seen", ValueExpr::Now),
             ("day", ValueExpr::Now),
         ] {
-            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+            assert_eq!(
+                engine.edit(&target(column, expr)).await.unwrap(),
+                1,
+                "{column}"
+            );
         }
         let values = vec![
-            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
-            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
-            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+            InsertValue {
+                column: "id".into(),
+                value: Some("2".into()),
+                expr: None,
+            },
+            InsertValue {
+                column: "status".into(),
+                value: None,
+                expr: Some(ValueExpr::Default),
+            },
+            InsertValue {
+                column: "seen".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "day".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "note".into(),
+                value: Some("n".into()),
+                expr: None,
+            },
         ];
         assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
         let rows = engine.execute(&format!("SELECT id, status, note, abs(extract(epoch FROM now() - seen)) < 60, day = current_date FROM {table} ORDER BY id"), 2).await.unwrap();
-        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from("true"), Value::from("true")], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from("true"), Value::from("true")]]);
-        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
+        assert_eq!(
+            rows.rows,
+            vec![
+                vec![
+                    Value::from(1),
+                    Value::from("new"),
+                    Value::Null,
+                    Value::from("true"),
+                    Value::from("true")
+                ],
+                vec![
+                    Value::from(2),
+                    Value::from("new"),
+                    Value::from("n"),
+                    Value::from("true"),
+                    Value::from("true")
+                ]
+            ]
+        );
+        engine
+            .execute(&format!("DROP TABLE {table}"), 1)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3825,19 +4006,64 @@ mod tests {
             ("seen", ValueExpr::Now),
             ("day", ValueExpr::Now),
         ] {
-            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+            assert_eq!(
+                engine.edit(&target(column, expr)).await.unwrap(),
+                1,
+                "{column}"
+            );
         }
         let values = vec![
-            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
-            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
-            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+            InsertValue {
+                column: "id".into(),
+                value: Some("2".into()),
+                expr: None,
+            },
+            InsertValue {
+                column: "status".into(),
+                value: None,
+                expr: Some(ValueExpr::Default),
+            },
+            InsertValue {
+                column: "seen".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "day".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "note".into(),
+                value: Some("n".into()),
+                expr: None,
+            },
         ];
         assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
         let rows = engine.execute(&format!("SELECT id, status, note, ABS(TIMESTAMPDIFF(SECOND, seen, NOW())) < 60, day = CURDATE() FROM {table} ORDER BY id"), 2).await.unwrap();
-        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from(1), Value::from(1)], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from(1), Value::from(1)]]);
-        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
+        assert_eq!(
+            rows.rows,
+            vec![
+                vec![
+                    Value::from(1),
+                    Value::from("new"),
+                    Value::Null,
+                    Value::from(1),
+                    Value::from(1)
+                ],
+                vec![
+                    Value::from(2),
+                    Value::from("new"),
+                    Value::from("n"),
+                    Value::from(1),
+                    Value::from(1)
+                ]
+            ]
+        );
+        engine
+            .execute(&format!("DROP TABLE {table}"), 1)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -4168,19 +4394,64 @@ mod tests {
             ("seen", ValueExpr::Now),
             ("day", ValueExpr::Now),
         ] {
-            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+            assert_eq!(
+                engine.edit(&target(column, expr)).await.unwrap(),
+                1,
+                "{column}"
+            );
         }
         let values = vec![
-            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
-            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
-            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
-            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+            InsertValue {
+                column: "id".into(),
+                value: Some("2".into()),
+                expr: None,
+            },
+            InsertValue {
+                column: "status".into(),
+                value: None,
+                expr: Some(ValueExpr::Default),
+            },
+            InsertValue {
+                column: "seen".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "day".into(),
+                value: None,
+                expr: Some(ValueExpr::Now),
+            },
+            InsertValue {
+                column: "note".into(),
+                value: Some("n".into()),
+                expr: None,
+            },
         ];
         assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
         let rows = engine.execute(&format!("SELECT id, status, note, CASE WHEN ABS(DATEDIFF(SECOND, seen, GETDATE())) < 60 THEN 1 ELSE 0 END, CASE WHEN day = CAST(GETDATE() AS date) THEN 1 ELSE 0 END FROM {table} ORDER BY id"), 2).await.unwrap();
-        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from(1), Value::from(1)], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from(1), Value::from(1)]]);
-        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
+        assert_eq!(
+            rows.rows,
+            vec![
+                vec![
+                    Value::from(1),
+                    Value::from("new"),
+                    Value::Null,
+                    Value::from(1),
+                    Value::from(1)
+                ],
+                vec![
+                    Value::from(2),
+                    Value::from("new"),
+                    Value::from("n"),
+                    Value::from(1),
+                    Value::from(1)
+                ]
+            ]
+        );
+        engine
+            .execute(&format!("DROP TABLE {table}"), 1)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -4250,7 +4521,12 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("AFTER INSERT ON jobs"));
-        assert!(engine.table_detail("audit").await.unwrap().triggers.is_empty());
+        assert!(engine
+            .table_detail("audit")
+            .await
+            .unwrap()
+            .triggers
+            .is_empty());
     }
 
     #[test]
@@ -4258,7 +4534,10 @@ mod tests {
         let parsed = crate::postgres::trigger_timing_event(
             "CREATE TRIGGER t BEFORE INSERT OR UPDATE OF a, b ON public.x FOR EACH ROW EXECUTE FUNCTION f()",
         );
-        assert_eq!(parsed, (Some("BEFORE".into()), Some("INSERT OR UPDATE".into())));
+        assert_eq!(
+            parsed,
+            (Some("BEFORE".into()), Some("INSERT OR UPDATE".into()))
+        );
         let parsed = crate::postgres::trigger_timing_event(
             "CREATE TRIGGER t INSTEAD OF DELETE ON v FOR EACH ROW EXECUTE FUNCTION f()",
         );

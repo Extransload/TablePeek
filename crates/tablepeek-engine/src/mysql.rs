@@ -462,8 +462,7 @@ pub(crate) async fn schema(
         })
         .await
         .map_err(mysql_err)?;
-    let mut columns_by_table: HashMap<(Option<String>, String), Vec<ColumnSchema>> =
-        HashMap::new();
+    let mut columns_by_table: HashMap<(Option<String>, String), Vec<ColumnSchema>> = HashMap::new();
     for row in rows {
         let schema: Option<String> = row.get::<String, _>(0);
         let schema_part = match schema {
@@ -1882,13 +1881,13 @@ mod tests {
             std::io::ErrorKind::InvalidData,
             rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
         );
-        assert!(tls_fallback_allowed(&MyError::Io(mysql_async::IoError::Io(
-            untrusted
-        ))));
+        assert!(tls_fallback_allowed(&MyError::Io(
+            mysql_async::IoError::Io(untrusted)
+        )));
         let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
-        assert!(!tls_fallback_allowed(&MyError::Io(mysql_async::IoError::Io(
-            refused
-        ))));
+        assert!(!tls_fallback_allowed(&MyError::Io(
+            mysql_async::IoError::Io(refused)
+        )));
     }
 
     #[test]

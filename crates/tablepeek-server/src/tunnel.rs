@@ -5,11 +5,11 @@ use base64::Engine as _;
 use russh::client::{Config, Handle, Msg};
 use russh::keys::PrivateKeyWithHashAlg;
 use russh::{Channel, ChannelMsg};
+use tablepeek_types::{HttpTunnelConfig, SshConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use tablepeek_types::{HttpTunnelConfig, SshConfig};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const CHUNK: usize = 32 * 1024;
@@ -339,7 +339,10 @@ mod tests {
             .expect("docker inspect를 실행할 수 없습니다");
         assert!(output.status.success(), "docker inspect tablepeek-pg 실패");
         let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        assert!(!ip.is_empty(), "tablepeek-pg 컨테이너 IP를 확인할 수 없습니다");
+        assert!(
+            !ip.is_empty(),
+            "tablepeek-pg 컨테이너 IP를 확인할 수 없습니다"
+        );
         ip
     }
 

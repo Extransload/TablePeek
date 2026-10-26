@@ -114,7 +114,10 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 "데모용 인메모리 SQLite에 demo 테이블({}행)을 만들었습니다.",
                 args.demo_rows
             );
-            Some(("데모 데이터베이스".to_string(), Engine::open_demo(args.demo_rows)?))
+            Some((
+                "데모 데이터베이스".to_string(),
+                Engine::open_demo(args.demo_rows)?,
+            ))
         }
         None => {
             println!("열린 연결 없이 시작합니다. 데모 데이터가 필요하면 --demo 옵션을 주세요.");
@@ -137,7 +140,13 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     ]);
     let mut registry = Registry::new();
     if let Some((label, engine)) = main {
-        registry.insert(Arc::new(ConnSlot::new("main".into(), label, None, None, engine)));
+        registry.insert(Arc::new(ConnSlot::new(
+            "main".into(),
+            label,
+            None,
+            None,
+            engine,
+        )));
     }
 
     let state = AppState {

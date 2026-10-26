@@ -7,15 +7,15 @@ use std::time::Instant;
 use futures_util::StreamExt;
 use rustls::RootCertStore;
 use serde_json::Value;
-use tokio_postgres::config::SslMode as PgSslMode;
-use tokio_postgres::types::{FromSqlOwned, ToSql, Type};
-use tokio_postgres::{Client, NoTls, Row, Statement};
-use tokio_postgres_rustls::MakeRustlsConnect;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
     ObjectDefinition, PkValue, PostgresConfig, ServerInfo, ServerSession, SslMode, TableDetail,
     TableSchema, TriggerInfo, ValueExpr,
 };
+use tokio_postgres::config::SslMode as PgSslMode;
+use tokio_postgres::types::{FromSqlOwned, ToSql, Type};
+use tokio_postgres::{Client, NoTls, Row, Statement};
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::source_cache::{key_unchanged, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
@@ -569,7 +569,11 @@ pub(crate) async fn query(
             count += 1;
         }
         // Known once the stream ran out, which one with no columns always does.
-        let rows_affected = if col_count == 0 { stream.rows_affected() } else { None };
+        let rows_affected = if col_count == 0 {
+            stream.rows_affected()
+        } else {
+            None
+        };
         Ok::<_, (tokio_postgres::Error, bool)>((
             statement,
             columns,
@@ -981,7 +985,10 @@ async fn table_detail_in(
         client,
         fenced,
         client
-            .query_opt("SELECT reltuples::bigint FROM pg_class WHERE oid = $1", &[&oid])
+            .query_opt(
+                "SELECT reltuples::bigint FROM pg_class WHERE oid = $1",
+                &[&oid],
+            )
             .await,
     )
     .await

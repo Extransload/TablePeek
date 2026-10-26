@@ -238,7 +238,8 @@ impl StoreFile {
         // An unsaved connection's slot dies with the server that opened it, so
         // its history and safe mode can never be reached again.
         history.retain(|entry| !entry.scope.starts_with(SESSION_PREFIX));
-        data.safe_modes.retain(|scope, _| !scope.starts_with(SESSION_PREFIX));
+        data.safe_modes
+            .retain(|scope, _| !scope.starts_with(SESSION_PREFIX));
         // Files from before ids and timestamps: fill them in once, for good.
         let mut history_ids = false;
         for entry in history.iter_mut().filter(|entry| entry.id.is_empty()) {
@@ -942,9 +943,15 @@ mod tests {
         store
             .add_connection(sample_mssql_connection("ms-1"))
             .unwrap();
-        store.record_history(run("saved:abc", "SELECT 1", 100)).unwrap();
         store
-            .record_history(run("saved:abc", "SELECT * FROM users WHERE name = '홍길동'", 200))
+            .record_history(run("saved:abc", "SELECT 1", 100))
+            .unwrap();
+        store
+            .record_history(run(
+                "saved:abc",
+                "SELECT * FROM users WHERE name = '홍길동'",
+                200,
+            ))
             .unwrap();
         store
             .add_favorite(FavoriteEntry {
@@ -1055,8 +1062,12 @@ mod tests {
     fn history_is_kept_per_scope() {
         let dir = temp_dir("history-scope");
         let mut store = StoreFile::load(&dir);
-        store.record_history(run("saved:a", "SELECT 1", 10)).unwrap();
-        store.record_history(run("file:/tmp/b.db", "SELECT 2", 20)).unwrap();
+        store
+            .record_history(run("saved:a", "SELECT 1", 10))
+            .unwrap();
+        store
+            .record_history(run("file:/tmp/b.db", "SELECT 2", 20))
+            .unwrap();
         store
             .record_history(HistoryEntry {
                 ok: false,
@@ -1102,7 +1113,9 @@ mod tests {
                 .record_history(run("saved:busy", &format!("SELECT {index}"), index as u64))
                 .unwrap();
         }
-        store.record_history(run("saved:quiet", "SELECT 'q'", 1)).unwrap();
+        store
+            .record_history(run("saved:quiet", "SELECT 'q'", 1))
+            .unwrap();
         let busy = store.history("saved:busy", HISTORY_CAP * 2);
         assert_eq!(busy.len(), HISTORY_CAP);
         assert_eq!(busy[0].sql, format!("SELECT {}", HISTORY_CAP + 4));
@@ -1111,11 +1124,15 @@ mod tests {
         assert_eq!(store.history("saved:quiet", 10).len(), 1);
 
         // Running the same statement twice is two runs, both kept.
-        store.record_history(run("saved:quiet", "SELECT 'q'", 2)).unwrap();
+        store
+            .record_history(run("saved:quiet", "SELECT 'q'", 2))
+            .unwrap();
         assert_eq!(store.history("saved:quiet", 10).len(), 2);
 
         store.record_history(run("saved:quiet", "   ", 3)).unwrap();
-        store.record_history(run("saved:quiet", "  SELECT 9  ", 4)).unwrap();
+        store
+            .record_history(run("saved:quiet", "  SELECT 9  ", 4))
+            .unwrap();
         let quiet = store.history("saved:quiet", 10);
         assert_eq!(quiet.len(), 3);
         assert_eq!(quiet[0].sql, "SELECT 9");
@@ -1154,8 +1171,12 @@ mod tests {
         let mut store = StoreFile::load(&dir);
         store.add_connection(sample_connection("gone")).unwrap();
         store.add_connection(sample_connection("kept")).unwrap();
-        store.record_history(run(&saved_scope("gone"), "SELECT 1", 1)).unwrap();
-        store.record_history(run(&saved_scope("kept"), "SELECT 2", 2)).unwrap();
+        store
+            .record_history(run(&saved_scope("gone"), "SELECT 1", 1))
+            .unwrap();
+        store
+            .record_history(run(&saved_scope("kept"), "SELECT 2", 2))
+            .unwrap();
         store.set_safe_mode(&saved_scope("gone"), Some(2)).unwrap();
         store.set_safe_mode(&saved_scope("kept"), Some(0)).unwrap();
 
@@ -1174,7 +1195,9 @@ mod tests {
     fn session_scopes_are_forgotten_on_load() {
         let dir = temp_dir("session-scope");
         let mut store = StoreFile::load(&dir);
-        store.record_history(run("session:abc", "SELECT 1", 1)).unwrap();
+        store
+            .record_history(run("session:abc", "SELECT 1", 1))
+            .unwrap();
         store.record_history(run("demo", "SELECT 2", 2)).unwrap();
         store.set_safe_mode("session:abc", Some(0)).unwrap();
         store.set_safe_mode("demo", Some(2)).unwrap();
@@ -1210,7 +1233,10 @@ mod tests {
         let dir = temp_dir("history-mode");
         let mut store = StoreFile::load(&dir);
         store.record_history(run("demo", "SELECT 1", 1)).unwrap();
-        let mode = std::fs::metadata(dir.join(HISTORY_FILE)).unwrap().permissions().mode();
+        let mode = std::fs::metadata(dir.join(HISTORY_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600);
 
         std::fs::remove_dir_all(&dir).unwrap();

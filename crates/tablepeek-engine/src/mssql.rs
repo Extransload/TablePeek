@@ -4,17 +4,17 @@ use std::time::Instant;
 
 use futures_util::StreamExt;
 use serde_json::Value;
+use tablepeek_types::{
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
+    MssqlConfig, ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema,
+    TriggerInfo, ValueExpr,
+};
 use tiberius::{
     AuthMethod, Client, ColumnData, Config, EncryptionLevel, ExecuteResult, FromSqlOwned,
     QueryItem, QueryStream, ToSql,
 };
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
-use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    MssqlConfig, ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema,
-    TriggerInfo, ValueExpr,
-};
 
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
@@ -1776,7 +1776,10 @@ mod tests {
 
     #[test]
     fn set_value_expressions_are_written_by_the_server() {
-        assert_eq!(value_sql(None, 2, "NVARCHAR(MAX)"), "CAST(@P2 AS NVARCHAR(MAX))");
+        assert_eq!(
+            value_sql(None, 2, "NVARCHAR(MAX)"),
+            "CAST(@P2 AS NVARCHAR(MAX))"
+        );
         assert_eq!(value_sql(Some(ValueExpr::Default), 1, "INT"), "DEFAULT");
         assert_eq!(value_sql(Some(ValueExpr::Now), 1, "DATETIME2"), "GETDATE()");
         assert_eq!(
