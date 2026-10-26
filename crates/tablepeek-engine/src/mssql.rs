@@ -11,8 +11,9 @@ use tiberius::{
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MssqlConfig,
-    ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema, TriggerInfo,
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
+    MssqlConfig, ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema,
+    TriggerInfo, ValueExpr,
 };
 
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
@@ -597,6 +598,19 @@ pub(crate) async fn query(
     })
 }
 
+/// What a cell is written as: its text bound at `position` and cast to the
+/// column's type, or the keyword or function an expression stands for. The
+/// time is GETDATE(), except in a datetimeoffset, which would take that local
+/// time as UTC: there the offset comes along.
+fn value_sql(expr: Option<ValueExpr>, position: usize, cast: &str) -> String {
+    match expr {
+        None => format!("CAST(@P{position} AS {cast})"),
+        Some(ValueExpr::Default) => "DEFAULT".into(),
+        Some(ValueExpr::Now) if cast == "DATETIMEOFFSET" => "SYSDATETIMEOFFSET()".into(),
+        Some(ValueExpr::Now) => "GETDATE()".into(),
+    }
+}
+
 pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64, EngineError> {
     if target.pk.is_empty() {
         return Err(EngineError::NotEditable(
@@ -612,24 +626,28 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
     let column_type = column_type_of(&mut client, &schema, &table, &target.column).await?;
     let cast = cast_type(&column_type);
 
+    let mut params: Vec<Option<String>> = Vec::with_capacity(target.pk.len() + 1);
+    if target.expr.is_none() {
+        params.push(target.value.clone());
+    }
     let mut sql = format!(
-        "UPDATE {table_ref} SET {} = CAST(@P1 AS {cast}) WHERE ",
-        quote_ident(&target.column)
+        "UPDATE {table_ref} SET {} = {} WHERE ",
+        quote_ident(&target.column),
+        value_sql(target.expr, 1, cast)
     );
-    let mut params: Vec<Option<String>> = vec![target.value.clone()];
     for (index, pk) in target.pk.iter().enumerate() {
         if index > 0 {
             sql.push_str(" AND ");
         }
         let pk_type = column_type_of(&mut client, &schema, &table, &pk.column).await?;
         let pk_cast = cast_type(&pk_type);
-        let position = index + 2;
+        params.push(pk_value_string(&pk.value));
+        let position = params.len();
         let quoted = quote_ident(&pk.column);
         sql.push_str(&format!(
             "({quoted} = CAST(@P{position} AS {pk_cast}) \
              OR ({quoted} IS NULL AND @P{position} IS NULL))"
         ));
-        params.push(pk_value_string(&pk.value));
     }
 
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
@@ -643,7 +661,7 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
 pub(crate) async fn insert_row(
     inner: &MssqlInner,
     table: &str,
-    values: &[(String, Option<String>)],
+    values: &[InsertValue],
 ) -> Result<u64, EngineError> {
     let mut guard = inner.client().await?;
     let mut client = take_client(&mut guard, &inner.log)?;
@@ -655,21 +673,30 @@ pub(crate) async fn insert_row(
     } else {
         let columns = values
             .iter()
-            .map(|(column, _)| quote_ident(column))
+            .map(|value| quote_ident(&value.column))
             .collect::<Vec<_>>()
             .join(", ");
         let mut placeholders = Vec::with_capacity(values.len());
-        for (index, (column, _)) in values.iter().enumerate() {
-            let column_type = column_type_of(&mut client, &schema, &table_name, column).await?;
+        let mut bound = 0;
+        for value in values {
+            let column_type =
+                column_type_of(&mut client, &schema, &table_name, &value.column).await?;
             let cast = cast_type(&column_type);
-            placeholders.push(format!("CAST(@P{} AS {cast})", index + 1));
+            if value.expr.is_none() {
+                bound += 1;
+            }
+            placeholders.push(value_sql(value.expr, bound, cast));
         }
         format!(
             "INSERT INTO {table_ref} ({columns}) VALUES ({})",
             placeholders.join(", ")
         )
     };
-    let params: Vec<Option<String>> = values.iter().map(|(_, value)| value.clone()).collect();
+    let params: Vec<Option<String>> = values
+        .iter()
+        .filter(|value| value.expr.is_none())
+        .map(|value| value.value.clone())
+        .collect();
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
     let result = client.change(&sql, &refs, inner.in_tx()).await;
     if result.is_err() {
@@ -1743,6 +1770,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_value_expressions_are_written_by_the_server() {
+        assert_eq!(value_sql(None, 2, "NVARCHAR(MAX)"), "CAST(@P2 AS NVARCHAR(MAX))");
+        assert_eq!(value_sql(Some(ValueExpr::Default), 1, "INT"), "DEFAULT");
+        assert_eq!(value_sql(Some(ValueExpr::Now), 1, "DATETIME2"), "GETDATE()");
+        assert_eq!(
+            value_sql(Some(ValueExpr::Now), 1, "DATETIMEOFFSET"),
+            "SYSDATETIMEOFFSET()"
+        );
+    }
 
     // A session with no server behind it: the cancel's KILL connects to a
     // port nobody listens on and goes nowhere.

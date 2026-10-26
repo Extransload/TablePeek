@@ -12,9 +12,9 @@ use tokio_postgres::types::{FromSqlOwned, ToSql, Type};
 use tokio_postgres::{Client, NoTls, Row, Statement};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, ObjectDefinition,
-    PkValue, PostgresConfig, ServerInfo, ServerSession, SslMode, TableDetail, TableSchema,
-    TriggerInfo,
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
+    ObjectDefinition, PkValue, PostgresConfig, ServerInfo, ServerSession, SslMode, TableDetail,
+    TableSchema, TriggerInfo, ValueExpr,
 };
 
 use crate::source_cache::{key_unchanged, KEY_CHANGED};
@@ -637,6 +637,17 @@ fn failure_ends_tx(controls: &[TxControl], ran: bool) -> bool {
         .any(|control| matches!(control, TxControl::Commit | TxControl::Rollback))
 }
 
+/// What a cell is written as: its text bound at `position` and cast to the
+/// column's type, or the keyword or function an expression stands for (the
+/// time cast the same way, so a date or time column takes it as it is).
+fn value_sql(expr: Option<ValueExpr>, position: usize, column_type: &str) -> String {
+    match expr {
+        None => format!("(${position}::text)::{column_type}"),
+        Some(ValueExpr::Default) => "DEFAULT".into(),
+        Some(ValueExpr::Now) => format!("now()::{column_type}"),
+    }
+}
+
 pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u64, EngineError> {
     if target.pk.is_empty() {
         return Err(EngineError::NotEditable(
@@ -648,17 +659,22 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
     check_key(&client, &table, &target.pk).await?;
     let column_type = column_type_of(&client, &table, &target.column).await?;
 
+    let mut params: Vec<Option<String>> = Vec::with_capacity(target.pk.len() + 1);
+    if target.expr.is_none() {
+        params.push(target.value.clone());
+    }
     let mut sql = format!(
-        "UPDATE {table} SET {} = ($1::text)::{column_type} WHERE ",
-        quote_ident(&target.column)
+        "UPDATE {table} SET {} = {} WHERE ",
+        quote_ident(&target.column),
+        value_sql(target.expr, 1, &column_type)
     );
-    let mut params: Vec<Option<String>> = vec![target.value.clone()];
     for (index, pk) in target.pk.iter().enumerate() {
         if index > 0 {
             sql.push_str(" AND ");
         }
         let pk_type = column_type_of(&client, &table, &pk.column).await?;
-        let position = index + 2;
+        params.push(pk_value_string(&pk.value));
+        let position = params.len();
         if pk.value.is_null() {
             sql.push_str(&format!(
                 "{} IS NOT DISTINCT FROM (${position}::text)::{pk_type}",
@@ -670,7 +686,6 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
                 quote_ident(&pk.column)
             ));
         }
-        params.push(pk_value_string(&pk.value));
     }
 
     let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
@@ -681,29 +696,32 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
 pub(crate) async fn insert_row(
     inner: &PostgresInner,
     table: &str,
-    values: &[(String, Option<String>)],
+    values: &[InsertValue],
 ) -> Result<u64, EngineError> {
     let client = inner.conn().await;
     let table_ref = qualified_from_display(table);
+    let mut params: Vec<Option<String>> = Vec::with_capacity(values.len());
     let sql = if values.is_empty() {
         format!("INSERT INTO {table_ref} DEFAULT VALUES")
     } else {
         let columns = values
             .iter()
-            .map(|(column, _)| quote_ident(column))
+            .map(|value| quote_ident(&value.column))
             .collect::<Vec<_>>()
             .join(", ");
         let mut placeholders = Vec::with_capacity(values.len());
-        for (index, (column, _)) in values.iter().enumerate() {
-            let column_type = column_type_of(&client, &table_ref, column).await?;
-            placeholders.push(format!("(${}::text)::{column_type}", index + 1));
+        for value in values {
+            let column_type = column_type_of(&client, &table_ref, &value.column).await?;
+            if value.expr.is_none() {
+                params.push(value.value.clone());
+            }
+            placeholders.push(value_sql(value.expr, params.len(), &column_type));
         }
         format!(
             "INSERT INTO {table_ref} ({columns}) VALUES ({})",
             placeholders.join(", ")
         )
     };
-    let params: Vec<Option<String>> = values.iter().map(|(_, value)| value.clone()).collect();
     let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
     let changed = client.change(&sql, &refs).await?;
     Ok(changed)
@@ -1816,6 +1834,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_value_expressions_are_written_by_the_server() {
+        assert_eq!(value_sql(None, 1, "integer"), "($1::text)::integer");
+        assert_eq!(value_sql(Some(ValueExpr::Default), 1, "text"), "DEFAULT");
+        assert_eq!(
+            value_sql(Some(ValueExpr::Now), 1, "timestamp with time zone"),
+            "now()::timestamp with time zone"
+        );
+        assert_eq!(value_sql(Some(ValueExpr::Now), 3, "date"), "now()::date");
+    }
 
     fn change(sql: &str) -> Change {
         Change {

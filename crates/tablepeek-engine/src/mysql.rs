@@ -12,9 +12,9 @@ use mysql_async::{
 };
 use serde_json::Value;
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MySqlConfig,
-    ObjectDefinition, PkValue, ServerInfo, ServerSession, SslMode, TableDetail, TableSchema,
-    TriggerInfo,
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
+    MySqlConfig, ObjectDefinition, PkValue, ServerInfo, ServerSession, SslMode, TableDetail,
+    TableSchema, TriggerInfo, ValueExpr,
 };
 
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
@@ -686,6 +686,16 @@ async fn server_in_tx(conn: &mut MyConn<'_>, implicit: bool) -> Option<bool> {
     }
 }
 
+/// What a cell is written as: its text bound and cast to the column's type,
+/// or the keyword or function an expression stands for.
+fn value_sql(expr: Option<ValueExpr>, cast: &str) -> String {
+    match expr {
+        None => format!("CAST(? AS {cast})"),
+        Some(ValueExpr::Default) => "DEFAULT".into(),
+        Some(ValueExpr::Now) => "NOW()".into(),
+    }
+}
+
 pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64, EngineError> {
     if target.pk.is_empty() {
         return Err(EngineError::NotEditable(
@@ -705,14 +715,17 @@ pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64,
     let cast = cast_type(&data_type, &column_type);
 
     let mut sql = format!(
-        "UPDATE {table_ref} SET {} = CAST(? AS {cast}) WHERE ",
-        quote_ident(&target.column)
+        "UPDATE {table_ref} SET {} = {} WHERE ",
+        quote_ident(&target.column),
+        value_sql(target.expr, cast)
     );
     let mut params: Vec<MyValue> = Vec::with_capacity(target.pk.len() + 1);
-    params.push(match &target.value {
-        Some(text) => MyValue::from(text.clone()),
-        None => MyValue::NULL,
-    });
+    if target.expr.is_none() {
+        params.push(match &target.value {
+            Some(text) => MyValue::from(text.clone()),
+            None => MyValue::NULL,
+        });
+    }
     for (index, pk) in target.pk.iter().enumerate() {
         if index > 0 {
             sql.push_str(" AND ");
@@ -737,7 +750,7 @@ pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64,
 pub(crate) async fn insert_row(
     inner: &MySqlInner,
     table: &str,
-    values: &[(String, Option<String>)],
+    values: &[InsertValue],
 ) -> Result<u64, EngineError> {
     let mut conn = inner.conn().await;
     let (schema_part, table_name) = split_display_table(table);
@@ -751,15 +764,15 @@ pub(crate) async fn insert_row(
     } else {
         let columns = values
             .iter()
-            .map(|(column, _)| quote_ident(column))
+            .map(|value| quote_ident(&value.column))
             .collect::<Vec<_>>()
             .join(", ");
         let mut placeholders = Vec::with_capacity(values.len());
-        for (column, _) in values.iter() {
+        for value in values {
             let (data_type, column_type) =
-                column_type_of(&mut conn, &schema, &table_name, column).await?;
+                column_type_of(&mut conn, &schema, &table_name, &value.column).await?;
             let cast = cast_type(&data_type, &column_type);
-            placeholders.push(format!("CAST(? AS {cast})"));
+            placeholders.push(value_sql(value.expr, cast));
         }
         format!(
             "INSERT INTO {table_ref} ({columns}) VALUES ({})",
@@ -768,7 +781,8 @@ pub(crate) async fn insert_row(
     };
     let params: Vec<MyValue> = values
         .iter()
-        .map(|(_, value)| match value {
+        .filter(|value| value.expr.is_none())
+        .map(|value| match &value.value {
             Some(text) => MyValue::from(text.clone()),
             None => MyValue::NULL,
         })
@@ -1814,6 +1828,13 @@ fn value_text(value: &MyValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_value_expressions_are_written_by_the_server() {
+        assert_eq!(value_sql(None, "SIGNED"), "CAST(? AS SIGNED)");
+        assert_eq!(value_sql(Some(ValueExpr::Default), "CHAR"), "DEFAULT");
+        assert_eq!(value_sql(Some(ValueExpr::Now), "DATETIME"), "NOW()");
+    }
 
     fn server(code: u16) -> MyError {
         MyError::Server(mysql_async::ServerError {

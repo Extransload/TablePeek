@@ -18,8 +18,8 @@ use serde_json::{json, Value};
 use tablepeek_engine::sql_log::{Change, LogEntry};
 use tablepeek_engine::{Engine, EngineError, QueryData};
 use tablepeek_types::{
-    ApiError, ConnectRequest, DbObjects, EditTarget, EngineMeta, FsEntry, FsListing,
-    ObjectDefinition, PkValue, QueryResult, ServerInfo, TableDetail, TableSchema,
+    ApiError, ConnectRequest, DbObjects, EditTarget, EngineMeta, FsEntry, FsListing, InsertValue,
+    ObjectDefinition, PkValue, QueryResult, ServerInfo, TableDetail, TableSchema, ValueExpr,
 };
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
@@ -3157,6 +3157,9 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
         pk: Vec<PkMsg>,
         column: String,
         value: Option<String>,
+        // DEFAULT or the current time, which the database writes itself.
+        #[serde(default)]
+        expr: Option<ValueExpr>,
         row: Option<usize>,
         col: Option<usize>,
     }
@@ -3223,9 +3226,35 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
             .collect(),
         column: msg.column,
         value: msg.value,
+        expr: msg.expr,
     };
 
     match slot.engine.edit(&target).await {
+        Ok(changed) if target.expr.is_some() => {
+            // Only the database knows what DEFAULT or the time became, so the
+            // cached cell isn't patched: the page reads the row again. Inside
+            // a transaction the change counts as structural, so a rollback
+            // drops the results read in the meantime.
+            if slot.engine.in_tx().await.unwrap_or(false) {
+                let mut store = slot.sessions.lock().await;
+                store.mark_structural();
+                if let Some(session_arc) = store.get(&session_id) {
+                    session_arc.lock().await.journal.push(JournalEntry::Structural);
+                }
+            }
+            sender
+                .json(json!({
+                    "type": "edited",
+                    "conn": conn,
+                    "row": row,
+                    "col": col,
+                    "column": echo_column,
+                    "value": Value::Null,
+                    "expr": target.expr,
+                    "rows_affected": changed,
+                }))
+                .await;
+        }
         Ok(changed) => {
             if let (Some(row), Some(col)) = (row, col) {
                 if let Some(session_arc) = slot.sessions.lock().await.get(&session_id) {
@@ -3311,7 +3340,7 @@ async fn handle_row_change(
 
     let outcome: Result<u64, EngineError> = match op {
         RowOp::Insert => match parse_insert_values(&value["values"]) {
-            Ok(values) => slot.engine.insert_row(&table, &values).await,
+            Ok(values) => slot.engine.insert_values(&table, &values).await,
             Err(message) => {
                 sender
                     .json(error_json(Some(&id), Some(conn), &message, false))
@@ -3363,7 +3392,7 @@ async fn handle_row_change(
     }
 }
 
-fn parse_insert_values(entries: &Value) -> Result<Vec<(String, Option<String>)>, String> {
+fn parse_insert_values(entries: &Value) -> Result<Vec<InsertValue>, String> {
     let Some(items) = entries.as_array() else {
         return Err("values 배열이 필요합니다".into());
     };
@@ -3383,7 +3412,19 @@ fn parse_insert_values(entries: &Value) -> Result<Vec<(String, Option<String>)>,
             Value::Bool(flag) => Some(if *flag { "true".into() } else { "false".into() }),
             _ => return Err("value는 문자열 또는 null이어야 합니다".into()),
         };
-        values.push((column.to_string(), value));
+        // A named expression only ("default", "now"); never SQL text.
+        let expr = match &item["expr"] {
+            Value::Null => None,
+            other => Some(
+                serde_json::from_value::<ValueExpr>(other.clone())
+                    .map_err(|_| "expr는 default 또는 now여야 합니다".to_string())?,
+            ),
+        };
+        values.push(InsertValue {
+            column: column.to_string(),
+            value,
+            expr,
+        });
     }
     Ok(values)
 }
@@ -5049,6 +5090,7 @@ mod tests {
                 }],
                 column: "name".into(),
                 value: Some("O'Neil".into()),
+                expr: None,
             })
             .await
             .unwrap();
@@ -5324,6 +5366,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn insert_values_take_named_expressions_only() {
+        let values = parse_insert_values(&json!([
+            { "column": "seen", "value": null, "expr": "now" },
+            { "column": "status", "value": null, "expr": "default" },
+            { "column": "name", "value": "x" },
+        ]))
+        .unwrap();
+        let exprs: Vec<Option<ValueExpr>> = values.iter().map(|value| value.expr).collect();
+        assert_eq!(exprs, vec![Some(ValueExpr::Now), Some(ValueExpr::Default), None]);
+        assert_eq!(values[2].value.as_deref(), Some("x"));
+        for bad in [json!("now(); DROP TABLE demo"), json!("NOW"), json!(1)] {
+            let refused = parse_insert_values(&json!([{ "column": "seen", "value": null, "expr": bad }]));
+            assert!(refused.is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_expression_edit_is_read_back_not_patched() {
+        let dir = temp_dir("edit-expr");
+        let state = test_state(&dir);
+        let (sender, mut rx) = test_sender();
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let run = |id: &str, sql: &str| json!({ "type": "query", "id": id, "sql": sql });
+        let now_edit = json!({
+            "type": "edit", "session": "q1", "table": "demo",
+            "pk": [{ "column": "id", "value": 1 }],
+            "column": "created_at", "value": null, "expr": "now", "row": 0, "col": 3,
+        });
+
+        handle_query(&state, &sender, &run("q1", "SELECT * FROM demo"), "main").await;
+        next_of(&mut rx, "meta").await;
+        let before = {
+            let session = slot.sessions.lock().await.get("q1").unwrap();
+            let guard = session.lock().await;
+            guard.data.cell_string(0, 3)
+        };
+        handle_query(&state, &sender, &run("q2", "BEGIN"), "main").await;
+        next_of(&mut rx, "meta").await;
+
+        handle_edit(&state, &sender, &now_edit, "main").await;
+        let edited = next_of(&mut rx, "edited").await;
+        assert_eq!((edited["expr"].clone(), edited["value"].clone()), (json!("now"), Value::Null));
+        assert_eq!(edited["rows_affected"], json!(1));
+        {
+            // The cached cell keeps what it read; the page reads the row again.
+            let session = slot.sessions.lock().await.get("q1").unwrap();
+            let guard = session.lock().await;
+            assert_eq!(guard.data.cell_string(0, 3), before);
+        }
+        let written = slot
+            .engine
+            .execute("SELECT created_at = CURRENT_TIMESTAMP OR created_at > datetime('now', '-1 minute') FROM demo WHERE id = 1", 1)
+            .await
+            .unwrap();
+        assert_eq!(written.rows[0][0], json!(1));
+
+        // Rolled back, the results read since are dropped for a fresh read.
+        handle_query(&state, &sender, &run("q3", "ROLLBACK"), "main").await;
+        let rolled = next_of(&mut rx, "meta").await;
+        assert_eq!(rolled["tx"], json!("rolledback"));
+        assert_eq!(rolled["invalidate"], json!(true));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[tokio::test]
     async fn query_replies_carry_the_transaction_state() {
         let dir = temp_dir("query-in-tx");
@@ -5373,6 +5481,7 @@ mod tests {
                 }],
                 column: "name".into(),
                 value: Some("edited".into()),
+                expr: None,
             })
             .await
             .unwrap();
