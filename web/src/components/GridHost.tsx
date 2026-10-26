@@ -1,5 +1,11 @@
 import { forwardRef, useImperativeHandle, useRef } from "react";
-import type { CellChoices, GridEditHandlers, SelectedRows, SortIndicator } from "../grid/CanvasGrid";
+import type {
+  CellChoices,
+  GridEditHandlers,
+  GridSelection,
+  SelectedRows,
+  SortIndicator,
+} from "../grid/CanvasGrid";
 import type { GridColumnSpec } from "../grid/columns";
 import { store, type GridResult } from "../store";
 import { TableGrid, type TableGridHandle } from "./TableGrid";
@@ -9,6 +15,9 @@ export interface GridHostHandle {
   focus(): void;
   keepViewOnNextResult(): void;
   selectCell(row: number, col: number): void;
+  selectRows(from: number, to: number): void;
+  selection(): GridSelection | null;
+  copySelection(): void;
   cellRect(row: number, col: number): { left: number; top: number; right: number; bottom: number } | null;
 }
 
@@ -21,8 +30,9 @@ interface GridHostProps {
   sortColumns?: SortIndicator[];
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
   onSelectionChange?(row: number | null, rows: SelectedRows | null): void;
-  onCellContextMenu?(row: number, col: number, x: number, y: number): void;
+  onCellContextMenu?(row: number, col: number, x: number, y: number, selection: GridSelection): void;
   onDeleteRows?(rows: number[]): void;
+  onPasteRows?(rows: string[][]): void;
   onQuickLook?(row: number): void;
   onCellQuickLook?(row: number, col: number): void;
   onLink?(row: number, col: number): void;
@@ -91,6 +101,9 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
       focus: () => tableRef.current?.focus(),
       keepViewOnNextResult: () => tableRef.current?.keepViewOnNextSource(),
       selectCell: (row, col) => tableRef.current?.selectCell(row, col),
+      selectRows: (from, to) => tableRef.current?.selectRows(from, to),
+      selection: () => tableRef.current?.selection() ?? null,
+      copySelection: () => tableRef.current?.copySelection(),
       cellRect: (row, col) => tableRef.current?.cellRect(row, col) ?? null,
     }),
     [],
@@ -108,6 +121,7 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
       onSelectionChange={props.onSelectionChange}
       onCellContextMenu={props.onCellContextMenu}
       onDeleteRows={props.onDeleteRows}
+      onPasteRows={props.onPasteRows}
       onQuickLook={props.onQuickLook}
       onCellQuickLook={props.onCellQuickLook}
       onLink={props.onLink}

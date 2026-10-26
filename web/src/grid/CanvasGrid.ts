@@ -4,7 +4,9 @@ import { getSettings } from "../settings";
 import { classifyCell } from "./valueKind";
 import { edgeScrollStep } from "./edgeScroll";
 import { isDateKind, type CellKind, type GridColumnSpec } from "./columns";
+import { COPY_MAX_ROWS, parseClipboardTable, toPlainText } from "../copyFormats";
 import { t } from "../i18n";
+import { IS_MAC } from "../shortcuts";
 
 // Sizes at the default system font size (12px); scaled by syncScale().
 const BASE_FONT_PX = 12;
@@ -22,7 +24,6 @@ const COL_MAX = 800;
 const FIT_MAX = 360;
 const RESIZE_GRIP = 4;
 const MAX_SCROLL_PX = 33_000_000;
-const COPY_MAX_ROWS = 100_000;
 const MIN_CHAR_W = 3;
 const STATE_ALPHA = 0.16;
 const EDIT_ALPHA = 0.24;
@@ -74,7 +75,7 @@ const HOLD_MS = 200;
 const MENU_MAX_H = 240;
 const MENU_MAX_ITEMS = 300;
 
-type SelMode = "cell" | "row" | "col";
+export type SelMode = "cell" | "row" | "col";
 
 interface CellPos {
   row: number;
@@ -106,8 +107,19 @@ export interface SelectedRows {
   to: number;
 }
 type SelectionHandler = (row: number | null, rows: SelectedRows | null) => void;
-type CellContextMenuHandler = (row: number, col: number, x: number, y: number) => void;
+// What is selected, as a block: whole rows (from the row numbers) span every
+// column, whole columns (from the header) every row.
+export interface GridSelection {
+  mode: SelMode;
+  r0: number;
+  r1: number;
+  c0: number;
+  c1: number;
+}
+type CellContextMenuHandler = (row: number, col: number, x: number, y: number, selection: GridSelection) => void;
 type DeleteRowsHandler = (rows: number[]) => void;
+// Clipboard rows pasted over whole selected rows, each with a field per column.
+type PasteRowsHandler = (rows: string[][]) => void;
 
 // A cell's button: "choices" opens the editor's list here; the others go to
 // the accessory handler (a date picker, the row a foreign key points at).
@@ -149,6 +161,10 @@ interface EditState {
   active: number;
   typed: boolean;
 }
+
+// The text the last single-cell copy put on the clipboard (from any grid):
+// pasted back, it stays one value even with line breaks in it.
+let lastCellCopy: string | null = null;
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
@@ -192,6 +208,7 @@ export class CanvasGrid {
   private selectionListener: SelectionHandler | null = null;
   private contextMenuHandler: CellContextMenuHandler | null = null;
   private deleteRowsHandler: DeleteRowsHandler | null = null;
+  private pasteRowsHandler: PasteRowsHandler | null = null;
   private quickLook: ((row: number, col: number) => void) | null = null;
   private cellQuickLook: ((row: number, col: number) => void) | null = null;
   private lastNotified = "";
@@ -293,6 +310,9 @@ export class CanvasGrid {
     canvas.addEventListener("blur", this.onBlur);
     canvas.addEventListener("wheel", this.onWheel, { passive: false });
     this.ro.observe(scroller);
+    // Browsers send ⌘V to the focused element or to the body, depending on
+    // the selection; the document hears it either way.
+    document.addEventListener("paste", this.onPaste);
 
     this.updateSizer();
     this.resizeSurface();
@@ -519,6 +539,31 @@ export class CanvasGrid {
     this.deleteRowsHandler = handler;
   }
 
+  // Without one, rows pasted over selected rows go over their cells instead.
+  setPasteRowsHandler(handler: PasteRowsHandler | null): void {
+    this.pasteRowsHandler = handler;
+  }
+
+  selection(): GridSelection | null {
+    const range = this.selectionRange();
+    return range === null ? null : { mode: this.selMode, ...range };
+  }
+
+  // Selects rows `from`…`to` whole, as the row numbers do.
+  selectRows(from: number, to: number): void {
+    const src = this.source;
+    if (!src || from < 0 || to >= src.rowCount || from > to) {
+      return;
+    }
+    this.selMode = "row";
+    this.anchor = { row: from, col: 0 };
+    this.cursor = { row: to, col: 0 };
+    this.ensureVisibleFor(to, 0);
+    this.notifySelection();
+    this.canvas.focus({ preventScroll: true });
+    this.schedulePaint();
+  }
+
   beginEdit(row: number, col: number): void {
     if (this.editor) {
       this.commitEdit();
@@ -605,6 +650,7 @@ export class CanvasGrid {
     this.canvas.removeEventListener("auxclick", this.onAuxClick);
     this.canvas.removeEventListener("dblclick", this.onDblClick);
     this.canvas.removeEventListener("keydown", this.onKeyDown);
+    document.removeEventListener("paste", this.onPaste);
     this.canvas.removeEventListener("focus", this.onFocus);
     this.canvas.removeEventListener("blur", this.onBlur);
     this.canvas.removeEventListener("wheel", this.onWheel);
@@ -1416,27 +1462,25 @@ export class CanvasGrid {
     this.schedulePaint();
   }
 
-  private copySelection(): void {
+  // ⌘C: the selected cells as tab-separated text (rows not loaded yet come
+  // out empty).
+  copySelection(): void {
     const src = this.source;
     const sel = this.selectionRange();
     if (!src || !sel) {
       return;
     }
     const lastRow = Math.min(sel.r1, sel.r0 + COPY_MAX_ROWS - 1);
-    const lines: string[] = [];
+    const rows: unknown[][] = [];
     for (let r = sel.r0; r <= lastRow; r++) {
-      const cells: string[] = [];
+      const cells: unknown[] = [];
       for (let c = sel.c0; c <= sel.c1; c++) {
-        const v = src.cell(r, c);
-        if (v === undefined || v === null) {
-          cells.push("");
-        } else {
-          cells.push(this.cellText(v));
-        }
+        cells.push(src.cell(r, c));
       }
-      lines.push(cells.join("\t"));
+      rows.push(cells);
     }
-    const text = lines.join("\n");
+    const text = toPlainText(rows);
+    lastCellCopy = rows.length === 1 && rows[0].length === 1 ? text : null;
     const clip = navigator.clipboard;
     if (clip) {
       clip.writeText(text).catch(() => this.copyFallback(text));
@@ -1965,7 +2009,8 @@ export class CanvasGrid {
 
   private readonly onPointerDown = (e: PointerEvent): void => {
     const src = this.source;
-    if (!src || e.button !== 0) {
+    // ⌃-click on macOS is a right-click: the selection stays for its menu.
+    if (!src || e.button !== 0 || (IS_MAC && e.ctrlKey)) {
       return;
     }
     // Read the point first, and focus without scrolling: a grid only partly
@@ -2046,7 +2091,8 @@ export class CanvasGrid {
     this.schedulePaint();
     if (e.altKey && this.contextMenuHandler) {
       const menu = this.contextMenuHandler;
-      window.setTimeout(() => menu(row, col, e.clientX, e.clientY), 0);
+      const selection: GridSelection = { mode: "cell", r0: row, r1: row, c0: col, c1: col };
+      window.setTimeout(() => menu(row, col, e.clientX, e.clientY, selection), 0);
     }
   };
 
@@ -2236,6 +2282,9 @@ export class CanvasGrid {
     this.cellQuickLook(row, col);
   };
 
+  // A right-click inside the selection (a block of cells, whole rows, whole
+  // columns) keeps it, so the menu acts on all of it; one outside selects the
+  // cell clicked.
   private readonly onContextMenu = (e: MouseEvent): void => {
     if (!this.source || !this.contextMenuHandler) {
       return;
@@ -2247,12 +2296,77 @@ export class CanvasGrid {
       return;
     }
     e.preventDefault();
-    this.selMode = "cell";
-    this.anchor = { row, col };
-    this.cursor = { row, col };
-    this.notifySelection();
-    this.schedulePaint();
-    this.contextMenuHandler(row, col, e.clientX, e.clientY);
+    const sel = this.selectionRange();
+    const inside = sel !== null && row >= sel.r0 && row <= sel.r1 && col >= sel.c0 && col <= sel.c1;
+    if (!inside) {
+      this.selMode = "cell";
+      this.anchor = { row, col };
+      this.cursor = { row, col };
+      this.notifySelection();
+      this.schedulePaint();
+    }
+    const selection = this.selection() ?? { mode: "cell", r0: row, r1: row, c0: col, c1: col };
+    this.contextMenuHandler(row, col, e.clientX, e.clientY, selection);
+  };
+
+  // ⌘V: the clipboard's text over the cells from the selection's top-left
+  // corner, rightward and downward, each field staged as an edit through the
+  // grid's editing handlers (and so their rules). Rows pasted over as many
+  // whole rows selected, with a field per column, are added as new rows
+  // instead, when the owner takes them.
+  private readonly onPaste = (e: ClipboardEvent): void => {
+    const src = this.source;
+    const handlers = this.editable;
+    const sel = this.selectionRange();
+    if (document.activeElement !== this.canvas || e.defaultPrevented || !src || !handlers || !sel) {
+      return;
+    }
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (text === "") {
+      return;
+    }
+    e.preventDefault();
+    const fields = text === lastCellCopy ? [[text]] : parseClipboardTable(text);
+    const colCount = this.widths.length;
+    if (
+      this.selMode === "row" &&
+      this.pasteRowsHandler !== null &&
+      fields.every((line) => line.length === colCount)
+    ) {
+      this.pasteRowsHandler(fields);
+      return;
+    }
+    let lastRow = sel.r0 - 1;
+    let lastCol = sel.c0 - 1;
+    for (let i = 0; i < fields.length; i++) {
+      const row = sel.r0 + i;
+      // Rows not loaded yet can't be edited; the paste stops at them.
+      if (row >= src.rowCount || src.cell(row, sel.c0) === undefined) {
+        break;
+      }
+      lastRow = row;
+      for (let j = 0; j < fields[i].length && sel.c0 + j < colCount; j++) {
+        const col = sel.c0 + j;
+        lastCol = Math.max(lastCol, col);
+        if (!this.canEditCell(row, col)) {
+          continue;
+        }
+        // An empty field is NULL, as an emptied cell editor is.
+        const value = fields[i][j] === "" ? null : fields[i][j];
+        const choices = this.choicesAt(row, col);
+        if (choices?.strict && value !== null && !choices.options.includes(value)) {
+          continue;
+        }
+        handlers.onCommit(row, col, value);
+      }
+    }
+    if (lastRow >= sel.r0 && lastCol >= sel.c0) {
+      this.selMode = "cell";
+      this.anchor = { row: sel.r0, col: sel.c0 };
+      this.cursor = { row: lastRow, col: lastCol };
+      this.notifySelection();
+      this.schedulePaint();
+    }
   };
 
   private readonly onDblClick = (e: MouseEvent): void => {

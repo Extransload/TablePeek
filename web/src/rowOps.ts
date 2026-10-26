@@ -28,3 +28,22 @@ export function fkFilterFor(column: string, value: unknown, id = "fk"): FilterSt
     logic: "AND",
   };
 }
+
+// TablePlus's Quick Filter: the rows whose column holds this value, or is
+// NULL. `isText`: the column holds text, so the value is always quoted.
+export function quickFilterFor(column: string, value: unknown, isText: boolean): FilterState {
+  const text = cellToString(value);
+  return {
+    rows: [
+      {
+        id: "quick",
+        column,
+        op: text === null ? "IS NULL" : "=",
+        value: text ?? "",
+        enabled: true,
+        ...(isText ? { text: true } : {}),
+      },
+    ],
+    logic: "AND",
+  };
+}

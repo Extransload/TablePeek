@@ -719,6 +719,16 @@ async function runDetached(
   return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW });
 }
 
+// A staged cell back to what it was: an edited cell to its value, a new row's
+// cell to DEFAULT (left out of the INSERT).
+function revertCell(row: number, col: number): void {
+  const result = state.result;
+  if (!result || stagingBlocked(result)) {
+    return;
+  }
+  result.source.revertCell(row, col);
+}
+
 function stageInsert(values?: Map<number, string | null>): number | null {
   const result = state.result;
   if (!result || !result.meta.sourceTable || stagingBlocked(result)) {
@@ -1323,6 +1333,7 @@ export const store = {
   runDetached,
   cancelQuery,
   editCell,
+  revertCell,
   stageInsert,
   stageDelete,
   applyPending,

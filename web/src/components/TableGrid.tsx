@@ -9,6 +9,7 @@ import {
 import {
   CanvasGrid,
   type GridEditHandlers,
+  type GridSelection,
   type SelectedRows,
   type SortIndicator,
 } from "../grid/CanvasGrid";
@@ -21,6 +22,10 @@ export interface TableGridHandle {
   focus(): void;
   keepViewOnNextSource(): void;
   selectCell(row: number, col: number): void;
+  selectRows(from: number, to: number): void;
+  selection(): GridSelection | null;
+  // ⌘C's copy of the selection.
+  copySelection(): void;
   cellRect(row: number, col: number): { left: number; top: number; right: number; bottom: number } | null;
   // The grid itself, for what only one view needs (sizing to its rows, …).
   grid(): CanvasGrid | null;
@@ -37,8 +42,12 @@ export interface TableGridProps {
   sortColumns?: SortIndicator[];
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
   onSelectionChange?(row: number | null, rows: SelectedRows | null): void;
-  onCellContextMenu?(row: number, col: number, x: number, y: number): void;
+  // `selection`: what the menu acts on, the clicked cell inside it.
+  onCellContextMenu?(row: number, col: number, x: number, y: number, selection: GridSelection): void;
   onDeleteRows?(rows: number[]): void;
+  // Rows pasted over whole selected rows, a field per column; absent, they
+  // paste over the cells as any other paste does.
+  onPasteRows?(rows: string[][]): void;
   onQuickLook?(row: number): void;
   onCellQuickLook?(row: number, col: number): void;
   // The → of a foreign key cell.
@@ -79,7 +88,9 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
     const grid = new CanvasGrid(host);
     gridRef.current = grid;
     grid.setSelectionListener((row, rows) => propsRef.current.onSelectionChange?.(row, rows));
-    grid.setCellContextMenuHandler((row, col, x, y) => propsRef.current.onCellContextMenu?.(row, col, x, y));
+    grid.setCellContextMenuHandler((row, col, x, y, selection) =>
+      propsRef.current.onCellContextMenu?.(row, col, x, y, selection),
+    );
     grid.setQuickLookHandler((row) => propsRef.current.onQuickLook?.(row));
     grid.setCellQuickLookHandler((row, col) => propsRef.current.onCellQuickLook?.(row, col));
     grid.setAccessoryHandler((kind, row, col) => {
@@ -129,6 +140,11 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
     );
     grid.setDeleteRowsHandler(
       editable ? (rows) => propsRef.current.onDeleteRows?.(rows) : null,
+    );
+    grid.setPasteRowsHandler(
+      editable && propsRef.current.onPasteRows !== undefined
+        ? (rows) => propsRef.current.onPasteRows?.(rows)
+        : null,
     );
   }, [editable, props.source]);
 
@@ -182,6 +198,9 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
       focus: () => gridRef.current?.focus(),
       keepViewOnNextSource: () => gridRef.current?.keepViewOnNextSource(),
       selectCell: (row, col) => gridRef.current?.selectCell(row, col),
+      selectRows: (from, to) => gridRef.current?.selectRows(from, to),
+      selection: () => gridRef.current?.selection() ?? null,
+      copySelection: () => gridRef.current?.copySelection(),
       cellRect: (row, col) => gridRef.current?.cellRect(row, col) ?? null,
       grid: () => gridRef.current,
     }),
