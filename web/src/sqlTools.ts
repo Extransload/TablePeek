@@ -55,6 +55,14 @@ function scanText(sql: string, dialect?: string): string {
     .replace(/^\(+\s*/, "");
 }
 
+// Statements after which the database's tables, views or columns may differ.
+const SCHEMA_KEYWORDS = new Set(["create", "drop", "alter", "rename"]);
+
+export function changesSchema(sql: string, dialect?: string): boolean {
+  const keyword = (/^([a-z]+)/i.exec(scanText(sql, dialect))?.[1] ?? "").toLowerCase();
+  return SCHEMA_KEYWORDS.has(keyword);
+}
+
 export function classifyStatement(sql: string, dialect?: string): ReviewItem | null {
   const scan = scanText(sql, dialect);
   const keyword = (/^([a-z]+)/i.exec(scan)?.[1] ?? "").toLowerCase();

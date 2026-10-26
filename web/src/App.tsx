@@ -118,6 +118,7 @@ import {
   planSqlFor,
   snippetList,
   reviewStatements,
+  changesSchema,
   type DefinitionKind,
   type ReviewItem,
   type SafeMode,
@@ -1442,6 +1443,15 @@ export default function App() {
       setHistoryVersion((value) => value + 1);
       // A statement may have changed rows, structure or sizes.
       forgetTableDetails();
+      // A table or view made, dropped or altered shows in the sidebar at once.
+      const dialect = meta?.kind ?? "";
+      if (
+        conn === activeConnIdRef.current &&
+        statements.slice(0, outcomes.length).some((sql) => changesSchema(sql, dialect))
+      ) {
+        setMetaNonce((value) => value + 1);
+        void refreshActiveMeta();
+      }
       const last = outcomes[outcomes.length - 1];
       if (last !== undefined) {
         handleOutcome(conn, tabId, last);
