@@ -263,14 +263,14 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
   const included = sources.flatMap((_, col) => {
     if (createNew) {
       const column = newColumns[col];
-      return column.include ? [{ source: col, name: column.name, boolean: wantsBoolean(column.type) }] : [];
+      return column.include ? [{ source: col, name: column.name, boolean: wantsBoolean(column.type, kind) }] : [];
     }
     const name = mapping[col];
     if (name === null) {
       return [];
     }
     const declared = tableDetail?.columns.find((column) => column.name === name)?.decl_type ?? null;
-    return [{ source: col, name, boolean: wantsBoolean(declared) }];
+    return [{ source: col, name, boolean: wantsBoolean(declared, kind) }];
   });
 
   const modes = createNew ? (["insert"] as InsertMode[]) : insertModes(kind);
