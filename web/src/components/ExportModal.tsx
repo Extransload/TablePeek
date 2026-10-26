@@ -906,7 +906,11 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
             )
           : resultSections(conn, kind, resultPicks(), every ? null : dataTab, scope === "all"),
     };
-    const handle = startJob(t("내보내기"), `${name}${extension}`, 0, { cancellable: true });
+    const handle = startJob(t("내보내기"), `${name}${extension}`, 0, {
+      cancellable: true,
+      // A long read in flight stops too, rather than holding the connection.
+      onCancel: () => store.cancelJobStatement(conn),
+    });
     setJobId(handle.id);
     setError(null);
     void (async () => {

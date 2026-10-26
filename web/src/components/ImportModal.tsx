@@ -14,6 +14,7 @@ import {
   type ParsedImport,
 } from "../importParse";
 import {
+  CommitOutcomeUnknown,
   ImportFailure,
   importLiteral,
   insertModes,
@@ -436,20 +437,23 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
           return importLiteral(column.boolean ? asBoolean(value) : value, kind);
         }),
     };
+    setRunning({ done: 0, total: rows.length, locating: false, committing: false });
     // The connection is the import's from here to the end, before its first
     // statement: on MySQL that is the CREATE TABLE, which would commit a
-    // transaction the user (or another import) has open.
+    // transaction the user (or another import, in any tab) has open.
     try {
-      store.claimConn(conn);
+      await store.claimConn(conn);
     } catch (err) {
+      setRunning(null);
       setError(errorOf(err, t("가져오기에 실패했습니다")));
       return;
     }
     const job = startJob(t("가져오기: {table}", { table: destination }), fileName, rows.length, {
       cancellable: true,
+      // A chunk stuck on a row lock stops too, not only between chunks.
+      onCancel: () => store.cancelJobStatement(conn),
     });
     jobRef.current = job.id;
-    setRunning({ done: 0, total: rows.length, locating: false, committing: false });
     const where = (row: number): string => {
       const at = parsed.at[row] ?? row + 1;
       return parsed.unit === "line" ? t("{line}번째 줄", { line: at.toLocaleString() }) : t("레코드 {index}", { index: at.toLocaleString() });
@@ -462,13 +466,22 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
             await store.exec(conn, sql, { job: true });
           },
           begin: () => store.ownTx(conn, "begin"),
-          commit: () => {
+          commit: async () => {
             // A stop now would report rows as not imported that the COMMIT keeps.
             job.setCancellable(false);
             if (mountedRef.current) {
               setRunning((current) => (current === null ? current : { ...current, committing: true }));
             }
-            return store.ownTx(conn, "commit");
+            try {
+              await store.ownTx(conn, "commit");
+            } catch (err) {
+              // Only a rollback the server is sure of undoes the import (and
+              // drops MySQL's new table); a lost connection may have committed.
+              if (store.isDefiniteRollback(err)) {
+                throw err;
+              }
+              throw new CommitOutcomeUnknown(errorOf(err, t("가져오기에 실패했습니다")));
+            }
           },
           rollback: () => store.ownTx(conn, "rollback"),
         },
@@ -489,7 +502,13 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
     } catch (err) {
       let message: string;
       let at: string | null = null;
-      if (err instanceof ImportFailure && err.undoError !== null) {
+      if (err instanceof ImportFailure && err.outcomeUnknown) {
+        message = t(
+          "COMMIT 결과를 알 수 없습니다. 가져온 행(과 새 테이블)이 저장됐는지 확인하세요: {error}",
+          { error: err.message },
+        );
+        onImported(destination, createNew);
+      } else if (err instanceof ImportFailure && err.undoError !== null) {
         // Never "nothing was imported" when the ROLLBACK (or the DROP of the
         // new table) didn't go through.
         message = t(
@@ -523,7 +542,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
         store.setError(message);
       }
     } finally {
-      store.releaseConn(conn);
+      await store.releaseConn(conn);
       jobRef.current = null;
       if (mountedRef.current) {
         setRunning(null);

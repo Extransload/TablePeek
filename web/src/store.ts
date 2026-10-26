@@ -631,6 +631,19 @@ function cancelQuery(conn?: string): void {
   }
 }
 
+// A background job's Stop: interrupts its statement running now (an import
+// chunk waiting on a row lock, a long export read), which then fails and
+// lets the job wind down.
+function cancelJobStatement(conn: string): void {
+  socket?.cancel(conn, true);
+}
+
+// A COMMIT the server says was rolled back, for certain; a dropped
+// connection or an unknown outcome is not that.
+function isDefiniteRollback(error: unknown): boolean {
+  return error instanceof TablePeekSocketError && error.rolledBack && error.outcomeUnknown !== true;
+}
+
 export interface EditOutcome {
   row: number;
   col: number;
@@ -717,6 +730,11 @@ async function runDetached(
   sql: string,
   maxRows: number,
 ): Promise<{ meta: QueryMeta; source: WindowedRowSource }> {
+  // While an import or restore holds the connection its rows aren't
+  // committed yet: an export or backup would read them as if they were.
+  if (inOwnTx(conn)) {
+    throw new Error(t(BUSY_ERROR));
+  }
   // A job's read: it runs beside the page's queries, and the server keeps its
   // rows only until the source is disposed.
   return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW, job: true });
@@ -982,10 +1000,11 @@ function refuseWhileJob(): boolean {
   return false;
 }
 
-// Before a job's first statement. Refused while the user has a transaction
-// open there (the job's COMMIT or ROLLBACK, or MySQL's CREATE TABLE, would
-// end it) or another job holds the connection.
-function claimConn(conn: string): void {
+// Before a job's first statement. Refused while a transaction is open there
+// (the job's COMMIT or ROLLBACK, or MySQL's CREATE TABLE, would end it) or
+// another job holds the connection; the server checks too, for what other
+// tabs have open.
+async function claimConn(conn: string): Promise<void> {
   if (state.connId === conn && state.tx === "active") {
     throw new Error(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
   }
@@ -993,10 +1012,31 @@ function claimConn(conn: string): void {
     throw new Error(t(BUSY_ERROR));
   }
   ownTxConns.add(conn);
+  try {
+    await jobOnServer(conn, "start");
+  } catch (error) {
+    ownTxConns.delete(conn);
+    throw error;
+  }
 }
 
-function releaseConn(conn: string): void {
-  ownTxConns.delete(conn);
+// After a job's last statement. A transaction it leaves open (a ROLLBACK
+// that failed) is the user's from now on, on the server as here.
+async function releaseConn(conn: string): Promise<void> {
+  try {
+    await jobOnServer(conn, "end");
+  } catch {
+    // The server lets a job go by itself a minute after its last statement.
+  } finally {
+    ownTxConns.delete(conn);
+  }
+}
+
+async function jobOnServer(conn: string, action: "start" | "end"): Promise<void> {
+  await api<{ ok: boolean }>(`/api/job?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
 }
 
 // A claimed job's own transaction, on the connection's one session as
@@ -1473,6 +1513,8 @@ export const store = {
   inOwnTx,
   claimConn,
   releaseConn,
+  cancelJobStatement,
+  isDefiniteRollback,
   openDb,
   listDir,
   statPath,

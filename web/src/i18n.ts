@@ -1249,6 +1249,8 @@ const EN: Record<string, string> = {
   "JSON에서 가져오기": "Import from JSON",
   "SQL 덤프에서 가져오기": "Import from SQL Dump",
   "커밋하는 중…": "Committing…",
+  "COMMIT 결과를 알 수 없습니다. 가져온 행(과 새 테이블)이 저장됐는지 확인하세요: {error}": "Whether the COMMIT went through is unknown. Check whether the imported rows (and the new table) were saved: {error}",
+  "복원 뒤 세션 설정(외래 키 검사 등)을 되돌리지 못했습니다: {error}": "Couldn't put the session settings (foreign key checks and others) back after the restore: {error}",
   "가져오기를 되돌리지 못했습니다. 트랜잭션이 열려 있거나 새 테이블이 남았을 수 있으니 확인하세요: {error}": "The import couldn't be undone: a transaction may still be open, or the new table may be left. Check it: {error}",
   // Export
   "테이블 내보내기": "Export tables",
