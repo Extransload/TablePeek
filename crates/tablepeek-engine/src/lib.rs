@@ -14,9 +14,9 @@ use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, MssqlConfig,
-    MySqlConfig, ObjectDefinition, PkValue, PostgresConfig, QueryResult, ServerInfo, TableDetail,
-    TableSchema, TriggerInfo,
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
+    MssqlConfig, MySqlConfig, ObjectDefinition, PkValue, PostgresConfig, QueryResult, ServerInfo,
+    TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 
 mod mssql;
@@ -902,17 +902,40 @@ impl Engine {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> Result<u64, EngineError> {
+        let values: Vec<InsertValue> = values
+            .iter()
+            .map(|(column, value)| InsertValue {
+                column: column.clone(),
+                value: value.clone(),
+                expr: None,
+            })
+            .collect();
+        self.insert_values(table, &values).await
+    }
+
+    /// A new row whose columns may also be expressions. A column set to
+    /// DEFAULT is left out of the INSERT, which every database (SQLite too,
+    /// which has no DEFAULT in VALUES) reads as its default.
+    pub async fn insert_values(
+        &self,
+        table: &str,
+        values: &[InsertValue],
+    ) -> Result<u64, EngineError> {
+        let values: Vec<InsertValue> = values
+            .iter()
+            .filter(|value| value.expr != Some(ValueExpr::Default))
+            .cloned()
+            .collect();
         match self.backend_snapshot()? {
             Backend::Sqlite { inner } => {
                 let table = table.to_string();
-                let values = values.to_vec();
                 tokio::task::spawn_blocking(move || insert_sync(&inner, &table, &values))
                     .await
                     .map_err(|e| EngineError::Internal(e.to_string()))?
             }
-            Backend::Postgres { inner } => postgres::insert_row(&inner, table, values).await,
-            Backend::MySql { inner } => mysql::insert_row(&inner, table, values).await,
-            Backend::Mssql { inner } => mssql::insert_row(&inner, table, values).await,
+            Backend::Postgres { inner } => postgres::insert_row(&inner, table, &values).await,
+            Backend::MySql { inner } => mysql::insert_row(&inner, table, &values).await,
+            Backend::Mssql { inner } => mssql::insert_row(&inner, table, &values).await,
         }
     }
 
@@ -1429,8 +1452,24 @@ fn edit_sync(inner: &SqliteInner, target: &EditTarget) -> Result<u64, EngineErro
         ));
     }
     let conn = lock_conn(inner)?;
+    let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(target.pk.len() + 1);
+    let value_sql = match target.expr {
+        Some(ValueExpr::Now) => SQLITE_NOW.to_string(),
+        Some(ValueExpr::Default) => sqlite_default_sql(sqlite_column_default(
+            &conn,
+            &target.table,
+            &target.column,
+        )?),
+        None => {
+            params.push(match &target.value {
+                Some(s) => rusqlite::types::Value::Text(s.clone()),
+                None => rusqlite::types::Value::Null,
+            });
+            "?1".to_string()
+        }
+    };
     let mut sql = format!(
-        "UPDATE {} SET {} = ?1 WHERE ",
+        "UPDATE {} SET {} = {value_sql} WHERE ",
         quote_ident(&target.table),
         quote_ident(&target.column)
     );
@@ -1438,20 +1477,56 @@ fn edit_sync(inner: &SqliteInner, target: &EditTarget) -> Result<u64, EngineErro
         if i > 0 {
             sql.push_str(" AND ");
         }
-        sql.push_str(&format!("{} = ?{}", quote_ident(&pk.column), i + 2));
-    }
-
-    let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(target.pk.len() + 1);
-    params.push(match &target.value {
-        Some(s) => rusqlite::types::Value::Text(s.clone()),
-        None => rusqlite::types::Value::Null,
-    });
-    for pk in &target.pk {
         params.push(json_to_sql(&pk.value));
+        sql.push_str(&format!("{} = ?{}", quote_ident(&pk.column), params.len()));
     }
 
     let changed = conn.change(&sql, &sqlite_refs(&params))?;
     Ok(changed as u64)
+}
+
+// SQLite's NOW(): the current UTC time as its date functions write it.
+const SQLITE_NOW: &str = "CURRENT_TIMESTAMP";
+
+// SQLite has no `SET col = DEFAULT`, so DEFAULT writes the column's default
+// as the schema declares it: SQLite's own text from CREATE TABLE, which it
+// limits to a constant expression, never anything from the client. A column
+// without one defaults to NULL, as an INSERT leaving it out would.
+fn sqlite_default_sql(declared: Option<String>) -> String {
+    match declared {
+        // `DEFAULT "x"` is the string x in CREATE TABLE, but in an UPDATE it
+        // would name a column x if there is one: written as a string here.
+        Some(expr) if is_double_quoted(&expr) => {
+            let text = expr[1..expr.len() - 1].replace("\"\"", "\"");
+            format!("'{}'", text.replace('\'', "''"))
+        }
+        Some(expr) => format!("({expr})"),
+        None => "NULL".into(),
+    }
+}
+
+// One "…" token, its own quotes doubled inside.
+fn is_double_quoted(expr: &str) -> bool {
+    expr.len() >= 2
+        && expr.starts_with('"')
+        && expr.ends_with('"')
+        && !expr[1..expr.len() - 1].replace("\"\"", "").contains('"')
+}
+
+fn sqlite_column_default(
+    conn: &SqliteConn<'_>,
+    table: &str,
+    column: &str,
+) -> Result<Option<String>, EngineError> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        // Column names are matched without case, as SQLite itself does.
+        "SELECT dflt_value FROM pragma_table_info(?1) WHERE name = ?2 COLLATE NOCASE",
+        &[&table as &dyn rusqlite::ToSql, &column],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()?
+    .ok_or_else(|| EngineError::BadRequest(format!("열을 찾을 수 없습니다: {column}")))
 }
 
 fn sqlite_refs(params: &[rusqlite::types::Value]) -> Vec<&dyn rusqlite::ToSql> {
@@ -1481,7 +1556,7 @@ fn json_to_sql(v: &Value) -> rusqlite::types::Value {
 fn insert_sync(
     inner: &SqliteInner,
     table: &str,
-    values: &[(String, Option<String>)],
+    values: &[InsertValue],
 ) -> Result<u64, EngineError> {
     let conn = lock_conn(inner)?;
     let changed = if values.is_empty() {
@@ -1492,24 +1567,28 @@ fn insert_sync(
     } else {
         let columns = values
             .iter()
-            .map(|(column, _)| quote_ident(column))
+            .map(|value| quote_ident(&value.column))
             .collect::<Vec<_>>()
             .join(", ");
-        let placeholders = (1..=values.len())
-            .map(|index| format!("?{index}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "INSERT INTO {} ({columns}) VALUES ({placeholders})",
-            quote_ident(table)
-        );
-        let params: Vec<rusqlite::types::Value> = values
-            .iter()
-            .map(|(_, value)| match value {
+        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(values.len());
+        let mut placeholders = Vec::with_capacity(values.len());
+        for value in values {
+            // DEFAULT never gets here (Engine::insert_values leaves it out).
+            if value.expr == Some(ValueExpr::Now) {
+                placeholders.push(SQLITE_NOW.to_string());
+                continue;
+            }
+            params.push(match &value.value {
                 Some(text) => rusqlite::types::Value::Text(text.clone()),
                 None => rusqlite::types::Value::Null,
-            })
-            .collect();
+            });
+            placeholders.push(format!("?{}", params.len()));
+        }
+        let sql = format!(
+            "INSERT INTO {} ({columns}) VALUES ({})",
+            quote_ident(table),
+            placeholders.join(", ")
+        );
         conn.change(&sql, &sqlite_refs(&params))?
     };
     Ok(changed as u64)
@@ -1967,6 +2046,7 @@ mod tests {
             }],
             column: "name".into(),
             value: Some("수정됨".into()),
+            expr: None,
         };
         let changed = engine.edit(&target).await.unwrap();
         assert_eq!(changed, 1);
@@ -1997,6 +2077,110 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(check.rows[0][0], Value::from("롤백됨"));
+    }
+
+    #[test]
+    fn sqlite_defaults_are_written_as_declared() {
+        assert_eq!(sqlite_default_sql(None), "NULL");
+        assert_eq!(sqlite_default_sql(Some("'new'".into())), "('new')");
+        assert_eq!(sqlite_default_sql(Some("2 + 5".into())), "(2 + 5)");
+        assert_eq!(sqlite_default_sql(Some("CURRENT_TIMESTAMP".into())), "(CURRENT_TIMESTAMP)");
+        // A double-quoted default is a string, its quotes undone and redone.
+        assert_eq!(sqlite_default_sql(Some("\"note\"".into())), "'note'");
+        assert_eq!(sqlite_default_sql(Some("\"say \"\"hi\"\" it's\"".into())), "'say \"hi\" it''s'");
+        // Not one quoted token: left as the expression it is.
+        assert_eq!(sqlite_default_sql(Some("\"a\" || \"b\"".into())), "(\"a\" || \"b\")");
+    }
+
+    fn expr_target(id: i64, column: &str, expr: ValueExpr) -> EditTarget {
+        EditTarget {
+            table: "items".into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(id),
+            }],
+            column: column.into(),
+            value: None,
+            expr: Some(expr),
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_set_value_writes_default_and_the_time() {
+        let path = temp_db("value-expr");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE items(
+                    id INTEGER PRIMARY KEY,
+                    status TEXT DEFAULT 'new',
+                    qty INTEGER NOT NULL DEFAULT (2 + 5),
+                    note TEXT,
+                    seen TEXT,
+                    kind TEXT DEFAULT \"note\"
+                 );
+                 INSERT INTO items(id, status, qty, note, seen, kind) VALUES (1, 'old', 1, 'x', NULL, 'k');",
+            )
+            .unwrap();
+        }
+        let engine = Engine::open_file(&path).unwrap();
+        let log = engine.sql_log().clone();
+        let newest = || log.since(None).0.last().map_or(0, |entry| entry.seq);
+        let mark = newest();
+
+        // DEFAULT: the declared default (an expression too), else NULL.
+        for column in ["status", "qty", "note"] {
+            let changed = engine.edit(&expr_target(1, column, ValueExpr::Default)).await.unwrap();
+            assert_eq!(changed, 1, "{column}");
+        }
+        // `DEFAULT "note"` is the string, not the column note; names match
+        // without case.
+        engine.edit(&expr_target(1, "KIND", ValueExpr::Default)).await.unwrap();
+        let kind = engine.execute("SELECT kind FROM items WHERE id = 1", 1).await.unwrap();
+        assert_eq!(kind.rows[0][0], Value::from("note"));
+        // NOW(): SQLite's CURRENT_TIMESTAMP.
+        engine.edit(&expr_target(1, "seen", ValueExpr::Now)).await.unwrap();
+        let row = engine
+            .execute(
+                "SELECT status, qty, note, seen IS NOT NULL, \
+                 abs(strftime('%s', seen) - strftime('%s', 'now')) < 60 FROM items WHERE id = 1",
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            row.rows[0],
+            vec![Value::from("new"), Value::from(7), Value::Null, Value::from(1), Value::from(1)]
+        );
+        let logged: Vec<String> = log.since(Some(mark)).0.into_iter().map(|entry| entry.sql).collect();
+        assert!(logged.contains(&"UPDATE \"items\" SET \"status\" = ('new') WHERE \"id\" = 1;".to_string()), "{logged:?}");
+        // PRAGMA gives `(2 + 5)` as `2 + 5`: the parentheses keep it one value.
+        assert!(logged.contains(&"UPDATE \"items\" SET \"qty\" = (2 + 5) WHERE \"id\" = 1;".to_string()), "{logged:?}");
+        assert!(logged.contains(&"UPDATE \"items\" SET \"note\" = NULL WHERE \"id\" = 1;".to_string()), "{logged:?}");
+        assert!(logged.contains(&"UPDATE \"items\" SET \"seen\" = CURRENT_TIMESTAMP WHERE \"id\" = 1;".to_string()), "{logged:?}");
+
+        // A new row: DEFAULT is left out, NOW() written, values bound after it.
+        let values = vec![
+            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
+            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
+            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+        ];
+        assert_eq!(engine.insert_values("items", &values).await.unwrap(), 1);
+        let row = engine
+            .execute("SELECT status, qty, note, seen IS NOT NULL FROM items WHERE id = 2", 1)
+            .await
+            .unwrap();
+        assert_eq!(row.rows[0], vec![Value::from("new"), Value::from(7), Value::from("n"), Value::from(1)]);
+        let logged: Vec<String> = log.since(None).0.into_iter().map(|entry| entry.sql).collect();
+        assert!(logged.contains(
+            &"INSERT INTO \"items\" (\"id\", \"seen\", \"note\") VALUES ('2', CURRENT_TIMESTAMP, 'n');".to_string()
+        ), "{logged:?}");
+
+        // A column the table doesn't have is refused, not guessed.
+        let missing = engine.edit(&expr_target(1, "nope", ValueExpr::Default)).await;
+        assert!(matches!(missing, Err(EngineError::BadRequest(_))), "{missing:?}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
@@ -2057,6 +2241,7 @@ mod tests {
                 }],
                 column: "name".into(),
                 value: Some("O'Neil".into()),
+                expr: None,
             })
             .await
             .unwrap();
@@ -2133,6 +2318,7 @@ mod tests {
             }],
             column: "name".into(),
             value: Some(name.into()),
+            expr: None,
         }
     }
 
@@ -2367,6 +2553,7 @@ mod tests {
             }],
             column: "note".into(),
             value: Some("edited".into()),
+            expr: None,
         };
         let err = engine.edit(&target).await.unwrap_err();
         assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
@@ -2430,6 +2617,7 @@ mod tests {
             }],
             column: column.into(),
             value: Some(value.into()),
+            expr: None,
         };
 
         // The third edit hits the key; the user then clicks Commit.
@@ -2580,6 +2768,7 @@ mod tests {
             }],
             column: "name".into(),
             value: Some("피지수정".into()),
+            expr: None,
         };
         assert_eq!(engine.edit(&target).await.unwrap(), 1);
         let check = engine
@@ -2679,6 +2868,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pg_set_value_writes_default_and_the_time() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        let table = format!("tablepeek_exprtest_{}", std::process::id());
+        engine.execute(&format!("CREATE TABLE {table} (id integer PRIMARY KEY, status text DEFAULT 'new', note text, seen timestamptz, day date)"), 1).await.unwrap();
+        engine
+            .insert_row(
+                &table,
+                &[
+                    ("id".to_string(), Some("1".to_string())),
+                    ("status".to_string(), Some("old".to_string())),
+                    ("note".to_string(), Some("x".to_string())),
+                ],
+            )
+            .await
+            .unwrap();
+        let target = |column: &str, expr| EditTarget {
+            table: table.clone(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: column.into(),
+            value: None,
+            expr: Some(expr),
+        };
+        for (column, expr) in [
+            ("status", ValueExpr::Default),
+            ("note", ValueExpr::Default),
+            ("seen", ValueExpr::Now),
+            ("day", ValueExpr::Now),
+        ] {
+            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+        }
+        let values = vec![
+            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
+            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
+            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+        ];
+        assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
+        let rows = engine.execute(&format!("SELECT id, status, note, abs(extract(epoch FROM now() - seen)) < 60, day = current_date FROM {table} ORDER BY id"), 2).await.unwrap();
+        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from("true"), Value::from("true")], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from("true"), Value::from("true")]]);
+        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn pg_cancel_interrupts_running_query() {
         let Some(config) = pg_config() else {
             return;
@@ -2712,6 +2952,57 @@ mod tests {
             ssl_client_cert: None,
             ssl_client_key: None,
         })
+    }
+
+    #[tokio::test]
+    async fn cockroach_set_value_writes_default_and_the_time() {
+        let Some(config) = cockroach_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_cockroach(&config).await.unwrap();
+        let table = format!("tablepeek_exprtest_{}", std::process::id());
+        engine.execute(&format!("CREATE TABLE {table} (id INT8 PRIMARY KEY, status STRING DEFAULT 'new', note STRING, seen TIMESTAMPTZ, day DATE)"), 1).await.unwrap();
+        engine
+            .insert_row(
+                &table,
+                &[
+                    ("id".to_string(), Some("1".to_string())),
+                    ("status".to_string(), Some("old".to_string())),
+                    ("note".to_string(), Some("x".to_string())),
+                ],
+            )
+            .await
+            .unwrap();
+        let target = |column: &str, expr| EditTarget {
+            table: table.clone(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: column.into(),
+            value: None,
+            expr: Some(expr),
+        };
+        for (column, expr) in [
+            ("status", ValueExpr::Default),
+            ("note", ValueExpr::Default),
+            ("seen", ValueExpr::Now),
+            ("day", ValueExpr::Now),
+        ] {
+            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+        }
+        let values = vec![
+            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
+            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
+            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+        ];
+        assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
+        let rows = engine.execute(&format!("SELECT id, status, note, abs(extract(epoch FROM now() - seen)) < 60, day = current_date FROM {table} ORDER BY id"), 2).await.unwrap();
+        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from("true"), Value::from("true")], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from("true"), Value::from("true")]]);
+        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
     }
 
     #[tokio::test]
@@ -2783,6 +3074,7 @@ mod tests {
             }],
             column: "score".into(),
             value: Some("99.25".into()),
+            expr: None,
         };
         assert_eq!(engine.edit(&target).await.unwrap(), 1);
         let check = engine
@@ -2943,9 +3235,14 @@ mod tests {
 
     fn mysql_config() -> Option<tablepeek_types::MySqlConfig> {
         std::env::var("TABLEPEEK_TEST_MYSQL").ok()?;
+        // Another port when 3307 is taken (a tunnel to a real server, say).
+        let port = std::env::var("TABLEPEEK_TEST_MYSQL_PORT")
+            .ok()
+            .and_then(|port| port.parse().ok())
+            .unwrap_or(3307);
         Some(tablepeek_types::MySqlConfig {
             host: "127.0.0.1".into(),
-            port: 3307,
+            port,
             user: "root".into(),
             password: Some("root_pw".into()),
             database: "tablepeek_test".into(),
@@ -2995,6 +3292,7 @@ mod tests {
             }],
             column: "note".into(),
             value: Some("edited".into()),
+            expr: None,
         };
         let err = engine.edit(&target("tp_key")).await.unwrap_err();
         assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
@@ -3042,6 +3340,7 @@ mod tests {
             }],
             column: "note".into(),
             value: Some(note.into()),
+            expr: None,
         };
 
         engine.execute("START TRANSACTION", 1).await.unwrap();
@@ -3142,6 +3441,7 @@ mod tests {
             }],
             column: "score".into(),
             value: Some("99.25".into()),
+            expr: None,
         };
         assert_eq!(engine.edit(&target).await.unwrap(), 1);
         let check = engine
@@ -3245,6 +3545,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mysql_set_value_writes_default_and_the_time() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        let table = format!("tablepeek_exprtest_{}", std::process::id());
+        engine.execute(&format!("CREATE TABLE {table} (id INT PRIMARY KEY, status VARCHAR(20) DEFAULT 'new', note VARCHAR(20) NULL, seen DATETIME NULL, day DATE NULL)"), 1).await.unwrap();
+        engine
+            .insert_row(
+                &table,
+                &[
+                    ("id".to_string(), Some("1".to_string())),
+                    ("status".to_string(), Some("old".to_string())),
+                    ("note".to_string(), Some("x".to_string())),
+                ],
+            )
+            .await
+            .unwrap();
+        let target = |column: &str, expr| EditTarget {
+            table: table.clone(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: column.into(),
+            value: None,
+            expr: Some(expr),
+        };
+        for (column, expr) in [
+            ("status", ValueExpr::Default),
+            ("note", ValueExpr::Default),
+            ("seen", ValueExpr::Now),
+            ("day", ValueExpr::Now),
+        ] {
+            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+        }
+        let values = vec![
+            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
+            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
+            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+        ];
+        assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
+        let rows = engine.execute(&format!("SELECT id, status, note, ABS(TIMESTAMPDIFF(SECOND, seen, NOW())) < 60, day = CURDATE() FROM {table} ORDER BY id"), 2).await.unwrap();
+        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from(1), Value::from(1)], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from(1), Value::from(1)]]);
+        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn mysql_cancel_interrupts_running_query() {
         let Some(config) = mysql_config() else {
             return;
@@ -3323,6 +3674,7 @@ mod tests {
             }],
             column: "note".into(),
             value: Some("edited".into()),
+            expr: None,
         };
         let err = engine.edit(&target).await.unwrap_err();
         assert!(matches!(err, EngineError::NotEditable(_)), "{err}");
@@ -3415,6 +3767,7 @@ mod tests {
             }],
             column: "score".into(),
             value: Some("99.25".into()),
+            expr: None,
         };
         assert_eq!(engine.edit(&target).await.unwrap(), 1);
         let check = engine
@@ -3535,6 +3888,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mssql_set_value_writes_default_and_the_time() {
+        let Some(config) = mssql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mssql(&config).await.unwrap();
+        let table = format!("tablepeek_exprtest_{}", std::process::id());
+        engine.execute(&format!("CREATE TABLE {table} (id INT PRIMARY KEY, status NVARCHAR(20) DEFAULT 'new', note NVARCHAR(20) NULL, seen DATETIME2 NULL, day DATE NULL)"), 1).await.unwrap();
+        engine
+            .insert_row(
+                &table,
+                &[
+                    ("id".to_string(), Some("1".to_string())),
+                    ("status".to_string(), Some("old".to_string())),
+                    ("note".to_string(), Some("x".to_string())),
+                ],
+            )
+            .await
+            .unwrap();
+        let target = |column: &str, expr| EditTarget {
+            table: table.clone(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(1),
+            }],
+            column: column.into(),
+            value: None,
+            expr: Some(expr),
+        };
+        for (column, expr) in [
+            ("status", ValueExpr::Default),
+            ("note", ValueExpr::Default),
+            ("seen", ValueExpr::Now),
+            ("day", ValueExpr::Now),
+        ] {
+            assert_eq!(engine.edit(&target(column, expr)).await.unwrap(), 1, "{column}");
+        }
+        let values = vec![
+            InsertValue { column: "id".into(), value: Some("2".into()), expr: None },
+            InsertValue { column: "status".into(), value: None, expr: Some(ValueExpr::Default) },
+            InsertValue { column: "seen".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "day".into(), value: None, expr: Some(ValueExpr::Now) },
+            InsertValue { column: "note".into(), value: Some("n".into()), expr: None },
+        ];
+        assert_eq!(engine.insert_values(&table, &values).await.unwrap(), 1);
+        let rows = engine.execute(&format!("SELECT id, status, note, CASE WHEN ABS(DATEDIFF(SECOND, seen, GETDATE())) < 60 THEN 1 ELSE 0 END, CASE WHEN day = CAST(GETDATE() AS date) THEN 1 ELSE 0 END FROM {table} ORDER BY id"), 2).await.unwrap();
+        assert_eq!(rows.rows, vec![vec![Value::from(1), Value::from("new"), Value::Null, Value::from(1), Value::from(1)], vec![Value::from(2), Value::from("new"), Value::from("n"), Value::from(1), Value::from(1)]]);
+        engine.execute(&format!("DROP TABLE {table}"), 1).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn mssql_cancel_interrupts_running_query() {
         let Some(config) = mssql_config() else {
             return;
@@ -3567,6 +3971,7 @@ mod tests {
                 pk: vec![],
                 column: "name".into(),
                 value: Some("x".into()),
+                expr: None,
             })
             .await
             .unwrap_err();

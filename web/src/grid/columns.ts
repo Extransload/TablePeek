@@ -13,6 +13,8 @@ export interface GridColumnSpec {
   // The values an enum, set or boolean cell offers.
   options?: string[];
   nullable?: boolean;
+  // The column declares a default (Set Value ▸ DEFAULT means something).
+  hasDefault?: boolean;
 }
 
 export function isDateKind(kind: CellKind): boolean {
@@ -56,6 +58,10 @@ export function kindOfType(declType: string | null, dialect: string): Pick<GridC
   }
   if (/^date$/.test(type)) {
     return { kind: "date" };
+  }
+  // SQL Server's timestamp is rowversion, a binary counter, not a time.
+  if (dialect === "mssql" && /^(timestamp|rowversion)\b/.test(type)) {
+    return { kind: "text" };
   }
   if (/^(datetime|datetime2|smalldatetime|datetimeoffset|timestamp|timestamptz)\b/.test(type)) {
     return { kind: "datetime" };
@@ -118,7 +124,10 @@ export function specsForTable(
       options: enumKind ? labels : declared.options,
       pk: column.pk,
       link: linked.has(name),
-      nullable: !column.not_null,
+      // A key column never takes NULL, whatever SQLite's PRAGMA says of an
+      // INTEGER PRIMARY KEY.
+      nullable: !column.not_null && !column.pk,
+      hasDefault: column.default !== null && column.default !== undefined,
     };
   });
 }

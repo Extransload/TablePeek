@@ -1,5 +1,5 @@
 import { tableFromIPC } from "apache-arrow";
-import { WindowedRowSource } from "../grid/windowSource";
+import { WindowedRowSource, type ValueExpr } from "../grid/windowSource";
 import { t } from "../i18n";
 
 export type SocketStatus = "connecting" | "open" | "closed";
@@ -41,6 +41,8 @@ export interface EditRequest {
   pk: { column: string; value: string | number | null }[];
   column: string;
   value: string | null;
+  // Written by the database in place of `value`.
+  expr?: ValueExpr;
   row: number;
   col: number;
 }
@@ -63,7 +65,7 @@ export interface RowChange {
 export interface InsertRowRequest {
   session: string;
   table: string;
-  values: { column: string; value: string | null }[];
+  values: { column: string; value: string | null; expr?: ValueExpr }[];
 }
 
 export interface DeleteRowRequest {

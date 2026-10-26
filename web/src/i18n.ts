@@ -1331,6 +1331,9 @@ const EN: Record<string, string> = {
   "다음으로 시작": "Has prefix",
   "다음으로 끝남": "Has suffix",
   "SQL 직접 입력": "Raw SQL",
+  "처음 {count}행만 복사했습니다": "Copied the first {count} rows only",
+  "처음 {count}행만 복제했습니다": "Duplicated the first {count} rows only",
+  "처음 {count}행만 바꿨습니다": "Changed the first {count} rows only",
 };
 
 let current: Language = readLanguage();
@@ -1395,6 +1398,7 @@ const SERVER_PREFIXES: [RegExp, string][] = [
   [/^SQLite 데이터베이스 파일이 아닙니다: /, "Not a SQLite database file: "],
   [/^편집할 수 없습니다: /, "Can't edit: "],
   [/^내부 오류: /, "Internal error: "],
+  [/^열을 찾을 수 없습니다: /, "Column not found: "],
   [/^커밋하지 못해 트랜잭션을 롤백했습니다: /, "Couldn't commit, so the transaction was rolled back: "],
   [/^연결이 끊겨 커밋되었는지 알 수 없습니다: /, "The connection dropped; whether the commit went through is unknown: "],
   [/^배치가 실패해 트랜잭션이 커밋되었는지 알 수 없습니다: /, "The batch failed; whether the transaction was committed is unknown: "],

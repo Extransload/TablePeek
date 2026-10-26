@@ -44,6 +44,18 @@ pub struct FsListing {
     pub entries: Vec<FsEntry>,
 }
 
+/// A value the database writes itself, as TablePlus's Set Value offers it.
+/// The client names one; each backend writes its own keyword or function,
+/// so no SQL text ever comes from the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ValueExpr {
+    /// The column's default.
+    Default,
+    /// The current date and time, as the database tells it.
+    Now,
+}
+
 /// 편집 대상 (UPDATE ... WHERE pk)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditTarget {
@@ -51,6 +63,18 @@ pub struct EditTarget {
     pub pk: Vec<PkValue>,
     pub column: String,
     pub value: Option<String>,
+    /// Written in place of `value` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<ValueExpr>,
+}
+
+/// One column of a new row: a value bound as text, or an expression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsertValue {
+    pub column: String,
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<ValueExpr>,
 }
 
 /// 기본 키 컬럼과 값 (NULL 비교 포함)
