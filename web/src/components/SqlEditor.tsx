@@ -1,13 +1,22 @@
 import { basicSetup } from "codemirror";
-import { SQLite, sql } from "@codemirror/lang-sql";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import {
+  MSSQL,
+  MariaSQL,
+  MySQL,
+  PostgreSQL,
+  SQLite,
+  keywordCompletionSource,
+  type SQLDialect,
+} from "@codemirror/lang-sql";
+import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { isolateHistory } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { completeSql, type SqlWord } from "../sqlComplete";
 import { statementAt } from "../sqlSplit";
 
 export interface FavoriteSnippet {
@@ -76,6 +85,42 @@ function sameSpot(before: string, offset: number, after: string): number {
   }
   return at;
 }
+
+// The connection's SQL, for highlighting and completion; any other kind (or
+// no connection) keeps SQLite's.
+const DIALECTS: Record<string, SQLDialect> = {
+  sqlite: SQLite,
+  postgres: PostgreSQL,
+  cockroach: PostgreSQL,
+  mysql: MySQL,
+  mariadb: MariaSQL,
+  mssql: MSSQL,
+};
+
+function dialectFor(kind: string | undefined): SQLDialect {
+  return DIALECTS[kind ?? ""] ?? SQLite;
+}
+
+const dialectWords = new Map<SQLDialect, SqlWord[]>();
+
+// The dialect's keywords, types and functions: lang-sql builds its keyword
+// options up front, through the builder it is given.
+function wordsOf(dialect: SQLDialect): SqlWord[] {
+  let words = dialectWords.get(dialect);
+  if (words === undefined) {
+    const list: SqlWord[] = [];
+    keywordCompletionSource(dialect, false, (label, type) => {
+      list.push({ label, type });
+      return { label, type };
+    });
+    words = list;
+    dialectWords.set(dialect, words);
+  }
+  return words;
+}
+
+// How far either side of the cursor completion reads a long script (a dump).
+const COMPLETION_WINDOW = 50_000;
 
 const editorTheme = EditorView.theme(
   {
@@ -163,7 +208,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const schemaRef = useRef(schema);
     const runKeyRef = useRef(runKey === undefined ? "Mod-Enter" : runKey);
     const pendingRef = useRef<{ tabId: string; sql: string; timer: number } | null>(null);
-    const [schemaCompartment] = useState(() => new Compartment());
+    const [languageCompartment] = useState(() => new Compartment());
 
     onRunRef.current = onRun;
     onSqlChangeRef.current = onSqlChange;
@@ -207,29 +252,65 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       pendingRef.current = null;
     }
 
-    function favoriteCompletion(context: CompletionContext): CompletionResult | null {
-      const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*$/);
-      if (word === null || (word.from === word.to && !context.explicit)) {
+    // Columns, tables and keywords by where the cursor is (see sqlComplete),
+    // after the saved queries whose keyword starts with what was typed.
+    function sqlCompletion(context: CompletionContext): CompletionResult | null {
+      const { state, pos } = context;
+      const dialect = dialectFor(dialectRef.current);
+      const start = pos > COMPLETION_WINDOW ? state.doc.lineAt(pos - COMPLETION_WINDOW).from : 0;
+      const end =
+        state.doc.length - pos > COMPLETION_WINDOW ? state.doc.lineAt(pos + COMPLETION_WINDOW).to : state.doc.length;
+      const found = completeSql(state.sliceDoc(start, end), pos - start, {
+        schema: schemaRef.current,
+        words: wordsOf(dialect),
+        dialect: dialectRef.current,
+        identifierQuotes: dialect.spec.identifierQuotes ?? '"',
+        caseInsensitiveIdentifiers: dialect.spec.caseInsensitiveIdentifiers,
+        explicit: context.explicit,
+      });
+      if (found === null) {
         return null;
       }
-      const typed = word.text.toLowerCase();
-      const options = favoritesRef.current
-        .filter((favorite) => favorite.keyword.toLowerCase().startsWith(typed))
-        .map((favorite) => ({
-          label: favorite.keyword,
-          detail: favorite.name,
-          info: favorite.sql,
-          apply: favorite.sql,
-          type: "keyword",
-        }));
+      const typed = found.typed.toLowerCase();
+      const favorites: Completion[] = found.bare
+        ? favoritesRef.current
+            .filter((favorite) => favorite.keyword.toLowerCase().startsWith(typed))
+            .map((favorite) => ({
+              label: favorite.keyword,
+              detail: favorite.name,
+              info: favorite.sql,
+              apply: favorite.sql,
+              type: "keyword",
+            }))
+        : [];
+      const options = [...favorites, ...found.options];
       if (options.length === 0) {
         return null;
       }
-      return { from: word.from, options };
+      return {
+        from: start + found.from,
+        to: start + found.to,
+        options,
+        // Already matched and ranked; CodeMirror's fuzzy filter would bring
+        // back keywords that merely contain the text.
+        filter: false,
+        getMatch: (completion) => {
+          const at = completion.label.toLowerCase().indexOf(typed);
+          return typed === "" || at < 0 ? [] : [at, at + typed.length];
+        },
+        // Each keystroke ranks the list anew.
+        update: (_current, _from, _to, next) => sqlCompletion(next),
+      };
+    }
+
+    // Schema and saved queries are read when completing, so only a new
+    // dialect needs the language reconfigured.
+    function sqlLanguage(kind: string | undefined): LanguageSupport {
+      const dialect = dialectFor(kind);
+      return new LanguageSupport(dialect.language, dialect.language.data.of({ autocomplete: sqlCompletion }));
     }
 
     function makeState(doc: string): EditorState {
-      const support = sql({ dialect: SQLite, schema: schemaRef.current });
       return EditorState.create({
         doc,
         extensions: [
@@ -253,12 +334,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
             ]),
           ),
           basicSetup,
-          schemaCompartment.of([
-            support,
-            support.language.data.of({
-              autocomplete: (context: CompletionContext) => favoriteCompletion(context),
-            }),
-          ]),
+          languageCompartment.of(sqlLanguage(dialectRef.current)),
           editorTheme,
           syntaxHighlighting(highlightStyle),
           EditorView.lineWrapping,
@@ -337,21 +413,15 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     if (!view) {
       return;
     }
-    const support = sql({ dialect: SQLite, schema });
-    const extension = [
-      support,
-      support.language.data.of({
-        autocomplete: (context: CompletionContext) => favoriteCompletion(context),
-      }),
-    ];
+    const extension = sqlLanguage(dialect);
     for (const [key, state] of statesRef.current) {
       statesRef.current.set(
         key,
-        state.update({ effects: schemaCompartment.reconfigure(extension) }).state,
+        state.update({ effects: languageCompartment.reconfigure(extension) }).state,
       );
     }
-    view.dispatch({ effects: schemaCompartment.reconfigure(extension) });
-  }, [schemaCompartment, schema]);
+    view.dispatch({ effects: languageCompartment.reconfigure(extension) });
+  }, [languageCompartment, dialect]);
 
   useImperativeHandle(
     ref,
