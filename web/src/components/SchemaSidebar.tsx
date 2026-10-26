@@ -60,6 +60,9 @@ interface SchemaSidebarProps {
   onTogglePin(table: string): void;
   // Copies, truncates and drops take every picked table; the rest take one.
   onTableAction(action: TableAction, tables: string[]): void;
+  // The export window with these tables or views checked; columnPick opens
+  // it for one table with its fields to choose.
+  onExport?(names: string[], columnPick?: boolean): void;
   onOpenCreateTable(): void;
   onOpenSql(sql: string, title: string): void;
   onOpenUsers(): void;
@@ -171,6 +174,7 @@ export function SchemaSidebar({
   onOpenDefinition,
   onTogglePin,
   onTableAction,
+  onExport,
   onOpenCreateTable,
   onOpenSql,
   onOpenUsers,
@@ -589,6 +593,9 @@ export function SchemaSidebar({
       return [
         { label: t("새 탭에서 열기"), onSelect: () => tables.forEach((name) => onOpenDataNewTab(name)) },
         ...colorItems(tables),
+        ...(onExport !== undefined
+          ? [{ label: t("내보내기…"), separatorBefore: true, onSelect: () => onExport(tables) }]
+          : []),
         {
           label: t("CREATE 문 복사"),
           separatorBefore: true,
@@ -625,7 +632,13 @@ export function SchemaSidebar({
       { label: t("Laravel 스키마 복사"), onSelect: act("copyLaravel") },
       { label: t("이름 변경…"), separatorBefore: true, onSelect: act("rename") },
       { label: t("테이블 복제…"), onSelect: act("duplicate") },
-      { label: t("데이터 가져오기…"), separatorBefore: true, onSelect: act("import") },
+      ...(onExport !== undefined
+        ? [
+            { label: t("내보내기…"), separatorBefore: true, onSelect: () => onExport([table]) },
+            { label: t("열을 골라 내보내기…"), onSelect: () => onExport([table], true) },
+          ]
+        : []),
+      { label: t("데이터 가져오기…"), separatorBefore: onExport === undefined, onSelect: act("import") },
       { label: t("테이블 비우기 (TRUNCATE)"), onSelect: act("truncate") },
       { label: t("테이블 삭제"), onSelect: act("delete") },
     ];
@@ -965,6 +978,9 @@ export function SchemaSidebar({
                 })();
               },
             },
+            ...(objectMenu.obj === "view" && onExport !== undefined
+              ? [{ label: t("내보내기…"), separatorBefore: true, onSelect: () => onExport([objectMenu.name]) }]
+              : []),
             {
               label: t("DROP 문 템플릿"),
               separatorBefore: true,
@@ -992,6 +1008,14 @@ export function SchemaSidebar({
               ? [{ label: t("데이터베이스 전환…"), onSelect: () => onSwitchDatabase(moreMenu.x, moreMenu.y) }]
               : []),
             { label: t("새 테이블 생성"), separatorBefore: true, onSelect: onOpenCreateTable },
+            ...(onExport !== undefined
+              ? [
+                  {
+                    label: t("테이블 내보내기…"),
+                    onSelect: () => onExport([...picked.names]),
+                  },
+                ]
+              : []),
             { label: t("테이블 개요"), onSelect: onOpenOverview },
             { label: t("서버 정보"), onSelect: onOpenServer },
             { label: t("사용자 관리"), onSelect: onOpenUsers },
