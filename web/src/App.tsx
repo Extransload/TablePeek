@@ -863,7 +863,8 @@ export default function App() {
   runningTabRef.current = runningTabId;
   connectOpenRef.current = connectOpen;
   fsOpenRef.current = fsOpen;
-  detailPanelOpenRef.current = activeKey !== null && detailPanels[activeKey] === true;
+  // The side and bottom panels start open; closing one is what's remembered.
+  detailPanelOpenRef.current = activeKey !== null && detailPanels[activeKey] !== false;
   cellQuickLookRef.current = cellQuickLook;
   menuRef.current = menu;
   exportTargetRef.current = exportTarget;
@@ -4244,7 +4245,7 @@ export default function App() {
     storeWidth(DETAIL_WIDTH_KEY, width);
   }
 
-  const consoleOpen = activeKey !== null && consolePanels[activeKey] === true;
+  const consoleOpen = activeKey !== null && consolePanels[activeKey] !== false;
 
   function setConsoleOpen(open: boolean): void {
     const conn = activeConnIdRef.current;
@@ -4721,7 +4722,7 @@ export default function App() {
     (note, index, all): note is string =>
       note !== null && all.indexOf(note) === index && !(chipsShown && note === tabNote),
   );
-  const detailPanelOpen = activeKey !== null && detailPanels[activeKey] === true;
+  const detailPanelOpen = activeKey !== null && detailPanels[activeKey] !== false;
   // TablePlus's Data | Structure | Index switch, which leads each view's footer.
   const tableViewTabs =
     activeDataTab !== null ? (

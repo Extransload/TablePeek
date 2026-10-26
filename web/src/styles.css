@@ -369,16 +369,19 @@ select {
   display: flex;
 }
 
+/* A taller console pushes the panes above up, as in TablePlus: the results
+   give way first, then the editor down to its bar; nothing draws over it. */
 .workbench-main {
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .editor-pane {
-  flex: 0 0 35%;
+  flex: 0 1 35%;
   min-height: 90px;
   overflow: hidden;
   background: var(--bg);
@@ -406,7 +409,8 @@ select {
 
 .result-pane {
   flex: 1;
-  min-height: 0;
+  /* Room for its bar, which stays in view however tall the console gets. */
+  min-height: 35px;
   display: flex;
   flex-direction: column;
 }
@@ -3070,9 +3074,10 @@ textarea:focus-visible {
 }
 
 .h-splitter {
-  height: 7px;
+  height: 5px;
   background: transparent;
   border: 0;
+  border-top: 1px solid var(--line-soft);
   position: relative;
 }
 
@@ -3098,13 +3103,11 @@ textarea:focus-visible {
   background: var(--accent);
 }
 
-.editor-pane {
-  padding: 8px 10px 2px;
+.h-splitter:not(:hover)::after {
+  display: none;
 }
 
 .sql-editor .cm-editor {
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-md);
   overflow: hidden;
 }
 
@@ -7951,7 +7954,8 @@ button.field-box-copy:hover {
   flex: none;
   align-items: center;
   gap: 6px;
-  padding: 6px 0 2px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .editor-bar button {
