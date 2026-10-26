@@ -25,6 +25,7 @@ mod postgres;
 mod source_cache;
 pub mod sql_log;
 mod sql_parse;
+pub use sql_parse::is_read_only;
 
 use sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 

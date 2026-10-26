@@ -237,6 +237,37 @@ fn mssql_tx_control(sql: &str) -> Option<TxControl> {
     found
 }
 
+/// A single statement that only reads: what the MCP server lets an AI run,
+/// and what the page may still run while a job's transaction is open.
+/// Conservative: anything it can't tell (a `;`, a write keyword anywhere)
+/// counts as a write.
+pub fn is_read_only(sql: &str) -> bool {
+    let trimmed = sql.trim();
+    if trimmed.contains(';') {
+        return false;
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    let first = upper.split_whitespace().next().unwrap_or("");
+    if !READ_ONLY_PREFIXES.contains(&first) {
+        return false;
+    }
+    !FORBIDDEN_WORDS
+        .iter()
+        .any(|word| contains_word(&upper, word))
+}
+
+const READ_ONLY_PREFIXES: [&str; 6] = ["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"];
+const FORBIDDEN_WORDS: [&str; 7] = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "DROP", "ALTER"];
+
+fn contains_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(index, _)| {
+        let before = text[..index].chars().next_back();
+        let after = text[index + word.len()..].chars().next();
+        !before.is_some_and(|value| value.is_alphanumeric() || value == '_')
+            && !after.is_some_and(|value| value.is_alphanumeric() || value == '_')
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
