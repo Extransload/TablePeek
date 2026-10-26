@@ -43,15 +43,17 @@ export function importLiteral(value: unknown, dialect: string): string {
     return "NULL";
   }
   if (value instanceof JsonNumber) {
-    // Written as the file has it. SQLite would round anything but a 64-bit
+    // The file's digits, without an exponent (which MySQL and SQL Server
+    // would read as a float). SQLite would round anything but a 64-bit
     // integer to a REAL and SQL Server refuses numerics past 38 digits, so
     // there the digits go in as text, which the column converts.
-    const integer = /^-?\d+$/.test(value.text);
-    const digits = value.text.replace(/^-/, "").split(/[eE]/)[0].replace(".", "").replace(/^0+/, "").length;
+    const text = value.plain;
+    const integer = /^-?\d+$/.test(text);
+    const digits = text.replace(/^-/, "").split(/[eE]/)[0].replace(".", "").replace(/^0+/, "").length;
     const quoted =
-      (dialect === "sqlite" && !(integer && BigInt(value.text) >= -(2n ** 63n) && BigInt(value.text) < 2n ** 63n)) ||
+      (dialect === "sqlite" && !(integer && BigInt(text) >= -(2n ** 63n) && BigInt(text) < 2n ** 63n)) ||
       (dialect === "mssql" && digits > 38);
-    return quoted ? stringLiteral(value.text, dialect) : value.text;
+    return quoted ? stringLiteral(text, dialect) : text;
   }
   if (typeof value === "boolean") {
     if (dialect === "mssql") {

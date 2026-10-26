@@ -66,8 +66,9 @@ export interface DelimitedRows {
 // RFC 4180 with the delimiter and quote of the caller's choosing: a quote
 // opens a quoted field only at the field's start, a doubled quote inside one
 // is a quote, and line breaks inside one are data. Blank lines are no rows,
-// unless every row has one field: there an empty line is an empty value (a
-// one-column export writes NULL so), and only the end of the last line ends it.
+// unless every row has one field: there an empty line between rows is an
+// empty value (a one-column export writes NULL so), while the blank lines
+// at the very end of the file are only its end.
 export function parseDelimited(text: string, options: DelimitedOptions): DelimitedRows {
   const delimiter = options.delimiter === "" ? "," : options.delimiter;
   const quote = options.quote.slice(0, 1);
@@ -147,7 +148,11 @@ export function parseDelimited(text: string, options: DelimitedOptions): Delimit
     return { rows: [], lines: [] };
   }
   if (rows.every((entry) => entry.length <= 1)) {
-    return { rows, lines };
+    let end = rows.length;
+    while (end > 0 && blank[end - 1]) {
+      end -= 1;
+    }
+    return { rows: rows.slice(0, end), lines: lines.slice(0, end) };
   }
   const kept = rows.map((_, index) => index).filter((index) => !blank[index]);
   return { rows: kept.map((index) => rows[index]), lines: kept.map((index) => lines[index]) };
@@ -221,6 +226,33 @@ export class JsonNumber {
     const raw = (JSON as unknown as { rawJSON?: (text: string) => unknown }).rawJSON;
     return raw === undefined ? Number(this.text) : raw(this.text);
   }
+
+  // The same digits without an exponent (1.25e3 is 1250): MySQL and SQL
+  // Server read an exponent as a float, but plain digits as an exact
+  // decimal. Kept as written when that would take over 1,000 digits.
+  get plain(): string {
+    const match = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(this.text);
+    if (match === null) {
+      return this.text;
+    }
+    const [, sign, whole, fraction = "", exponent] = match;
+    const digits = whole + fraction;
+    // Where the point falls among the digits once the exponent moves it.
+    const point = whole.length + Number(exponent);
+    if (Math.abs(point) > 1000 || digits.length > 1000) {
+      return this.text;
+    }
+    const head = point <= 0 ? "0" : digits.slice(0, point).padEnd(point, "0");
+    const tail = point <= 0 ? "0".repeat(-point) + digits : digits.slice(point);
+    const integer = head.replace(/^0+(?=\d)/, "");
+    const decimals = tail.replace(/0+$/, "");
+    return `${sign}${integer}${decimals === "" ? "" : `.${decimals}`}`;
+  }
+}
+
+// An object read from the file: not an array, and not a number kept as its text.
+function isRecord(item: unknown): item is Record<string, unknown> {
+  return item !== null && typeof item === "object" && !Array.isArray(item) && !(item instanceof JsonNumber);
 }
 
 // Whether Number(source) would change a number literal's value.
@@ -435,8 +467,6 @@ function fromRecords(items: unknown[], at: number[], unit: ParsedImport["unit"])
       unit,
     };
   }
-  const isRecord = (item: unknown): item is Record<string, unknown> =>
-    item !== null && typeof item === "object" && !Array.isArray(item);
   if (!items.some(isRecord)) {
     // A list of plain values is one column of them.
     return { columns: ["value"], rows: items.map((item) => [scalar(item)]), at, unit };
@@ -498,7 +528,7 @@ export function parseJsonImport(text: string): ParsedImport {
       "record",
     );
   }
-  if (data !== null && typeof data === "object") {
+  if (isRecord(data)) {
     return fromRecords([data], [1], "record");
   }
   return { columns: [], rows: [], at: [], unit: "record" };

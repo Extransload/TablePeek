@@ -759,18 +759,88 @@ export function dropIfExistsSql(kind: string, name: string, object: "table" | "v
   return `DROP ${keyword} IF EXISTS ${quoted}`;
 }
 
+// Bare words SQLite reads in a DEFAULT as values, not as strings.
+const SQLITE_DEFAULT_WORDS = new Set(["null", "true", "false", "current_time", "current_date", "current_timestamp"]);
+
+// The text of a default spelled as one name: a bare word, "…" or `…` with
+// their quotes doubled inside, or […].
+function sqliteDefaultName(expr: string): string | null {
+  const quoted = /^"((?:[^"]|"")*)"$/.exec(expr) ?? /^`((?:[^`]|``)*)`$/.exec(expr);
+  if (quoted !== null) {
+    const quote = expr[0];
+    return quoted[1].split(quote + quote).join(quote);
+  }
+  const bracketed = /^\[([^\]]*)\]$/.exec(expr);
+  if (bracketed !== null) {
+    return bracketed[1];
+  }
+  return /^[A-Za-z_\u0080-\uffff][\w$\u0080-\uffff]*$/.test(expr) && !SQLITE_DEFAULT_WORDS.has(expr.toLowerCase())
+    ? expr
+    : null;
+}
+
+// Whether an expression holds a bind parameter (?, ?1, :x, @x, $x) outside
+// its strings, quoted names and comments. Unclosed ones count.
+function hasBindParameter(sql: string): boolean {
+  const word = /[\w$\u0080-\uffff]/;
+  for (let i = 0; i < sql.length; i += 1) {
+    const ch = sql[i];
+    const close = ch === "'" || ch === '"' || ch === "`" ? ch : ch === "[" ? "]" : null;
+    if (close !== null) {
+      // A doubled quote is two strings side by side.
+      const end = sql.indexOf(close, i + 1);
+      if (end < 0) {
+        return true;
+      }
+      i = end;
+      continue;
+    }
+    if (sql.startsWith("--", i)) {
+      const end = sql.indexOf("\n", i);
+      if (end < 0) {
+        return false;
+      }
+      i = end;
+      continue;
+    }
+    if (sql.startsWith("/*", i)) {
+      const end = sql.indexOf("*/", i + 2);
+      if (end < 0) {
+        return true;
+      }
+      i = end + 1;
+      continue;
+    }
+    const next = sql[i + 1] ?? "";
+    const startsName = word.test(next) && next !== "$";
+    const afterWord = i > 0 && word.test(sql[i - 1]);
+    if (ch === "?" || ((ch === ":" || ch === "@" || ch === "$") && startsName && !afterWord)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // SQLite has no `SET col = DEFAULT`: the column's declared default stands
-// in, as the engine writes it when it applies one, and NULL without one. A
-// default spelled "x" is the string x in CREATE TABLE but would name a
-// column in an UPDATE, so it is written as a string.
-export function sqliteDefaultSql(declared: string | null): string {
+// in, as the engine writes it when it applies one (crates/tablepeek-engine,
+// sqlite_default_sql), and NULL without one. A default spelled as one name
+// (DEFAULT active, "x", [x], `x`) is a string in CREATE TABLE but would name
+// a column in an UPDATE, so it is written as the string. null: the default
+// holds a bind parameter, which the engine refuses too.
+export function sqliteDefaultSql(declared: string | null): string | null {
   if (declared === null) {
     return "NULL";
   }
-  if (/^"(?:[^"]|"")*"$/.test(declared)) {
-    return `'${declared.slice(1, -1).replace(/""/g, '"').replace(/'/g, "''")}'`;
+  const name = sqliteDefaultName(declared.trim());
+  if (name !== null) {
+    return `'${name.replace(/'/g, "''")}'`;
   }
-  return `(${declared})`;
+  if (hasBindParameter(declared)) {
+    return null;
+  }
+  // pragma_table_info drops the outer parentheses but keeps a trailing
+  // `-- comment`, which would swallow the closing one: it ends a line here.
+  return declared.includes("--") ? `(${declared}\n)` : `(${declared})`;
 }
 
 export function truncateTableSql(kind: string, table: string): string {
