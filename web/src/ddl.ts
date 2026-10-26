@@ -694,6 +694,18 @@ export function dropTableSql(kind: string, table: string): string {
   return `DROP TABLE ${quoteIdent(kind, table)}`;
 }
 
+// What an export's "Drop" writes before CREATE, so the file runs again on a
+// database that already has the object.
+export function dropIfExistsSql(kind: string, name: string, object: "table" | "view" = "table"): string {
+  const keyword = object === "view" ? "VIEW" : "TABLE";
+  const quoted = quoteIdent(kind, name);
+  if (kind === "mssql") {
+    // DROP … IF EXISTS needs SQL Server 2016; OBJECT_ID works on older servers too.
+    return `IF OBJECT_ID(N'${quoted.replace(/'/g, "''")}', N'${object === "view" ? "V" : "U"}') IS NOT NULL DROP ${keyword} ${quoted}`;
+  }
+  return `DROP ${keyword} IF EXISTS ${quoted}`;
+}
+
 export function truncateTableSql(kind: string, table: string): string {
   if (kind === "sqlite") {
     return `DELETE FROM ${quoteIdent(kind, table)}`;

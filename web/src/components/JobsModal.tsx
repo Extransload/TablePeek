@@ -1,11 +1,19 @@
 import { useEffect, useState } from "react";
 import { t } from "../i18n";
-import { clearFinishedJobs, subscribeJobs, type Job } from "../jobs";
+import { cancelJob, clearFinishedJobs, subscribeJobs, type Job } from "../jobs";
 import { ErrorNotice } from "./ErrorNotice";
+import { StopIcon } from "./icons";
 
 interface JobsModalProps {
   onClose(): void;
 }
+
+const STATUS_LABEL: Record<Job["status"], string> = {
+  running: "진행 중",
+  done: "완료",
+  error: "실패",
+  cancelled: "중지됨",
+};
 
 function formatWhen(time: number): string {
   const date = new Date(time);
@@ -59,17 +67,24 @@ export function JobsModal({ onClose }: JobsModalProps) {
                           : "job-status"
                     }
                   >
-                    {job.status === "running"
-                      ? t("진행 중")
-                      : job.status === "done"
-                        ? t("완료")
-                        : t("실패")}
+                    {t(STATUS_LABEL[job.status])}
                   </span>
                   <span className="job-time dim">{formatWhen(job.startedAt)}</span>
+                  {job.status === "running" && job.cancellable ? (
+                    <button
+                      type="button"
+                      className="icon-button job-stop"
+                      title={t("중지")}
+                      aria-label={t("중지")}
+                      onClick={() => cancelJob(job.id)}
+                    >
+                      <StopIcon size={10} />
+                    </button>
+                  ) : null}
                 </div>
                 <div className="job-bar">
                   <div
-                    className={`job-bar-fill${job.status === "error" ? " error" : ""}`}
+                    className={`job-bar-fill${job.status === "error" ? " error" : job.status === "cancelled" ? " cancelled" : ""}`}
                     style={{
                       width: `${job.total > 0 ? Math.min(100, Math.round((job.done / job.total) * 100)) : job.status === "running" ? 5 : 100}%`,
                     }}

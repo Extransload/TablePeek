@@ -9018,3 +9018,215 @@ button.result-set.failed .result-set-status {
   line-height: 1.5;
   white-space: pre;
 }
+
+/* ── Export window: format tabs, the items or result scope, the format's
+   options and the file name, as TablePlus lays them out ─────────────── */
+
+.export-window {
+  width: min(780px, 94vw);
+  max-height: 88vh;
+}
+
+.export-window .section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.export-format-tabs {
+  display: flex;
+  justify-content: center;
+  padding: 10px 12px 0;
+}
+
+.export-format-tabs .segmented button {
+  min-width: 68px;
+  height: 24px;
+  justify-content: center;
+  text-align: center;
+}
+
+.export-panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.export-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+}
+
+.export-pick {
+  max-height: 52vh;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.export-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--faint);
+}
+
+.export-search:focus-within {
+  border-color: var(--accent);
+}
+
+.export-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.export-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.export-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.export-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+}
+
+.export-items.sql .export-item {
+  grid-template-columns: minmax(0, 1fr) repeat(3, 48px);
+}
+
+.export-item.head {
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.export-item .check-row {
+  min-width: 0;
+}
+
+.export-item:not(.head) .check-row {
+  padding-left: 16px;
+}
+
+.export-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The Structure / Drop / Data columns: headers centred over their boxes. */
+.export-flag {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  color: var(--muted);
+  font-size: calc(10px * var(--ui-scale, 1));
+  font-weight: 600;
+  text-align: center;
+}
+
+.export-flag input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.export-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.export-options-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+
+.export-checks {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-file {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 10px;
+}
+
+.export-file-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.export-file-name input {
+  flex: 1;
+}
+
+.export-file-ext {
+  color: var(--faint);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.export-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.job-stop {
+  flex: none;
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.job-bar-fill.cancelled {
+  background: var(--faint);
+}
+
+@media (max-width: 640px) {
+  .export-panes {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: auto;
+  }
+}

@@ -31,7 +31,7 @@ import { ConnectionPickerModal, type PickTarget } from "./components/ConnectionP
 import { DumpModal } from "./components/DumpModal";
 import { EmptyWorkspace } from "./components/EmptyWorkspace";
 import { ErrorNotice } from "./components/ErrorNotice";
-import { ExportModal } from "./components/ExportModal";
+import { ExportModal, type ExportTarget } from "./components/ExportModal";
 import { FilterBar } from "./components/FilterBar";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
@@ -137,7 +137,6 @@ import {
   type ConnSummary,
   type EngineMeta,
   type Favorite,
-  type GridResult,
   type LiveConn,
   type QueryOutcome,
   type MissingSecret,
@@ -293,13 +292,6 @@ interface DbMenuState {
   x: number;
   y: number;
   databases: string[];
-}
-
-interface ExportTarget {
-  conn: string;
-  title: string;
-  result: GridResult;
-  dataTab: DataTab | null;
 }
 
 interface MenuState {
@@ -3468,6 +3460,12 @@ export default function App() {
       { id: "open-structure", label: t("테이블 구조 보기"), sourceId: "structure" },
       { id: "server-info", label: t("서버 정보"), run: openServerTab },
       { id: "export", label: t("결과 내보내기"), disabled: result === null, run: openExport },
+      {
+        id: "export-tables",
+        label: t("테이블 내보내기"),
+        disabled: meta === null,
+        run: () => openTableExport(activeDataTab !== null ? [activeDataTab.table] : []),
+      },
       { id: "refresh-meta", label: t("새로고침"), hint: shortcutHint(settings.keymap, "refresh"), run: refreshView },
       {
         id: "alert-mode",
@@ -3846,12 +3844,34 @@ export default function App() {
     if (!result || conn === null) {
       return;
     }
+    // A multi-statement run offers every result that has rows to write.
+    const chips = activeTab !== null ? (resultSets[activeTab.id] ?? null) : null;
+    const results =
+      chips !== null && chips.conn === conn
+        ? chips.entries.flatMap((entry) =>
+            entry.outcome.kind === "ok" && entry.outcome.result.meta.columns.length > 0
+              ? [{ label: entry.label, result: entry.outcome.result }]
+              : [],
+          )
+        : [];
     setExportTarget({
+      mode: "results",
       conn,
       title: activeTab ? activeTab.title : "export",
       result,
       dataTab: activeDataTab,
+      results: results.length > 1 ? results : null,
     });
+  }
+
+  // TablePlus's Export Tables window: the picked tables and views checked, or
+  // one table with its fields to choose.
+  function openTableExport(picked: string[], columnPick = false): void {
+    const conn = activeConnIdRef.current;
+    if (conn === null || meta === null) {
+      return;
+    }
+    setExportTarget({ mode: "tables", conn, picked, columnPick });
   }
 
   function saveSidebarWidth(width: number | null): void {
@@ -4716,6 +4736,7 @@ export default function App() {
                   onOpenDefinition={openDefinitionTab}
                   onTogglePin={togglePin}
                   onTableAction={(action, tables) => void tableAction(action, tables)}
+                  onExport={openTableExport}
                   onOpenCreateTable={() => setCreateTableOpen(true)}
                   onImport={(format) => openImport(format, null)}
                   onOpenSql={openSqlTab}
@@ -5360,6 +5381,11 @@ export default function App() {
               onSelect: openExport,
             },
             {
+              label: t("테이블 내보내기…"),
+              disabled: meta === null,
+              onSelect: () => openTableExport(activeDataTab !== null ? [activeDataTab.table] : []),
+            },
+            {
               label: t("가져오기"),
               disabled: meta === null,
               submenu: [
@@ -5460,16 +5486,8 @@ export default function App() {
           onClose={() => setDumpPicker(null)}
         />
       )}
-      {exportTarget !== null && (
-        <ExportModal
-          conn={exportTarget.conn}
-          title={exportTarget.title}
-          result={exportTarget.result}
-          dataTab={exportTarget.dataTab}
-          loading={exportTarget.dataTab !== null && runningTabId === exportTarget.dataTab.id}
-          kind={meta?.kind ?? "postgres"}
-          onClose={() => setExportTarget(null)}
-        />
+      {exportTarget !== null && meta !== null && (
+        <ExportModal target={exportTarget} meta={meta} onClose={() => setExportTarget(null)} />
       )}
       {importTarget !== null && activeConnId !== null && meta !== null && (
         <ImportModal
