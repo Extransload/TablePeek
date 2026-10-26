@@ -139,6 +139,7 @@ import {
   type ConnSummary,
   type EngineMeta,
   type Favorite,
+  type GridResult,
   type LiveConn,
   type QueryOutcome,
   type MissingSecret,
