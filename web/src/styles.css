@@ -8923,3 +8923,8 @@ button.result-set.failed .result-set-status {
   animation: none;
 }
 
+
+/* Grid polish: a Raw SQL condition reads as code. */
+.filter-value.raw {
+  font-family: var(--mono);
+}

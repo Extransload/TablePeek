@@ -1198,6 +1198,13 @@ const EN: Record<string, string> = {
   "나눔스퀘어": "NanumSquare",
   "맑은 고딕": "Malgun Gothic",
   "나눔고딕코딩": "Nanum Gothic Coding",
+  // Grid polish
+  "WHERE 조건 (SQL)": "WHERE condition (SQL)",
+  "다음을 포함": "Contains",
+  "다음을 포함하지 않음": "Not contains",
+  "다음으로 시작": "Has prefix",
+  "다음으로 끝남": "Has suffix",
+  "SQL 직접 입력": "Raw SQL",
 };
 
 let current: Language = readLanguage();
