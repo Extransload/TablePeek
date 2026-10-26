@@ -1,5 +1,5 @@
-import type { WindowedRowSource } from "./grid/windowSource";
-import { escapeSqlIdentifier, quoteIdentifier, quoteLiteral } from "./dataQuery";
+import type { ValueExpr, WindowedRowSource } from "./grid/windowSource";
+import { booleanLiteral, escapeSqlIdentifier, quoteIdentifier, quoteLiteral, stringLiteral } from "./dataQuery";
 
 export { escapeSqlIdentifier, quoteIdentifier, quoteLiteral };
 
@@ -156,7 +156,38 @@ export function jsonEnd(empty: boolean): string {
   return empty ? "]" : "\n]";
 }
 
+// A staged DEFAULT or NOW() on its way into SQL: the keyword, or the
+// dialect's current time, where the grid shows a label. `sql` stands in for
+// either where a dialect needs its own (SQLite's UPDATE has no DEFAULT).
+export class SqlExpression {
+  readonly expr: ValueExpr;
+  readonly sql: string | null;
+
+  constructor(expr: ValueExpr, sql: string | null = null) {
+    this.expr = expr;
+    this.sql = sql;
+  }
+}
+
+// NOW() as each server writes it when it applies one.
+export function nowSql(kind: string): string {
+  if (kind === "postgres" || kind === "cockroach") {
+    return "now()";
+  }
+  if (kind === "mysql" || kind === "mariadb") {
+    return "NOW()";
+  }
+  return kind === "mssql" ? "GETDATE()" : "CURRENT_TIMESTAMP";
+}
+
+function isDefault(value: unknown): boolean {
+  return value instanceof SqlExpression && value.expr === "default" && value.sql === null;
+}
+
 export function sqlLiteral(value: unknown, kind = "postgres"): string {
+  if (value instanceof SqlExpression) {
+    return value.sql ?? (value.expr === "now" ? nowSql(kind) : "DEFAULT");
+  }
   if (value === null || value === undefined) {
     return "NULL";
   }
@@ -164,33 +195,23 @@ export function sqlLiteral(value: unknown, kind = "postgres"): string {
     return Number.isFinite(value) ? String(value) : quoteLiteral(String(value));
   }
   if (typeof value === "boolean") {
-    // SQL Server's bit takes 1 and 0; it has no TRUE.
-    if (kind === "mssql") {
-      return value ? "1" : "0";
-    }
-    return value ? "TRUE" : "FALSE";
+    return booleanLiteral(value, kind);
   }
   if (typeof value === "bigint") {
     return value.toString();
   }
-  const text = typeof value === "string" ? value : cellText(value);
-  if (kind === "mysql" || kind === "mariadb") {
-    // MySQL reads a backslash in a string as an escape unless told otherwise.
-    return quoteLiteral(text.replace(/\\/g, "\\\\"));
-  }
-  if (kind === "mssql") {
-    // Without N the text goes through the database's code page and Korean is lost.
-    return `N${quoteLiteral(text)}`;
-  }
-  return quoteLiteral(text);
+  return stringLiteral(typeof value === "string" ? value : cellText(value), kind);
 }
 
-function rowValues(row: unknown[], columnCount: number, kind: string): string[] {
-  const values = new Array<string>(columnCount);
+// The columns a row leaves out: those at DEFAULT, as applying a new row does.
+function omitted(row: unknown[], columnCount: number): string {
+  let key = "";
   for (let c = 0; c < columnCount; c += 1) {
-    values[c] = sqlLiteral(row[c], kind);
+    if (isDefault(row[c])) {
+      key += `${c},`;
+    }
   }
-  return values;
+  return key;
 }
 
 export function toSqlInserts(
@@ -202,15 +223,31 @@ export function toSqlInserts(
   if (columns.length === 0) {
     return "";
   }
-  const head = `INSERT INTO ${quoteIdentifier(table, kind)} (${columns.map((column) => escapeSqlIdentifier(column, kind)).join(", ")}) VALUES`;
+  const target = quoteIdentifier(table, kind);
   const chunks: string[] = [];
-  for (let start = 0; start < rows.length; start += INSERT_CHUNK) {
-    const end = Math.min(rows.length, start + INSERT_CHUNK);
-    const lines = new Array<string>(end - start);
-    for (let r = start; r < end; r += 1) {
-      lines[r - start] = `  (${rowValues(rows[r], columns.length, kind).join(", ")})`;
+  // Rows leaving out the same columns share a statement, up to INSERT_CHUNK.
+  for (let start = 0; start < rows.length; ) {
+    const key = omitted(rows[start], columns.length);
+    let end = start + 1;
+    while (end < rows.length && end - start < INSERT_CHUNK && omitted(rows[end], columns.length) === key) {
+      end += 1;
     }
-    chunks.push(`${head}\n${lines.join(",\n")};`);
+    const kept = columns.map((_, c) => c).filter((c) => !isDefault(rows[start][c]));
+    if (kept.length === 0) {
+      // Every column at its default; MySQL spells it its own way.
+      const statement = kind === "mysql" || kind === "mariadb" ? `INSERT INTO ${target} () VALUES ();` : `INSERT INTO ${target} DEFAULT VALUES;`;
+      for (let r = start; r < end; r += 1) {
+        chunks.push(statement);
+      }
+    } else {
+      const head = `INSERT INTO ${target} (${kept.map((c) => escapeSqlIdentifier(columns[c], kind)).join(", ")}) VALUES`;
+      const lines = new Array<string>(end - start);
+      for (let r = start; r < end; r += 1) {
+        lines[r - start] = `  (${kept.map((c) => sqlLiteral(rows[r][c], kind)).join(", ")})`;
+      }
+      chunks.push(`${head}\n${lines.join(",\n")};`);
+    }
+    start = end;
   }
   return chunks.join("\n");
 }
