@@ -3743,6 +3743,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mysql_a_text_key_in_another_collation_is_found() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        // The connection and the key column collate differently, as with a
+        // MySQL 8 table (utf8mb4_0900_ai_ci) read over utf8mb4_general_ci.
+        for sql in [
+            "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci",
+            "DROP TABLE IF EXISTS tp_coll",
+            "CREATE TABLE tp_coll (code VARCHAR(20) COLLATE utf8mb4_0900_ai_ci NOT NULL, \
+             note VARCHAR(20), PRIMARY KEY (code))",
+            r"INSERT INTO tp_coll VALUES ('k1', 'a'), ('it''s \\ ok', 'b')",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let key = |code: &str| {
+            vec![PkValue {
+                column: "code".into(),
+                value: Value::from(code),
+            }]
+        };
+        let edit = |code: &str, note: &str| EditTarget {
+            table: "tp_coll".into(),
+            pk: key(code),
+            column: "note".into(),
+            value: Some(note.into()),
+            expr: None,
+        };
+        assert_eq!(engine.edit(&edit("k1", "edited")).await.unwrap(), 1);
+        assert_eq!(engine.edit(&edit(r"it's \ ok", "quoted")).await.unwrap(), 1);
+        let notes = engine
+            .query("SELECT note FROM tp_coll ORDER BY code", 10)
+            .await
+            .unwrap();
+        assert_eq!(notes.cell_string(0, 0).as_deref(), Some("quoted"));
+        assert_eq!(notes.cell_string(1, 0).as_deref(), Some("edited"));
+        assert_eq!(engine.delete_row("tp_coll", &key("k1")).await.unwrap(), 1);
+
+        // With NO_BACKSLASH_ESCAPES a backslash is an ordinary character.
+        for sql in [
+            "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')",
+            r"INSERT INTO tp_coll VALUES ('c:\x', 'c')",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        assert_eq!(engine.edit(&edit(r"c:\x", "plain")).await.unwrap(), 1);
+        assert_eq!(
+            engine.delete_row("tp_coll", &key(r"c:\x")).await.unwrap(),
+            1
+        );
+        assert_eq!(
+            engine
+                .delete_row("tp_coll", &key(r"it's \ ok"))
+                .await
+                .unwrap(),
+            1
+        );
+        engine.execute("DROP TABLE tp_coll", 1).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn mysql_editor_transactions_and_ddl_settle_history() {
         let Some(config) = mysql_config() else {
             return;

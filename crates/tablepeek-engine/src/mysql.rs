@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use futures_util::StreamExt;
-use mysql_async::consts::{ColumnFlags, ColumnType};
+use mysql_async::consts::{ColumnFlags, ColumnType, StatusFlags};
 use mysql_async::prelude::{FromRow, Queryable};
 use mysql_async::{
     ClientIdentity, Column, Conn, DriverError, Error as MyError, Opts, OptsBuilder, QueryResult,
@@ -108,6 +108,16 @@ impl MyConn<'_> {
     fn shown(sql: &str, params: &[MyValue]) -> String {
         let values: Vec<LogParam> = params.iter().map(log_param).collect();
         inline_params(sql, &values, Dialect::MySql)
+    }
+
+    /// Whether the session reads a backslash in a string as an ordinary
+    /// character, as the server's last reply says: what
+    /// mysql_real_escape_string goes by.
+    fn no_backslash_escapes(&self) -> bool {
+        self.conn.last_ok_packet().is_some_and(|ok| {
+            ok.status_flags()
+                .contains(StatusFlags::SERVER_STATUS_NO_BACKSLASH_ESCAPES)
+        })
     }
 
     async fn query_iter<'q>(
@@ -725,7 +735,7 @@ pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64,
         quote_ident(&target.column),
         value_sql(target.expr, cast)
     );
-    let mut params: Vec<MyValue> = Vec::with_capacity(target.pk.len() + 1);
+    let mut params: Vec<MyValue> = Vec::with_capacity(1);
     if target.expr.is_none() {
         params.push(match &target.value {
             Some(text) => MyValue::from(text.clone()),
@@ -736,14 +746,13 @@ pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64,
         if index > 0 {
             sql.push_str(" AND ");
         }
-        let (pk_data_type, pk_column_type) =
-            column_type_of(&mut conn, &schema, &table, &pk.column).await?;
-        let pk_cast = cast_type(&pk_data_type, &pk_column_type);
-        sql.push_str(&format!(
-            "{} <=> CAST(? AS {pk_cast})",
-            quote_ident(&pk.column)
+        let (pk_data_type, _) = column_type_of(&mut conn, &schema, &table, &pk.column).await?;
+        sql.push_str(&key_term(
+            &pk.column,
+            &pk_data_type,
+            &pk.value,
+            conn.no_backslash_escapes(),
         ));
-        params.push(pk_value(&pk.value));
     }
 
     let result = conn.change(&sql, params, inner.in_tx()).await;
@@ -817,21 +826,20 @@ pub(crate) async fn delete_row(
     check_key(inner, &mut conn, &schema, &table_name, pk).await?;
     let table_ref = qualified(&schema, &table_name);
     let mut sql = format!("DELETE FROM {table_ref} WHERE ");
-    let mut params: Vec<MyValue> = Vec::with_capacity(pk.len());
     for (index, condition) in pk.iter().enumerate() {
         if index > 0 {
             sql.push_str(" AND ");
         }
-        let (data_type, column_type) =
+        let (data_type, _) =
             column_type_of(&mut conn, &schema, &table_name, &condition.column).await?;
-        let cast = cast_type(&data_type, &column_type);
-        sql.push_str(&format!(
-            "{} <=> CAST(? AS {cast})",
-            quote_ident(&condition.column)
+        sql.push_str(&key_term(
+            &condition.column,
+            &data_type,
+            &condition.value,
+            conn.no_backslash_escapes(),
         ));
-        params.push(pk_value(&condition.value));
     }
-    let result = conn.change(&sql, params, inner.in_tx()).await;
+    let result = conn.change(&sql, Vec::new(), inner.in_tx()).await;
     if let Err(err) = &result {
         after_failed_change(inner, &mut conn, err).await;
     }
@@ -1498,22 +1506,54 @@ fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
-fn pk_value(value: &Value) -> MyValue {
-    match value {
-        Value::Null => MyValue::NULL,
-        Value::Bool(flag) => MyValue::Int(i64::from(*flag)),
-        Value::Number(number) => {
-            if let Some(integer) = number.as_i64() {
-                MyValue::Int(integer)
-            } else if let Some(integer) = number.as_u64() {
-                MyValue::UInt(integer)
-            } else {
-                MyValue::Double(number.as_f64().unwrap_or_default())
-            }
+/// One key column's WHERE term, written as TablePlus writes it: the key as a
+/// literal (`= 'k1'`, a bare number, `X'…'`, `IS NULL`), not a cast
+/// parameter. `CAST(? AS CHAR)` takes the connection's collation as firmly as
+/// the column holds its own, and MySQL refuses to compare two strings whose
+/// collations tie like that (error 1267); a literal gives way to the
+/// column's. A BIT key is the number `bit_json` showed it as.
+fn key_term(column: &str, data_type: &str, value: &Value, no_backslash_escapes: bool) -> String {
+    let name = quote_ident(column);
+    let text = match value {
+        Value::Null => return format!("{name} IS NULL"),
+        Value::Bool(flag) => return format!("{name} = {}", u8::from(*flag)),
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    match data_type.to_lowercase().as_str() {
+        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "decimal"
+        | "numeric" | "float" | "double" | "real" | "year" | "bit"
+            if is_number_literal(&text) =>
+        {
+            format!("{name} = {text}")
         }
-        Value::String(text) => MyValue::from(text.clone()),
-        other => MyValue::from(other.to_string()),
+        "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" | "geometry" => {
+            let hex: String = text.bytes().map(|byte| format!("{byte:02X}")).collect();
+            format!("{name} = X'{hex}'")
+        }
+        _ => format!(
+            "{name} = {}",
+            MyValue::from(text).as_sql(no_backslash_escapes)
+        ),
     }
+}
+
+/// A key a numeric column can take bare: a sign, digits, an optional
+/// fraction and exponent, and nothing that could end the literal early.
+fn is_number_literal(text: &str) -> bool {
+    let body = text.strip_prefix('-').unwrap_or(text);
+    let (mantissa, exponent) = match body.find(['e', 'E']) {
+        Some(at) => (&body[..at], Some(&body[at + 1..])),
+        None => (body, None),
+    };
+    let (whole, fraction) = match mantissa.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (mantissa, None),
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let exponent_ok = exponent
+        .is_none_or(|exponent| digits(exponent.strip_prefix(['+', '-']).unwrap_or(exponent)));
+    digits(whole) && fraction.is_none_or(digits) && exponent_ok
 }
 
 /// The table a SELECT read and its primary key, when the result holds every
@@ -1840,6 +1880,61 @@ mod tests {
         assert_eq!(value_sql(None, "SIGNED"), "CAST(? AS SIGNED)");
         assert_eq!(value_sql(Some(ValueExpr::Default), "CHAR"), "DEFAULT");
         assert_eq!(value_sql(Some(ValueExpr::Now), "DATETIME"), "NOW()");
+    }
+
+    #[test]
+    fn keys_are_compared_as_literals_like_tableplus() {
+        let term = |data_type: &str, value: Value| key_term("k", data_type, &value, false);
+        assert_eq!(term("varchar", Value::from("k1")), "`k` = 'k1'");
+        assert_eq!(
+            term("varchar", Value::from(r"it's \ ok")),
+            r"`k` = 'it\'s \\ ok'"
+        );
+        assert_eq!(term("int", Value::from(42)), "`k` = 42");
+        assert_eq!(
+            term("bigint", Value::from("12345678901234567890")),
+            "`k` = 12345678901234567890"
+        );
+        assert_eq!(term("decimal", Value::from("-1.5e3")), "`k` = -1.5e3");
+        // A numeric column given something else gets a quoted literal, never bare text.
+        assert_eq!(term("int", Value::from("1 OR 1=1")), "`k` = '1 OR 1=1'");
+        assert_eq!(term("bit", Value::from("101")), "`k` = 101");
+        assert_eq!(term("bit", Value::from(true)), "`k` = 1");
+        assert_eq!(term("varbinary", Value::from("ab")), "`k` = X'6162'");
+        assert_eq!(
+            term("datetime", Value::from("2024-01-05 10:20:30")),
+            "`k` = '2024-01-05 10:20:30'"
+        );
+        assert_eq!(term("varchar", Value::Null), "`k` IS NULL");
+        assert_eq!(
+            key_term("we`ird", "char", &Value::from("x"), false),
+            "`we``ird` = 'x'"
+        );
+        // NO_BACKSLASH_ESCAPES: only the quote is doubled.
+        assert_eq!(
+            key_term("k", "varchar", &Value::from(r"it's \ ok"), true),
+            r"`k` = 'it''s \ ok'"
+        );
+    }
+
+    #[test]
+    fn only_plain_numbers_go_in_bare() {
+        for ok in [
+            "0",
+            "42",
+            "-7",
+            "1.5",
+            "2e10",
+            "-1.5E-3",
+            "12345678901234567890",
+        ] {
+            assert!(is_number_literal(ok), "{ok}");
+        }
+        for bad in [
+            "", "-", ".5", "1.", "1e", "1e+", "0x1F", "1 OR 1=1", "1;", "NaN", "+1",
+        ] {
+            assert!(!is_number_literal(bad), "{bad}");
+        }
     }
 
     fn server(code: u16) -> MyError {
