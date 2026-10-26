@@ -174,7 +174,7 @@ export function sqlLiteral(value: unknown, kind = "postgres"): string {
     return value.toString();
   }
   const text = typeof value === "string" ? value : cellText(value);
-  if (kind === "mysql") {
+  if (kind === "mysql" || kind === "mariadb") {
     // MySQL reads a backslash in a string as an escape unless told otherwise.
     return quoteLiteral(text.replace(/\\/g, "\\\\"));
   }
