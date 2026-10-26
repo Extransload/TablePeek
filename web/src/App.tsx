@@ -371,6 +371,13 @@ async function rangeValues(
   return rows;
 }
 
+// Copies and row actions stop at COPY_MAX_ROWS; this says so when they did.
+function noteCapped(rows: number, message: string): void {
+  if (rows > COPY_MAX_ROWS) {
+    store.setInfo(message);
+  }
+}
+
 function rangeOf(from: number, to: number): number[] {
   return Array.from({ length: Math.max(0, to - from + 1) }, (_, index) => from + index);
 }
@@ -796,7 +803,9 @@ export default function App() {
   const detailLoadsRef = useRef(new Map<string, Promise<TableDetail | null>>());
   const shortcutRef = useRef<(action: KeyAction) => void>(() => {});
   // Whether the app takes a key that is only its own in some places.
-  const claimsKeyRef = useRef<(action: KeyAction, target: Element | null) => boolean>(() => true);
+  const claimsKeyRef = useRef<(action: KeyAction, target: Element | null, modal: boolean) => boolean>(
+    () => true,
+  );
   // A result dropped by the server while changes were being applied.
   const missedInvalidateRef = useRef(false);
   const lastSelectionRef = useRef<SelectedRows | null>(null);
@@ -2493,6 +2502,7 @@ export default function App() {
         gridHostRef.current?.selectRows(first, last);
       }
     }
+    noteCapped(to - from + 1, t("처음 {count}행만 복제했습니다", { count: COPY_MAX_ROWS.toLocaleString() }));
   }
 
   // Whole rows pasted over whole rows: added as new rows, as Duplicate does
@@ -2708,7 +2718,11 @@ export default function App() {
 
   // ⌘F is a Data tab's filter and ⌘D the focused grid's rows; anywhere else
   // the browser's find and the SQL editor's ⌘D (select the next match) keep them.
-  claimsKeyRef.current = (action, target) => {
+  claimsKeyRef.current = (action, target, modal) => {
+    // Under a dialog (export, import, the palette, …) the browser keeps them.
+    if ((action === "openFilter" || action === "duplicateRows") && modal) {
+      return false;
+    }
     if (action === "openFilter") {
       const tab = currentTab();
       return activeConnIdRef.current !== null && tab?.kind === "data" && (tab.view ?? "data") === "data";
@@ -3887,6 +3901,10 @@ export default function App() {
           const values = await rangeValues(source, selection.r0, selection.r1, cols);
           const target = table !== null ? { table, dialect } : null;
           await writeClipboard(formatCopy(format, { columns: cols.map((c) => columns[c]), rows: values }, target));
+          noteCapped(
+            selection.r1 - selection.r0 + 1,
+            t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+          );
         } catch (err) {
           store.setError(errorOf(err, t("행을 불러오지 못했습니다")));
         }
@@ -3920,6 +3938,10 @@ export default function App() {
           }
         }
       }
+      noteCapped(
+        selection.r1 - selection.r0 + 1,
+        t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+      );
     };
 
     const views: ContextMenuItem[] = [
@@ -3958,6 +3980,10 @@ export default function App() {
           try {
             const values = await rangeValues(source, 0, source.rowCount - 1, [col]);
             await writeClipboard(values.map((line) => cellToString(line[0]) ?? "").join("\n"));
+            noteCapped(
+              source.rowCount,
+              t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+            );
           } catch (err) {
             store.setError(errorOf(err, t("행을 불러오지 못했습니다")));
           }
@@ -4002,6 +4028,10 @@ export default function App() {
               }
             }
           }
+          noteCapped(
+            selection.r1 - selection.r0 + 1,
+            t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+          );
         },
       });
     }
@@ -4021,7 +4051,7 @@ export default function App() {
         label: copies === 1 ? t("행 복제") : t("{count}행 복제", { count: copies.toLocaleString() }),
         separatorBefore: true,
         onSelect: () => {
-          void duplicateRows(selection.r0, lastRow);
+          void duplicateRows(selection.r0, selection.r1);
         },
       });
       items.push({
@@ -4060,6 +4090,10 @@ export default function App() {
                 statements.push(sql);
               }
               await writeClipboard(statements.join("\n"));
+              noteCapped(
+                rowCount,
+                t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+              );
             } catch (err) {
               store.setError(errorOf(err, t("행을 불러오지 못했습니다")));
             }
@@ -4457,6 +4491,11 @@ export default function App() {
       ) {
         return;
       }
+      // Keys the app takes only in some places (⌘F, ⌘D) are left alone
+      // everywhere else, dialogs included.
+      if (!claimsKeyRef.current(action, target, modalOpen())) {
+        return;
+      }
       // While an IME is composing, or a dialog owns the keyboard, the action
       // doesn't run, but the browser's own action (reload, print, save page)
       // must not run behind it either. The dialog still sees the key.
@@ -4473,9 +4512,6 @@ export default function App() {
         event.key === "Enter" &&
         target?.closest(".table-grid, .schema-table-row, .schema-object-row, .date-picker") != null
       ) {
-        return;
-      }
-      if (!claimsKeyRef.current(action, target)) {
         return;
       }
       // Runs in the capture phase: an app shortcut wins over the browser's

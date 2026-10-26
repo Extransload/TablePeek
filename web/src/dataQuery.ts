@@ -97,10 +97,15 @@ export function quoteLiteral(value: string): string {
   return `'${value.split("'").join("''")}'`;
 }
 
-// MySQL reads a backslash in a string as an escape (unless the server runs
-// with NO_BACKSLASH_ESCAPES), so there it is doubled to stay a backslash.
-function stringLiteral(value: string, kind: string): string {
-  return quoteLiteral(kind === "mysql" ? value.replace(/\\/g, "\\\\") : value);
+// A text literal as each dialect reads it. MySQL takes a backslash for an
+// escape (unless the server runs with NO_BACKSLASH_ESCAPES), so there it is
+// doubled; SQL Server needs N or non-ASCII text (Korean) goes through the
+// database's code page and no longer matches an nvarchar value.
+export function stringLiteral(value: string, kind: string): string {
+  if (kind === "mysql" || kind === "mariadb") {
+    return quoteLiteral(value.replace(/\\/g, "\\\\"));
+  }
+  return kind === "mssql" ? `N${quoteLiteral(value)}` : quoteLiteral(value);
 }
 
 export function literalValue(raw: string, kind = "postgres"): string {
@@ -108,6 +113,10 @@ export function literalValue(raw: string, kind = "postgres"): string {
     return "NULL";
   }
   if (/^(true|false)$/i.test(raw)) {
+    // SQL Server's bit takes 1 and 0; it has no TRUE.
+    if (kind === "mssql") {
+      return /^true$/i.test(raw) ? "1" : "0";
+    }
     return raw.toUpperCase();
   }
   if (NUMBER_RE.test(raw.trim()) && raw.trim() !== "") {

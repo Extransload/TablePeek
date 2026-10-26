@@ -1217,6 +1217,9 @@ const EN: Record<string, string> = {
   "다음으로 시작": "Has prefix",
   "다음으로 끝남": "Has suffix",
   "SQL 직접 입력": "Raw SQL",
+  "처음 {count}행만 복사했습니다": "Copied the first {count} rows only",
+  "처음 {count}행만 복제했습니다": "Duplicated the first {count} rows only",
+  "처음 {count}행만 바꿨습니다": "Changed the first {count} rows only",
 };
 
 let current: Language = readLanguage();
