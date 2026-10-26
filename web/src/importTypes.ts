@@ -116,9 +116,10 @@ function readValue(value: unknown): ValueReading | null {
   if (typeof value === "boolean") {
     return { kind: "boolean", intDigits: 0, scale: 0, fraction: 0 };
   }
-  // Read as written: a 19-digit id is a bigint, not a double.
+  // Read as written: a 19-digit id is a bigint, not a double, and a long
+  // decimal with an exponent a decimal too.
   if (value instanceof JsonNumber) {
-    return readText(value.text);
+    return readText(value.plain);
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
