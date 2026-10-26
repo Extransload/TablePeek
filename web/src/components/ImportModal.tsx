@@ -66,6 +66,8 @@ interface Running {
   done: number;
   total: number;
   locating: boolean;
+  // The COMMIT is on its way: too late to stop.
+  committing: boolean;
 }
 
 const CHUNK_ROWS = 200;
@@ -434,11 +436,20 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
           return importLiteral(column.boolean ? asBoolean(value) : value, kind);
         }),
     };
+    // The connection is the import's from here to the end, before its first
+    // statement: on MySQL that is the CREATE TABLE, which would commit a
+    // transaction the user (or another import) has open.
+    try {
+      store.claimConn(conn);
+    } catch (err) {
+      setError(errorOf(err, t("가져오기에 실패했습니다")));
+      return;
+    }
     const job = startJob(t("가져오기: {table}", { table: destination }), fileName, rows.length, {
       cancellable: true,
     });
     jobRef.current = job.id;
-    setRunning({ done: 0, total: rows.length, locating: false });
+    setRunning({ done: 0, total: rows.length, locating: false, committing: false });
     const where = (row: number): string => {
       const at = parsed.at[row] ?? row + 1;
       return parsed.unit === "line" ? t("{line}번째 줄", { line: at.toLocaleString() }) : t("레코드 {index}", { index: at.toLocaleString() });
@@ -448,17 +459,24 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
         plan,
         {
           exec: async (sql) => {
-            await store.exec(conn, sql);
+            await store.exec(conn, sql, { job: true });
           },
           begin: () => store.ownTx(conn, "begin"),
-          commit: () => store.ownTx(conn, "commit"),
+          commit: () => {
+            // A stop now would report rows as not imported that the COMMIT keeps.
+            job.setCancellable(false);
+            if (mountedRef.current) {
+              setRunning((current) => (current === null ? current : { ...current, committing: true }));
+            }
+            return store.ownTx(conn, "commit");
+          },
           rollback: () => store.ownTx(conn, "rollback"),
         },
         job.signal,
         (done, locating = false) => {
           job.update(done, locating ? t("오류가 난 행을 찾는 중…") : undefined);
           if (mountedRef.current) {
-            setRunning({ done, total: rows.length, locating });
+            setRunning({ done, total: rows.length, locating, committing: false });
           }
         },
       );
@@ -471,7 +489,14 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
     } catch (err) {
       let message: string;
       let at: string | null = null;
-      if (err instanceof ImportFailure) {
+      if (err instanceof ImportFailure && err.undoError !== null) {
+        // Never "nothing was imported" when the ROLLBACK (or the DROP of the
+        // new table) didn't go through.
+        message = t(
+          "가져오기를 되돌리지 못했습니다. 트랜잭션이 열려 있거나 새 테이블이 남았을 수 있으니 확인하세요: {error}",
+          { error: err.undoError },
+        );
+      } else if (err instanceof ImportFailure) {
         message = err.stopped
           ? t("가져오기를 중지했습니다. 테이블은 바뀌지 않았습니다.")
           : err.row !== null
@@ -498,6 +523,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
         store.setError(message);
       }
     } finally {
+      store.releaseConn(conn);
       jobRef.current = null;
       if (mountedRef.current) {
         setRunning(null);
@@ -802,7 +828,9 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
               <span className="dim">
                 {running.locating
                   ? t("오류가 난 행을 찾는 중…")
-                  : t("{done} / {total}행", {
+                  : running.committing
+                    ? t("커밋하는 중…")
+                    : t("{done} / {total}행", {
                       done: running.done.toLocaleString(),
                       total: running.total.toLocaleString(),
                     })}
@@ -814,7 +842,11 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                 <button type="button" onClick={onClose}>
                   {t("백그라운드에서 계속")}
                 </button>
-                <button type="button" onClick={() => jobRef.current !== null && cancelJob(jobRef.current)}>
+                <button
+                  type="button"
+                  disabled={running.committing}
+                  onClick={() => jobRef.current !== null && cancelJob(jobRef.current)}
+                >
                   <StopIcon size={10} />
                   {t("중지")}
                 </button>

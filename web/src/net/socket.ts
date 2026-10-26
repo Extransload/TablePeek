@@ -298,6 +298,9 @@ export class TablePeekSocket {
   private readonly editWaiters = new Map<string, EditWaiter>();
   private readonly txWaiters = new Map<string, TxWaiter>();
   private readonly rowWaiters = new Map<string, RowWaiter>();
+  // Queries a background job runs (an export's pages): the page's next query
+  // doesn't cancel them, and a connection-wide error isn't theirs.
+  private readonly jobQueries = new Set<string>();
   private readonly rowChangeListeners = new Set<(change: RowChange) => void>();
   private readonly consoleListeners = new Set<(update: ConsoleUpdate) => void>();
   // Connections whose console a panel is showing.
@@ -375,15 +378,24 @@ export class TablePeekSocket {
     conn: string,
     sql: string,
     // history: file the run under this connection's history (editor runs only).
-    options: { maxRows: number; window: number; history?: boolean },
+    // job: a background job's read, which runs beside the page's queries
+    // (neither cancels the other) and whose rows the server keeps only until
+    // its source is disposed.
+    options: { maxRows: number; window: number; history?: boolean; job?: boolean },
   ): Promise<QueryResult> {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       throw new TablePeekSocketError(t(CLOSED_ERROR), false);
     }
-    this.cancelPending(conn);
+    const job = options.job === true;
+    if (!job) {
+      this.cancelPending(conn);
+    }
     const queryId = crypto.randomUUID();
+    if (job) {
+      this.jobQueries.add(queryId);
+    }
     const messagePromise = new Promise<MetaMessage>((resolve, reject) => {
       this.metaWaiters.set(queryId, { id: queryId, conn, resolve, reject });
       ws.send(
@@ -395,10 +407,17 @@ export class TablePeekSocket {
           max_rows: options.maxRows,
           window: options.window,
           ...(options.history === true ? { history: true } : {}),
+          ...(job ? { job: true } : {}),
         }),
       );
     });
-    const message = await messagePromise;
+    let message: MetaMessage;
+    try {
+      message = await messagePromise;
+    } catch (error) {
+      this.jobQueries.delete(queryId);
+      throw error;
+    }
     const meta: QueryMeta = {
       id: message.id,
       kind: message.kind,
@@ -419,8 +438,18 @@ export class TablePeekSocket {
       rowCount: meta.rowCount,
       windowSize: options.window,
       fetchWindow: (offset, limit) => this.fetch(conn, queryId, offset, limit),
+      onDispose: job ? () => this.release(conn, queryId) : undefined,
     });
     return { meta, source, queryId, conn };
+  }
+
+  // A job is done reading a result: the server lets it go.
+  release(conn: string, id: string): void {
+    this.jobQueries.delete(id);
+    const ws = this.ws;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "release", conn, id }));
+    }
   }
 
   private windowKey(conn: string, id: string, offset: number): string {
@@ -473,8 +502,10 @@ export class TablePeekSocket {
     return result;
   }
 
-  begin(conn: string): Promise<void> {
-    return this.runTx(conn, "begin");
+  // job: an import's own transaction (the server lets nothing cancel the
+  // page's statements while it is open).
+  begin(conn: string, job = false): Promise<void> {
+    return this.runTx(conn, "begin", job);
   }
 
   onRowChange(listener: (change: RowChange) => void): () => void {
@@ -492,12 +523,12 @@ export class TablePeekSocket {
     return this.sendRowOp(conn, { type: "delete_row", ...request });
   }
 
-  commit(conn: string): Promise<void> {
-    return this.runTx(conn, "commit");
+  commit(conn: string, job = false): Promise<void> {
+    return this.runTx(conn, "commit", job);
   }
 
-  rollback(conn: string): Promise<void> {
-    return this.runTx(conn, "rollback");
+  rollback(conn: string, job = false): Promise<void> {
+    return this.runTx(conn, "rollback", job);
   }
 
   close(): void {
@@ -567,7 +598,7 @@ export class TablePeekSocket {
     }
   }
 
-  private async runTx(conn: string, action: "begin" | "commit" | "rollback"): Promise<void> {
+  private async runTx(conn: string, action: "begin" | "commit" | "rollback", job: boolean): Promise<void> {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -581,7 +612,7 @@ export class TablePeekSocket {
     const promise = new Promise<void>((resolve, reject) => {
       this.txWaiters.set(conn, { conn, expected, resolve, reject });
     });
-    ws.send(JSON.stringify({ type: "tx", conn, action }));
+    ws.send(JSON.stringify({ type: "tx", conn, action, ...(job ? { job: true } : {}) }));
     return promise;
   }
 
@@ -676,7 +707,7 @@ export class TablePeekSocket {
         const matches =
           message.id !== null
             ? message.id === id
-            : message.conn == null || message.conn === waiter.conn;
+            : !this.jobQueries.has(id) && (message.conn == null || message.conn === waiter.conn);
         if (matches) {
           this.metaWaiters.delete(id);
           waiter.reject(error);
@@ -686,7 +717,7 @@ export class TablePeekSocket {
         const matches =
           message.id !== null
             ? waiter.id === message.id
-            : message.conn == null || message.conn === waiter.conn;
+            : !this.jobQueries.has(waiter.id) && (message.conn == null || message.conn === waiter.conn);
         if (matches) {
           this.windowWaiters.delete(key);
           clearTimeout(waiter.timer);
@@ -815,22 +846,25 @@ export class TablePeekSocket {
     }
   }
 
+  // The page's newer query replaces what it was still waiting for; a job's
+  // reads carry on. Frames already in are left alone: the server sends a
+  // window's frames and its "window" message together, so they belong to
+  // the next window message, which may well be a job's.
   private cancelPending(conn: string): void {
     const error = new TablePeekSocketError(t(CANCELLED_ERROR), true);
     for (const [id, waiter] of this.metaWaiters) {
-      if (waiter.conn === conn) {
+      if (waiter.conn === conn && !this.jobQueries.has(id)) {
         this.metaWaiters.delete(id);
         waiter.reject(error);
       }
     }
     for (const [key, waiter] of this.windowWaiters) {
-      if (waiter.conn === conn) {
+      if (waiter.conn === conn && !this.jobQueries.has(waiter.id)) {
         this.windowWaiters.delete(key);
         clearTimeout(waiter.timer);
         waiter.reject(error);
       }
     }
-    this.pendingFrames = [];
   }
 
   private failPending(error: TablePeekSocketError): void {

@@ -283,17 +283,16 @@ impl PostgresInner {
     }
 
     // The cancel request is a protocol message, not SQL: nothing to log.
-    pub(crate) fn cancel(&self) {
+    // Done once the server has taken it.
+    pub(crate) fn cancel(&self) -> tokio::task::JoinHandle<()> {
         let token = self.cancel.clone();
-        if let Some(tls) = self.tls.clone() {
-            tokio::spawn(async move {
-                let _ = token.cancel_query(tls).await;
-            });
-        } else {
-            tokio::spawn(async move {
-                let _ = token.cancel_query(NoTls).await;
-            });
-        }
+        let tls = self.tls.clone();
+        tokio::spawn(async move {
+            let _ = match tls {
+                Some(tls) => token.cancel_query(tls).await,
+                None => token.cancel_query(NoTls).await,
+            };
+        })
     }
 }
 

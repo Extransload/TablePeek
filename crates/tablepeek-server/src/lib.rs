@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
@@ -33,6 +33,12 @@ pub mod tunnel;
 struct Assets;
 
 pub const SESSION_CAP: usize = 8;
+// Results a job (an export page) is still reading: kept apart from the page's
+// own, which they'd otherwise push out, until the job releases them.
+pub const JOB_SESSION_CAP: usize = 4;
+// How long a job's statement waits for a cancel meant for the statement
+// before it to land, at most.
+const CANCEL_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub struct QuerySession {
     pub data: QueryData,
@@ -62,6 +68,7 @@ pub struct SessionStore {
     map: HashMap<String, Arc<tokio::sync::Mutex<QuerySession>>>,
     order: VecDeque<String>,
     cap: usize,
+    job_order: VecDeque<String>,
     structural: bool,
 }
 
@@ -71,8 +78,31 @@ impl SessionStore {
             map: HashMap::new(),
             order: VecDeque::new(),
             cap,
+            job_order: VecDeque::new(),
             structural: false,
         }
+    }
+
+    /// A job's result, counted apart: however many pages an export reads,
+    /// the page's own results stay. A job that never releases its result
+    /// loses it to its next ones.
+    pub fn insert_job(&mut self, id: String, data: Arc<QueryData>) {
+        self.job_order.retain(|existing| existing != &id);
+        self.job_order.push_back(id.clone());
+        let session = Arc::new(tokio::sync::Mutex::new(QuerySession::new((*data).clone())));
+        self.map.insert(id, session);
+        while self.job_order.len() > JOB_SESSION_CAP {
+            if let Some(old) = self.job_order.pop_front() {
+                self.map.remove(&old);
+            }
+        }
+    }
+
+    /// A result its reader is done with.
+    pub fn remove(&mut self, id: &str) {
+        self.map.remove(id);
+        self.order.retain(|existing| existing != id);
+        self.job_order.retain(|existing| existing != id);
     }
 
     pub fn insert(&mut self, id: String, data: Arc<QueryData>) {
@@ -100,6 +130,7 @@ impl SessionStore {
     pub fn clear(&mut self) {
         self.map.clear();
         self.order.clear();
+        self.job_order.clear();
     }
 
     pub fn mark_structural(&mut self) {
@@ -127,6 +158,34 @@ pub struct ConnSlot {
     // Last known meta summary, so listing connections needs no database round
     // trip (and never waits behind a long query holding the engine lock).
     summary: std::sync::Mutex<Option<SlotSummary>>,
+    // One statement at a time on the session (the engine runs them one by
+    // one anyway), and what kind it is: a cancel reaches the page's own work,
+    // never a job's.
+    gate: tokio::sync::Mutex<()>,
+    holder: std::sync::Mutex<Holder>,
+    // A job's transaction (an import's) is open on the session.
+    job_tx: AtomicBool,
+}
+
+/// Whose statement runs on a connection's session now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Holder {
+    Idle,
+    // The page's own: a newer query cancels it, as moving to another table
+    // does.
+    Foreground,
+    // A background job's (an import's chunk, a restore's statement, an
+    // export's page) or a transaction command: never cancelled from here.
+    Job,
+}
+
+// Sets the slot's holder back to idle when the statement ends or is dropped.
+struct HolderReset<'a>(&'a ConnSlot);
+
+impl Drop for HolderReset<'_> {
+    fn drop(&mut self) {
+        self.0.set_holder(Holder::Idle);
+    }
 }
 
 #[derive(Clone)]
@@ -200,6 +259,9 @@ impl ConnSlot {
             tunnel: Arc::new(tokio::sync::Mutex::new(None)),
             inflight: Arc::new(AtomicUsize::new(0)),
             summary: std::sync::Mutex::new(None),
+            gate: tokio::sync::Mutex::new(()),
+            holder: std::sync::Mutex::new(Holder::Idle),
+            job_tx: AtomicBool::new(false),
         }
     }
 
@@ -224,9 +286,74 @@ impl ConnSlot {
         }
     }
 
+    fn set_holder(&self, holder: Holder) {
+        *self
+            .holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = holder;
+    }
+
+    pub fn holder(&self) -> Holder {
+        *self
+            .holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Runs one statement through the session's gate, as `holder`. A job's
+    /// waits first for cancels already sent to land, so one meant for the
+    /// page's previous statement can't stop it.
+    pub async fn gated<T>(&self, holder: Holder, run: impl std::future::Future<Output = T>) -> T {
+        let _gate = self.gate.lock().await;
+        if holder == Holder::Job {
+            self.engine.cancels_settled(CANCEL_SETTLE).await;
+        }
+        self.set_holder(holder);
+        let _reset = HolderReset(self);
+        run.await
+    }
+
+    /// Cancels the page's statement running now, if one is. Not a job's,
+    /// and nothing while a job's transaction is open: a cancel would abort it
+    /// on PostgreSQL and end the whole session on SQL Server, so the page's
+    /// statement runs to its end instead.
     fn cancel_if_inflight(&self) {
-        if self.inflight.load(Ordering::SeqCst) > 0 {
+        let holder = self
+            .holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *holder == Holder::Foreground && !self.job_tx.load(Ordering::SeqCst) {
             self.engine.cancel();
+        }
+    }
+
+    /// The page's statement while a job's transaction is open: PostgreSQL
+    /// would abort that transaction (the job's work with it) if the statement
+    /// failed, so it runs under a savepoint of its own there.
+    async fn foreground_query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
+        if !(self.job_tx.load(Ordering::SeqCst) && self.engine.failure_aborts_transaction()) {
+            return self.engine.query(sql, max_rows).await;
+        }
+        self.engine.query("SAVEPOINT tablepeek_page", 1).await?;
+        let outcome = self.engine.query(sql, max_rows).await;
+        // A failure is undone back to the savepoint, which then goes too.
+        let usable = outcome.is_ok()
+            || self
+                .engine
+                .query("ROLLBACK TO SAVEPOINT tablepeek_page", 1)
+                .await
+                .is_ok();
+        if usable {
+            let _ = self.engine.query("RELEASE SAVEPOINT tablepeek_page", 1).await;
+        }
+        outcome
+    }
+
+    /// After a statement: a transaction that is gone (ended from the editor,
+    /// lost with the session) no longer holds the job's.
+    async fn settle_job_tx(&self) {
+        if self.job_tx.load(Ordering::SeqCst) && !self.engine.in_tx().await.unwrap_or(false) {
+            self.job_tx.store(false, Ordering::SeqCst);
         }
     }
 }
@@ -694,6 +821,10 @@ struct ExecRequest {
     // inside an open transaction, only once that commits.
     #[serde(default)]
     history: bool,
+    // A background job's statement (an import's chunk, a restore's): never
+    // cancelled by the page's queries, nor cancelling them.
+    #[serde(default)]
+    job: bool,
 }
 
 async fn exec_route(
@@ -711,7 +842,24 @@ async fn exec_route(
     }
     let slot = slot_for(&state, params.conn.as_deref()).await?;
     let _guard = InflightGuard::new(slot.inflight.clone());
-    let result = slot.engine.execute(sql, 1).await.map_err(engine_error)?;
+    let holder = if req.job { Holder::Job } else { Holder::Foreground };
+    let result = slot
+        .gated(holder, async {
+            if req.job {
+                slot.engine.execute(sql, 1).await
+            } else {
+                slot.foreground_query(sql, 1).await.map(|data| QueryResult {
+                    columns: data.columns.clone(),
+                    row_count: data.row_count,
+                    rows: data.rows_json(),
+                    elapsed_ms: data.elapsed_ms,
+                    truncated: data.truncated,
+                })
+            }
+        })
+        .await;
+    slot.settle_job_tx().await;
+    let result = result.map_err(engine_error)?;
     if req.history {
         let change = Change {
             sql: sql.to_string(),
@@ -2538,8 +2686,7 @@ async fn query(
     let slot = slot_for(&state, params.conn.as_deref()).await?;
     let max_rows = req.max_rows.unwrap_or(10_000).clamp(1, 500_000);
     let _inflight = InflightGuard::new(slot.inflight.clone());
-    slot.engine
-        .execute(&req.sql, max_rows)
+    slot.gated(Holder::Foreground, slot.engine.execute(&req.sql, max_rows))
         .await
         .map(Json)
         .map_err(engine_error)
@@ -2680,6 +2827,10 @@ async fn kill_route(
 struct Sender {
     tx: mpsc::Sender<Message>,
     order: Arc<tokio::sync::Mutex<()>>,
+    // The page's latest query per connection: the page drops what it was
+    // still waiting for when it sends a newer one, so an older one still
+    // waiting for the session is skipped rather than run for nobody.
+    latest: Arc<std::sync::Mutex<HashMap<String, u64>>>,
 }
 
 impl Clone for Sender {
@@ -2687,6 +2838,7 @@ impl Clone for Sender {
         Self {
             tx: self.tx.clone(),
             order: self.order.clone(),
+            latest: self.latest.clone(),
         }
     }
 }
@@ -2758,6 +2910,7 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
     let sender = Sender {
         tx,
         order: Arc::new(tokio::sync::Mutex::new(())),
+        latest: Arc::default(),
     };
     // Console forwarders by connection id; each holds a Sender clone.
     let mut consoles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
@@ -2785,6 +2938,14 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
                 match value["type"].as_str().unwrap_or("") {
                     "query" => handle_query(&state, &sender, &value, &conn).await,
                     "fetch" => handle_fetch(&state, &sender, &value, &conn).await,
+                    // A job's reader is done with its result.
+                    "release" => {
+                        if let (Ok(slot), Some(id)) =
+                            (slot_for(&state, Some(&conn)).await, value["id"].as_str())
+                        {
+                            slot.sessions.lock().await.remove(id);
+                        }
+                    }
                     "cancel" => {
                         if let Ok(slot) = slot_for(&state, Some(&conn)).await {
                             slot.cancel_if_inflight();
@@ -2979,6 +3140,10 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
     // Only statements the user ran from the editor go into history; table
     // browsing and paging send their own SELECTs without this flag.
     let record = value["history"].as_bool().unwrap_or(false);
+    // A background job's read (an export's page): it neither cancels the
+    // page's statement nor can be cancelled by the page's next one, and its
+    // result is kept apart until the job releases it.
+    let job = value["job"].as_bool().unwrap_or(false);
     if id.is_empty() || sql.trim().is_empty() {
         sender
             .json(error_json(
@@ -3001,7 +3166,17 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
         }
     };
 
-    slot.cancel_if_inflight();
+    // The page's queries replace one another (see Sender::latest).
+    let seq = (!job).then(|| {
+        slot.cancel_if_inflight();
+        let mut latest = sender
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = latest.get(conn).map_or(1, |seq| seq + 1);
+        latest.insert(conn.to_string(), next);
+        next
+    });
 
     let state = state.clone();
     let sender = sender.clone();
@@ -3011,7 +3186,36 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
         let _inflight = InflightGuard::new(slot.inflight.clone());
         let started = std::time::Instant::now();
         let mark = slot.engine.sql_log().ends();
-        let outcome = slot.engine.query(&sql, max_rows).await;
+        let outcome = if job {
+            slot.gated(Holder::Job, slot.engine.query(&sql, max_rows)).await
+        } else {
+            let superseded = || {
+                let latest = sender
+                    .latest
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                latest.get(&conn) != seq.as_ref()
+            };
+            let ran = slot
+                .gated(Holder::Foreground, async {
+                    if superseded() {
+                        None
+                    } else {
+                        Some(slot.foreground_query(&sql, max_rows).await)
+                    }
+                })
+                .await;
+            match ran {
+                Some(outcome) => outcome,
+                None => {
+                    sender
+                        .json(error_json(Some(&id), Some(&conn), "쿼리가 취소되었습니다", true))
+                        .await;
+                    return;
+                }
+            }
+        };
+        slot.settle_job_tx().await;
         // Statements run here can open or close a transaction (or, failing,
         // abort one): the page's indicator follows this.
         let in_tx = slot.engine.in_tx().await.unwrap_or(false);
@@ -3067,7 +3271,14 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                         return;
                     }
                 }
-                slot.sessions.lock().await.insert(id.clone(), data.clone());
+                {
+                    let mut sessions = slot.sessions.lock().await;
+                    if job {
+                        sessions.insert_job(id.clone(), data.clone());
+                    } else {
+                        sessions.insert(id.clone(), data.clone());
+                    }
+                }
                 if let Err(err) = send_window(&slot, &sender, &conn, &id, 0, window).await {
                     sender
                         .json(error_json(Some(&id), Some(&conn), &err.to_string(), false))
@@ -3467,10 +3678,18 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
             return;
         }
     };
+    // An import's own transaction: while it is open the page's statements
+    // can't cancel anything (see cancel_if_inflight).
+    let job = value["job"].as_bool().unwrap_or(false);
+    // A transaction command is never cancelled: an interrupted COMMIT leaves
+    // its outcome unknown.
     let result = match action {
-        "begin" => slot.engine.begin_tx().await.map(|_| "began"),
-        "commit" => slot.engine.commit_tx().await.map(|_| "committed"),
-        "rollback" => slot.engine.rollback_tx().await.map(|_| "rolledback"),
+        "begin" => slot.gated(Holder::Job, slot.engine.begin_tx()).await.map(|_| "began"),
+        "commit" => slot.gated(Holder::Job, slot.engine.commit_tx()).await.map(|_| "committed"),
+        "rollback" => slot
+            .gated(Holder::Job, slot.engine.rollback_tx())
+            .await
+            .map(|_| "rolledback"),
         _ => {
             sender
                 .json(error_json(None, Some(conn), "알 수 없는 tx action", false))
@@ -3478,6 +3697,13 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
             return;
         }
     };
+    if action == "begin" {
+        if job && result.is_ok() {
+            slot.job_tx.store(true, Ordering::SeqCst);
+        }
+    } else {
+        slot.settle_job_tx().await;
+    }
     // A COMMIT that ended the transaction without committing (an aborted
     // PostgreSQL transaction, a session a cancel killed), or whose outcome
     // was lost with the connection: the page sees the transaction closed,
@@ -5027,6 +5253,7 @@ mod tests {
             let req = ExecRequest {
                 sql: sql.into(),
                 history,
+                job: false,
             };
             async move {
                 exec_route(
@@ -5196,6 +5423,7 @@ mod tests {
         let sender = Sender {
             tx,
             order: Arc::new(tokio::sync::Mutex::new(())),
+            latest: Arc::default(),
         };
         (sender, rx)
     }
@@ -5791,5 +6019,133 @@ mod tests {
         assert_eq!(err.1.code, "invalid_request");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Long enough on the demo's SQLite to be cancelled midway.
+    const SLOW: &str = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000000) SELECT count(*) FROM c";
+
+    fn gate_slot() -> Arc<ConnSlot> {
+        Arc::new(ConnSlot::new(
+            "gate".into(),
+            "gate".into(),
+            None,
+            None,
+            Engine::open_demo(1).unwrap(),
+        ))
+    }
+
+    async fn until_held(slot: &ConnSlot, holder: Holder) {
+        for _ in 0..500 {
+            if slot.holder() == holder {
+                // Into the statement itself, past the gate.
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        panic!("{holder:?} never held the gate");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_stops_the_pages_statement_but_never_a_jobs() {
+        let slot = gate_slot();
+        for (holder, cancelled) in [(Holder::Foreground, true), (Holder::Job, false)] {
+            let running = slot.clone();
+            let task = tokio::spawn(async move { running.gated(holder, running.engine.query(SLOW, 1)).await });
+            until_held(&slot, holder).await;
+            slot.cancel_if_inflight();
+            let outcome = task.await.unwrap();
+            assert_eq!(
+                outcome.as_ref().err().is_some_and(EngineError::is_interrupted),
+                cancelled,
+                "{holder:?}: {:?}",
+                outcome.as_ref().err()
+            );
+            assert_eq!(slot.holder(), Holder::Idle);
+        }
+    }
+
+    #[tokio::test]
+    async fn nothing_is_cancelled_while_a_jobs_transaction_is_open() {
+        let slot = gate_slot();
+        slot.job_tx.store(true, Ordering::SeqCst);
+        let running = slot.clone();
+        let task =
+            tokio::spawn(async move { running.gated(Holder::Foreground, running.engine.query(SLOW, 1)).await });
+        until_held(&slot, Holder::Foreground).await;
+        slot.cancel_if_inflight();
+        assert!(task.await.unwrap().is_ok(), "the page's statement ran to its end");
+    }
+
+    #[tokio::test]
+    async fn the_pages_statement_waits_for_the_jobs_instead_of_cancelling_it() {
+        let slot = gate_slot();
+        let job = slot.clone();
+        let job_task = tokio::spawn(async move {
+            let outcome = job.gated(Holder::Job, job.engine.query(SLOW, 1)).await;
+            (outcome.is_ok(), std::time::Instant::now())
+        });
+        until_held(&slot, Holder::Job).await;
+        // What handle_query does for the page's next query.
+        slot.cancel_if_inflight();
+        let page = slot.clone();
+        let page_task = tokio::spawn(async move {
+            let outcome = page.gated(Holder::Foreground, page.engine.query("SELECT 1", 1)).await;
+            (outcome.is_ok(), std::time::Instant::now())
+        });
+        let (job_ok, job_done) = job_task.await.unwrap();
+        let (page_ok, page_done) = page_task.await.unwrap();
+        assert!(job_ok && page_ok);
+        assert!(page_done >= job_done, "the page's statement ran after the job's");
+    }
+
+    #[tokio::test]
+    async fn a_query_the_page_replaced_while_it_waited_is_skipped() {
+        let dir = temp_dir("superseded");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let (sender, mut rx) = test_sender();
+        let job = slot.clone();
+        let held = tokio::spawn(async move { job.gated(Holder::Job, job.engine.query(SLOW, 1)).await });
+        until_held(&slot, Holder::Job).await;
+        // Two of the page's queries queue behind the job; the second replaces the first.
+        let run = |id: &str, sql: &str| json!({ "type": "query", "id": id, "sql": sql });
+        handle_query(&state, &sender, &run("old", "SELECT 1"), "main").await;
+        handle_query(&state, &sender, &run("new", "SELECT 2"), "main").await;
+        assert!(held.await.unwrap().is_ok(), "the job's statement ran to its end");
+        let mut replies = HashMap::new();
+        while replies.len() < 2 {
+            let message = next_json(&mut rx).await;
+            if let Some(id) = message["id"].as_str() {
+                if message["type"] == json!("meta") || message["type"] == json!("error") {
+                    replies.insert(id.to_string(), message);
+                }
+            }
+        }
+        assert_eq!(replies["old"]["type"], json!("error"));
+        assert_eq!(replies["old"]["cancelled"], json!(true));
+        assert_eq!(replies["new"]["type"], json!("meta"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_jobs_results_never_push_out_the_pages_and_go_when_released() {
+        let mut store = SessionStore::new(SESSION_CAP);
+        let data = Arc::new(QueryData::empty());
+        store.insert("page-1".into(), data.clone());
+        store.insert("page-2".into(), data.clone());
+        for page in 0..(SESSION_CAP * 3) {
+            store.insert_job(format!("export-{page}"), data.clone());
+        }
+        assert!(store.get("page-1").is_some() && store.get("page-2").is_some());
+        let kept = (0..SESSION_CAP * 3)
+            .filter(|page| store.get(&format!("export-{page}")).is_some())
+            .count();
+        assert_eq!(kept, JOB_SESSION_CAP);
+        let last = format!("export-{}", SESSION_CAP * 3 - 1);
+        store.remove(&last);
+        assert!(store.get(&last).is_none());
+        store.remove("page-1");
+        assert!(store.get("page-1").is_none() && store.get("page-2").is_some());
     }
 }

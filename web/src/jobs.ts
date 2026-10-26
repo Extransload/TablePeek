@@ -22,6 +22,9 @@ export interface JobHandle {
   // Aborted once the job is stopped; the work checks it between steps.
   readonly signal: AbortSignal;
   update(done: number, detail?: string, total?: number): void;
+  // Past the point a stop could undo (an import's COMMIT): the queue stops
+  // offering it, and a stop asked for now is ignored.
+  setCancellable(cancellable: boolean): void;
   finish(): void;
   fail(message: string): void;
 }
@@ -100,6 +103,11 @@ export function startJob(label: string, detail: string, total: number, options: 
         emit();
       }
     },
+    setCancellable(cancellable) {
+      if (patchRunning(id, (entry) => ({ ...entry, cancellable }))) {
+        emit();
+      }
+    },
     finish() {
       controllers.delete(id);
       if (
@@ -127,6 +135,9 @@ export function startJob(label: string, detail: string, total: number, options: 
 }
 
 export function cancelJob(id: string): void {
+  if (jobs.find((entry) => entry.id === id)?.cancellable !== true) {
+    return;
+  }
   const controller = controllers.get(id);
   controllers.delete(id);
   if (patchRunning(id, (entry) => ({ ...entry, status: "cancelled", finishedAt: Date.now() }))) {

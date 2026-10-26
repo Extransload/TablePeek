@@ -233,13 +233,15 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     if (statements.length === 0 || busy) {
       return;
     }
-    const current = store.getState();
-    if (current.connId === conn && current.tx === "active") {
-      setError(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
-      return;
-    }
-    if (store.inOwnTx(conn)) {
-      setError(t("가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요."));
+    // The connection is the restore's until its last statement: the page's
+    // writes and TX controls wait (a COMMIT in the dump would end their
+    // transaction, or theirs the dump's), and its reads can't cancel the
+    // dump's statements. Refused while the user's transaction or an import
+    // holds it.
+    try {
+      store.claimConn(conn);
+    } catch (err) {
+      setError(errorOf(err, t("복원에 실패했습니다")));
       return;
     }
     const job = startJob(t("복원"), restoreFile, statements.length, { cancellable: true });
@@ -262,14 +264,15 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         if (job.signal.aborted) {
           break;
         }
-        await store.exec(conn, statement.text);
+        await store.exec(conn, statement.text, { job: true });
         executed += 1;
         job.update(executed);
         if (mountedRef.current) {
           setRestoreProgress({ done: executed, total: statements.length });
         }
       }
-      if (executed < statements.length) {
+      // Stopped while the last statement ran: all of them did, but not as asked.
+      if (executed < statements.length || job.signal.aborted) {
         const message = t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
           count: executed.toLocaleString(),
         });
@@ -291,6 +294,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         store.setError(t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: failure, ...where }));
       }
     } finally {
+      store.releaseConn(conn);
       restoreJobRef.current = null;
       if (mountedRef.current) {
         setBusy(false);
