@@ -143,8 +143,9 @@ interface DataTabToolbarProps {
   tab: DataTab;
   // The Data | Structure | Index switch, which leads the footer.
   viewTabs: ReactNode;
-  // The refresh shortcut as the keymap has it, for the tooltip.
+  // The refresh and filter shortcuts as the keymap has them, for the tooltips.
   refreshHint?: string;
+  filterHint?: string;
   total: DataTotal | null;
   running: boolean;
   // The rows are on their way (a run, or an open about to start one).
@@ -188,6 +189,7 @@ export function DataTabToolbar({
   tab,
   viewTabs,
   refreshHint,
+  filterHint,
   total,
   running,
   loading,
@@ -250,7 +252,7 @@ export function DataTabToolbar({
           type="button"
           className={filterOpen ? "footer-button active" : "footer-button"}
           onClick={onToggleFilter}
-          title={t("필터 표시/숨김")}
+          title={withHint(t("필터 표시/숨김"), filterHint)}
         >
           <FilterIcon size={11} />
           <span className="footer-label">{t("필터")}</span>

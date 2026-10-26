@@ -9154,3 +9154,8 @@ button.result-set.failed .result-set-status {
     overflow: auto;
   }
 }
+
+/* Grid polish: a Raw SQL condition reads as code. */
+.filter-value.raw {
+  font-family: var(--mono);
+}

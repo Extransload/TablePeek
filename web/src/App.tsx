@@ -91,7 +91,8 @@ import {
   type FilterState,
   type SortState,
 } from "./dataQuery";
-import { buildUpdateSql, toSqlInserts } from "./export";
+import { buildUpdateSql } from "./export";
+import { COPY_MAX_ROWS, formatCopy, type CopyFormat } from "./copyFormats";
 import { subscribeJobs } from "./jobs";
 import {
   loadTableColors,
@@ -107,7 +108,7 @@ import {
   subscribeSettings,
   type AppSettings,
 } from "./settings";
-import { cellToString, fkFilterFor } from "./rowOps";
+import { cellToString, fkFilterFor, quickFilterFor } from "./rowOps";
 import {
   bindParams,
   explainPrefixFor,
@@ -127,9 +128,9 @@ import { forgetSchema, loadSchema } from "./schemaCache";
 import { splitSqlStatements } from "./sqlSplit";
 import { loadAutoSave } from "./savedQueries";
 import { specsForTable, withResultKinds } from "./grid/columns";
-import { cellMenuItems } from "./grid/cellMenu";
+import { cellMenuItems, deleteRowsLabel, type CellValueChoice } from "./grid/cellMenu";
 import { IS_MAC, actionForEvent, formatBinding, matchesBinding, shortcutHint, withHint, type KeyAction } from "./shortcuts";
-import type { SortIndicator } from "./grid/CanvasGrid";
+import type { GridSelection, SortIndicator } from "./grid/CanvasGrid";
 import { subscribePendingChanges, type WindowedRowSource } from "./grid/windowSource";
 import {
   ApiRequestError,
@@ -300,6 +301,8 @@ interface MenuState {
   col: number;
   x: number;
   y: number;
+  // What the menu acts on; the clicked cell is inside it.
+  selection: GridSelection;
 }
 
 interface Workspace {
@@ -339,6 +342,29 @@ async function rowValues(source: WindowedRowSource, row: number): Promise<unknow
     values[c] = value === undefined ? null : value;
   }
   return values;
+}
+
+// Rows `from`…`to` (at most COPY_MAX_ROWS of them) in the columns `cols`,
+// each window fetched as the walk reaches it.
+async function rangeValues(
+  source: WindowedRowSource,
+  from: number,
+  to: number,
+  cols: number[],
+): Promise<unknown[][]> {
+  const rows: unknown[][] = [];
+  const last = Math.min(to, from + COPY_MAX_ROWS - 1, source.rowCount - 1);
+  for (let row = from; row <= last; row += 1) {
+    if (source.cell(row, 0) === undefined) {
+      await source.ensureRow(row);
+    }
+    rows.push(cols.map((col) => source.cell(row, col) ?? null));
+  }
+  return rows;
+}
+
+function rangeOf(from: number, to: number): number[] {
+  return Array.from({ length: Math.max(0, to - from + 1) }, (_, index) => from + index);
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -496,6 +522,11 @@ export default function App() {
   const [runningTabId, setRunningTabId] = useState<string | null>(null);
   const [editorHeight, setEditorHeight] = useState<number | null>(null);
   const [filterOpen, setFilterOpen] = useState<Record<string, boolean>>({});
+  // A filter bar asked to take the keyboard (its button, ⌘F), with the column
+  // a new condition starts on; cleared once the bar has done it.
+  const [filterFocus, setFilterFocus] = useState<{ tab: string; seq: number; column: string | null } | null>(
+    null,
+  );
   // The row detail panel stays open or closed per connection, across its
   // tables; detailRows is the span of rows it describes (null until picked).
   const [detailPanels, setDetailPanels] = useState<Record<string, boolean>>(() => loadFlagMap(DETAIL_PANELS_KEY));
@@ -770,6 +801,8 @@ export default function App() {
   const detailCacheRef = useRef(new Map<string, TableDetail>());
   const detailLoadsRef = useRef(new Map<string, Promise<TableDetail | null>>());
   const shortcutRef = useRef<(action: KeyAction) => void>(() => {});
+  // Whether the app takes a key that is only its own in some places.
+  const claimsKeyRef = useRef<(action: KeyAction, target: Element | null) => boolean>(() => true);
   const lastSelectionRef = useRef<SelectedRows | null>(null);
   // A drag changes the selection many times a frame; the panel follows once per frame.
   const selectionFrameRef = useRef(0);
@@ -2405,26 +2438,115 @@ export default function App() {
     }
   }
 
-  async function duplicateRowAt(row: number): Promise<void> {
+  // Staged inserts copying rows `from`…`to` (TablePlus's Duplicate); key
+  // columns are left to their defaults.
+  async function duplicateRows(from: number, to: number): Promise<void> {
+    const result = store.getState().result;
+    if (!result || result.meta.sourceTable === null) {
+      store.setInfo(t("행을 추가할 수 없는 결과입니다"));
+      return;
+    }
+    const source = result.source;
+    const pkNames = new Set(result.meta.pk ?? []);
+    let values: unknown[][];
+    try {
+      values = await rangeValues(source, from, to, rangeOf(0, result.meta.columns.length - 1));
+    } catch (err) {
+      store.setError(errorOf(err, t("행을 불러오지 못했습니다")));
+      return;
+    }
+    // Another result came while the rows loaded: the copies belong to this one.
+    if (store.getState().result !== result) {
+      return;
+    }
+    let first: number | null = null;
+    let last: number | null = null;
+    for (let offset = 0; offset < values.length; offset += 1) {
+      const row = from + offset;
+      const fromInsert = source.isInserted(row);
+      const staged = new Map<number, string | null>();
+      result.meta.columns.forEach((column, index) => {
+        // Columns still at DEFAULT on a staged row stay DEFAULT on the copy.
+        const untouched = fromInsert && source.cellState(row, index) === "default";
+        if (!pkNames.has(column) && !untouched) {
+          staged.set(index, cellToString(values[offset][index]));
+        }
+      });
+      const created = store.stageInsert(staged);
+      if (created === null) {
+        break;
+      }
+      first ??= created;
+      last = created;
+    }
+    if (first !== null && last !== null) {
+      if (first === last) {
+        gridHostRef.current?.selectCell(first, 0);
+      } else {
+        gridHostRef.current?.selectRows(first, last);
+      }
+    }
+  }
+
+  // Whole rows pasted over whole rows: added as new rows, as Duplicate does
+  // (an empty field is NULL, key columns are left to their defaults).
+  function pasteRows(lines: string[][]): void {
     const result = store.getState().result;
     if (!result || result.meta.sourceTable === null) {
       return;
     }
-    const values = await rowValues(result.source, row);
     const pkNames = new Set(result.meta.pk ?? []);
-    const fromInsert = result.source.isInserted(row);
-    const staged = new Map<number, string | null>();
-    result.meta.columns.forEach((column, index) => {
-      // Columns still at DEFAULT on a staged row stay DEFAULT on the copy.
-      const untouched = fromInsert && result.source.cellState(row, index) === "default";
-      if (!pkNames.has(column) && !untouched) {
-        staged.set(index, cellToString(values[index]));
+    let first: number | null = null;
+    let last: number | null = null;
+    for (const line of lines) {
+      const staged = new Map<number, string | null>();
+      result.meta.columns.forEach((column, index) => {
+        if (!pkNames.has(column)) {
+          staged.set(index, line[index] === "" ? null : line[index]);
+        }
+      });
+      const created = store.stageInsert(staged);
+      if (created === null) {
+        break;
       }
-    });
-    const created = store.stageInsert(staged);
-    if (created !== null) {
-      gridHostRef.current?.selectCell(created, 0);
+      first ??= created;
+      last = created;
     }
+    if (first !== null && last !== null) {
+      gridHostRef.current?.selectRows(first, last);
+    }
+  }
+
+  // Shows the filter bar of the Data tab on screen with the keyboard in its
+  // first value; a bar with no conditions gets one, on the selected cell's
+  // column.
+  function openFilterBar(): void {
+    const tab = currentTab();
+    if (!tab || tab.kind !== "data" || (tab.view ?? "data") !== "data") {
+      return;
+    }
+    const col = gridHostRef.current?.selection()?.c0;
+    const column = col === undefined ? null : (store.getState().result?.meta.columns[col] ?? null);
+    setFilterOpen((prev) => (prev[tab.id] ? prev : { ...prev, [tab.id]: true }));
+    setFilterFocus((prev) => ({ tab: tab.id, seq: (prev?.seq ?? 0) + 1, column }));
+  }
+
+  function quickFilter(row: number, col: number): void {
+    const conn = activeConnIdRef.current;
+    const tab = currentTab();
+    const result = store.getState().result;
+    const column = result?.meta.columns[col];
+    if (conn === null || !tab || tab.kind !== "data" || !result || column === undefined) {
+      return;
+    }
+    const value = result.source.cell(row, col);
+    // Text columns compare as text: "12345" in a varchar isn't a number.
+    const spec = gridSpecs?.[col] ?? null;
+    const isText = spec !== null ? spec.kind !== "number" && spec.kind !== "boolean" : typeof value === "string";
+    const filter = quickFilterFor(column, value, isText);
+    runDataWith(conn, tab, { offset: 0, pageSize: tab.pageSize, filter, sorts: tab.sorts ?? null });
+    // The condition shows in the filter bar, as TablePlus's quick filter does.
+    setFilterOpen((prev) => ({ ...prev, [tab.id]: true }));
   }
 
   async function applyChanges(): Promise<void> {
@@ -2565,6 +2687,19 @@ export default function App() {
     }
   }
 
+  // ⌘F is a Data tab's filter and ⌘D the focused grid's rows; anywhere else
+  // the browser's find and the SQL editor's ⌘D (select the next match) keep them.
+  claimsKeyRef.current = (action, target) => {
+    if (action === "openFilter") {
+      const tab = currentTab();
+      return activeConnIdRef.current !== null && tab?.kind === "data" && (tab.view ?? "data") === "data";
+    }
+    if (action === "duplicateRows") {
+      return target instanceof HTMLCanvasElement && target.closest(".grid-host") !== null;
+    }
+    return true;
+  };
+
   shortcutRef.current = (action) => {
     const inWorkspace = activeConnIdRef.current !== null;
     switch (action) {
@@ -2621,6 +2756,16 @@ export default function App() {
       case "toggleDetail":
         toggleDetailPanel();
         return;
+      case "openFilter":
+        openFilterBar();
+        return;
+      case "duplicateRows": {
+        const selection = gridHostRef.current?.selection() ?? null;
+        if (selection !== null && selection.mode !== "col") {
+          void duplicateRows(selection.r0, selection.r1);
+        }
+        return;
+      }
       case "toggleConsole":
         if (inWorkspace) {
           setConsoleOpen(!consoleOpen);
@@ -3695,9 +3840,9 @@ export default function App() {
     setCellQuickLook({ row, col, anchor: gridHostRef.current?.cellRect(row, col) ?? null });
   }
 
-  function openRowDetail(row: number): void {
+  function openRowDetail(from: number, to = from): void {
     setCellQuickLook(null);
-    setDetailRows({ from: row, to: row });
+    setDetailRows({ from, to });
     setDetailPanelOpen(true);
   }
 
@@ -3726,7 +3871,7 @@ export default function App() {
     }
   }
 
-  function handleCellContextMenu(row: number, col: number, x: number, y: number): void {
+  function handleCellContextMenu(row: number, col: number, x: number, y: number, selection: GridSelection): void {
     if (state.result === null) {
       return;
     }
@@ -3735,120 +3880,216 @@ export default function App() {
     if (conn !== null && tab && tab.kind === "data") {
       void ensureDetail(conn, tab.table);
     }
-    setMenu({ row, col, x, y });
+    setMenu({ row, col, x, y, selection });
   }
 
+  // The data and results grids' cell menu, in TablePlus's order. It acts on
+  // the whole selection; column and cell entries on the cell clicked.
   function menuItems(menuState: MenuState): ContextMenuItem[] {
     const result = state.result;
     if (!result) {
       return [];
     }
     const source = result.source;
-    const keyed =
-      result.meta.sourceTable !== null && result.meta.pk !== null && result.meta.pk.length > 0;
-    const inserted = source.isInserted(menuState.row);
-    const deleted = source.isDeleted(menuState.row);
-    const canEdit = result.meta.sourceTable !== null && (keyed || inserted) && !deleted;
-    const value = source.cell(menuState.row, menuState.col);
+    const columns = result.meta.columns;
+    const { row, col, selection } = menuState;
+    const editableTable = result.meta.sourceTable !== null;
+    const keyed = editableTable && result.meta.pk !== null && result.meta.pk.length > 0;
     const tab = currentTab();
-    const table =
-      result.meta.sourceTable !== null
-        ? result.meta.sourceTable
-        : tab && tab.kind === "data"
-          ? tab.table
-          : null;
-    const { row, col } = menuState;
-    const spec = gridSpecs?.[col] ?? null;
-    const items = cellMenuItems({
-      column: result.meta.columns[col] ?? "",
-      value: async () => {
-        if (source.cell(row, col) === undefined) {
-          await source.ensureRow(row);
+    const dataTab = tab && tab.kind === "data" ? tab : null;
+    const table = result.meta.sourceTable ?? dataTab?.table ?? null;
+    const dialect = meta?.kind ?? "postgres";
+    const editableRow = (r: number): boolean =>
+      editableTable && (keyed || source.isInserted(r)) && !source.isDeleted(r);
+    const selectedCols = rangeOf(selection.c0, selection.c1);
+    // Whole columns take every row; the row actions leave them alone, as the
+    // Delete key does.
+    const rowCount = selection.mode === "col" ? 0 : selection.r1 - selection.r0 + 1;
+    // Actions that read or write cell by cell stop at the copy limit.
+    const lastRow = Math.min(selection.r1, selection.r0 + COPY_MAX_ROWS - 1);
+
+    const copyAs = (cols: number[]) => (format: CopyFormat) => {
+      void (async () => {
+        try {
+          const values = await rangeValues(source, selection.r0, selection.r1, cols);
+          const target = table !== null ? { table, dialect } : null;
+          await writeClipboard(formatCopy(format, { columns: cols.map((c) => columns[c]), rows: values }, target));
+        } catch (err) {
+          store.setError(errorOf(err, t("행을 불러오지 못했습니다")));
         }
-        return source.cell(row, col) ?? null;
+      })();
+    };
+
+    const specsOf = selectedCols.map((c) => gridSpecs?.[c] ?? null);
+    let anyEditable = false;
+    let allInserted = true;
+    for (let r = selection.r0; r <= lastRow; r += 1) {
+      anyEditable ||= editableRow(r);
+      allInserted &&= source.isInserted(r);
+    }
+    const single = selection.r0 === selection.r1 && selection.c0 === selection.c1;
+    const value = source.cell(row, col);
+    const setValue = (choice: CellValueChoice): void => {
+      for (let r = selection.r0; r <= lastRow; r += 1) {
+        if (!editableRow(r) || source.cell(r, selection.c0) === undefined) {
+          continue;
+        }
+        for (const c of selectedCols) {
+          if (choice === "default") {
+            // A new row's cell back at DEFAULT: left out of its INSERT.
+            store.revertCell(r, c);
+          } else {
+            void store.editCell(r, c, choice === "null" ? null : "");
+          }
+        }
+      }
+    };
+
+    const views: ContextMenuItem[] = [
+      {
+        label: t("행 상세 보기"),
+        onSelect: () => (rowCount > 0 ? openRowDetail(selection.r0, selection.r1) : openRowDetail(row)),
       },
-      row: () => rowValues(source, row),
-      copy: writeClipboard,
-      quickLook: () => openCellQuickLook(row, col),
-      views: [{ label: t("행 상세 보기"), onSelect: () => openRowDetail(row) }],
-      edit: canEdit ? () => gridHostRef.current?.beginEdit(row, col) : undefined,
-      setValue: canEdit ? (next) => void store.editCell(row, col, next) : undefined,
-      // Without the table's structure, any column may take either.
-      nullable: spec?.nullable ?? true,
-      allowsEmpty: spec === null || spec.kind === "text" || spec.kind === "enum" || spec.kind === "set",
-      isNull: value === undefined || (value === null && !inserted),
-    });
-    if (canEdit && source.cellState(row, col) === "edited") {
-      items.push({
-        label: t("변경 되돌리기"),
-        onSelect: () => source.revertCell(row, col),
-      });
-    }
-    if (result.meta.sourceTable !== null) {
-      items.push({
-        label: t("행 복제"),
-        separatorBefore: true,
-        onSelect: () => {
-          void duplicateRowAt(menuState.row);
-        },
-      });
-      items.push({
-        label: inserted ? t("행 추가 취소") : deleted ? t("행 삭제 취소") : t("행 삭제"),
-        disabled: !keyed && !inserted,
-        onSelect: () => deleteRows([menuState.row]),
-      });
-    }
-    if (tab && tab.kind === "data") {
-      const columnName = result.meta.columns[menuState.col];
+    ];
+    if (dataTab !== null) {
+      const columnName = columns[col];
       const conn = activeConnIdRef.current;
-      const cached =
-        conn !== null ? detailCacheRef.current.get(`${conn}:${tab.table}`) : undefined;
+      const cached = conn !== null ? detailCacheRef.current.get(`${conn}:${dataTab.table}`) : undefined;
       const hasFk =
         cached !== undefined &&
         columnName !== undefined &&
         cached.foreign_keys.some((entry) => entry.columns.includes(columnName));
       if (hasFk) {
-        items.push({
+        views.push({
           label: t("참조 행 열기"),
           onSelect: () => {
-            void fkJump(menuState.row, menuState.col);
+            void fkJump(row, col);
           },
         });
       }
     }
-    if (table !== null) {
+
+    const items = cellMenuItems({
+      column: columns[col] ?? "",
+      copySelection: () => gridHostRef.current?.copySelection(),
+      copyText: writeClipboard,
+      copyRowsAs: copyAs(rangeOf(0, columns.length - 1)),
+      copyCellsAs: copyAs(selectedCols),
+      canInsert: table !== null,
+      copyColumnValues: () => {
+        void (async () => {
+          try {
+            const values = await rangeValues(source, 0, source.rowCount - 1, [col]);
+            await writeClipboard(values.map((line) => cellToString(line[0]) ?? "").join("\n"));
+          } catch (err) {
+            store.setError(errorOf(err, t("행을 불러오지 못했습니다")));
+          }
+        })();
+      },
+      quickLook: () => openCellQuickLook(row, col),
+      views,
+      edit: editableRow(row) ? () => gridHostRef.current?.beginEdit(row, col) : undefined,
+      setValue: anyEditable ? setValue : undefined,
+      // Without the table's structure, any column may take either.
+      nullable: specsOf.every((spec) => spec?.nullable ?? true),
+      allowsEmpty: specsOf.every(
+        (spec) => spec === null || spec.kind === "text" || spec.kind === "enum" || spec.kind === "set",
+      ),
+      // DEFAULT for a row already in the table needs the server to write
+      // DEFAULT into its UPDATE; a new row's cell simply stays out of its INSERT.
+      allowsDefault: allInserted,
+      isNull: single && (value === undefined || (value === null && !source.isInserted(row))),
+    });
+
+    let anyEdited = false;
+    for (let r = selection.r0; r <= lastRow && !anyEdited; r += 1) {
+      if (editableRow(r)) {
+        anyEdited = selectedCols.some((c) => source.cellState(r, c) === "edited");
+      }
+    }
+    if (anyEdited) {
       items.push({
-        label: t("INSERT 문 복사"),
+        label: t("변경 되돌리기"),
+        onSelect: () => {
+          for (let r = selection.r0; r <= lastRow; r += 1) {
+            for (const c of selectedCols) {
+              if (source.cellState(r, c) === "edited") {
+                store.revertCell(r, c);
+              }
+            }
+          }
+        },
+      });
+    }
+
+    if (editableTable && rowCount > 0) {
+      let newRows = 0;
+      let allDeleted = true;
+      for (let r = selection.r0; r <= selection.r1; r += 1) {
+        if (source.isInserted(r)) {
+          newRows += 1;
+        } else {
+          allDeleted &&= source.isDeleted(r);
+        }
+      }
+      const copies = lastRow - selection.r0 + 1;
+      items.push({
+        label: copies === 1 ? t("행 복제") : t("{count}행 복제", { count: copies.toLocaleString() }),
         separatorBefore: true,
         onSelect: () => {
-          void (async () => {
-            const values = await rowValues(source, menuState.row);
-            await writeClipboard(toSqlInserts(table, result.meta.columns, [values], meta?.kind ?? "postgres"));
-          })();
+          void duplicateRows(selection.r0, lastRow);
         },
       });
       items.push({
+        label: deleteRowsLabel(rowCount, newRows === rowCount ? "cancel" : allDeleted ? "undo" : "delete"),
+        disabled: !keyed && newRows === 0,
+        onSelect: () => deleteRows(rangeOf(selection.r0, selection.r1)),
+      });
+    }
+
+    if (dataTab !== null) {
+      items.push({ label: t("빠른 필터"), separatorBefore: true, onSelect: () => quickFilter(row, col) });
+    }
+
+    if (table !== null) {
+      let updatable = false;
+      for (let r = selection.r0; r < selection.r0 + rowCount && !updatable; r += 1) {
+        updatable = !source.isInserted(r);
+      }
+      items.push({
         label: t("UPDATE 문 복사"),
-        disabled: !keyed || inserted,
+        separatorBefore: dataTab === null,
+        disabled: !keyed || !updatable,
         onSelect: () => {
           void (async () => {
-            const values = await rowValues(source, menuState.row);
-            const sql = buildUpdateSql(
-              table,
-              result.meta.columns,
-              values,
-              result.meta.pk ?? [],
-              meta?.kind ?? "postgres",
-            );
-            if (sql === null) {
-              store.setError(t("기본 키가 없어 UPDATE 문을 만들 수 없습니다"));
-              return;
+            try {
+              const statements: string[] = [];
+              for (let r = selection.r0; r < selection.r0 + Math.min(rowCount, COPY_MAX_ROWS); r += 1) {
+                if (source.isInserted(r)) {
+                  continue;
+                }
+                const sql = buildUpdateSql(table, columns, await rowValues(source, r), result.meta.pk ?? [], dialect);
+                if (sql === null) {
+                  store.setError(t("기본 키가 없어 UPDATE 문을 만들 수 없습니다"));
+                  return;
+                }
+                statements.push(sql);
+              }
+              await writeClipboard(statements.join("\n"));
+            } catch (err) {
+              store.setError(errorOf(err, t("행을 불러오지 못했습니다")));
             }
-            await writeClipboard(sql);
           })();
         },
       });
     }
+
+    // Refresh reloads a Data tab's rows; in a query tab F5 only reloads the
+    // sidebar, which is not what a result's Refresh promises.
+    if (dataTab !== null) {
+      items.push({ label: t("새로고침"), separatorBefore: true, onSelect: refreshView });
+    }
+    items.push({ label: t("현재 페이지 내보내기…"), separatorBefore: dataTab === null, onSelect: openExport });
     return items;
   }
 
@@ -4273,6 +4514,9 @@ export default function App() {
         event.key === "Enter" &&
         target?.closest(".table-grid, .schema-table-row, .schema-object-row, .date-picker") != null
       ) {
+        return;
+      }
+      if (!claimsKeyRef.current(action, target)) {
         return;
       }
       // Runs in the capture phase: an app shortcut wins over the browser's
@@ -4945,6 +5189,7 @@ export default function App() {
                                 viewTabs={tableViewTabs}
                                 total={totalOf(activeConnId, activeDataTab)}
                                 refreshHint={shortcutHint(settings.keymap, "refresh")}
+                                filterHint={shortcutHint(settings.keymap, "openFilter")}
                                 running={connRunning}
                                 loading={resultLoading}
                                 counting={countingTabId === activeDataTab.id}
@@ -4973,12 +5218,13 @@ export default function App() {
                                     ),
                                   )
                                 }
-                                onToggleFilter={() =>
-                                  setFilterOpen((prev) => ({
-                                    ...prev,
-                                    [activeDataTab.id]: !(prev[activeDataTab.id] ?? false),
-                                  }))
-                                }
+                                onToggleFilter={() => {
+                                  if (filterVisible) {
+                                    setFilterOpen((prev) => ({ ...prev, [activeDataTab.id]: false }));
+                                  } else {
+                                    openFilterBar();
+                                  }
+                                }}
                                 onToggleColumns={() => setColumnsPickOpen((value) => !value)}
                                 onInsertRow={insertDefaultRow}
                                 onLimit={(limit) =>
@@ -5057,6 +5303,9 @@ export default function App() {
                           columns={dataMeta?.columns ?? EMPTY_TABLES}
                           filter={activeDataTab.filter ?? EMPTY_FILTER}
                           running={connRunning}
+                          focusRequest={filterFocus?.tab === activeDataTab.id ? filterFocus.seq : null}
+                          defaultColumn={filterFocus?.tab === activeDataTab.id ? filterFocus.column : null}
+                          onFocusHandled={() => setFilterFocus(null)}
                           onApply={(next) =>
                             runDataWith(activeConnId, activeDataTab, {
                               offset: 0,
@@ -5130,6 +5379,7 @@ export default function App() {
                             onSelectionChange={handleSelectionChange}
                             onCellContextMenu={handleCellContextMenu}
                             onDeleteRows={deleteRows}
+                            onPasteRows={pasteRows}
                             onQuickLook={(row) => openRowDetail(row)}
                             onCellQuickLook={(row, col) => openCellQuickLook(row, col)}
                             specs={gridSpecs}

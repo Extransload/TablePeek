@@ -18,7 +18,9 @@ export type KeyAction =
   | "toggleConsole"
   | "palette"
   | "dbSwitch"
-  | "openSettings";
+  | "openSettings"
+  | "openFilter"
+  | "duplicateRows";
 
 export type Keymap = Record<KeyAction, string[]>;
 
@@ -37,6 +39,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   "palette",
   "dbSwitch",
   "openSettings",
+  "openFilter",
+  "duplicateRows",
 ];
 
 // Browsers reserve ⌘/Ctrl + W, T, N for themselves, so each of those actions
@@ -60,6 +64,10 @@ export const DEFAULT_KEYMAP: Keymap = {
   palette: ["Mod+p"],
   dbSwitch: ["Mod+k"],
   openSettings: ["Mod+,"],
+  // Only in a Data tab and the focused grid; anywhere else the browser's find
+  // and the SQL editor's ⌘D (select the next match) keep the key.
+  openFilter: ["Mod+f"],
+  duplicateRows: ["Mod+d"],
 };
 
 export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
@@ -77,6 +85,8 @@ export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
   palette: "명령 팔레트",
   dbSwitch: "DB 전환",
   openSettings: "설정 열기",
+  openFilter: "데이터 필터 열기",
+  duplicateRows: "선택한 행 복제",
 };
 
 const CODE_KEYS: Record<string, string> = {

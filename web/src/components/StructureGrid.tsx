@@ -5,9 +5,11 @@ import {
   type CanvasGrid,
   type CellChoices,
   type GridEditHandlers,
+  type GridSelection,
   type SelectedRows,
 } from "../grid/CanvasGrid";
-import { cellMenuItems } from "../grid/cellMenu";
+import { cellMenuItems, deleteRowsLabel } from "../grid/cellMenu";
+import { formatCopy, type CopyFormat } from "../copyFormats";
 import type { CellState, RowSource, RowState } from "../grid/rowSource";
 import { t } from "../i18n";
 import { store } from "../store";
@@ -155,7 +157,13 @@ export function StructureGrid(props: StructureGridProps) {
   const source = sourceRef.current;
   // Room under the last row for the sideways scrollbar, only while there is one.
   const [scrollbar, setScrollbar] = useState(0);
-  const [menu, setMenu] = useState<{ x: number; y: number; row: number; col: number } | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    row: number;
+    col: number;
+    selection: GridSelection;
+  } | null>(null);
   const [quickLook, setQuickLook] = useState<{ row: number; col: number; anchor: CellAnchor | null } | null>(
     null,
   );
@@ -220,28 +228,66 @@ export function StructureGrid(props: StructureGridProps) {
     };
   }
 
-  function menuItems(row: number, col: number): ContextMenuItem[] {
+  function menuItems(row: number, col: number, selection: GridSelection): ContextMenuItem[] {
     const current = propsRef.current;
     const column = current.columns[col];
     const editable = editableCell(row, col);
+    const rowsOf = (cols: number[]): unknown[][] => {
+      const rows: unknown[][] = [];
+      for (let r = selection.r0; r <= selection.r1; r += 1) {
+        rows.push(cols.map((c) => source.cell(r, c)));
+      }
+      return rows;
+    };
+    const copyAs = (cols: number[]) => (format: CopyFormat) =>
+      void copyText(formatCopy(format, { columns: cols.map((c) => source.columns[c]), rows: rowsOf(cols) }, null));
+    const allColumns = current.columns.map((_, index) => index);
+    const selectedColumns = allColumns.slice(selection.c0, selection.c1 + 1);
+    // Set Value covers the selected cells that can be changed, when every
+    // selected column can be cleared.
+    const targets: [number, number][] = [];
+    for (let r = selection.r0; r <= selection.r1; r += 1) {
+      for (const c of selectedColumns) {
+        if (editableCell(r, c)) {
+          targets.push([r, c]);
+        }
+      }
+    }
     const items = cellMenuItems({
       column: column?.header ?? "",
-      value: () => source.cell(row, col),
-      row: () => current.columns.map((_, index) => source.cell(row, index)),
-      copy: copyText,
+      copySelection: () => tableRef.current?.copySelection(),
+      copyText,
+      copyRowsAs: copyAs(allColumns),
+      copyCellsAs: copyAs(selectedColumns),
       quickLook: () => setQuickLook({ row, col, anchor: tableRef.current?.cellRect(row, col) ?? null }),
       edit: editable ? () => tableRef.current?.beginEdit(row, col) : undefined,
-      setValue: editable ? (value) => column?.commit?.(row, value ?? "") : undefined,
-      nullable: column?.nullable ?? false,
-      isNull: source.cell(row, col) === null,
+      setValue:
+        targets.length > 0
+          ? () => targets.forEach(([r, c]) => propsRef.current.columns[c]?.commit?.(r, ""))
+          : undefined,
+      nullable: selectedColumns.every((c) => current.columns[c]?.nullable === true),
+      isNull: targets.every(([r, c]) => source.cell(r, c) === null),
     });
-    const state = current.rowState?.(row) ?? null;
-    const deletable = current.onDeleteRows !== undefined && (current.canDeleteRow?.(row) ?? true);
-    if (deletable) {
+    // Whole columns take every row; Delete leaves them alone, as the key does.
+    const rows: number[] = [];
+    if (selection.mode !== "col") {
+      for (let r = selection.r0; r <= selection.r1; r += 1) {
+        if (current.canDeleteRow?.(r) ?? true) {
+          rows.push(r);
+        }
+      }
+    }
+    if (current.onDeleteRows !== undefined && rows.length > 0) {
+      const states = rows.map((r) => current.rowState?.(r) ?? null);
+      const action = states.every((state) => state === "inserted")
+        ? "cancel"
+        : states.every((state) => state === "deleted")
+          ? "undo"
+          : "delete";
       items.push({
-        label: state === "inserted" ? t("행 추가 취소") : state === "deleted" ? t("행 삭제 취소") : t("행 삭제"),
+        label: deleteRowsLabel(rows.length, action),
         separatorBefore: true,
-        onSelect: () => current.onDeleteRows?.([row]),
+        onSelect: () => current.onDeleteRows?.(rows),
       });
     }
     return items;
@@ -265,14 +311,19 @@ export function StructureGrid(props: StructureGridProps) {
           }
         }}
         onSelectionChange={(row, rows) => propsRef.current.onSelect?.(source, row === null ? null : rows)}
-        onCellContextMenu={(row, col, x, y) => setMenu({ x, y, row, col })}
+        onCellContextMenu={(row, col, x, y, selection) => setMenu({ x, y, row, col, selection })}
         onCellQuickLook={(row, col) =>
           setQuickLook({ row, col, anchor: tableRef.current?.cellRect(row, col) ?? null })
         }
         onReady={onReady}
       />
       {menu !== null ? (
-        <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.row, menu.col)} onClose={() => setMenu(null)} />
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.row, menu.col, menu.selection)}
+          onClose={() => setMenu(null)}
+        />
       ) : null}
       {quickLook !== null ? (
         <CellInspector
