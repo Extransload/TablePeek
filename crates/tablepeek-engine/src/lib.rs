@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arrow::array::{
     Array, ArrayRef, Float64Array, Float64Builder, Int64Array, Int64Builder, StringArray,
@@ -622,9 +622,21 @@ impl Drop for EpochBump<'_> {
     }
 }
 
+// Cancel requests on their way: PostgreSQL's, MySQL's and SQL Server's go
+// over a connection of their own and land a moment after they're sent.
+#[derive(Default)]
+struct CancelsInFlight {
+    count: AtomicUsize,
+    landed: tokio::sync::Notify,
+    // PostgreSQL's request is done once written; the server signals the
+    // statement a moment later. Until then a new statement could take it.
+    quiet_until: Mutex<Option<Instant>>,
+}
+
 pub struct Engine {
     backend: RwLock<Backend>,
     active: Mutex<Option<ActiveTarget>>,
+    cancels: Arc<CancelsInFlight>,
     // Bumped by every statement and backend swap: anything derived from the
     // schema (table counts, …) is only known current while this hasn't moved.
     epoch: AtomicU64,
@@ -647,6 +659,7 @@ impl Engine {
         Self {
             backend: RwLock::new(Backend::Sqlite { inner }),
             active: Mutex::new(None),
+            cancels: Arc::new(CancelsInFlight::default()),
             epoch: AtomicU64::new(0),
             log,
         }
@@ -864,23 +877,81 @@ impl Engine {
     }
 
     pub fn cancel(&self) {
-        if let Some(target) = self.active.lock().ok().and_then(|guard| guard.clone()) {
-            match target {
-                ActiveTarget::Sqlite(inner) => inner.interrupt.interrupt(),
-                ActiveTarget::Postgres(inner) => inner.cancel(),
-                ActiveTarget::MySql(inner) => inner.cancel(),
-                ActiveTarget::Mssql(inner) => inner.cancel(),
-            }
-            return;
+        // SQLite's interrupt takes effect at once; the others send a request
+        // (MySQL's KILL and SQL Server's have taken effect once they're done,
+        // PostgreSQL's lands after it is sent).
+        let (request, lands_later) =
+            if let Some(target) = self.active.lock().ok().and_then(|guard| guard.clone()) {
+                match target {
+                    ActiveTarget::Sqlite(inner) => {
+                        inner.interrupt.interrupt();
+                        (None, false)
+                    }
+                    ActiveTarget::Postgres(inner) => (Some(inner.cancel()), true),
+                    ActiveTarget::MySql(inner) => (Some(inner.cancel()), false),
+                    ActiveTarget::Mssql(inner) => (inner.cancel(), false),
+                }
+            } else if let Ok(guard) = self.backend.read() {
+                match &*guard {
+                    Backend::Sqlite { inner } => {
+                        inner.interrupt.interrupt();
+                        (None, false)
+                    }
+                    Backend::Postgres { inner } => (Some(inner.cancel()), true),
+                    Backend::MySql { inner } => (Some(inner.cancel()), false),
+                    Backend::Mssql { inner } => (inner.cancel(), false),
+                }
+            } else {
+                (None, false)
+            };
+        if let Some(request) = request {
+            let cancels = self.cancels.clone();
+            cancels.count.fetch_add(1, Ordering::SeqCst);
+            let sent = Instant::now();
+            tokio::spawn(async move {
+                let _ = request.await;
+                if lands_later {
+                    // As long again as sending took (a round trip or more), so
+                    // the server has had the time to act on it.
+                    let until = Instant::now() + sent.elapsed().max(Duration::from_millis(50));
+                    if let Ok(mut quiet) = cancels.quiet_until.lock() {
+                        if quiet.is_none_or(|at| at < until) {
+                            *quiet = Some(until);
+                        }
+                    }
+                }
+                cancels.count.fetch_sub(1, Ordering::SeqCst);
+                cancels.landed.notify_waiters();
+            });
         }
-        if let Ok(guard) = self.backend.read() {
-            match &*guard {
-                Backend::Sqlite { inner } => inner.interrupt.interrupt(),
-                Backend::Postgres { inner } => inner.cancel(),
-                Backend::MySql { inner } => inner.cancel(),
-                Backend::Mssql { inner } => inner.cancel(),
+    }
+
+    /// Waits, at most `limit`, for cancel requests already sent to land: one
+    /// meant for the statement before would otherwise stop the next one, if
+    /// that started first (PostgreSQL and MySQL cancel whatever is running
+    /// when the request arrives).
+    pub async fn cancels_settled(&self, limit: Duration) {
+        let settled = async {
+            loop {
+                // Made before the count is read, so a landing in between isn't missed.
+                let landed = self.cancels.landed.notified();
+                if self.cancels.count.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                landed.await;
             }
-        }
+            let quiet = self.cancels.quiet_until.lock().ok().and_then(|quiet| *quiet);
+            if let Some(until) = quiet {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
+            }
+        };
+        let _ = tokio::time::timeout(limit, settled).await;
+    }
+
+    /// PostgreSQL and CockroachDB: a statement that fails inside a
+    /// transaction aborts all of it until a ROLLBACK (TO SAVEPOINT).
+    pub fn failure_aborts_transaction(&self) -> bool {
+        matches!(self.backend_snapshot(), Ok(Backend::Postgres { .. }))
     }
 
     pub async fn edit(&self, target: &EditTarget) -> Result<u64, EngineError> {

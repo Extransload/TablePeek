@@ -716,7 +716,9 @@ async function runDetached(
   sql: string,
   maxRows: number,
 ): Promise<{ meta: QueryMeta; source: WindowedRowSource }> {
-  return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW });
+  // A job's read: it runs beside the page's queries, and the server keeps its
+  // rows only until the source is disposed.
+  return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW, job: true });
 }
 
 // A staged cell back to what it was: an edited cell to its value, a new row's

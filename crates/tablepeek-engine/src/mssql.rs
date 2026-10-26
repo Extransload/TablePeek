@@ -53,10 +53,11 @@ impl MssqlInner {
         self.in_tx.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn cancel(&self) {
+    // Done once the KILL has run; None when there is no session to kill.
+    pub(crate) fn cancel(&self) -> Option<tokio::task::JoinHandle<()>> {
         let spid = self.spid.load(Ordering::SeqCst);
         if spid == 0 {
-            return;
+            return None;
         }
         self.cancel_requested.store(true, Ordering::SeqCst);
         self.session_dead.store(true, Ordering::SeqCst);
@@ -68,14 +69,14 @@ impl MssqlInner {
         self.lose_tx(CANCELLED);
         let config = self.config.clone();
         let log = self.log.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             if let Ok(mut client) = open_client(&config).await {
                 let sql = format!("KILL {spid}");
                 log.record(&sql, Dialect::Mssql);
                 let _ = client.execute(sql, &[]).await;
                 let _ = client.close().await;
             }
-        });
+        }))
     }
 
     async fn client(

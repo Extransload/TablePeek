@@ -81,7 +81,8 @@ impl MySqlInner {
         }
     }
 
-    pub(crate) fn cancel(&self) {
+    // Done once the KILL has run.
+    pub(crate) fn cancel(&self) -> tokio::task::JoinHandle<()> {
         let opts = self.opts.clone();
         let connection_id = self.connection_id.load(Ordering::SeqCst);
         let log = self.log.clone();
@@ -92,7 +93,7 @@ impl MySqlInner {
                 let _ = conn.query_drop(sql).await;
                 let _ = conn.disconnect().await;
             }
-        });
+        })
     }
 }
 

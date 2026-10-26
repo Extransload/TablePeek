@@ -7,6 +7,8 @@ export interface WindowedRowSourceOptions {
   windowSize: number;
   fetchWindow: (offset: number, limit: number) => Promise<unknown[][]>;
   maxWindows?: number;
+  // Called once, when the rows are no longer read (the server can let them go).
+  onDispose?: () => void;
 }
 
 export interface PkPair {
@@ -59,6 +61,7 @@ export class WindowedRowSource implements RowSource {
   private readonly windowSize: number;
   private readonly maxWindows: number;
   private readonly fetchWindow: (offset: number, limit: number) => Promise<unknown[][]>;
+  private readonly onDispose: (() => void) | undefined;
   private readonly windows = new Map<number, unknown[][]>();
   private readonly pending = new Map<number, Promise<void>>();
   private readonly listeners = new Set<() => void>();
@@ -74,6 +77,7 @@ export class WindowedRowSource implements RowSource {
     this.windowSize = Math.max(1, Math.trunc(options.windowSize));
     this.maxWindows = Math.max(1, Math.trunc(options.maxWindows ?? DEFAULT_MAX_WINDOWS));
     this.fetchWindow = options.fetchWindow;
+    this.onDispose = options.onDispose;
   }
 
   get rowCount(): number {
@@ -350,6 +354,9 @@ export class WindowedRowSource implements RowSource {
   }
 
   dispose(): void {
+    if (!this.disposed) {
+      this.onDispose?.();
+    }
     this.disposed = true;
     this.pending.clear();
     this.listeners.clear();
