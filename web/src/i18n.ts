@@ -1201,6 +1201,7 @@ const EN: Record<string, string> = {
   "결과 {count}": "Result {count}",
   "{count}행 영향": "{count} rows affected",
   // Import
+  "문장 {index}, {line}번째 줄에서 중단했습니다": "Stopped at statement {index}, line {line}",
   "{where}에서 실패해 모두 되돌렸습니다": "Failed at {where}, so nothing was imported",
   "가져오기에 실패해 모두 되돌렸습니다": "Import failed, so nothing was imported",
   "가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요.": "An import is running. Run this again once it finishes.",

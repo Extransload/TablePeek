@@ -42,6 +42,9 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
   const [includeData, setIncludeData] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Where a failed restore stopped, shown above the database's own error (whose
+  // explanation would otherwise hide it); only while that error is the one shown.
+  const [failedAt, setFailedAt] = useState<{ error: string; text: string } | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [restoreFile, setRestoreFile] = useState("");
   const [restoreBytes, setRestoreBytes] = useState<ArrayBuffer | null>(null);
@@ -251,14 +254,13 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
       const failure = errorOf(err, t("복원에 실패했습니다"));
       const line = restoreText.slice(0, statements[executed].codeFrom).split("\n").length;
       job.fail(failure);
-      report(
-        t("{error} (문장 {index}, {line}번째 줄에서 중단)", {
-          error: failure,
-          index: (executed + 1).toLocaleString(),
-          line: line.toLocaleString(),
-        }),
-        true,
-      );
+      const where = { index: (executed + 1).toLocaleString(), line: line.toLocaleString() };
+      if (mountedRef.current) {
+        setError(failure);
+        setFailedAt({ error: failure, text: t("문장 {index}, {line}번째 줄에서 중단했습니다", where) });
+      } else {
+        store.setError(t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: failure, ...where }));
+      }
     } finally {
       restoreJobRef.current = null;
       if (mountedRef.current) {
@@ -298,6 +300,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
           </div>
         </div>
         <div className="modal-body dump-body">
+          {error && failedAt?.error === error ? <div className="import-failed-at">{failedAt.text}</div> : null}
           {error ? <ErrorNotice message={error} /> : null}
           {info ? <div className="helper">{info}</div> : null}
           {tab === "backup" ? (
