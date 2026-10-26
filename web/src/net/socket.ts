@@ -104,6 +104,9 @@ export class TablePeekSocketError extends Error {
   inTx?: boolean;
   txEnded?: "committed" | "rolledback";
   invalidated?: boolean;
+  // A COMMIT whose outcome is not known (the connection dropped with it):
+  // it may have committed, so it doesn't count as rolled back.
+  outcomeUnknown?: boolean;
 
   constructor(message: string, cancelled: boolean, rolledBack = false) {
     super(message);
@@ -165,6 +168,7 @@ interface TxMessage {
   conn?: string;
   state: "began" | "committed" | "rolledback";
   invalidate?: boolean;
+  unknown?: boolean;
 }
 
 interface RowChangeMessage {
@@ -224,6 +228,8 @@ interface TxWaiter {
   expected: TxMessage["state"];
   // A COMMIT came back rolled back; the error with the reason follows.
   rolledBack?: boolean;
+  // …or with its outcome unknown.
+  unknown?: boolean;
   resolve: () => void;
   reject: (error: TablePeekSocketError) => void;
 }
@@ -479,10 +485,12 @@ export class TablePeekSocket {
     });
   }
 
-  cancel(conn: string): void {
+  // job: a background job's Stop, which interrupts the job's statement
+  // running now (and only that).
+  cancel(conn: string, job = false): void {
     const ws = this.ws;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "cancel", conn }));
+      ws.send(JSON.stringify({ type: "cancel", conn, ...(job ? { job: true } : {}) }));
     }
   }
 
@@ -696,7 +704,9 @@ export class TablePeekSocket {
       const rolledBack = message.id == null && message.conn != null ? this.txWaiters.get(message.conn) : undefined;
       if (rolledBack?.rolledBack) {
         this.txWaiters.delete(rolledBack.conn);
-        rolledBack.reject(new TablePeekSocketError(message.message, false, true));
+        const failure = new TablePeekSocketError(message.message, false, true);
+        failure.outcomeUnknown = rolledBack.unknown === true;
+        rolledBack.reject(failure);
         return;
       }
       const error = new TablePeekSocketError(message.message, message.cancelled);
@@ -794,12 +804,13 @@ export class TablePeekSocket {
         if (target.expected === "committed" && message.state === "rolledback") {
           // Keep waiting for the reason; settle without it if none comes.
           target.rolledBack = true;
+          target.unknown = message.unknown === true;
           window.setTimeout(() => {
             if (this.txWaiters.get(target.conn) === target) {
               this.txWaiters.delete(target.conn);
-              target.reject(
-                new TablePeekSocketError(t("트랜잭션이 오류로 중단되어 롤백했습니다"), false, true),
-              );
+              const failure = new TablePeekSocketError(t("트랜잭션이 오류로 중단되어 롤백했습니다"), false, true);
+              failure.outcomeUnknown = target.unknown === true;
+              target.reject(failure);
             }
           }, 2000);
         } else {

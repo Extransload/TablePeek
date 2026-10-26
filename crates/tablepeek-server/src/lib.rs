@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
@@ -36,9 +36,14 @@ pub const SESSION_CAP: usize = 8;
 // Results a job (an export page) is still reading: kept apart from the page's
 // own, which they'd otherwise push out, until the job releases them.
 pub const JOB_SESSION_CAP: usize = 4;
-// How long a job's statement waits for a cancel meant for the statement
-// before it to land, at most.
+// How long a statement waits for a cancel meant for the statement before it
+// to land, at most.
 const CANCEL_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+// A job's transaction counts as the job's this long after its last statement.
+const JOB_LEASE: std::time::Duration = std::time::Duration::from_secs(60);
+// The refusal a write or a transaction command meets while a job holds the
+// session (the page shows it in the UI language).
+const JOB_BUSY: &str = "가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요.";
 
 pub struct QuerySession {
     pub data: QueryData,
@@ -159,12 +164,14 @@ pub struct ConnSlot {
     // trip (and never waits behind a long query holding the engine lock).
     summary: std::sync::Mutex<Option<SlotSummary>>,
     // One statement at a time on the session (the engine runs them one by
-    // one anyway), and what kind it is: a cancel reaches the page's own work,
-    // never a job's.
+    // one anyway), and what kind it is: a cancel reaches only the kind it is
+    // meant for.
     gate: tokio::sync::Mutex<()>,
     holder: std::sync::Mutex<Holder>,
-    // A job's transaction (an import's) is open on the session.
-    job_tx: AtomicBool,
+    // The open transaction is a job's (an import's, a restore's dump's own
+    // BEGIN): when a job's statement last ran in it. Who opened it decides,
+    // not which command did.
+    job_tx: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 /// Whose statement runs on a connection's session now.
@@ -175,8 +182,11 @@ pub enum Holder {
     // does.
     Foreground,
     // A background job's (an import's chunk, a restore's statement, an
-    // export's page) or a transaction command: never cancelled from here.
+    // export's page): only the job's own Stop cancels it.
     Job,
+    // A transaction command, a grid edit or row change: never cancelled,
+    // since an interrupted COMMIT or UPDATE leaves its outcome unknown.
+    Protected,
 }
 
 // Sets the slot's holder back to idle when the statement ends or is dropped.
@@ -261,7 +271,7 @@ impl ConnSlot {
             summary: std::sync::Mutex::new(None),
             gate: tokio::sync::Mutex::new(()),
             holder: std::sync::Mutex::new(Holder::Idle),
-            job_tx: AtomicBool::new(false),
+            job_tx: std::sync::Mutex::new(None),
         }
     }
 
@@ -300,17 +310,43 @@ impl ConnSlot {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Runs one statement through the session's gate, as `holder`. A job's
-    /// waits first for cancels already sent to land, so one meant for the
-    /// page's previous statement can't stop it.
-    pub async fn gated<T>(&self, holder: Holder, run: impl std::future::Future<Output = T>) -> T {
+    /// Runs one statement through the session's gate, as `holder`; `job`:
+    /// it is a background job's. Cancels already sent (for the page's
+    /// previous statement) land first: PostgreSQL and MySQL cancel whatever
+    /// is running when the request arrives. Whether a transaction the
+    /// statement leaves open is a job's is settled here too, before the next
+    /// statement can start.
+    pub async fn gated<T>(&self, holder: Holder, job: bool, run: impl std::future::Future<Output = T>) -> T {
         let _gate = self.gate.lock().await;
-        if holder == Holder::Job {
-            self.engine.cancels_settled(CANCEL_SETTLE).await;
-        }
+        self.engine.cancels_settled(CANCEL_SETTLE).await;
+        let before = self.engine.in_tx().await.unwrap_or(false);
         self.set_holder(holder);
         let _reset = HolderReset(self);
-        run.await
+        let outcome = run.await;
+        let after = self.engine.in_tx().await.unwrap_or(false);
+        let mut owner = self.job_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !after {
+            *owner = None;
+        } else if job && (!before || owner.is_some()) {
+            // Opened by the job, or the job still at work in its own.
+            *owner = Some(std::time::Instant::now());
+        }
+        outcome
+    }
+
+    /// A job's transaction is open: its statement runs now, or one ran in it
+    /// lately. A job whose page went away (a reload mid-import) lets go
+    /// after JOB_LEASE, so its leftover transaction can be ended from the
+    /// TX controls.
+    pub fn job_tx_open(&self) -> bool {
+        let last = *self.job_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        last.is_some_and(|at| self.holder() == Holder::Job || at.elapsed() < JOB_LEASE)
+    }
+
+    /// The job is done (or its page gave up on it): an open transaction it
+    /// leaves is the user's now.
+    pub fn end_job(&self) {
+        *self.job_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Cancels the page's statement running now, if one is. Not a job's,
@@ -318,20 +354,51 @@ impl ConnSlot {
     /// on PostgreSQL and end the whole session on SQL Server, so the page's
     /// statement runs to its end instead.
     fn cancel_if_inflight(&self) {
+        let job_tx = self.job_tx_open();
         let holder = self
             .holder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *holder == Holder::Foreground && !self.job_tx.load(Ordering::SeqCst) {
+        if *holder == Holder::Foreground && !job_tx {
             self.engine.cancel();
         }
     }
 
+    /// A job's Stop: cancels its statement running now (an import's chunk
+    /// waiting on a row lock, a long export read). Never a transaction
+    /// command, an edit or the page's statement.
+    fn cancel_job(&self) {
+        let holder = self
+            .holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *holder == Holder::Job {
+            self.engine.cancel();
+        }
+    }
+
+    /// What a write from the page (or another tab) meets while a job's
+    /// transaction is open: it would join the job's transaction, and a
+    /// COMMIT or ROLLBACK would end it.
+    fn refused_while_job(&self) -> Result<(), EngineError> {
+        if self.job_tx_open() {
+            return Err(EngineError::BadRequest(JOB_BUSY.into()));
+        }
+        Ok(())
+    }
+
     /// The page's statement while a job's transaction is open: PostgreSQL
     /// would abort that transaction (the job's work with it) if the statement
-    /// failed, so it runs under a savepoint of its own there.
+    /// failed, so it runs under a savepoint of its own there. A write is
+    /// refused (see refused_while_job).
     async fn foreground_query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
-        if !(self.job_tx.load(Ordering::SeqCst) && self.engine.failure_aborts_transaction()) {
+        if !self.job_tx_open() {
+            return self.engine.query(sql, max_rows).await;
+        }
+        if !tablepeek_engine::is_read_only(sql) {
+            return Err(EngineError::BadRequest(JOB_BUSY.into()));
+        }
+        if !(self.engine.failure_aborts_transaction() && self.engine.in_tx().await.unwrap_or(false)) {
             return self.engine.query(sql, max_rows).await;
         }
         self.engine.query("SAVEPOINT tablepeek_page", 1).await?;
@@ -347,14 +414,6 @@ impl ConnSlot {
             let _ = self.engine.query("RELEASE SAVEPOINT tablepeek_page", 1).await;
         }
         outcome
-    }
-
-    /// After a statement: a transaction that is gone (ended from the editor,
-    /// lost with the session) no longer holds the job's.
-    async fn settle_job_tx(&self) {
-        if self.job_tx.load(Ordering::SeqCst) && !self.engine.in_tx().await.unwrap_or(false) {
-            self.job_tx.store(false, Ordering::SeqCst);
-        }
     }
 }
 
@@ -586,6 +645,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/schema", get(schema_route))
         .route("/api/count", get(count_route))
         .route("/api/exec", post(exec_route))
+        .route("/api/job", post(job_route))
         .route("/api/databases", get(databases_route))
         .route("/api/switch-db", post(switch_db_route))
         .route("/api/query", post(query))
@@ -827,6 +887,50 @@ struct ExecRequest {
     job: bool,
 }
 
+#[derive(Deserialize)]
+struct JobRequest {
+    // "start" before a job's first statement, "end" after its last.
+    action: String,
+}
+
+/// A background job (an import, a restore) starting or ending on a
+/// connection. Starting is refused while a transaction is open there, from
+/// any tab (the job's COMMIT, ROLLBACK or MySQL CREATE TABLE would end it),
+/// or another job holds it. Ending hands a transaction the job leaves open
+/// (a ROLLBACK that failed) to the TX controls.
+async fn job_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<JobRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let start = match req.action.as_str() {
+        "start" => true,
+        "end" => false,
+        _ => return Err(bad_request("invalid_request", "알 수 없는 job action")),
+    };
+    slot.gated(Holder::Protected, false, async {
+        if !start {
+            slot.end_job();
+            return Ok(());
+        }
+        slot.refused_while_job()?;
+        if slot.engine.in_tx().await.unwrap_or(false) {
+            return Err(EngineError::BadRequest(
+                "트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요.".into(),
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(engine_error)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 async fn exec_route(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -843,8 +947,10 @@ async fn exec_route(
     let slot = slot_for(&state, params.conn.as_deref()).await?;
     let _guard = InflightGuard::new(slot.inflight.clone());
     let holder = if req.job { Holder::Job } else { Holder::Foreground };
+    // The page's own (a count, a structure change): while a job's
+    // transaction is open, a read runs beside it and a write is refused.
     let result = slot
-        .gated(holder, async {
+        .gated(holder, req.job, async {
             if req.job {
                 slot.engine.execute(sql, 1).await
             } else {
@@ -858,7 +964,6 @@ async fn exec_route(
             }
         })
         .await;
-    slot.settle_job_tx().await;
     let result = result.map_err(engine_error)?;
     if req.history {
         let change = Change {
@@ -1001,6 +1106,8 @@ async fn switch_db_route(
     }
     slot.cancel_if_inflight();
     slot.engine.cancel();
+    // The session (and any job's transaction in it) goes with the switch.
+    slot.end_job();
     {
         let mut sessions = slot.sessions.lock().await;
         sessions.clear();
@@ -2686,10 +2793,18 @@ async fn query(
     let slot = slot_for(&state, params.conn.as_deref()).await?;
     let max_rows = req.max_rows.unwrap_or(10_000).clamp(1, 500_000);
     let _inflight = InflightGuard::new(slot.inflight.clone());
-    slot.gated(Holder::Foreground, slot.engine.execute(&req.sql, max_rows))
-        .await
-        .map(Json)
-        .map_err(engine_error)
+    slot.gated(Holder::Foreground, false, async {
+        slot.foreground_query(&req.sql, max_rows).await.map(|data| QueryResult {
+            columns: data.columns.clone(),
+            row_count: data.row_count,
+            rows: data.rows_json(),
+            elapsed_ms: data.elapsed_ms,
+            truncated: data.truncated,
+        })
+    })
+    .await
+    .map(Json)
+    .map_err(engine_error)
 }
 
 #[derive(Deserialize)]
@@ -2914,6 +3029,11 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
     };
     // Console forwarders by connection id; each holds a Sender clone.
     let mut consoles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    // Transaction commands, edits and row changes wait their turn at the
+    // connection's gate; run here they would hold up this socket's other
+    // messages (fetches, cancels, releases) meanwhile. Each connection's
+    // run in order on a task of their own, which ends with the socket.
+    let mut ordered: HashMap<String, mpsc::UnboundedSender<Value>> = HashMap::new();
 
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
@@ -2948,17 +3068,41 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
                     }
                     "cancel" => {
                         if let Ok(slot) = slot_for(&state, Some(&conn)).await {
-                            slot.cancel_if_inflight();
+                            // A job's Stop reaches its own statement; the
+                            // editor's, the page's.
+                            if value["job"].as_bool().unwrap_or(false) {
+                                slot.cancel_job();
+                            } else {
+                                slot.cancel_if_inflight();
+                            }
                         }
                     }
-                    "edit" => handle_edit(&state, &sender, &value, &conn).await,
-                    "insert_row" => {
-                        handle_row_change(&state, &sender, &value, &conn, RowOp::Insert).await
+                    "edit" | "insert_row" | "delete_row" | "tx" => {
+                        let queue = ordered.entry(conn.clone()).or_insert_with(|| {
+                            let (queue, mut pending) = mpsc::unbounded_channel::<Value>();
+                            let state = state.clone();
+                            let sender = sender.clone();
+                            let conn = conn.clone();
+                            tokio::spawn(async move {
+                                while let Some(value) = pending.recv().await {
+                                    match value["type"].as_str().unwrap_or("") {
+                                        "edit" => handle_edit(&state, &sender, &value, &conn).await,
+                                        "insert_row" => {
+                                            handle_row_change(&state, &sender, &value, &conn, RowOp::Insert)
+                                                .await
+                                        }
+                                        "delete_row" => {
+                                            handle_row_change(&state, &sender, &value, &conn, RowOp::Delete)
+                                                .await
+                                        }
+                                        _ => handle_tx(&state, &sender, &value, &conn).await,
+                                    }
+                                }
+                            });
+                            queue
+                        });
+                        let _ = queue.send(value.clone());
                     }
-                    "delete_row" => {
-                        handle_row_change(&state, &sender, &value, &conn, RowOp::Delete).await
-                    }
-                    "tx" => handle_tx(&state, &sender, &value, &conn).await,
                     "console" => {
                         handle_console(&state, &sender, &value, &conn, &mut consoles).await
                     }
@@ -2981,10 +3125,12 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
     }
 
     // The writer ends once every Sender is gone: the forwarders' (aborted
-    // here), this one, and those of queries still finishing.
+    // here), this one, those of queries still finishing, and the ordered
+    // tasks', which end once their queues (dropped here) are done.
     for console in consoles.values() {
         console.abort();
     }
+    drop(ordered);
     cancel_all_inflight(&state).await;
     drop(sender);
     let _ = writer.await;
@@ -3185,43 +3331,42 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
     tokio::spawn(async move {
         let _inflight = InflightGuard::new(slot.inflight.clone());
         let started = std::time::Instant::now();
-        let mark = slot.engine.sql_log().ends();
-        let outcome = if job {
-            slot.gated(Holder::Job, slot.engine.query(&sql, max_rows)).await
-        } else {
-            let superseded = || {
-                let latest = sender
-                    .latest
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                latest.get(&conn) != seq.as_ref()
-            };
-            let ran = slot
-                .gated(Holder::Foreground, async {
-                    if superseded() {
-                        None
-                    } else {
-                        Some(slot.foreground_query(&sql, max_rows).await)
-                    }
-                })
-                .await;
-            match ran {
-                Some(outcome) => outcome,
-                None => {
-                    sender
-                        .json(error_json(Some(&id), Some(&conn), "쿼리가 취소되었습니다", true))
-                        .await;
-                    return;
-                }
-            }
+        let superseded = || {
+            let latest = sender
+                .latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            seq.is_some() && latest.get(&conn) != seq.as_ref()
         };
-        slot.settle_job_tx().await;
-        // Statements run here can open or close a transaction (or, failing,
-        // abort one): the page's indicator follows this.
-        let in_tx = slot.engine.in_tx().await.unwrap_or(false);
-        // One this statement ended (COMMIT or ROLLBACK typed here, a failed
-        // COMMIT, a deadlock) settles the cached results as the toolbar's do.
-        let ended = slot.engine.sql_log().ended_since(mark);
+        // Read inside the gate, so a transaction another statement ends (a
+        // job's COMMIT queued before this one) isn't put down to this one.
+        let ran = slot
+            .gated(if job { Holder::Job } else { Holder::Foreground }, job, async {
+                if superseded() {
+                    return None;
+                }
+                let mark = slot.engine.sql_log().ends();
+                let outcome = if job {
+                    slot.engine.query(&sql, max_rows).await
+                } else {
+                    slot.foreground_query(&sql, max_rows).await
+                };
+                // Statements run here can open or close a transaction (or,
+                // failing, abort one): the page's indicator follows this.
+                let in_tx = slot.engine.in_tx().await.unwrap_or(false);
+                // One this statement ended (COMMIT or ROLLBACK typed here, a
+                // failed COMMIT, a deadlock) settles the cached results as
+                // the toolbar's do.
+                let ended = slot.engine.sql_log().ended_since(mark);
+                Some((outcome, in_tx, ended))
+            })
+            .await;
+        let Some((outcome, in_tx, ended)) = ran else {
+            sender
+                .json(error_json(Some(&id), Some(&conn), "쿼리가 취소되었습니다", true))
+                .await;
+            return;
+        };
         // An outcome nobody knows (a COMMIT lost with the connection, a
         // failed batch that also ended the transaction): reload, not revert.
         let reload = matches!(outcome, Err(EngineError::TxOutcomeUnknown(_)));
@@ -3260,6 +3405,16 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                 if invalidate {
                     meta["invalidate"] = json!(true);
                 }
+                // Kept before the page hears of it: a job's release (or the
+                // page's fetch) may come back the moment the meta arrives.
+                {
+                    let mut sessions = slot.sessions.lock().await;
+                    if job {
+                        sessions.insert_job(id.clone(), data.clone());
+                    } else {
+                        sessions.insert(id.clone(), data.clone());
+                    }
+                }
                 {
                     let _guard = sender.order.lock().await;
                     if sender
@@ -3269,14 +3424,6 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                         .is_err()
                     {
                         return;
-                    }
-                }
-                {
-                    let mut sessions = slot.sessions.lock().await;
-                    if job {
-                        sessions.insert_job(id.clone(), data.clone());
-                    } else {
-                        sessions.insert(id.clone(), data.clone());
                     }
                 }
                 if let Err(err) = send_window(&slot, &sender, &conn, &id, 0, window).await {
@@ -3443,7 +3590,15 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
         expr: msg.expr,
     };
 
-    match slot.engine.edit(&target).await {
+    // Through the gate, never cancelled: an interrupted UPDATE leaves its
+    // outcome unknown. Refused while a job's transaction is open.
+    let outcome = slot
+        .gated(Holder::Protected, false, async {
+            slot.refused_while_job()?;
+            slot.engine.edit(&target).await
+        })
+        .await;
+    match outcome {
         Ok(changed) if target.expr.is_some() => {
             // Only the database knows what DEFAULT or the time became, so the
             // cached cell isn't patched: the page reads the row again. Inside
@@ -3554,7 +3709,13 @@ async fn handle_row_change(
 
     let outcome: Result<u64, EngineError> = match op {
         RowOp::Insert => match parse_insert_values(&value["values"]) {
-            Ok(values) => slot.engine.insert_values(&table, &values).await,
+            Ok(values) => {
+                slot.gated(Holder::Protected, false, async {
+                    slot.refused_while_job()?;
+                    slot.engine.insert_values(&table, &values).await
+                })
+                .await
+            }
             Err(message) => {
                 sender
                     .json(error_json(Some(&id), Some(conn), &message, false))
@@ -3563,7 +3724,13 @@ async fn handle_row_change(
             }
         },
         RowOp::Delete => match parse_pk_values(&value["pk"]) {
-            Ok(pk) => slot.engine.delete_row(&table, &pk).await,
+            Ok(pk) => {
+                slot.gated(Holder::Protected, false, async {
+                    slot.refused_while_job()?;
+                    slot.engine.delete_row(&table, &pk).await
+                })
+                .await
+            }
             Err(message) => {
                 sender
                     .json(error_json(Some(&id), Some(conn), &message, false))
@@ -3679,31 +3846,29 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
         }
     };
     // An import's own transaction: while it is open the page's statements
-    // can't cancel anything (see cancel_if_inflight).
+    // can't cancel anything (see cancel_if_inflight), and the page's own
+    // transaction commands (from any tab) are refused.
     let job = value["job"].as_bool().unwrap_or(false);
+    if !matches!(action, "begin" | "commit" | "rollback") {
+        sender
+            .json(error_json(None, Some(conn), "알 수 없는 tx action", false))
+            .await;
+        return;
+    }
     // A transaction command is never cancelled: an interrupted COMMIT leaves
     // its outcome unknown.
-    let result = match action {
-        "begin" => slot.gated(Holder::Job, slot.engine.begin_tx()).await.map(|_| "began"),
-        "commit" => slot.gated(Holder::Job, slot.engine.commit_tx()).await.map(|_| "committed"),
-        "rollback" => slot
-            .gated(Holder::Job, slot.engine.rollback_tx())
-            .await
-            .map(|_| "rolledback"),
-        _ => {
-            sender
-                .json(error_json(None, Some(conn), "알 수 없는 tx action", false))
-                .await;
-            return;
-        }
-    };
-    if action == "begin" {
-        if job && result.is_ok() {
-            slot.job_tx.store(true, Ordering::SeqCst);
-        }
-    } else {
-        slot.settle_job_tx().await;
-    }
+    let result = slot
+        .gated(Holder::Protected, job, async {
+            if !job {
+                slot.refused_while_job()?;
+            }
+            match action {
+                "begin" => slot.engine.begin_tx().await.map(|_| "began"),
+                "commit" => slot.engine.commit_tx().await.map(|_| "committed"),
+                _ => slot.engine.rollback_tx().await.map(|_| "rolledback"),
+            }
+        })
+        .await;
     // A COMMIT that ended the transaction without committing (an aborted
     // PostgreSQL transaction, a session a cancel killed), or whose outcome
     // was lost with the connection: the page sees the transaction closed,
@@ -3725,6 +3890,11 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
             let mut body = json!({"type": "tx", "conn": conn, "state": state_label});
             if invalidate {
                 body["invalidate"] = json!(true);
+            }
+            // Whether the COMMIT went through is not known (the connection
+            // dropped with it): the page mustn't take it as rolled back.
+            if reload {
+                body["unknown"] = json!(true);
             }
             sender.json(body).await;
             if let Some((reason, _)) = closed {
@@ -6051,7 +6221,9 @@ mod tests {
         let slot = gate_slot();
         for (holder, cancelled) in [(Holder::Foreground, true), (Holder::Job, false)] {
             let running = slot.clone();
-            let task = tokio::spawn(async move { running.gated(holder, running.engine.query(SLOW, 1)).await });
+            let task = tokio::spawn(async move {
+                running.gated(holder, holder == Holder::Job, running.engine.query(SLOW, 1)).await
+            });
             until_held(&slot, holder).await;
             slot.cancel_if_inflight();
             let outcome = task.await.unwrap();
@@ -6068,10 +6240,11 @@ mod tests {
     #[tokio::test]
     async fn nothing_is_cancelled_while_a_jobs_transaction_is_open() {
         let slot = gate_slot();
-        slot.job_tx.store(true, Ordering::SeqCst);
+        *slot.job_tx.lock().unwrap() = Some(std::time::Instant::now());
         let running = slot.clone();
-        let task =
-            tokio::spawn(async move { running.gated(Holder::Foreground, running.engine.query(SLOW, 1)).await });
+        let task = tokio::spawn(async move {
+            running.gated(Holder::Foreground, false, running.engine.query(SLOW, 1)).await
+        });
         until_held(&slot, Holder::Foreground).await;
         slot.cancel_if_inflight();
         assert!(task.await.unwrap().is_ok(), "the page's statement ran to its end");
@@ -6082,7 +6255,7 @@ mod tests {
         let slot = gate_slot();
         let job = slot.clone();
         let job_task = tokio::spawn(async move {
-            let outcome = job.gated(Holder::Job, job.engine.query(SLOW, 1)).await;
+            let outcome = job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await;
             (outcome.is_ok(), std::time::Instant::now())
         });
         until_held(&slot, Holder::Job).await;
@@ -6090,7 +6263,7 @@ mod tests {
         slot.cancel_if_inflight();
         let page = slot.clone();
         let page_task = tokio::spawn(async move {
-            let outcome = page.gated(Holder::Foreground, page.engine.query("SELECT 1", 1)).await;
+            let outcome = page.gated(Holder::Foreground, false, page.engine.query("SELECT 1", 1)).await;
             (outcome.is_ok(), std::time::Instant::now())
         });
         let (job_ok, job_done) = job_task.await.unwrap();
@@ -6106,7 +6279,7 @@ mod tests {
         let slot = slot_for(&state, Some("main")).await.unwrap();
         let (sender, mut rx) = test_sender();
         let job = slot.clone();
-        let held = tokio::spawn(async move { job.gated(Holder::Job, job.engine.query(SLOW, 1)).await });
+        let held = tokio::spawn(async move { job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await });
         until_held(&slot, Holder::Job).await;
         // Two of the page's queries queue behind the job; the second replaces the first.
         let run = |id: &str, sql: &str| json!({ "type": "query", "id": id, "sql": sql });
@@ -6125,6 +6298,205 @@ mod tests {
         assert_eq!(replies["old"]["type"], json!("error"));
         assert_eq!(replies["old"]["cancelled"], json!(true));
         assert_eq!(replies["new"]["type"], json!("meta"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    async fn exec_as(state: &AppState, sql: &str, job: bool) -> Result<Value, (StatusCode, Json<ApiError>)> {
+        exec_route(
+            State(state.clone()),
+            test_headers(),
+            Query(ConnQuery { conn: None, system: None }),
+            Json(ExecRequest { sql: sql.into(), history: false, job }),
+        )
+        .await
+        .map(|Json(value)| value)
+    }
+
+    async fn job_action(state: &AppState, action: &str) -> Result<Value, (StatusCode, Json<ApiError>)> {
+        job_route(
+            State(state.clone()),
+            test_headers(),
+            Query(ConnQuery { conn: None, system: None }),
+            Json(JobRequest { action: action.into() }),
+        )
+        .await
+        .map(|Json(value)| value)
+    }
+
+    #[tokio::test]
+    async fn a_transaction_is_the_jobs_when_a_jobs_statement_opened_it() {
+        let dir = temp_dir("job-tx-owner");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        // A restore's dump runs its own BEGIN as a job statement.
+        exec_as(&state, "BEGIN", true).await.unwrap();
+        assert!(slot.job_tx_open());
+        exec_as(&state, "COMMIT", true).await.unwrap();
+        assert!(!slot.job_tx_open());
+        // The user's own transaction stays the user's, even with an export's
+        // read (a job statement) running in it.
+        exec_as(&state, "BEGIN", false).await.unwrap();
+        exec_as(&state, "SELECT 1", true).await.unwrap();
+        assert!(!slot.job_tx_open());
+        exec_as(&state, "ROLLBACK", false).await.unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_jobs_stop_reaches_its_own_statement_and_nothing_else() {
+        let slot = gate_slot();
+        for (holder, cancelled) in [(Holder::Job, true), (Holder::Foreground, false), (Holder::Protected, false)] {
+            let running = slot.clone();
+            let task = tokio::spawn(async move {
+                running.gated(holder, holder == Holder::Job, running.engine.query(SLOW, 1)).await
+            });
+            until_held(&slot, holder).await;
+            slot.cancel_job();
+            let outcome = task.await.unwrap();
+            assert_eq!(
+                outcome.as_ref().err().is_some_and(EngineError::is_interrupted),
+                cancelled,
+                "{holder:?}"
+            );
+        }
+        // Nor does the page's cancel reach a transaction command or an edit.
+        let running = slot.clone();
+        let task = tokio::spawn(async move {
+            running.gated(Holder::Protected, false, running.engine.query(SLOW, 1)).await
+        });
+        until_held(&slot, Holder::Protected).await;
+        slot.cancel_if_inflight();
+        assert!(task.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn whose_transaction_it_is_is_settled_before_the_next_statement_starts() {
+        let slot = gate_slot();
+        let job = slot.clone();
+        let held = tokio::spawn(async move { job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await });
+        until_held(&slot, Holder::Job).await;
+        let job = slot.clone();
+        let begin = tokio::spawn(async move { job.gated(Holder::Protected, true, job.engine.begin_tx()).await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // The page's statement queued right behind the job's BEGIN.
+        let page = slot.clone();
+        let seen = tokio::spawn(async move { page.gated(Holder::Foreground, false, async { page.job_tx_open() }).await });
+        held.await.unwrap().unwrap();
+        begin.await.unwrap().unwrap();
+        assert!(seen.await.unwrap(), "the page's statement saw the job's transaction as the job's");
+        slot.gated(Holder::Protected, true, slot.engine.rollback_tx()).await.unwrap();
+        assert!(!slot.job_tx_open());
+    }
+
+    #[tokio::test]
+    async fn a_page_query_doesnt_report_a_transaction_end_a_job_caused() {
+        let dir = temp_dir("job-commit-mark");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let (sender, mut rx) = test_sender();
+        exec_as(&state, "BEGIN", true).await.unwrap();
+        let job = slot.clone();
+        let held = tokio::spawn(async move { job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await });
+        until_held(&slot, Holder::Job).await;
+        // The job's COMMIT queues first, then the page's query.
+        let commit_state = state.clone();
+        let commit = tokio::spawn(async move { exec_as(&commit_state, "COMMIT", true).await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        handle_query(&state, &sender, &json!({ "type": "query", "id": "page", "sql": "SELECT 1" }), "main").await;
+        held.await.unwrap().unwrap();
+        commit.await.unwrap().unwrap();
+        let meta = next_of(&mut rx, "meta").await;
+        assert_eq!(meta["id"], json!("page"));
+        assert_eq!(meta["tx"], Value::Null, "the job's COMMIT isn't the page's");
+        assert_eq!(meta["in_tx"], json!(false));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_page_can_read_but_not_write_or_end_a_jobs_transaction() {
+        let dir = temp_dir("job-refusals");
+        let state = test_state(&dir);
+        let (sender, mut rx) = test_sender();
+        exec_as(&state, "BEGIN", true).await.unwrap();
+        // Another tab's exec: a read runs, a write is refused.
+        exec_as(&state, "SELECT COUNT(*) FROM demo", false).await.unwrap();
+        let refused = exec_as(&state, "DELETE FROM demo", false).await.unwrap_err();
+        assert_eq!(refused.1 .0.message, JOB_BUSY);
+        // Its transaction commands, queries that write, and row changes.
+        handle_tx(&state, &sender, &json!({ "type": "tx", "action": "commit" }), "main").await;
+        assert_eq!(next_of(&mut rx, "error").await["message"], json!(JOB_BUSY));
+        handle_query(&state, &sender, &json!({ "type": "query", "id": "w", "sql": "UPDATE demo SET name = 'x'" }), "main").await;
+        let write = next_of(&mut rx, "error").await;
+        assert_eq!((write["id"].clone(), write["message"].clone()), (json!("w"), json!(JOB_BUSY)));
+        handle_query(&state, &sender, &json!({ "type": "query", "id": "r", "sql": "SELECT * FROM demo" }), "main").await;
+        assert_eq!(next_of(&mut rx, "meta").await["id"], json!("r"));
+        let delete = json!({ "type": "delete_row", "id": "d", "session": "none", "table": "demo", "pk": [{ "column": "id", "value": 1 }] });
+        handle_row_change(&state, &sender, &delete, "main", RowOp::Delete).await;
+        assert_eq!(next_of(&mut rx, "error").await["message"], json!(JOB_BUSY));
+        // Starting another job is refused too.
+        assert_eq!(job_action(&state, "start").await.unwrap_err().1 .0.message, JOB_BUSY);
+        exec_as(&state, "COMMIT", true).await.unwrap();
+        exec_as(&state, "DELETE FROM demo WHERE id = -1", false).await.unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_job_starts_only_with_no_transaction_open_and_its_end_hands_one_over() {
+        let dir = temp_dir("job-start-end");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        exec_as(&state, "BEGIN", false).await.unwrap();
+        let refused = job_action(&state, "start").await.unwrap_err();
+        assert!(refused.1 .0.message.contains("트랜잭션이 열려 있습니다"));
+        exec_as(&state, "ROLLBACK", false).await.unwrap();
+        job_action(&state, "start").await.unwrap();
+        // The job's ROLLBACK failed, say: its transaction is still open.
+        exec_as(&state, "BEGIN", true).await.unwrap();
+        assert!(slot.job_tx_open());
+        job_action(&state, "end").await.unwrap();
+        assert!(!slot.job_tx_open(), "the leftover transaction is the user's now");
+        exec_as(&state, "ROLLBACK", false).await.unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_jobs_result_is_kept_before_its_meta_goes_out() {
+        let dir = temp_dir("job-session-order");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let (sender, mut rx) = test_sender();
+        handle_query(&state, &sender, &json!({ "type": "query", "id": "page-1", "sql": "SELECT 1", "job": true }), "main").await;
+        let meta = next_of(&mut rx, "meta").await;
+        assert_eq!(meta["id"], json!("page-1"));
+        // A release sent the moment the meta arrives finds it.
+        assert!(slot.sessions.lock().await.get("page-1").is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_row_change_waits_its_turn_at_the_gate() {
+        let dir = temp_dir("row-change-gate");
+        let state = test_state(&dir);
+        let slot = slot_for(&state, Some("main")).await.unwrap();
+        let (sender, mut rx) = test_sender();
+        let job = slot.clone();
+        let held = tokio::spawn(async move {
+            let outcome = job.gated(Holder::Job, true, job.engine.query(SLOW, 1)).await;
+            (outcome, std::time::Instant::now())
+        });
+        until_held(&slot, Holder::Job).await;
+        let delete = json!({ "type": "delete_row", "id": "d", "session": "none", "table": "demo", "pk": [{ "column": "id", "value": -1 }] });
+        let change_state = state.clone();
+        let change_sender = sender.clone();
+        let change = tokio::spawn(async move {
+            handle_row_change(&change_state, &change_sender, &delete, "main", RowOp::Delete).await;
+            std::time::Instant::now()
+        });
+        let (outcome, job_done) = held.await.unwrap();
+        assert!(outcome.is_ok());
+        let change_done = change.await.unwrap();
+        assert!(change_done >= job_done, "the row change ran after the job's statement");
+        assert_eq!(next_of(&mut rx, "row_change").await["id"], json!("d"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

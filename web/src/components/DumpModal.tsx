@@ -4,6 +4,7 @@ import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts }
 import { t } from "../i18n";
 import { decodeText, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
 import { cancelJob, startJob } from "../jobs";
+import { restoreSql, snapshotSql } from "../sessionSettings";
 import { getSettings } from "../settings";
 import { splitSqlRanges } from "../sqlSplit";
 import { store, type EngineMeta, type TableDetail } from "../store";
@@ -91,6 +92,11 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
   async function runBackup(): Promise<void> {
     const tables = meta.tables.filter((name) => selected.has(name));
     if (tables.length === 0 || busy) {
+      return;
+    }
+    // An import's rows aren't committed yet: a backup now would hold them.
+    if (store.inOwnTx(conn)) {
+      setError(t("가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요."));
       return;
     }
     const job = startJob(t("백업"), t("{count}개 테이블", { count: tables.length }), tables.length);
@@ -238,15 +244,20 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     // transaction, or theirs the dump's), and its reads can't cancel the
     // dump's statements. Refused while the user's transaction or an import
     // holds it.
+    setBusy(true);
     try {
-      store.claimConn(conn);
+      await store.claimConn(conn);
     } catch (err) {
+      setBusy(false);
       setError(errorOf(err, t("복원에 실패했습니다")));
       return;
     }
-    const job = startJob(t("복원"), restoreFile, statements.length, { cancellable: true });
+    const job = startJob(t("복원"), restoreFile, statements.length, {
+      cancellable: true,
+      // A statement still running (a big INSERT, one waiting on a lock) stops too.
+      onCancel: () => store.cancelJobStatement(conn),
+    });
     restoreJobRef.current = job.id;
-    setBusy(true);
     setError(null);
     setInfo(null);
     setRestoreProgress({ done: 0, total: statements.length });
@@ -259,6 +270,17 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
       }
     };
     let executed = 0;
+    // What the dump may change for its run (foreign key checks, search_path),
+    // put back below however far it gets.
+    const snapshot = snapshotSql(meta.kind);
+    let settings: unknown[] | undefined;
+    if (snapshot !== null) {
+      try {
+        settings = (await store.exec(conn, snapshot, { job: true })).rows[0] as unknown[] | undefined;
+      } catch {
+        settings = undefined;
+      }
+    }
     try {
       for (const statement of statements) {
         if (job.signal.aborted) {
@@ -284,6 +306,15 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
       }
     } catch (err) {
       const failure = errorOf(err, t("복원에 실패했습니다"));
+      // Stop interrupted the statement in flight: it failed because it was stopped.
+      if (job.signal.aborted) {
+        const message = t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
+          count: executed.toLocaleString(),
+        });
+        job.fail(message);
+        report(message, true);
+        return;
+      }
       const line = restoreText.slice(0, statements[executed].codeFrom).split("\n").length;
       job.fail(failure);
       const where = { index: (executed + 1).toLocaleString(), line: line.toLocaleString() };
@@ -294,7 +325,15 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         store.setError(t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: failure, ...where }));
       }
     } finally {
-      store.releaseConn(conn);
+      const putBack = restoreSql(meta.kind, settings);
+      if (putBack !== null) {
+        try {
+          await store.exec(conn, putBack, { job: true });
+        } catch (err) {
+          report(t("복원 뒤 세션 설정(외래 키 검사 등)을 되돌리지 못했습니다: {error}", { error: errorOf(err, "") }), true);
+        }
+      }
+      await store.releaseConn(conn);
       restoreJobRef.current = null;
       if (mountedRef.current) {
         setBusy(false);

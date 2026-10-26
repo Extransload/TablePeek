@@ -162,14 +162,28 @@ export class ImportFailure extends Error {
   // Why the import couldn't be undone (a ROLLBACK that failed, MySQL's new
   // table that wouldn't drop), else null: the table is as it was.
   readonly undoError: string | null;
+  // The COMMIT went out but whether it went through is not known (the
+  // connection dropped with it): the rows, and a new table, may be there.
+  readonly outcomeUnknown: boolean;
 
-  constructor(message: string, row: number | null, stopped = false, undoError: string | null = null) {
+  constructor(
+    message: string,
+    row: number | null,
+    stopped = false,
+    undoError: string | null = null,
+    outcomeUnknown = false,
+  ) {
     super(message);
     this.row = row;
     this.stopped = stopped;
     this.undoError = undoError;
+    this.outcomeUnknown = outcomeUnknown;
   }
 }
+
+// What an ImportSession's commit throws when the COMMIT may have gone
+// through: anything but a rollback the server is sure of.
+export class CommitOutcomeUnknown extends Error {}
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
@@ -257,21 +271,25 @@ export async function runImport(
       throw stopped();
     }
   } catch (error) {
+    // A stop that interrupted the statement in flight fails it: still a stop.
+    const stop = signal.aborted || (error instanceof ImportFailure && error.stopped);
     const rollbackError = await rollback();
     if (rollbackError !== null) {
       // Nothing more is tried on a transaction that may still be open.
       throw new ImportFailure(
-        error instanceof ImportFailure && error.stopped ? "stopped" : messageOf(error),
+        stop ? "stopped" : messageOf(error),
         failedAt >= 0 ? failedAt : null,
-        error instanceof ImportFailure && error.stopped,
+        stop,
         rollbackError,
       );
     }
-    if (error instanceof ImportFailure || failedAt < 0) {
+    if (stop || error instanceof ImportFailure || failedAt < 0) {
       const undoError = await dropCreated();
+      if (stop) {
+        throw new ImportFailure("stopped", null, true, undoError);
+      }
       if (undoError !== null) {
-        const stop = error instanceof ImportFailure && error.stopped;
-        throw new ImportFailure(stop ? "stopped" : messageOf(error), null, stop, undoError);
+        throw new ImportFailure(messageOf(error), null, false, undoError);
       }
       throw error;
     }
@@ -285,6 +303,11 @@ export async function runImport(
   try {
     await session.commit();
   } catch (error) {
+    if (error instanceof CommitOutcomeUnknown) {
+      // The table (MySQL's new one included) is left as the COMMIT left it.
+      throw new ImportFailure(messageOf(error), null, false, null, true);
+    }
+    // Rolled back for certain: MySQL's new table goes too.
     const undoError = await dropCreated();
     throw undoError === null ? error : new ImportFailure(messageOf(error), null, false, undoError);
   }

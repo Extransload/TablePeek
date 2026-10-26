@@ -2,12 +2,9 @@ use std::io::{self, BufRead, Write};
 
 use reqwest::blocking::{Client, Response};
 use serde_json::{json, Value};
+use tablepeek_engine::is_read_only;
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
-const READ_ONLY_PREFIXES: [&str; 6] = ["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"];
-const FORBIDDEN_WORDS: [&str; 7] = [
-    "INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "DROP", "ALTER",
-];
 
 pub struct McpConfig {
     pub url: String,
@@ -222,30 +219,6 @@ fn tool_text(text: String) -> Value {
 
 fn tool_error(message: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": message }], "isError": true })
-}
-
-fn is_read_only(sql: &str) -> bool {
-    let trimmed = sql.trim();
-    if trimmed.contains(';') {
-        return false;
-    }
-    let upper = trimmed.to_ascii_uppercase();
-    let first = upper.split_whitespace().next().unwrap_or("");
-    if !READ_ONLY_PREFIXES.contains(&first) {
-        return false;
-    }
-    !FORBIDDEN_WORDS
-        .iter()
-        .any(|word| contains_word(&upper, word))
-}
-
-fn contains_word(text: &str, word: &str) -> bool {
-    text.match_indices(word).any(|(index, _)| {
-        let before = text[..index].chars().next_back();
-        let after = text[index + word.len()..].chars().next();
-        !before.is_some_and(|value| value.is_alphanumeric() || value == '_')
-            && !after.is_some_and(|value| value.is_alphanumeric() || value == '_')
-    })
 }
 
 const CONN_DESCRIPTION: &str =

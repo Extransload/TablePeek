@@ -31,6 +31,9 @@ export interface JobHandle {
 
 export interface JobOptions {
   cancellable?: boolean;
+  // Called on a stop: the work's statement in flight can be interrupted
+  // rather than waited for (a chunk stuck on a row lock).
+  onCancel?: () => void;
 }
 
 type Listener = (jobs: Job[]) => void;
@@ -39,6 +42,7 @@ let jobSeq = 0;
 let jobs: Job[] = [];
 const listeners = new Set<Listener>();
 const controllers = new Map<string, AbortController>();
+const cancelHooks = new Map<string, () => void>();
 
 function emit(): void {
   const snapshot = jobs.slice();
@@ -74,6 +78,9 @@ export function startJob(label: string, detail: string, total: number, options: 
   const id = `job-${jobSeq}`;
   const controller = new AbortController();
   controllers.set(id, controller);
+  if (options.onCancel !== undefined) {
+    cancelHooks.set(id, options.onCancel);
+  }
   const job: Job = {
     id,
     label,
@@ -110,6 +117,7 @@ export function startJob(label: string, detail: string, total: number, options: 
     },
     finish() {
       controllers.delete(id);
+      cancelHooks.delete(id);
       if (
         patchRunning(id, (entry) => ({
           ...entry,
@@ -124,6 +132,7 @@ export function startJob(label: string, detail: string, total: number, options: 
     },
     fail(message) {
       controllers.delete(id);
+      cancelHooks.delete(id);
       if (
         patchRunning(id, (entry) => ({ ...entry, status: "error", error: message, finishedAt: Date.now() }))
       ) {
@@ -148,6 +157,9 @@ export function cancelJob(id: string): void {
     emit();
   }
   controller?.abort();
+  const onCancel = cancelHooks.get(id);
+  cancelHooks.delete(id);
+  onCancel?.();
 }
 
 export function clearFinishedJobs(): void {
