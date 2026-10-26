@@ -54,6 +54,7 @@ import { LockScreen } from "./components/LockScreen";
 import { OverviewPanel } from "./components/OverviewPanel";
 import { CellInspector, type CellAnchor } from "./components/CellInspector";
 import { RowDetailPanel } from "./components/RowDetailPanel";
+import { ResultBar, StatementMessages, statementStatus, type ShownResult, type StatementMessage } from "./components/ResultBar";
 import { LoadingState, Spinner } from "./components/Spinner";
 import { SchemaSidebar, type TableAction } from "./components/SchemaSidebar";
 import { SidebarPanel } from "./components/SidebarPanel";
@@ -357,6 +358,19 @@ async function writeClipboard(text: string): Promise<void> {
 
 function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+// The pane a statement's outcome opens on: an EXPLAIN's plan, its rows, or
+// the Message view for a failure or a statement without result columns
+// (UPDATE, DDL), whose empty grid would say nothing. Null leaves it as it is.
+function viewOfOutcome(outcome: QueryOutcome): "grid" | "message" | "plan" | null {
+  if (outcome.kind === "cancelled") {
+    return null;
+  }
+  if (outcome.kind === "error" || outcome.result.meta.columns.length === 0) {
+    return "message";
+  }
+  return isExplainSql(outcome.result.sql) ? "plan" : "grid";
 }
 
 function sameSql(a: string | undefined, b: string | undefined): boolean {
@@ -1114,10 +1128,9 @@ export default function App() {
       return false;
     }
     if (activeConnIdRef.current === conn && current.activeId === tabId) {
-      if (outcome.kind === "error") {
-        setResultView(tabById(tabsOf(conn) ?? { tabs: [], activeId: "" }, tabId)?.kind === "data" ? "grid" : "message");
-      } else if (outcome.kind === "ok") {
-        setResultView(isExplainSql(outcome.result.sql) ? "plan" : "grid");
+      const view = tabById(current, tabId)?.kind === "data" ? "grid" : viewOfOutcome(outcome);
+      if (view !== null) {
+        setResultView(view);
       }
     }
     const existing = tabById(current, tabId);
@@ -1447,7 +1460,8 @@ export default function App() {
             conn,
             tabId,
             entries: outcomes.map((outcome, index) => ({
-              label: t("쿼리 {count}", { count: index + 1 }),
+              // Not "쿼리 N": that's how query tabs are named.
+              label: t("결과 {count}", { count: index + 1 }),
               sql: statements[index] ?? "",
               outcome,
             })),
@@ -1605,13 +1619,7 @@ export default function App() {
     }
     setResultSets((prev) => ({ ...prev, [resultChips.tabId]: { ...resultChips, active: index } }));
     // The pane follows: a failed statement's message, a plan, or the rows.
-    setResultView(
-      entry.outcome.kind === "error"
-        ? "message"
-        : entry.outcome.kind === "ok" && isExplainSql(entry.outcome.result.sql)
-          ? "plan"
-          : "grid",
-    );
+    setResultView(viewOfOutcome(entry.outcome) ?? "grid");
     const next = patchFromOutcome(current, resultChips.tabId, entry.outcome);
     setTabsFor(resultChips.conn, next);
     const tab = tabById(next, resultChips.tabId);
@@ -4225,6 +4233,40 @@ export default function App() {
   const resultChips = activeTab !== null ? (resultSets[activeTab.id] ?? null) : null;
   const chipsShown = resultChips !== null && resultChips.conn === activeConnId;
   const planAvailable = state.result !== null && isExplainSql(state.result.sql);
+  // The query tab's last run as its result bar reports it. Picking one of
+  // several statements' results patches the tab, so this is the one shown.
+  const activeQueryTab = activeTab !== null && activeTab.kind === "query" ? activeTab : null;
+  const shownResult: ShownResult | null =
+    activeQueryTab === null
+      ? null
+      : activeQueryTab.error !== undefined
+        ? { kind: "error" }
+        : activeQueryTab.info !== undefined
+          ? { kind: "note", text: activeQueryTab.info }
+          : activeQueryTab.meta !== undefined
+            ? { kind: "ok", meta: activeQueryTab.meta }
+            : null;
+  // The Message view's lines: every statement of the run, or its only one.
+  const statementMessages: StatementMessage[] =
+    chipsShown && resultChips !== null
+      ? resultChips.entries.map((entry) => ({
+          label: entry.label,
+          sql: entry.sql,
+          outcome: entry.outcome.kind === "ok" ? { kind: "ok", meta: entry.outcome.result.meta } : entry.outcome,
+        }))
+      : activeQueryTab?.error !== undefined
+        ? [{ label: t("결과 {count}", { count: 1 }), sql: "", outcome: { kind: "error", error: activeQueryTab.error } }]
+        : shownResult?.kind === "ok"
+          ? [{ label: t("결과 {count}", { count: 1 }), sql: "", outcome: { kind: "ok", meta: shownResult.meta } }]
+          : [];
+  // Notes with no statement line of their own: a lone statement's cancel or
+  // expired result, "changes applied". Several statements' lines already say
+  // which one was cancelled.
+  const tabNote = activeQueryTab?.info ?? null;
+  const messageNotes = [chipsShown ? null : tabNote, state.info].filter(
+    (note, index, all): note is string =>
+      note !== null && all.indexOf(note) === index && !(chipsShown && note === tabNote),
+  );
   const detailPanelOpen = activeKey !== null && detailPanels[activeKey] === true;
   // TablePlus's Data | Structure | Index switch, which leads each view's footer.
   const tableViewTabs =
@@ -4311,6 +4353,21 @@ export default function App() {
     setStructurePick(null);
     lastStructurePickRef.current = null;
   }, [tabs?.activeId]);
+
+  // A query tab comes back on the pane its last run opened, so an UPDATE's
+  // tab shows its message again rather than an empty grid.
+  useEffect(() => {
+    if (activeQueryTab === null) {
+      return;
+    }
+    setResultView(
+      activeQueryTab.error !== undefined || activeQueryTab.meta?.columns.length === 0
+        ? "message"
+        : planAvailable
+          ? "plan"
+          : "grid",
+    );
+  }, [activeConnId, tabs?.activeId]);
 
   // The column list belongs to the Data view it was opened on.
   useEffect(() => {
@@ -4913,8 +4970,6 @@ export default function App() {
                           }
                         />
                       ) : null}
-                      {/* Results show on their own; this bar appears only for a plan to
-                          switch to, several statements' results, or rows cut off. */}
                       {/* Several statements' results: one segment each, the
                           one shown marked, so it's plain which result this is. */}
                       {!dataView && chipsShown && resultChips !== null ? (
@@ -4922,9 +4977,7 @@ export default function App() {
                           {resultChips.entries.map((entry, index) => {
                             const status =
                               entry.outcome.kind === "ok"
-                                ? entry.outcome.result.meta.columns.length > 0
-                                  ? t("{count}행", { count: entry.outcome.result.meta.rowCount.toLocaleString() })
-                                  : t("완료")
+                                ? statementStatus(entry.outcome.result.meta)
                                 : entry.outcome.kind === "error"
                                   ? t("오류")
                                   : t("취소됨");
@@ -4947,33 +5000,6 @@ export default function App() {
                               </button>
                             );
                           })}
-                        </div>
-                      ) : null}
-                      {!dataView && (planAvailable || state.result?.meta.truncated) ? (
-                        <div className="result-tabs">
-                          {planAvailable ? (
-                            <>
-                              <button
-                                type="button"
-                                className={`result-tab${resultView === "grid" ? " active" : ""}`}
-                                onClick={() => setResultView("grid")}
-                              >
-                                {t("그리드")}
-                              </button>
-                              <button
-                                type="button"
-                                className={`result-tab${resultView === "plan" ? " active" : ""}`}
-                                onClick={() => setResultView("plan")}
-                              >
-                                {t("계획")}
-                              </button>
-                            </>
-                          ) : null}
-                          {state.result?.meta.truncated ? (
-                            <span className="result-truncated warn">
-                              {t("최대 {count}행까지만 가져왔습니다", { count: maxRows.toLocaleString() })}
-                            </span>
-                          ) : null}
                         </div>
                       ) : null}
                       {dataView && state.error ? (
@@ -5048,13 +5074,22 @@ export default function App() {
                         ) : null}
                         {resultView === "message" && (
                           <div className="message-pane">
-                            {state.error ? (
+                            <StatementMessages entries={statementMessages} />
+                            {/* An error no statement line holds (applying edits, say). */}
+                            {state.error !== null &&
+                            !statementMessages.some(
+                              (entry) => entry.outcome.kind === "error" && entry.outcome.error === state.error,
+                            ) ? (
                               <ErrorNotice message={state.error} />
-                            ) : state.info ? (
-                              <div className="message-info">{tServer(state.info)}</div>
-                            ) : (
+                            ) : null}
+                            {messageNotes.map((note) => (
+                              <div className="message-info" key={note}>
+                                {tServer(note)}
+                              </div>
+                            ))}
+                            {statementMessages.length === 0 && state.error === null && messageNotes.length === 0 ? (
                               <div className="message-empty">{t("메시지가 없습니다")}</div>
-                            )}
+                            ) : null}
                           </div>
                         )}
                         {/* Rows already shown stay while new ones load; the
@@ -5075,6 +5110,17 @@ export default function App() {
                           </div>
                         ) : null}
                       </div>
+                      {/* Under the result, as the Data view's footer is (CSS order). */}
+                      {activeQueryTab !== null ? (
+                        <ResultBar
+                          view={resultView}
+                          planAvailable={planAvailable}
+                          shown={shownResult}
+                          canExport={state.result !== null && state.result.meta.columns.length > 0}
+                          onView={setResultView}
+                          onExport={openExport}
+                        />
+                      ) : null}
                         </>
                       )}
                     </>

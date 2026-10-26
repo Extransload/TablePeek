@@ -561,6 +561,7 @@ pub(crate) async fn query(
         source_table,
         pk,
         column_kinds,
+        rows_affected: read.rows_affected,
     })
 }
 
@@ -571,6 +572,8 @@ struct FirstResult {
     values: Vec<Vec<Value>>,
     count: usize,
     truncated: bool,
+    /// The OK packet's count, for a statement with no result set.
+    rows_affected: Option<u64>,
 }
 
 async fn first_result(
@@ -604,6 +607,8 @@ async fn first_result(
             }
         }
     }
+    // Read before the rest of a batch replaces the last OK packet.
+    let rows_affected = columns.is_empty().then(|| result.affected_rows());
     // The rest of a multi-statement batch: a statement that failed there
     // fails this query, not the next one.
     result.drop_result().await?;
@@ -612,6 +617,7 @@ async fn first_result(
         values,
         count,
         truncated,
+        rows_affected,
     })
 }
 

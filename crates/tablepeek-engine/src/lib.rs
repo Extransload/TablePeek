@@ -163,6 +163,10 @@ pub struct QueryData {
     /// for MySQL's TINYINT(1), whose values are 1 and 0. Empty when nothing
     /// is known.
     pub column_kinds: Vec<Option<&'static str>>,
+    /// Rows a statement without a result set (INSERT, UPDATE, DELETE, DDL)
+    /// changed, as the database reports it. None for one that returns rows,
+    /// or where the driver doesn't say (SQL Server's query stream).
+    pub rows_affected: Option<u64>,
 }
 
 impl QueryData {
@@ -178,6 +182,7 @@ impl QueryData {
             source_table: None,
             pk: None,
             column_kinds: Vec::new(),
+            rows_affected: None,
         }
     }
 
@@ -1194,6 +1199,9 @@ fn run_query_sync(
     let started = Instant::now();
     let conn = lock_conn(inner)?;
     let was_in_tx = !conn.is_autocommit();
+    // changes() keeps the last INSERT/UPDATE/DELETE's count through other
+    // statements; an unchanged total says this one (DDL, say) changed none.
+    let total_before = conn.conn.total_changes();
 
     let mut stmt = conn.prepare(sql)?;
     let columns: Vec<String> = stmt
@@ -1220,6 +1228,13 @@ fn run_query_sync(
         }
     }
     drop(stmt);
+    let rows_affected = (col_count == 0).then(|| {
+        if conn.conn.total_changes() == total_before {
+            0
+        } else {
+            conn.conn.changes()
+        }
+    });
     // A transaction the editor ended (COMMIT, ROLLBACK) settles the GUI
     // changes made inside it; changes still held outside any transaction
     // belong to one an error rolled back.
@@ -1251,6 +1266,7 @@ fn run_query_sync(
         // A BOOLEAN column's 1 and 0 show as booleans once the table's
         // structure is known; the result alone doesn't say.
         column_kinds: Vec::new(),
+        rows_affected,
     })
 }
 
@@ -1918,6 +1934,25 @@ mod tests {
         let data = engine.query("SELECT id FROM demo", 7).await.unwrap();
         assert_eq!(data.row_count, 7);
         assert!(data.truncated);
+    }
+
+    #[tokio::test]
+    async fn statements_without_rows_report_rows_affected() {
+        let engine = Engine::open_demo(10).unwrap();
+        let update = engine
+            .query("UPDATE demo SET name = name WHERE id <= 3", 100)
+            .await
+            .unwrap();
+        assert!(update.columns.is_empty());
+        assert_eq!(update.rows_affected, Some(3));
+        // SQLite's changes() still holds the UPDATE's 3 here.
+        let ddl = engine
+            .query("CREATE TABLE affected_probe(id INTEGER)", 100)
+            .await
+            .unwrap();
+        assert_eq!(ddl.rows_affected, Some(0));
+        let select = engine.query("SELECT id FROM demo", 100).await.unwrap();
+        assert_eq!(select.rows_affected, None);
     }
 
     #[tokio::test]

@@ -3045,6 +3045,7 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                     "source_table": data.source_table,
                     "pk": data.pk,
                     "column_kinds": data.column_kinds,
+                    "rows_affected": data.rows_affected,
                     "in_tx": in_tx,
                 });
                 if let Some(state) = tx_state {

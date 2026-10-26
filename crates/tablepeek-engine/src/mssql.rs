@@ -594,6 +594,8 @@ pub(crate) async fn query(
         pk,
         // Booleans arrive as true and false.
         column_kinds: Vec::new(),
+        // The query stream keeps its DONE tokens' row counts to itself.
+        rows_affected: None,
     })
 }
 

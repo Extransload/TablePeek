@@ -569,16 +569,19 @@ pub(crate) async fn query(
             }
             count += 1;
         }
+        // Known once the stream ran out, which one with no columns always does.
+        let rows_affected = if col_count == 0 { stream.rows_affected() } else { None };
         Ok::<_, (tokio_postgres::Error, bool)>((
             statement,
             columns,
             column_values,
             count,
             truncated,
+            rows_affected,
         ))
     }
     .await;
-    let (statement, columns, column_values, count, truncated) = match read {
+    let (statement, columns, column_values, count, truncated, rows_affected) = match read {
         Ok(read) => read,
         Err((err, ran)) => return Err(statement_failed(inner, &controls, err, ran)),
     };
@@ -603,6 +606,7 @@ pub(crate) async fn query(
         pk,
         // Booleans arrive as true and false.
         column_kinds: Vec::new(),
+        rows_affected,
     })
 }
 
