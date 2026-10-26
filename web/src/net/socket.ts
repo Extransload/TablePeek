@@ -237,7 +237,6 @@ const CLOSED_ERROR = "서버 연결이 끊어졌습니다";
 const CANCELLED_ERROR = "쿼리가 취소되었습니다";
 const FETCH_TIMEOUT_ERROR = "데이터 응답 시간이 초과되었습니다";
 const FETCH_TIMEOUT_MS = 30000;
-const MAX_UNCLAIMED_WINDOWS = 8;
 
 function decodeCell(value: unknown): unknown {
   if (typeof value === "bigint") {
@@ -294,10 +293,6 @@ export class TablePeekSocket {
   private readonly statusListeners = new Set<(status: SocketStatus) => void>();
   private readonly metaWaiters = new Map<string, MetaWaiter>();
   private readonly windowWaiters = new Map<string, WindowWaiter>();
-  // Windows that came without a waiter: the first one the server sends after
-  // a query's meta, or the reply to a fetch that window already answered. A
-  // result's rows never change, so a later fetch of the same window takes it.
-  private readonly unclaimedWindows = new Map<string, unknown[][]>();
   private readonly editWaiters = new Map<string, EditWaiter>();
   private readonly txWaiters = new Map<string, TxWaiter>();
   private readonly rowWaiters = new Map<string, RowWaiter>();
@@ -437,11 +432,6 @@ export class TablePeekSocket {
       throw new TablePeekSocketError(t(CLOSED_ERROR), false);
     }
     const key = this.windowKey(conn, id, offset);
-    const unclaimed = this.unclaimedWindows.get(key);
-    if (unclaimed !== undefined) {
-      this.unclaimedWindows.delete(key);
-      return unclaimed;
-    }
     const existing = this.windowWaiters.get(key);
     if (existing) {
       this.windowWaiters.delete(key);
@@ -660,18 +650,11 @@ export class TablePeekSocket {
         this.windowWaiters.delete(key);
         clearTimeout(waiter.timer);
         waiter.resolve(rows);
-      } else {
-        // Only the window asked for may answer a fetch: handing these rows to
-        // another offset's waiter would show (or export) them twice.
-        this.unclaimedWindows.set(key, rows);
-        while (this.unclaimedWindows.size > MAX_UNCLAIMED_WINDOWS) {
-          const oldest = this.unclaimedWindows.keys().next();
-          if (oldest.done) {
-            break;
-          }
-          this.unclaimedWindows.delete(oldest.value);
-        }
       }
+      // A window nobody waits for is dropped: the first one the server sends
+      // unasked after a query's meta, or a second reply for a window that one
+      // already answered. Handing it to another offset's waiter would show (or
+      // export) those rows twice.
       return;
     }
     if (message.type === "error") {
