@@ -8923,3 +8923,56 @@ button.result-set.failed .result-set-status {
   animation: none;
 }
 
+/* ── Result bar (TablePlus): Data | Message, rows · time, Export ──────
+   The query result's footer is a .data-toolbar, so it has the Data view's
+   height, buttons and three-part layout; these rules are its own parts. */
+.data-toolbar .result-bar-status {
+  gap: 8px;
+}
+
+.data-toolbar .result-bar-status.failed {
+  color: var(--error);
+}
+
+.data-toolbar .result-bar-time {
+  color: var(--faint);
+}
+
+/* The Message view: one line per statement run, a failure's card under it. */
+.message-pane > * + * {
+  margin-top: 10px;
+}
+
+.result-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result-message-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--ink);
+}
+
+.result-message-label {
+  color: var(--muted);
+}
+
+.result-message-time {
+  color: var(--faint);
+}
+
+.result-message-error {
+  color: var(--error);
+}
+
+.result-message .error-notice {
+  max-width: 760px;
+  margin-top: 6px;
+}

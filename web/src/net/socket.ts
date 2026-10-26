@@ -16,6 +16,9 @@ export interface QueryMeta {
   // What the driver says a column holds ("boolean" for MySQL's TINYINT(1)),
   // for results whose table structure isn't known; absent from older servers.
   columnKinds?: (string | null)[];
+  // Rows a statement with no result columns (UPDATE, DDL…) changed; absent
+  // where the driver doesn't say (SQL Server) or from older servers.
+  rowsAffected?: number;
   // Whether a transaction is open once the statement finished (BEGIN/COMMIT
   // typed in the editor move it); absent from older servers.
   inTx?: boolean;
@@ -120,6 +123,7 @@ interface MetaMessage {
   source_table: string | null;
   pk: string[] | null;
   column_kinds?: (string | null)[];
+  rows_affected?: number | null;
   in_tx?: boolean;
   tx?: "committed" | "rolledback";
   invalidate?: boolean;
@@ -403,6 +407,7 @@ export class TablePeekSocket {
       sourceTable: message.source_table,
       pk: message.pk,
       columnKinds: message.column_kinds,
+      rowsAffected: message.rows_affected ?? undefined,
       inTx: message.in_tx,
       txEnded: message.tx,
       invalidated: message.invalidate,

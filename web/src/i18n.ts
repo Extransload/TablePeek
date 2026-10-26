@@ -1198,6 +1198,9 @@ const EN: Record<string, string> = {
   "나눔스퀘어": "NanumSquare",
   "맑은 고딕": "Malgun Gothic",
   "나눔고딕코딩": "Nanum Gothic Coding",
+  // Result bar
+  "결과 {count}": "Result {count}",
+  "{count}행 영향": "{count} rows affected",
 };
 
 let current: Language = readLanguage();
