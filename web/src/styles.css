@@ -8859,6 +8859,12 @@ button.result-set.failed .result-set-status {
 
 /* ── Import: CSV / JSON wizard and SQL dump ─────────────────── */
 
+.import-failed-at {
+  margin-bottom: 6px;
+  color: var(--error);
+  font-weight: 600;
+}
+
 .import-modal {
   width: min(880px, 94vw);
   max-width: none;

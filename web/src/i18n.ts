@@ -1201,6 +1201,8 @@ const EN: Record<string, string> = {
   "결과 {count}": "Result {count}",
   "{count}행 영향": "{count} rows affected",
   // Import
+  "{where}에서 실패해 모두 되돌렸습니다": "Failed at {where}, so nothing was imported",
+  "가져오기에 실패해 모두 되돌렸습니다": "Import failed, so nothing was imported",
   "가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요.": "An import is running. Run this again once it finishes.",
   "가져오지 않음": "Do not import",
   "데이터 타입": "Data type",

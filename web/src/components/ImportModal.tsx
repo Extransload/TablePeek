@@ -168,6 +168,9 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
   const [renaming, setRenaming] = useState<number | null>(null);
   const [running, setRunning] = useState<Running | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Where a failed import stopped, shown above the database's own error (whose
+  // explanation would otherwise hide it); only while that error is the one shown.
+  const [failedAt, setFailedAt] = useState<{ error: string; text: string } | null>(null);
   // The running import's job: Stop here and in the jobs queue both cancel it.
   const jobRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -467,18 +470,30 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
       }
     } catch (err) {
       let message: string;
+      let at: string | null = null;
       if (err instanceof ImportFailure) {
         message = err.stopped
           ? t("가져오기를 중지했습니다. 테이블은 바뀌지 않았습니다.")
           : err.row !== null
             ? t("{where}에서 실패해 모두 되돌렸습니다: {error}", { where: where(err.row), error: err.message })
             : t("가져오기에 실패해 모두 되돌렸습니다: {error}", { error: err.message });
+        if (!err.stopped) {
+          at =
+            err.row !== null
+              ? t("{where}에서 실패해 모두 되돌렸습니다", { where: where(err.row) })
+              : t("가져오기에 실패해 모두 되돌렸습니다");
+        }
       } else {
         message = errorOf(err, t("가져오기에 실패했습니다"));
       }
       job.fail(message);
       if (mountedRef.current) {
-        setError(message);
+        if (at !== null && err instanceof ImportFailure) {
+          setError(err.message);
+          setFailedAt({ error: err.message, text: at });
+        } else {
+          setError(message);
+        }
       } else {
         store.setError(message);
       }
@@ -527,6 +542,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
             <span className="modal-path">{fileName ? `${fileName} · ${kind}` : kind}</span>
           </div>
           <div className="modal-body import-body">
+            {error && failedAt?.error === error ? <div className="import-failed-at">{failedAt.text}</div> : null}
             {error ? <ErrorNotice message={error} /> : null}
             {read.error ? <ErrorNotice message={read.error} /> : null}
             <section className="export-section">
