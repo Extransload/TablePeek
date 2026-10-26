@@ -8949,3 +8949,18 @@ button.result-set.failed .result-set-status {
   max-height: min(420px, 70vh);
   overflow-y: auto;
 }
+
+.dump-sql-preview {
+  max-height: 260px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1.5;
+  white-space: pre;
+}

@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createTableSql, draftsFromDetail, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
 import { t } from "../i18n";
+import { decodeText, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
 import { startJob } from "../jobs";
-import { splitSqlStatements } from "../sqlSplit";
+import { getSettings } from "../settings";
+import { splitSqlRanges } from "../sqlSplit";
 import { store, type EngineMeta, type TableDetail } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
-import { FolderIcon } from "./icons";
+import { FolderIcon, StopIcon } from "./icons";
 
 interface DumpModalProps {
   conn: string;
@@ -18,6 +20,8 @@ interface DumpModalProps {
 
 const PAGE_SIZE = 5000;
 const TABLE_ROW_CAP = 200000;
+// The start of an SQL file shown before it runs, as TablePlus previews it.
+const RESTORE_PREVIEW_CHARS = 100000;
 
 function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -40,7 +44,23 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [restoreFile, setRestoreFile] = useState("");
-  const [restoreText, setRestoreText] = useState("");
+  const [restoreBytes, setRestoreBytes] = useState<ArrayBuffer | null>(null);
+  const [restoreEncoding, setRestoreEncoding] = useState<string>(() => getSettings().csvEncoding);
+  const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
+  const restoreAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  const restoreText = useMemo(
+    () => (restoreBytes === null ? "" : decodeText(restoreBytes, restoreEncoding)),
+    [restoreBytes, restoreEncoding],
+  );
+  const restoreRanges = useMemo(() => splitSqlRanges(restoreText, meta.kind), [restoreText, meta.kind]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -165,43 +185,85 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     setError(null);
     setInfo(null);
     try {
-      const text = await file.text();
-      setRestoreText(text);
-      const count = splitSqlStatements(text, meta.kind).length;
-      setInfo(t("{count}개 문장", { count: count.toLocaleString() }));
+      setRestoreBytes(await file.arrayBuffer());
     } catch (err) {
       setError(errorOf(err, t("파일을 읽지 못했습니다")));
     }
   }
 
+  // The file's statements run one by one, as written: a dump brings its own
+  // BEGIN and COMMIT (or none), so they aren't wrapped in a transaction, and
+  // what ran before a failure or a stop stays. A transaction the user has
+  // open is refused: the dump's COMMIT would end it.
   async function runRestore(): Promise<void> {
-    if (restoreText === "" || busy) {
+    const statements = restoreRanges;
+    if (statements.length === 0 || busy) {
       return;
     }
-    const statements = splitSqlStatements(restoreText, meta.kind);
-    if (statements.length === 0) {
+    const current = store.getState();
+    if (current.connId === conn && current.tx === "active") {
+      setError(t("트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요."));
       return;
     }
+    const controller = new AbortController();
+    restoreAbortRef.current = controller;
     const job = startJob(t("복원"), restoreFile, statements.length);
     setBusy(true);
     setError(null);
+    setInfo(null);
+    setRestoreProgress({ done: 0, total: statements.length });
+    // Shown in the window while it is open, in the status line once it isn't.
+    const report = (message: string, failed: boolean): void => {
+      if (mountedRef.current) {
+        (failed ? setError : setInfo)(message);
+      } else {
+        (failed ? store.setError : store.setInfo)(message);
+      }
+    };
     let executed = 0;
     try {
       for (const statement of statements) {
-        await store.exec(conn, statement);
+        if (controller.signal.aborted) {
+          break;
+        }
+        await store.exec(conn, statement.text);
         executed += 1;
         job.update(executed);
+        if (mountedRef.current) {
+          setRestoreProgress({ done: executed, total: statements.length });
+        }
       }
-      job.finish();
-      setInfo(t("{count}개 문장을 실행했습니다", { count: statements.length.toLocaleString() }));
-      onRestored();
+      if (executed < statements.length) {
+        const message = t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
+          count: executed.toLocaleString(),
+        });
+        job.fail(message);
+        report(message, true);
+      } else {
+        job.finish();
+        report(t("{count}개 문장을 실행했습니다", { count: statements.length.toLocaleString() }), false);
+      }
     } catch (err) {
       const failure = errorOf(err, t("복원에 실패했습니다"));
-      const message = t("{error} (문장 {index}에서 중단)", { error: failure, index: executed + 1 });
+      const line = restoreText.slice(0, statements[executed].codeFrom).split("\n").length;
       job.fail(failure);
-      setError(message);
+      report(
+        t("{error} (문장 {index}, {line}번째 줄에서 중단)", {
+          error: failure,
+          index: (executed + 1).toLocaleString(),
+          line: line.toLocaleString(),
+        }),
+        true,
+      );
     } finally {
-      setBusy(false);
+      restoreAbortRef.current = null;
+      if (mountedRef.current) {
+        setBusy(false);
+        setRestoreProgress(null);
+      }
+      if (executed > 0) {
+        onRestored();
+      }
     }
   }
 
@@ -306,6 +368,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
                     disabled={busy}
                     onChange={(event) => {
                       const file = event.target.files?.[0];
+                      event.target.value = "";
                       if (file) {
                         void pickRestoreFile(file);
                       }
@@ -313,8 +376,41 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
                   />
                 </label>
                 {restoreFile ? <span className="dim">{restoreFile}</span> : null}
+                <label className="field">
+                  <span>{t("인코딩")}</span>
+                  <select
+                    value={restoreEncoding}
+                    disabled={busy}
+                    onChange={(event) => setRestoreEncoding(event.target.value)}
+                  >
+                    {IMPORT_ENCODINGS.map((entry) => (
+                      <option value={entry} key={entry}>
+                        {ENCODING_LABELS[entry]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {restoreBytes !== null ? (
+                  <span className="panel-count">
+                    {t("{count}개 문장", { count: restoreRanges.length.toLocaleString() })}
+                  </span>
+                ) : null}
               </div>
-              <p className="helper">{t("문장 단위로 나누어 순서대로 실행합니다. 실패 시 중단됩니다.")}</p>
+              {restoreBytes !== null ? (
+                <pre className="dump-sql-preview">
+                  {restoreText.length > RESTORE_PREVIEW_CHARS
+                    ? `${restoreText.slice(0, RESTORE_PREVIEW_CHARS)}\n…`
+                    : restoreText}
+                </pre>
+              ) : null}
+              <p className="helper">
+                {restoreProgress !== null
+                  ? t("{done} / {total}개 문장 실행 중", {
+                      done: restoreProgress.done.toLocaleString(),
+                      total: restoreProgress.total.toLocaleString(),
+                    })
+                  : t("문장 단위로 나누어 현재 데이터베이스에서 순서대로 실행합니다. 실패하면 그 문장에서 멈추고, 앞서 실행한 문장은 남습니다.")}
+              </p>
             </section>
           )}
         </div>
@@ -332,11 +428,21 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
             >
               {t("백업 다운로드")}
             </button>
+          ) : restoreProgress !== null ? (
+            <>
+              <button type="button" onClick={onClose}>
+                {t("백그라운드에서 계속")}
+              </button>
+              <button type="button" onClick={() => restoreAbortRef.current?.abort()}>
+                <StopIcon size={10} />
+                {t("중지")}
+              </button>
+            </>
           ) : (
             <button
               type="button"
               className="primary"
-              disabled={busy || restoreText === ""}
+              disabled={busy || restoreRanges.length === 0}
               onClick={() => void runRestore()}
             >
               {t("복원 실행")}
