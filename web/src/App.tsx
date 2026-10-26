@@ -3226,21 +3226,44 @@ export default function App() {
     setActiveConnId(live.conn);
   }
 
+  // Entering a connection, or connecting a saved one, while under way, by id:
+  // the two clicks of a double-click share one. Two would each build a
+  // workspace, the second replacing the first (its query tab "Query 2").
+  const enteringRef = useRef(new Map<string, Promise<boolean>>());
+  const connectingRef = useRef(new Map<string, Promise<"entered" | "asking" | "failed">>());
+
+  function shared<T>(calls: Map<string, Promise<T>>, id: string, start: () => Promise<T>): Promise<T> {
+    const pending = calls.get(id);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const call = start().finally(() => calls.delete(id));
+    calls.set(id, call);
+    return call;
+  }
+
   // Resolves false when the connection could not be entered.
-  async function enterConn(id: string): Promise<boolean> {
+  function enterConn(id: string): Promise<boolean> {
+    return shared(enteringRef.current, id, () => enterConnNow(id));
+  }
+
+  async function enterConnNow(id: string): Promise<boolean> {
     if (workspacesRef.current[id] !== undefined) {
       setActiveConnId(id);
       return true;
     }
     try {
       const nextMeta = await store.refreshMeta(id);
-      const fresh = firstTabOf(id, nextMeta);
-      const ws: Workspace = {
-        tabs: { tabs: [fresh], activeId: fresh.id },
-        meta: nextMeta,
-        tx: "none",
-      };
-      commitWorkspaces({ ...workspacesRef.current, [id]: ws });
+      // Opened another way meanwhile: keep that workspace.
+      if (workspacesRef.current[id] === undefined) {
+        const fresh = firstTabOf(id, nextMeta);
+        const ws: Workspace = {
+          tabs: { tabs: [fresh], activeId: fresh.id },
+          meta: nextMeta,
+          tx: "none",
+        };
+        commitWorkspaces({ ...workspacesRef.current, [id]: ws });
+      }
       setActiveConnId(id);
       return true;
     } catch (err) {
@@ -3291,7 +3314,13 @@ export default function App() {
   // "asking": the connection dialog now asks for a password. A profile that keeps
   // its password connects at once; one that doesn't asks first, since a try
   // without the password only logs a failed login.
-  async function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
+  // A second call while the first is connecting shares it (busySaved, the
+  // state that hides a second click, isn't set until the next render).
+  function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
+    return shared(connectingRef.current, id, () => connectSavedNow(id));
+  }
+
+  async function connectSavedNow(id: string): Promise<"entered" | "asking" | "failed"> {
     const existing = conns.find((conn) => conn.saved_id === id);
     if (existing !== undefined) {
       return (await enterConn(existing.id)) ? "entered" : "failed";
@@ -4098,6 +4127,12 @@ export default function App() {
         document.querySelector(".modal-backdrop") !== null
       );
     }
+    // Escape closes the right panel unless something else takes it. An open
+    // menu or dialog is seen here, in the capture phase, before it closes
+    // itself; what a focused text field does with the key (the SQL editor
+    // closing its autocomplete or search, an input cancelling an edit) shows
+    // only once the event is through, as its default prevented.
+    let panelEscape: KeyboardEvent | null = null;
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
         // An open dialog owns Escape; don't also close panels behind it.
@@ -4115,10 +4150,7 @@ export default function App() {
         ) {
           return;
         }
-        // The cell popover counts as a dialog and closes itself.
-        if (detailPanelOpenRef.current) {
-          setDetailPanelOpen(false);
-        }
+        panelEscape = event;
         return;
       }
       if (event.metaKey && event.ctrlKey && (event.key === "[" || event.key === "]")) {
@@ -4196,9 +4228,27 @@ export default function App() {
       event.stopPropagation();
       shortcutRef.current(action);
     }
+    function onEscape(event: KeyboardEvent): void {
+      if (event !== panelEscape) {
+        return;
+      }
+      panelEscape = null;
+      const target = event.target instanceof Element ? event.target : null;
+      const field = target?.closest("input, textarea, select, [contenteditable], .cm-editor") != null;
+      // A Hangul (or other IME) composition is cancelled by it, too.
+      if (event.isComposing || (field && event.defaultPrevented)) {
+        return;
+      }
+      // The cell popover counts as a dialog and closes itself.
+      if (detailPanelOpenRef.current) {
+        setDetailPanelOpen(false);
+      }
+    }
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keydown", onEscape);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keydown", onEscape);
     };
   }, []);
 
