@@ -1,4 +1,5 @@
-import { toCsv, toJson, toSqlInserts } from "./export";
+import { SqlExpression, toCsv, toJson, toSqlInserts } from "./export";
+import type { WindowedRowSource } from "./grid/windowSource";
 import { cellToString } from "./rowOps";
 
 // The most rows one copy takes, from the grid or its menu.
@@ -16,6 +17,22 @@ export interface CopyTable {
 export interface InsertTarget {
   table: string;
   dialect: string;
+}
+
+// A cell as a copy takes it. For SQL (`keywords`) a staged DEFAULT or NOW()
+// is that expression rather than the label shown, and a new row's untouched
+// column is DEFAULT, as applying the row leaves it out.
+export function copyValue(source: WindowedRowSource, row: number, col: number, keywords: boolean): unknown {
+  if (keywords) {
+    const staged = source.stagedExpr(row, col);
+    if (staged !== null) {
+      return new SqlExpression(staged.expr);
+    }
+    if (source.isInserted(row) && source.cellState(row, col) === "default") {
+      return new SqlExpression("default");
+    }
+  }
+  return source.cell(row, col) ?? null;
 }
 
 function cellText(value: unknown): string {

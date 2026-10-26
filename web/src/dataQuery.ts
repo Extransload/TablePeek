@@ -108,16 +108,20 @@ export function stringLiteral(value: string, kind: string): string {
   return kind === "mssql" ? `N${quoteLiteral(value)}` : quoteLiteral(value);
 }
 
+// SQL Server's bit takes 1 and 0; it has no TRUE.
+export function booleanLiteral(value: boolean, kind: string): string {
+  if (kind === "mssql") {
+    return value ? "1" : "0";
+  }
+  return value ? "TRUE" : "FALSE";
+}
+
 export function literalValue(raw: string, kind = "postgres"): string {
   if (/^null$/i.test(raw)) {
     return "NULL";
   }
   if (/^(true|false)$/i.test(raw)) {
-    // SQL Server's bit takes 1 and 0; it has no TRUE.
-    if (kind === "mssql") {
-      return /^true$/i.test(raw) ? "1" : "0";
-    }
-    return raw.toUpperCase();
+    return booleanLiteral(/^true$/i.test(raw), kind);
   }
   if (NUMBER_RE.test(raw.trim()) && raw.trim() !== "") {
     return raw.trim();

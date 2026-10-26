@@ -759,6 +759,20 @@ export function dropIfExistsSql(kind: string, name: string, object: "table" | "v
   return `DROP ${keyword} IF EXISTS ${quoted}`;
 }
 
+// SQLite has no `SET col = DEFAULT`: the column's declared default stands
+// in, as the engine writes it when it applies one, and NULL without one. A
+// default spelled "x" is the string x in CREATE TABLE but would name a
+// column in an UPDATE, so it is written as a string.
+export function sqliteDefaultSql(declared: string | null): string {
+  if (declared === null) {
+    return "NULL";
+  }
+  if (/^"(?:[^"]|"")*"$/.test(declared)) {
+    return `'${declared.slice(1, -1).replace(/""/g, '"').replace(/'/g, "''")}'`;
+  }
+  return `(${declared})`;
+}
+
 export function truncateTableSql(kind: string, table: string): string {
   if (kind === "sqlite") {
     return `DELETE FROM ${quoteIdent(kind, table)}`;

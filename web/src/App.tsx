@@ -21,6 +21,7 @@ import {
   laravelSchemaScript,
   quoteIdent,
   renameTableSql,
+  sqliteDefaultSql,
   truncateTableSql,
 } from "./ddl";
 import { adoptDrafts, listDrafts, removeDraft, saveDraft, type QueryDraft } from "./drafts";
@@ -91,8 +92,8 @@ import {
   type FilterState,
   type SortState,
 } from "./dataQuery";
-import { buildUpdateSql } from "./export";
-import { COPY_MAX_ROWS, formatCopy, type CopyFormat } from "./copyFormats";
+import { buildUpdateSql, SqlExpression } from "./export";
+import { COPY_MAX_ROWS, copyValue, formatCopy, type CopyFormat } from "./copyFormats";
 import { subscribeJobs } from "./jobs";
 import {
   loadTableColors,
@@ -334,17 +335,11 @@ function primaryKeyOf(detail: TableDetail | undefined): string[] | null {
   return pkColumns.length > 0 ? pkColumns : null;
 }
 
-async function rowValues(source: WindowedRowSource, row: number): Promise<unknown[]> {
-  const count = source.columns.length;
+async function rowValues(source: WindowedRowSource, row: number, keywords = false): Promise<unknown[]> {
   if (source.cell(row, 0) === undefined) {
     await source.ensureRow(row);
   }
-  const values = new Array<unknown>(count);
-  for (let c = 0; c < count; c += 1) {
-    const value = source.cell(row, c);
-    values[c] = value === undefined ? null : value;
-  }
-  return values;
+  return source.columns.map((_, c) => copyValue(source, row, c, keywords));
 }
 
 // Rows `from`…`to` (at most COPY_MAX_ROWS of them) in the columns `cols`,
@@ -354,6 +349,7 @@ async function rangeValues(
   from: number,
   to: number,
   cols: number[],
+  keywords = false,
 ): Promise<unknown[][]> {
   const rows: unknown[][] = [];
   const last = Math.min(to, from + COPY_MAX_ROWS - 1, source.rowCount - 1);
@@ -361,7 +357,7 @@ async function rangeValues(
     if (source.cell(row, 0) === undefined) {
       await source.ensureRow(row);
     }
-    rows.push(cols.map((col) => source.cell(row, col) ?? null));
+    rows.push(cols.map((col) => copyValue(source, row, col, keywords)));
   }
   return rows;
 }
@@ -3967,7 +3963,8 @@ export default function App() {
     const copyAs = (cols: number[]) => (format: CopyFormat) => {
       void (async () => {
         try {
-          const values = await rangeValues(source, selection.r0, selection.r1, cols);
+          // INSERT writes a staged DEFAULT or NOW() as SQL; the rest show its label.
+          const values = await rangeValues(source, selection.r0, selection.r1, cols, format === "insert");
           const target = table !== null ? { table, dialect } : null;
           await writeClipboard(formatCopy(format, { columns: cols.map((c) => columns[c]), rows: values }, target));
           noteCapped(
@@ -4147,11 +4144,21 @@ export default function App() {
           void (async () => {
             try {
               const statements: string[] = [];
+              const detail = dialect === "sqlite" ? await ensureDetail(result.conn, table) : null;
+              // SQLite's UPDATE takes no DEFAULT: the column's declared one instead.
+              const asSql = (value: unknown, c: number): unknown =>
+                detail !== null && value instanceof SqlExpression && value.expr === "default"
+                  ? new SqlExpression(
+                      "default",
+                      sqliteDefaultSql(detail.columns.find((column) => column.name === columns[c])?.default ?? null),
+                    )
+                  : value;
               for (let r = selection.r0; r < selection.r0 + Math.min(rowCount, COPY_MAX_ROWS); r += 1) {
                 if (source.isInserted(r)) {
                   continue;
                 }
-                const sql = buildUpdateSql(table, columns, await rowValues(source, r), result.meta.pk ?? [], dialect);
+                const values = (await rowValues(source, r, true)).map(asSql);
+                const sql = buildUpdateSql(table, columns, values, result.meta.pk ?? [], dialect);
                 if (sql === null) {
                   store.setError(t("기본 키가 없어 UPDATE 문을 만들 수 없습니다"));
                   return;
