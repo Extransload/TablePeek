@@ -3,7 +3,7 @@ import { getConnMeta, subscribeConnMeta } from "../connMeta";
 import { t } from "../i18n";
 import type { ConnSummary, Connection } from "../store";
 import { DriverIcon, driverName } from "./DriverIcon";
-import { CloseIcon, PlusIcon } from "./icons";
+import { CloseIcon } from "./icons";
 
 interface ConnSwitcherProps {
   conns: ConnSummary[];
@@ -11,7 +11,6 @@ interface ConnSwitcherProps {
   connection: Connection;
   activeDetail: string | null;
   onSwitch(id: string): void;
-  onNewConnection(): void;
   onClose(id: string): void;
 }
 
@@ -26,7 +25,6 @@ export function ConnSwitcher({
   connection,
   activeDetail,
   onSwitch,
-  onNewConnection,
   onClose,
 }: ConnSwitcherProps) {
   const [, setMetaVersion] = useState(0);
@@ -89,14 +87,6 @@ export function ConnSwitcher({
           })
         )}
       </div>
-      <button
-        type="button"
-        className="conn-bar-add"
-        onClick={onNewConnection}
-        title={t("새 연결")}
-      >
-        <PlusIcon size={12} />
-      </button>
     </div>
   );
 }

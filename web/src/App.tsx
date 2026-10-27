@@ -5010,7 +5010,6 @@ export default function App() {
                 : null
             }
             onSwitch={(id) => void enterConn(id)}
-            onNewConnection={() => openNewConnection()}
             onClose={(id) => void closeConn(id)}
           />
           <span className="spacer" />

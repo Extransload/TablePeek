@@ -4485,23 +4485,6 @@ textarea:focus-visible {
   flex: none;
 }
 
-.conn-bar-add {
-  width: 28px;
-  height: 28px;
-  flex: none;
-  padding: 0;
-  justify-content: center;
-  border-color: var(--line-soft);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-}
-
-.conn-bar-add:hover {
-  background: var(--hover-fill);
-  color: var(--ink);
-}
-
 .schema-sidebar {
   width: var(--sidebar-w);
   /* Gives way, down to 180px, when a narrow window needs room for the editor. */
@@ -4816,11 +4799,6 @@ body.col-resizing * {
 }
 
 /* Larger icon hit areas to match the larger icons */
-.conn-bar-add {
-  width: 32px;
-  height: 32px;
-}
-
 .result-action {
   height: 24px;
 }
