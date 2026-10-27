@@ -4928,7 +4928,10 @@ button.pending-apply {
 
 .conn-tab-close {
   position: absolute;
-  top: 50%;
+  /* Centred by its offset, not a transform: a pressed button's 1px nudge
+     (button:active) replaces any transform, and the X jumped half its height
+     out from under the pointer before the click landed. */
+  top: calc(50% - 10px);
   right: 6px;
   width: 20px;
   height: 20px;
@@ -4939,7 +4942,6 @@ button.pending-apply {
   background: transparent;
   color: var(--faint);
   opacity: 0;
-  transform: translateY(-50%);
 }
 
 .conn-tab-wrap:hover .conn-tab-close,
