@@ -3413,6 +3413,12 @@ textarea:focus-visible {
   margin-top: 2px;
 }
 
+/* In the schema tree a section head sits a level left of its tables (History
+   and Queries reuse the head over rows of their own). */
+.schema-list:not(.history-list, .queries-list) .schema-section-head {
+  padding: 0 2px;
+}
+
 .schema-section-label {
   font-size: calc(11px * var(--ui-scale, 1));
   letter-spacing: 0.02em;
@@ -3426,7 +3432,8 @@ textarea:focus-visible {
 .schema-table-row {
   height: 28px;
   margin: 0 2px;
-  padding-right: 5px;
+  /* One level under its section head. */
+  padding: 0 5px 0 12px;
   gap: 2px;
 }
 
@@ -3446,7 +3453,7 @@ textarea:focus-visible {
 
 .schema-col {
   min-height: 23px;
-  padding-left: 18px;
+  padding-left: 30px;
   padding-right: 7px;
   gap: 5px;
 }
@@ -3454,7 +3461,8 @@ textarea:focus-visible {
 .schema-object-row {
   height: 26px;
   margin: 0 2px;
-  padding-left: 24px;
+  /* Its icon in line with a table row's. */
+  padding-left: 34px;
   border-radius: var(--r-xs);
 }
 
