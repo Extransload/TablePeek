@@ -7,6 +7,7 @@ import {
   type QueryMeta,
 } from "./net/socket";
 import type { DefinitionKind } from "./sqlTools";
+import type { InstalledFont } from "./fonts";
 import { t } from "./i18n";
 
 export interface EngineMeta {
@@ -1124,6 +1125,12 @@ async function listConns(): Promise<ConnSummary[]> {
   return body.conns;
 }
 
+// The font families installed on this machine (Settings lists them all).
+async function listFonts(): Promise<InstalledFont[]> {
+  const body = await api<{ families: InstalledFont[] }>("/api/fonts");
+  return body.families;
+}
+
 async function closeConn(id: string): Promise<void> {
   await api<{ ok: boolean }>(`/api/conns/${encodeURIComponent(id)}`, {
     method: "DELETE",
@@ -1526,6 +1533,7 @@ export const store = {
   connectSaved,
   listConns,
   closeConn,
+  listFonts,
   listConnections,
   createConnection,
   exportConnections,

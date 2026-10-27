@@ -660,6 +660,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/conns/{id}", delete(conns_delete))
         .route("/api/fs/list", get(fs_list))
         .route("/api/fs/stat", get(fs_stat))
+        .route("/api/fonts", get(fonts_route))
         .route("/api/schema", get(schema_route))
         .route("/api/count", get(count_route))
         .route("/api/exec", post(exec_route))
@@ -2765,6 +2766,61 @@ async fn fs_stat(
         return Err(bad_request("fs_error", "경로가 비어 있습니다"));
     }
     Ok(Json(path_stat(path)))
+}
+
+/// The font families installed on this machine, for the settings' font
+/// lists. The browser runs here too (the server listens on loopback only), so
+/// what this finds is what a page can draw with. Read once, on first ask.
+async fn fonts_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    static FAMILIES: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    if let Some(families) = FAMILIES.get() {
+        return Ok(Json(families.clone()));
+    }
+    let found = tokio::task::spawn_blocking(installed_fonts)
+        .await
+        .map_err(|err| internal_error(err.to_string()))?;
+    Ok(Json(FAMILIES.get_or_init(|| found).clone()))
+}
+
+/// Every family once, by the name CSS knows it by, with its Korean name when
+/// the font has one (HYwulM is HY울릉도M), monospaced when all its faces are.
+fn installed_fonts() -> Value {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let mut families: HashMap<String, (Option<String>, bool)> = HashMap::new();
+    for face in db.faces() {
+        let Some((name, _)) = face.families.first() else {
+            continue;
+        };
+        // macOS keeps the fonts of its own interface under names starting with a dot.
+        if name.trim().is_empty() || name.starts_with('.') {
+            continue;
+        }
+        let korean = face
+            .families
+            .iter()
+            .find(|(local, language)| *language == fontdb::Language::Korean_Korea && local != name)
+            .map(|(local, _)| local.clone());
+        let entry = families.entry(name.clone()).or_insert((None, true));
+        entry.0 = entry.0.take().or(korean);
+        entry.1 &= face.monospaced;
+    }
+    let mut list: Vec<(String, (Option<String>, bool))> = families.into_iter().collect();
+    list.sort_by_key(|(name, _)| name.to_lowercase());
+    json!({
+        "families": list
+            .into_iter()
+            .map(|(name, (korean, monospace))| {
+                json!({ "name": name, "korean": korean, "monospace": monospace })
+            })
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn path_stat(path: &str) -> Value {

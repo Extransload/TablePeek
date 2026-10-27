@@ -8,6 +8,7 @@ aes-gcm = { version = "0.11", default-features = false, features = ["aes", "allo
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 axum = { workspace = true }
 base64 = "0.22"
+fontdb = "0.24"
 futures-util = "=0.3.32"
 getrandom = "0.3"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, VALUE_KINDS, palette, themeFromJson } from "../palette";
-import { CODE_FONTS, UI_FONTS, fontInstalled, type FontChoice } from "../fonts";
+import { fontGroups, fontInstalled, type FontGroup, type InstalledFont } from "../fonts";
+import { store } from "../store";
 import {
   MAX_ROWS_LIMIT,
   getPasscodeHash,
@@ -64,32 +65,54 @@ const SETTINGS_CATEGORIES: {
   { id: "security", label: "보안", icon: ShieldIcon },
 ];
 
+// The installed families, asked of the server once a session.
+let installedFonts: Promise<InstalledFont[]> | null = null;
+
+function loadInstalledFonts(): Promise<InstalledFont[]> {
+  installedFonts ??= store.listFonts().catch(() => {
+    installedFonts = null;
+    return [];
+  });
+  return installedFonts;
+}
+
 // A font list with the current pick, a saved list no longer offered shown as
-// "custom"; fonts this machine lacks are marked (they fall back to the system's).
+// "custom"; a suggested font this machine lacks is marked (it falls back to
+// the system's).
 function FontSelect({
-  choices,
+  groups,
   value,
   preview,
   onChange,
 }: {
-  choices: FontChoice[];
+  groups: FontGroup[];
   value: string;
   preview: string;
   onChange(value: string): void;
 }) {
-  const known = choices.some((choice) => choice.value === value);
+  const known = groups.some((group) => group.choices.some((choice) => choice.value === value));
+  const options = (group: FontGroup) =>
+    group.choices.map((choice) => (
+      <option key={choice.value} value={choice.value}>
+        {choice.family !== undefined && !fontInstalled(choice.family)
+          ? `${t(choice.label)} — ${t("미설치")}`
+          : t(choice.label)}
+      </option>
+    ));
   return (
     <div className="font-select">
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {choices.map((choice) => (
-          <option key={choice.value} value={choice.value}>
-            {choice.family !== undefined && !fontInstalled(choice.family)
-              ? `${t(choice.label)} — ${t("미설치")}`
-              : t(choice.label)}
-          </option>
-        ))}
+      <Select value={value} onChange={(event) => onChange(event.target.value)}>
+        {groups.map((group) =>
+          group.label === null ? (
+            options(group)
+          ) : (
+            <optgroup key={group.label} label={t(group.label)}>
+              {options(group)}
+            </optgroup>
+          ),
+        )}
         {known ? null : <option value={value}>{t("사용자 지정")}</option>}
-      </select>
+      </Select>
       <span className="font-preview" style={{ fontFamily: value }}>
         {preview}
       </span>
@@ -119,6 +142,28 @@ export function SettingsModal({
     () => getPasscodeHash() !== null,
   );
   const [themeUrl, setThemeUrl] = useState("");
+  // Empty until the server answers: the suggested fonts show meanwhile.
+  const [fontFamilies, setFontFamilies] = useState<InstalledFont[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    void loadInstalledFonts().then((families) => {
+      if (live) {
+        setFontFamilies(families);
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const uiFontGroups = useMemo(
+    () => fontGroups("ui", fontFamilies, settings.uiFontFamily),
+    [fontFamilies, settings.uiFontFamily],
+  );
+  const codeFontGroups = useMemo(
+    () => fontGroups("code", fontFamilies, settings.fontFamily),
+    [fontFamilies, settings.fontFamily],
+  );
   const [themeMessage, setThemeMessage] = useState<string | null>(null);
   const [themeBusy, setThemeBusy] = useState(false);
   const [category, setCategory] = useState<SettingsCategory>("general");
@@ -443,7 +488,7 @@ export function SettingsModal({
                     <div className="settings-row">
                       <span className="settings-label">{t("앱 글꼴")}</span>
                       <FontSelect
-                        choices={UI_FONTS}
+                        groups={uiFontGroups}
                         value={settings.uiFontFamily}
                         preview={t("가나다 ABC 123 — 테이블과 메뉴")}
                         onChange={(uiFontFamily) => onChange({ uiFontFamily })}
@@ -452,7 +497,7 @@ export function SettingsModal({
                     <div className="settings-row">
                       <span className="settings-label">{t("에디터 글꼴")}</span>
                       <FontSelect
-                        choices={CODE_FONTS}
+                        groups={codeFontGroups}
                         value={settings.fontFamily}
                         preview="SELECT id, name FROM users; -- 0O 1lI"
                         onChange={(fontFamily) => onChange({ fontFamily })}

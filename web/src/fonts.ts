@@ -14,10 +14,15 @@ export const SYSTEM_UI_FONT =
   '-apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
 export const SYSTEM_CODE_FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
+// A family name as a CSS string: a quote or backslash in it would end it early.
+function cssName(family: string): string {
+  return `"${family.replace(/[\\"]/g, "\\$&")}"`;
+}
+
 function uiFont(label: string, families: string[]): FontChoice {
   return {
     label,
-    value: `${families.map((name) => `"${name}"`).join(", ")}, ${SYSTEM_UI_FONT}`,
+    value: `${families.map(cssName).join(", ")}, ${SYSTEM_UI_FONT}`,
     family: families[0],
   };
 }
@@ -25,7 +30,7 @@ function uiFont(label: string, families: string[]): FontChoice {
 function codeFont(label: string, families: string[]): FontChoice {
   return {
     label,
-    value: `${families.map((name) => `"${name}"`).join(", ")}, ${SYSTEM_CODE_FONT}`,
+    value: `${families.map(cssName).join(", ")}, ${SYSTEM_CODE_FONT}`,
     family: families[0],
   };
 }
@@ -96,9 +101,74 @@ export function fontInstalled(family: string): boolean {
   const found = ["monospace", "serif", "sans-serif"].some((generic) => {
     ctx.font = `32px ${generic}`;
     const plain = ctx.measureText(sample).width;
-    ctx.font = `32px "${family}", ${generic}`;
+    ctx.font = `32px ${cssName(family)}, ${generic}`;
     return ctx.measureText(sample).width !== plain;
   });
   installed.set(family, found);
   return found;
+}
+
+// A font family installed on this machine, as the server lists them.
+export interface InstalledFont {
+  name: string;
+  // Its Korean name, when the font has one (HYwulM is HY울릉도M).
+  korean: string | null;
+  monospace: boolean;
+}
+
+export interface FontGroup {
+  // None for the list's first, ungrouped entry.
+  label: string | null;
+  choices: FontChoice[];
+}
+
+const evenWidths = new Map<string, boolean>();
+
+// Whether a family's letters all take one width, measured as drawn: plenty
+// of code fonts leave their own fixed-pitch flag unset.
+function drawsMonospace(family: string): boolean {
+  const known = evenWidths.get(family);
+  if (known !== undefined) {
+    return known;
+  }
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (ctx === null) {
+    return false;
+  }
+  ctx.font = `32px ${cssName(family)}, sans-serif`;
+  const even = ctx.measureText("iiiiiiiiii").width === ctx.measureText("MMMMMMMMMM").width;
+  evenWidths.set(family, even);
+  return even;
+}
+
+// What Settings offers: the system's own font first, then the suggested ones
+// this machine has (and the saved pick, even when it hasn't), then every
+// other installed family; for code, the monospaced ones before the rest.
+export function fontGroups(kind: "ui" | "code", families: InstalledFont[], current: string): FontGroup[] {
+  const [system, ...suggested] = kind === "ui" ? UI_FONTS : CODE_FONTS;
+  const offered = suggested.filter(
+    (choice) => choice.family === undefined || fontInstalled(choice.family) || choice.value === current,
+  );
+  const covered = new Set(offered.map((choice) => choice.family?.toLowerCase()));
+  const make = kind === "ui" ? uiFont : codeFont;
+  const rest = families
+    .filter((font) => !covered.has(font.name.toLowerCase()))
+    .map((font) => ({
+      choice: make(font.korean ? `${font.korean} (${font.name})` : font.name, [font.name]),
+      // Measured for the code list only: the app list doesn't split on it.
+      monospace: kind === "code" && (font.monospace || drawsMonospace(font.name)),
+    }));
+  const groups: FontGroup[] = [
+    { label: null, choices: [system] },
+    { label: "추천", choices: offered },
+  ];
+  if (kind === "ui") {
+    groups.push({ label: "설치된 글꼴", choices: rest.map((font) => font.choice) });
+  } else {
+    groups.push(
+      { label: "고정폭 글꼴", choices: rest.filter((font) => font.monospace).map((font) => font.choice) },
+      { label: "그 밖의 글꼴", choices: rest.filter((font) => !font.monospace).map((font) => font.choice) },
+    );
+  }
+  return groups.filter((group) => group.choices.length > 0);
 }
