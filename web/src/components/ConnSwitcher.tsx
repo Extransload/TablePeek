@@ -74,6 +74,9 @@ export function ConnSwitcher({
                 <button
                   type="button"
                   className="conn-tab-close"
+                  // No focus on press: focusing a half-hidden tab scrolls the bar,
+                  // which moves the button out from under the pointer.
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={() => onClose(conn.id)}
                   title={t("연결 끊기")}
                   aria-label={t("연결 끊기")}

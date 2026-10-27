@@ -843,13 +843,17 @@ export default function App() {
     return conn?.path ? `file:${conn.path}` : connId;
   }
   const connsRef = useRef(conns);
+  // Connections whose close is on its way to the server: no list fetched
+  // meanwhile brings their tabs back.
+  const closingConnsRef = useRef(new Set<string>());
   connsRef.current = conns;
 
   // A fetched connection list, seen at once by code that runs before the next
   // render (entering a connection just opened).
   function commitConns(list: ConnSummary[]): void {
-    connsRef.current = list;
-    setConns(list);
+    const shown = list.filter((conn) => !closingConnsRef.current.has(conn.id));
+    connsRef.current = shown;
+    setConns(shown);
   }
 
   // Where a connection's query drafts are kept: its saved connection, any
@@ -3613,42 +3617,75 @@ export default function App() {
   }
 
   async function closeConn(id: string): Promise<void> {
-    const summary = conns.find((conn) => conn.id === id);
+    if (closingConnsRef.current.has(id)) {
+      return;
+    }
+    const summary = connsRef.current.find((conn) => conn.id === id);
     if (summary?.is_default) {
       store.setError(t("기본 연결은 닫을 수 없습니다"));
       return;
     }
     const ws = workspacesRef.current[id];
-    if (ws !== undefined) {
-      if (!guardPending(stagedSources(ws.tabs.tabs), () => void closeConn(id))) {
-        return;
+    if (ws !== undefined && !guardPending(stagedSources(ws.tabs.tabs), () => void closeConn(id))) {
+      return;
+    }
+    // Its tab goes at once, and the neighbour takes over as a browser tab's
+    // does: home only once no connection is left open.
+    closingConnsRef.current.add(id);
+    const order = connsRef.current;
+    const at = order.findIndex((conn) => conn.id === id);
+    const left = order.filter((conn) => conn.id !== id && !closingConnsRef.current.has(conn.id));
+    const successor = left.find((conn) => order.indexOf(conn) > at) ?? left[left.length - 1] ?? null;
+    commitConns(order.filter((conn) => conn.id !== id));
+    // Marked until the server answers, whatever happens on the way.
+    let closed = false;
+    try {
+      if (ws !== undefined) {
+        if (runningTabRef.current !== null && tabById(ws.tabs, runningTabRef.current) !== null) {
+          closedDuringRunRef.current = runningTabRef.current;
+          store.cancelQuery(id);
+          setRunningTabId(null);
+        }
+        for (const tab of ws.tabs.tabs) {
+          if (tab.kind === "query" || tab.kind === "data") {
+            tab.source?.dispose();
+          }
+        }
+        const next = { ...workspacesRef.current };
+        delete next[id];
+        commitWorkspaces(next);
       }
-      if (runningTabRef.current !== null && tabById(ws.tabs, runningTabRef.current) !== null) {
-        closedDuringRunRef.current = runningTabRef.current;
-        store.cancelQuery(id);
-        setRunningTabId(null);
-      }
-      for (const tab of ws.tabs.tabs) {
-        if (tab.kind === "query" || tab.kind === "data") {
-          tab.source?.dispose();
+      if (activeConnIdRef.current === id) {
+        // One already open takes over at once; one not yet opened loads from
+        // home, where a failed load leaves the app (never on the closed one).
+        if (successor !== null && workspacesRef.current[successor.id] !== undefined) {
+          setActiveConnId(successor.id);
+        } else {
+          setActiveConnId(null);
+          if (successor !== null) {
+            void enterConn(successor.id);
+          }
         }
       }
-      const next = { ...workspacesRef.current };
-      delete next[id];
-      commitWorkspaces(next);
-    }
-    if (activeConnIdRef.current === id) {
-      setActiveConnId(null);
-    }
-    forgetSchema(id);
-    try {
-      await store.closeConn(id);
-    } catch (err) {
-      store.setError(errorOf(err, t("연결을 닫지 못했습니다")));
+      forgetSchema(id);
+      try {
+        await store.closeConn(id);
+        closed = true;
+      } catch (err) {
+        store.setError(errorOf(err, t("연결을 닫지 못했습니다")));
+      }
+    } finally {
+      closingConnsRef.current.delete(id);
     }
     try {
+      // commitConns keeps any other close still on its way hidden.
       commitConns(await store.listConns());
-    } catch {}
+    } catch {
+      // A connection the server still holds comes back to the bar.
+      if (!closed) {
+        commitConns(order);
+      }
+    }
   }
 
   // File → Import, as TablePlus has it: CSV and JSON open the wizard (on the
