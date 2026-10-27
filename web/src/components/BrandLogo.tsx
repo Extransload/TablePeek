@@ -6,7 +6,10 @@ interface BrandMarkProps {
   className?: string;
 }
 
+const GRID_PATH = "M0 8H32M0 16H32M0 24H32M8 0V32M16 0V32M24 0V32";
+
 // Same artwork as src/assets/tablepeek-mark.svg (the favicon); ids are scoped per instance.
+// A monocle: a dark plate with a faint grid, one circular lens where the grid shows sharp on paper.
 export function BrandMark({ size = 24, className }: BrandMarkProps) {
   const id = useId().replace(/:/g, "");
   return (
@@ -19,53 +22,47 @@ export function BrandMark({ size = 24, className }: BrandMarkProps) {
       focusable="false"
     >
       <defs>
-        <linearGradient id={`${id}-bg`} x1="3" y1="1" x2="29" y2="31" gradientUnits="userSpaceOnUse">
+        <clipPath id={`${id}-tile`}>
+          <rect width="32" height="32" rx="7.25" />
+        </clipPath>
+        <clipPath id={`${id}-lens`}>
+          <circle cx="16" cy="16" r="11" />
+        </clipPath>
+        <linearGradient
+          id={`${id}-rim`}
+          x1="5"
+          y1="5"
+          x2="27"
+          y2="27"
+          gradientUnits="userSpaceOnUse"
+        >
           <stop offset="0" stopColor="#4FA3FF" />
-          <stop offset="0.55" stopColor="#5B6BFF" />
-          <stop offset="1" stopColor="#7A3FF2" />
+          <stop offset="0.55" stopColor="#6E5BFF" />
+          <stop offset="1" stopColor="#A35BFF" />
         </linearGradient>
-        <linearGradient id={`${id}-shine`} x1="16" y1="1" x2="16" y2="17" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#FFFFFF" stopOpacity="0.32" />
-          <stop offset="1" stopColor="#FFFFFF" stopOpacity="0" />
-        </linearGradient>
-        <radialGradient id={`${id}-lens`} cx="21.2" cy="20.2" r="5.6" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#7CF5E4" stopOpacity="0.55" />
-          <stop offset="1" stopColor="#1B1650" stopOpacity="0.55" />
-        </radialGradient>
       </defs>
-      <rect x="1" y="1" width="30" height="30" rx="8.5" fill={`url(#${id}-bg)`} />
-      <path
-        d="M9.5 1h13A8.5 8.5 0 0 1 31 9.5V13Q16 19 1 13V9.5A8.5 8.5 0 0 1 9.5 1z"
-        fill={`url(#${id}-shine)`}
-      />
-      <path d="M9 6.8h10.6a2.6 2.6 0 0 1 2.6 2.6v2H6.4v-2A2.6 2.6 0 0 1 9 6.8z" fill="#FFFFFF" />
-      <rect
-        x="6.4"
-        y="6.8"
-        width="15.8"
-        height="14.2"
-        rx="2.6"
-        fill="none"
-        stroke="#FFFFFF"
-        strokeWidth="1.6"
-      />
-      <path
-        d="M6.4 16.2h9.2M11.7 11.4v9.6"
-        stroke="#FFFFFF"
-        strokeOpacity="0.6"
-        strokeWidth="1.3"
-      />
-      <circle
-        cx="21.2"
-        cy="20.2"
-        r="5.6"
-        fill={`url(#${id}-lens)`}
-        stroke="#FFFFFF"
-        strokeWidth="2.1"
-      />
-      <path d="M18.3 20.2q2.9-3 5.8 0q-2.9 3-5.8 0z" fill="#FFFFFF" />
-      <circle cx="21.2" cy="20.2" r="1.25" fill="#3B2BB8" />
-      <path d="M25.3 24.3l2.6 2.6" stroke="#FFFFFF" strokeWidth="2.6" strokeLinecap="round" />
+      <g clipPath={`url(#${id}-tile)`}>
+        <rect width="32" height="32" fill="#1A1830" />
+        <path
+          d={GRID_PATH}
+          stroke="#C8C6F0"
+          strokeOpacity="0.12"
+          strokeWidth="0.5"
+        />
+        <g clipPath={`url(#${id}-lens)`}>
+          <rect width="32" height="32" fill="#FBF6EA" />
+          <path d={GRID_PATH} stroke="#1A1830" strokeWidth="0.625" />
+          <rect x="16" y="16" width="8" height="8" fill="#6E5BFF" />
+        </g>
+        <circle
+          cx="16"
+          cy="16"
+          r="11"
+          fill="none"
+          stroke={`url(#${id}-rim)`}
+          strokeWidth="0.875"
+        />
+      </g>
     </svg>
   );
 }
