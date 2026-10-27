@@ -3195,10 +3195,9 @@ textarea:focus-visible {
   border-radius: var(--r-sm);
 }
 
+/* Dialogs open over the app darkened, not blurred. */
 .modal-backdrop {
-  background: rgba(9, 10, 15, 0.42);
-  backdrop-filter: blur(7px);
-  -webkit-backdrop-filter: blur(7px);
+  background: rgba(0, 0, 0, 0.5);
 }
 
 .modal {
@@ -8796,7 +8795,8 @@ button.result-set.failed .result-set-status {
   color: var(--muted);
   font-size: calc(13px * var(--ui-scale, 1));
   text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Kept as written: the table sample spaces its cells. */
+  white-space: pre;
 }
 
 /* A short note over the window ("nothing to run"), gone in a moment. */
@@ -9260,4 +9260,36 @@ html.scrollbar-x-always :is(.grid-scroller, .cm-scroller) {
 
 html.scrollbar-y-always :is(.grid-scroller, .cm-scroller) {
   overflow-y: scroll !important;
+}
+
+/* Settings → Sidebar: the left sidebar and the right detail panel take
+   their own font (names and labels alike) and size; the rest of the app
+   keeps the system's. */
+.schema-sidebar,
+.row-detail {
+  --ui: var(--sidebar-font);
+  --mono: var(--sidebar-font);
+  --ui-scale: var(--sidebar-scale);
+  font-family: var(--ui);
+}
+
+/* A font and its size side by side, over the line written in them. */
+.font-select-row {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.font-select-row select:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The grid's own cell editor and value menu write in the Data Table font
+   and size, as the cells they open over. */
+.cell-editor,
+.cell-menu {
+  --ui: var(--grid-font);
+  --mono: var(--grid-font);
+  --ui-scale: var(--grid-scale);
 }

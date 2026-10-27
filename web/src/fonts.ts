@@ -141,34 +141,35 @@ function drawsMonospace(family: string): boolean {
   return even;
 }
 
-// What Settings offers: the system's own font first, then the suggested ones
-// this machine has (and the saved pick, even when it hasn't), then every
-// other installed family; for code, the monospaced ones before the rest.
-export function fontGroups(kind: "ui" | "code", families: InstalledFont[], current: string): FontGroup[] {
-  const [system, ...suggested] = kind === "ui" ? UI_FONTS : CODE_FONTS;
+// What Settings offers for one of its three fonts: the system's own first
+// (for the data table and the sidebar both its monospaced and its plain
+// one, as TablePlus offers), then the suggested ones this machine has (and
+// the saved pick, even when it hasn't), then every other installed family,
+// the monospaced ones before the rest.
+export function fontGroups(
+  place: "editor" | "grid" | "sidebar",
+  families: InstalledFont[],
+  current: string,
+): FontGroup[] {
+  const [systemCode, ...codeSuggested] = CODE_FONTS;
+  const [systemUi, ...uiSuggested] = UI_FONTS;
+  const systems = place === "editor" ? [systemCode] : [systemCode, systemUi];
+  const suggested = place === "editor" ? codeSuggested : [...codeSuggested, ...uiSuggested];
   const offered = suggested.filter(
     (choice) => choice.family === undefined || fontInstalled(choice.family) || choice.value === current,
   );
   const covered = new Set(offered.map((choice) => choice.family?.toLowerCase()));
-  const make = kind === "ui" ? uiFont : codeFont;
   const rest = families
     .filter((font) => !covered.has(font.name.toLowerCase()))
     .map((font) => ({
-      choice: make(font.korean ? `${font.korean} (${font.name})` : font.name, [font.name]),
-      // Measured for the code list only: the app list doesn't split on it.
-      monospace: kind === "code" && (font.monospace || drawsMonospace(font.name)),
+      choice: codeFont(font.korean ? `${font.korean} (${font.name})` : font.name, [font.name]),
+      monospace: font.monospace || drawsMonospace(font.name),
     }));
   const groups: FontGroup[] = [
-    { label: null, choices: [system] },
+    { label: null, choices: systems },
     { label: "추천", choices: offered },
+    { label: "고정폭 글꼴", choices: rest.filter((font) => font.monospace).map((font) => font.choice) },
+    { label: "그 밖의 글꼴", choices: rest.filter((font) => !font.monospace).map((font) => font.choice) },
   ];
-  if (kind === "ui") {
-    groups.push({ label: "설치된 글꼴", choices: rest.map((font) => font.choice) });
-  } else {
-    groups.push(
-      { label: "고정폭 글꼴", choices: rest.filter((font) => font.monospace).map((font) => font.choice) },
-      { label: "그 밖의 글꼴", choices: rest.filter((font) => !font.monospace).map((font) => font.choice) },
-    );
-  }
   return groups.filter((group) => group.choices.length > 0);
 }

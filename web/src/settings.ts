@@ -25,15 +25,17 @@ export interface AppSettings {
   language: Language;
   theme: ThemeMode;
   accent: string;
-  // The code font: SQL editor, console and data grid.
+  // Fonts and sizes (px) in three places, as TablePlus has them; menus,
+  // tabs, toolbars and dialogs keep the system's font at its usual size.
+  // The SQL editor's, the console's and code shown elsewhere.
   fontFamily: string;
-  // The app's font: menus, panels, tabs, the sidebar.
-  uiFontFamily: string;
-  // The SQL editor's (and the console's) text size, in px.
   fontSize: number;
-  // Everything else: sidebar, tabs, menus, panels and the data grid, in px
-  // (12 is the size the app is drawn at).
-  uiFontSize: number;
+  // Every table: the data grid, structure, previews.
+  gridFontFamily: string;
+  gridFontSize: number;
+  // The left sidebar and the right detail panel.
+  sidebarFontFamily: string;
+  sidebarFontSize: number;
   rowAlt: boolean;
   typeColors: boolean;
   // The grid's and the editor's scrollbars kept in view on each axis,
@@ -56,8 +58,12 @@ export interface AppSettings {
 export const MAX_ROWS_LIMIT = 500000;
 export const EDITOR_FONT_MIN = 10;
 export const EDITOR_FONT_MAX = 24;
-export const UI_FONT_MIN = 10;
-export const UI_FONT_MAX = 16;
+export const GRID_FONT_MIN = 10;
+export const GRID_FONT_MAX = 24;
+export const SIDEBAR_FONT_MIN = 10;
+export const SIDEBAR_FONT_MAX = 18;
+// The size the app is drawn at: every px size in styles.css is for it.
+const BASE_UI_PX = 12;
 
 function clampSize(value: unknown, min: number, max: number, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
@@ -68,9 +74,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   accent: "#4082ee",
   fontFamily: SYSTEM_CODE_FONT,
-  uiFontFamily: SYSTEM_UI_FONT,
   fontSize: 12,
-  uiFontSize: 12,
+  gridFontFamily: SYSTEM_CODE_FONT,
+  gridFontSize: 12,
+  sidebarFontFamily: SYSTEM_CODE_FONT,
+  sidebarFontSize: 12,
   rowAlt: true,
   typeColors: true,
   scrollbarX: true,
@@ -100,19 +108,39 @@ function readSettings(): AppSettings {
     if (raw === null) {
       return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
     }
-    const { hideScroller, ...parsed } = JSON.parse(raw) as Partial<AppSettings> & { hideScroller?: boolean };
+    const { hideScroller, uiFontFamily: _appFont, uiFontSize, ...parsed } = JSON.parse(raw) as Partial<AppSettings> & {
+      hideScroller?: boolean;
+      uiFontFamily?: string;
+      uiFontSize?: number;
+    };
     // "Hide scrollbars" from earlier versions: neither kept in view.
     const shown = hideScroller === true ? false : DEFAULT_SETTINGS.scrollbarX;
+    // Earlier versions drew the grid and the sidebar's names in the code
+    // font, at the one size the whole app took: they start from those.
+    const codeFont = typeof parsed.fontFamily === "string" ? parsed.fontFamily : DEFAULT_SETTINGS.fontFamily;
     return {
       ...DEFAULT_SETTINGS,
       scrollbarX: shown,
       scrollbarY: shown,
+      gridFontFamily: codeFont,
+      sidebarFontFamily: codeFont,
       ...parsed,
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
       fontSize: clampSize(parsed.fontSize, EDITOR_FONT_MIN, EDITOR_FONT_MAX, DEFAULT_SETTINGS.fontSize),
-      uiFontSize: clampSize(parsed.uiFontSize, UI_FONT_MIN, UI_FONT_MAX, DEFAULT_SETTINGS.uiFontSize),
+      gridFontSize: clampSize(
+        parsed.gridFontSize ?? uiFontSize,
+        GRID_FONT_MIN,
+        GRID_FONT_MAX,
+        DEFAULT_SETTINGS.gridFontSize,
+      ),
+      sidebarFontSize: clampSize(
+        parsed.sidebarFontSize ?? uiFontSize,
+        SIDEBAR_FONT_MIN,
+        SIDEBAR_FONT_MAX,
+        DEFAULT_SETTINGS.sidebarFontSize,
+      ),
       maxRows:
         typeof parsed.maxRows === "number" && Number.isFinite(parsed.maxRows)
           ? Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(parsed.maxRows)))
@@ -187,10 +215,15 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--scrollbar-hover", palette.muted);
   root.style.setProperty("--hover-fill", palette.hoverFill);
   root.style.setProperty("--mono", settings.fontFamily);
-  root.style.setProperty("--ui", settings.uiFontFamily);
+  root.style.setProperty("--ui", SYSTEM_UI_FONT);
   root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
-  // Every px font size in styles.css is multiplied by this.
-  root.style.setProperty("--ui-scale", String(settings.uiFontSize / DEFAULT_SETTINGS.uiFontSize));
+  // Every px font size in styles.css is multiplied by --ui-scale: 1 for the
+  // app, the sidebar's own inside the sidebars (see styles.css).
+  root.style.setProperty("--ui-scale", "1");
+  root.style.setProperty("--sidebar-font", settings.sidebarFontFamily);
+  root.style.setProperty("--sidebar-scale", String(settings.sidebarFontSize / BASE_UI_PX));
+  root.style.setProperty("--grid-font", settings.gridFontFamily);
+  root.style.setProperty("--grid-scale", String(settings.gridFontSize / BASE_UI_PX));
   const syntax = { ...syntaxColors(settings.syntaxPreset, theme.mode) };
   if (settings.syntaxPreset === "tablepeek") {
     Object.assign(syntax, theme.syntax ?? {

@@ -10,8 +10,10 @@ import {
   sha256Hex,
   EDITOR_FONT_MAX,
   EDITOR_FONT_MIN,
-  UI_FONT_MAX,
-  UI_FONT_MIN,
+  GRID_FONT_MAX,
+  GRID_FONT_MIN,
+  SIDEBAR_FONT_MAX,
+  SIDEBAR_FONT_MIN,
   type AppSettings,
 } from "../settings";
 import {
@@ -76,19 +78,27 @@ function loadInstalledFonts(): Promise<InstalledFont[]> {
   return installedFonts;
 }
 
-// A font list with the current pick, a saved list no longer offered shown as
-// "custom"; a suggested font this machine lacks is marked (it falls back to
-// the system's).
+// One of the three fonts: its family (a saved list no longer offered shows
+// as "custom", a suggested font this machine lacks is marked: it falls back
+// to the system's) and its size, over a line written in both.
 function FontSelect({
+  label,
   groups,
   value,
+  size,
+  sizes,
   preview,
   onChange,
+  onSize,
 }: {
+  label: string;
   groups: FontGroup[];
   value: string;
+  size: number;
+  sizes: number[];
   preview: string;
   onChange(value: string): void;
+  onSize(size: number): void;
 }) {
   const known = groups.some((group) => group.choices.some((choice) => choice.value === value));
   const options = (group: FontGroup) =>
@@ -101,19 +111,32 @@ function FontSelect({
     ));
   return (
     <div className="font-select">
-      <Select value={value} onChange={(event) => onChange(event.target.value)}>
-        {groups.map((group) =>
-          group.label === null ? (
-            options(group)
-          ) : (
-            <optgroup key={group.label} label={t(group.label)}>
-              {options(group)}
-            </optgroup>
-          ),
-        )}
-        {known ? null : <option value={value}>{t("사용자 지정")}</option>}
-      </Select>
-      <span className="font-preview" style={{ fontFamily: value }}>
+      <div className="font-select-row">
+        <Select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
+          {groups.map((group) =>
+            group.label === null ? (
+              options(group)
+            ) : (
+              <optgroup key={group.label} label={t(group.label)}>
+                {options(group)}
+              </optgroup>
+            ),
+          )}
+          {known ? null : <option value={value}>{t("사용자 지정")}</option>}
+        </Select>
+        <Select
+          aria-label={t("{name} 글자 크기", { name: label })}
+          value={size}
+          onChange={(event) => onSize(Number(event.target.value))}
+        >
+          {sizes.map((choice) => (
+            <option key={choice} value={choice}>
+              {choice}px
+            </option>
+          ))}
+        </Select>
+      </div>
+      <span className="font-preview" style={{ fontFamily: value, fontSize: `${size}px` }}>
         {preview}
       </span>
     </div>
@@ -156,13 +179,17 @@ export function SettingsModal({
       live = false;
     };
   }, []);
-  const uiFontGroups = useMemo(
-    () => fontGroups("ui", fontFamilies, settings.uiFontFamily),
-    [fontFamilies, settings.uiFontFamily],
-  );
-  const codeFontGroups = useMemo(
-    () => fontGroups("code", fontFamilies, settings.fontFamily),
+  const editorFontGroups = useMemo(
+    () => fontGroups("editor", fontFamilies, settings.fontFamily),
     [fontFamilies, settings.fontFamily],
+  );
+  const gridFontGroups = useMemo(
+    () => fontGroups("grid", fontFamilies, settings.gridFontFamily),
+    [fontFamilies, settings.gridFontFamily],
+  );
+  const sidebarFontGroups = useMemo(
+    () => fontGroups("sidebar", fontFamilies, settings.sidebarFontFamily),
+    [fontFamilies, settings.sidebarFontFamily],
   );
   const [themeMessage, setThemeMessage] = useState<string | null>(null);
   const [themeBusy, setThemeBusy] = useState(false);
@@ -486,51 +513,46 @@ export function SettingsModal({
                       </div>
                     </div>
                     <div className="settings-row">
-                      <span className="settings-label">{t("앱 글꼴")}</span>
+                      <span className="settings-label">{t("SQL 에디터")}</span>
                       <FontSelect
-                        groups={uiFontGroups}
-                        value={settings.uiFontFamily}
-                        preview={t("가나다 ABC 123 — 테이블과 메뉴")}
-                        onChange={(uiFontFamily) => onChange({ uiFontFamily })}
-                      />
-                    </div>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("에디터 글꼴")}</span>
-                      <FontSelect
-                        groups={codeFontGroups}
+                        label={t("SQL 에디터")}
+                        groups={editorFontGroups}
                         value={settings.fontFamily}
+                        size={settings.fontSize}
+                        sizes={sizeChoices(EDITOR_FONT_MIN, EDITOR_FONT_MAX, settings.fontSize)}
                         preview="SELECT id, name FROM users; -- 0O 1lI"
                         onChange={(fontFamily) => onChange({ fontFamily })}
+                        onSize={(fontSize) => onChange({ fontSize })}
                       />
                     </div>
                     <div className="settings-row">
-                      <span className="settings-label">{t("에디터 글자 크기")}</span>
-                      <Select
-                        value={settings.fontSize}
-                        onChange={(event) => onChange({ fontSize: Number(event.target.value) })}
-                      >
-                        {sizeChoices(EDITOR_FONT_MIN, EDITOR_FONT_MAX, settings.fontSize).map((size) => (
-                          <option key={size} value={size}>
-                            {size}px
-                          </option>
-                        ))}
-                      </Select>
+                      <span className="settings-label">{t("데이터 테이블")}</span>
+                      <FontSelect
+                        label={t("데이터 테이블")}
+                        groups={gridFontGroups}
+                        value={settings.gridFontFamily}
+                        size={settings.gridFontSize}
+                        sizes={sizeChoices(GRID_FONT_MIN, GRID_FONT_MAX, settings.gridFontSize)}
+                        preview="1  user_1  user1@example.com  2026-10-27 09:00"
+                        onChange={(gridFontFamily) => onChange({ gridFontFamily })}
+                        onSize={(gridFontSize) => onChange({ gridFontSize })}
+                      />
                     </div>
                     <div className="settings-row">
-                      <span className="settings-label">{t("시스템 글자 크기")}</span>
-                      <Select
-                        value={settings.uiFontSize}
-                        onChange={(event) => onChange({ uiFontSize: Number(event.target.value) })}
-                      >
-                        {sizeChoices(UI_FONT_MIN, UI_FONT_MAX, settings.uiFontSize).map((size) => (
-                          <option key={size} value={size}>
-                            {size}px
-                          </option>
-                        ))}
-                      </Select>
+                      <span className="settings-label">{t("사이드바")}</span>
+                      <FontSelect
+                        label={t("사이드바")}
+                        groups={sidebarFontGroups}
+                        value={settings.sidebarFontFamily}
+                        size={settings.sidebarFontSize}
+                        sizes={sizeChoices(SIDEBAR_FONT_MIN, SIDEBAR_FONT_MAX, settings.sidebarFontSize)}
+                        preview={t("customers · orders · 가나다 123")}
+                        onChange={(sidebarFontFamily) => onChange({ sidebarFontFamily })}
+                        onSize={(sidebarFontSize) => onChange({ sidebarFontSize })}
+                      />
                     </div>
                     <p className="helper">
-                      {t("에디터 글꼴은 SQL 에디터·콘솔·데이터 그리드에, 앱 글꼴은 메뉴·패널·탭·사이드바에 쓰입니다. 에디터 글자 크기는 SQL 에디터와 콘솔에, 시스템 글자 크기는 그 밖의 모든 곳(데이터 그리드 포함)에 적용됩니다.")}
+                      {t("SQL 에디터는 에디터와 콘솔에, 데이터 테이블은 모든 표에, 사이드바는 왼쪽 사이드바와 오른쪽 상세 패널에 쓰입니다. 메뉴·탭·대화창은 시스템 글꼴입니다.")}
                     </p>
                   </section>
                   <section className="settings-section">

@@ -29,13 +29,13 @@ const STATE_ALPHA = 0.16;
 const EDIT_ALPHA = 0.24;
 let FONT = "";
 let FONT_HEADER = "";
-// The grid's text, rows and header follow the system font size, as the rest
-// of the app does (see --ui-scale in styles.css), in the code font.
+// The grid's text, rows and header follow the Data Table font and size
+// (Settings), as every table in the app does.
 let SCALE = 0;
 let FAMILY = "";
 
 function syncScale(): void {
-  const { uiFontSize: size, fontFamily: family } = getSettings();
+  const { gridFontSize: size, gridFontFamily: family } = getSettings();
   const scale = size / BASE_FONT_PX;
   if (scale === SCALE && family === FAMILY) {
     return;
@@ -322,8 +322,8 @@ export class CanvasGrid {
     this.schedulePaint();
   }
 
-  // Colours, and the system font size: a new size scales rows, the header,
-  // the row numbers and every column with it.
+  // Colours, and the Data Table font and size: a new size scales rows, the
+  // header, the row numbers and every column with it.
   refreshTheme(): void {
     syncScale();
     if (this.fontSeen !== FONT) {
