@@ -1184,6 +1184,7 @@ const EN: Record<string, string> = {
   "실행 방식": "Run options",
   "미설치": "not installed",
   "SQL 에디터": "SQL Editor",
+  "연결할 데이터베이스 종류를 고르세요": "Pick the kind of database to connect to",
   "데이터 테이블": "Data Table",
   "{name} 글자 크기": "{name} font size",
   "customers · orders · 가나다 123": "customers · orders · ABC 123",

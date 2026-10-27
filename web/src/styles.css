@@ -9293,3 +9293,54 @@ html.scrollbar-y-always :is(.grid-scroller, .cm-scroller) {
   --mono: var(--grid-font);
   --ui-scale: var(--grid-scale);
 }
+
+/* A new connection's first step: the kind of database, as tiles. */
+.driver-picker {
+  width: min(560px, 94vw);
+}
+
+.driver-picker-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.driver-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  outline: none;
+}
+
+button.driver-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: auto;
+  min-height: 96px;
+  padding: 16px 6px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+button.driver-tile:hover {
+  border-color: color-mix(in srgb, var(--line) 50%, var(--muted));
+  background: var(--hover-fill);
+}
+
+button.driver-tile.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.driver-grid:focus-visible button.driver-tile.selected {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.driver-tile-name {
+  font-weight: 600;
+  font-size: calc(12px * var(--ui-scale, 1));
+}

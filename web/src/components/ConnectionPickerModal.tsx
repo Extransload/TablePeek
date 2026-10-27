@@ -13,7 +13,7 @@ import {
   savedAddress,
   tagPills,
 } from "./HomeConnectionList";
-import { SearchIcon } from "./icons";
+import { PlusIcon, SearchIcon } from "./icons";
 
 export interface PickTarget {
   savedId?: string;
@@ -26,11 +26,13 @@ interface ConnectionPickerModalProps {
   saved: SavedConnection[];
   onPick(target: PickTarget): void;
   onClose(): void;
+  // Offered as "New connection…" in the footer when given.
+  onNew?(): void;
 }
 
 // Pick a connection for a job that needs one open (backup, restore): the
 // home list's rows, with groups shown as plain headings.
-export function ConnectionPickerModal({ title, conns, saved, onPick, onClose }: ConnectionPickerModalProps) {
+export function ConnectionPickerModal({ title, conns, saved, onPick, onClose, onNew }: ConnectionPickerModalProps) {
   const [query, setQuery] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
   const groups = useMemo(() => listGroups(), []);
@@ -64,6 +66,13 @@ export function ConnectionPickerModal({ title, conns, saved, onPick, onClose }: 
     .filter((section) => section.members.length > 0);
   const empty = unsaved.length === 0 && visible.length === 0;
 
+  const connectedState = (
+    <span className="launcher-state">
+      <span className="launcher-state-dot" aria-hidden="true" />
+      {t("연결됨")}
+    </span>
+  );
+
   function row(key: string, target: PickTarget, icon: ReactNode, name: string, extra: ReactNode, address: string) {
     return (
       <button type="button" key={key} className="launcher-row picker-row" onClick={() => onPick(target)}>
@@ -82,12 +91,16 @@ export function ConnectionPickerModal({ title, conns, saved, onPick, onClose }: 
   }
 
   function savedRow(connection: SavedConnection) {
+    const open = conns.some((conn) => conn.saved_id === connection.id);
     return row(
       `saved:${connection.id}`,
       { savedId: connection.id },
       <DriverIcon kind={connection.driver} size={30} className="launcher-logo" />,
       connection.name,
-      tagPills(metaById[connection.id]),
+      <>
+        {tagPills(metaById[connection.id])}
+        {open ? connectedState : null}
+      </>,
       savedAddress(connection),
     );
   }
@@ -146,10 +159,7 @@ export function ConnectionPickerModal({ title, conns, saved, onPick, onClose }: 
               { connId: conn.id },
               <DriverIcon kind={conn.kind} size={30} className="launcher-logo" />,
               openName(conn),
-              <span className="launcher-state">
-                <span className="launcher-state-dot" aria-hidden="true" />
-                {t("연결됨")}
-              </span>,
+              connectedState,
               openAddress(conn),
             ),
           )}
@@ -170,6 +180,12 @@ export function ConnectionPickerModal({ title, conns, saved, onPick, onClose }: 
           ) : null}
         </div>
         <div className="modal-foot">
+          {onNew !== undefined ? (
+            <button type="button" onClick={onNew}>
+              <PlusIcon size={9} />
+              {t("새 연결…")}
+            </button>
+          ) : null}
           <span className="spacer" />
           <button type="button" onClick={onClose}>
             {t("취소")}

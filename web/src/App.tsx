@@ -29,6 +29,7 @@ import { subscribeConnMeta } from "./connMeta";
 import { DefinitionPanel } from "./components/DefinitionPanel";
 import { ExplainPlanPanel } from "./components/ExplainPlanPanel";
 import { ConnectionPickerModal, type PickTarget } from "./components/ConnectionPickerModal";
+import { DriverPickerModal } from "./components/DriverPickerModal";
 import { DumpModal } from "./components/DumpModal";
 import { EmptyWorkspace } from "./components/EmptyWorkspace";
 import { ErrorNotice } from "./components/ErrorNotice";
@@ -76,6 +77,7 @@ import {
   PanelLeftIcon,
   PanelBottomIcon,
   PlusIcon,
+  PlugIcon,
   SettingsIcon,
   SnippetIcon,
   StarIcon,
@@ -516,6 +518,10 @@ export default function App() {
   const [busySaved, setBusySaved] = useState<string | null>(null);
   const [fsOpen, setFsOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
+  // A new connection's kind of database being picked (the group it goes into).
+  const [driverPick, setDriverPick] = useState<{ group?: string } | null>(null);
+  // The connections window from the bar's plug button: saved ones to open.
+  const [openPicker, setOpenPicker] = useState<SavedConnection[] | null>(null);
   const [connectEditing, setConnectEditing] = useState<{
     saved: SavedConnection;
     notice: string | null;
@@ -3594,6 +3600,11 @@ export default function App() {
   }
 
   function openNewConnection(options?: NewConnectionOptions): void {
+    // As TablePlus starts one: the kind of database first, unless it's known.
+    if (options?.driver === undefined && options?.url === undefined) {
+      setDriverPick({ group: options?.group });
+      return;
+    }
     setConnectEditing(null);
     setNewConnOptions(options ?? null);
     setConnectOpen(true);
@@ -3604,6 +3615,21 @@ export default function App() {
   async function startBackupOrRestore(kind: "backup" | "restore"): Promise<void> {
     const saved = await store.listConnections().catch(() => []);
     setDumpPicker({ kind, saved });
+  }
+
+  // The plug button: the saved and open connections, as on home, to open
+  // one, or a new one to make.
+  async function openConnectionsWindow(): Promise<void> {
+    setOpenPicker(await store.listConnections().catch(() => []));
+  }
+
+  function pickToOpen(target: PickTarget): void {
+    setOpenPicker(null);
+    if (target.connId !== undefined) {
+      void enterConn(target.connId);
+    } else if (target.savedId !== undefined) {
+      void connectSavedById(target.savedId);
+    }
   }
 
   async function pickForDump(target: PickTarget): Promise<void> {
@@ -3831,7 +3857,7 @@ export default function App() {
       ...(getPasscodeHash() !== null
         ? [{ id: "lock", label: t("지금 잠금"), run: () => setLocked(true) }]
         : []),
-      { id: "connect", label: t("서버 연결"), run: () => openConnectionEditor(null) },
+      { id: "connect", label: t("서버 연결"), run: () => openNewConnection() },
       { id: "demo", label: t("데모 열기"), run: () => void openDemo() },
       { id: "history", label: t("실행 기록"), sourceId: "history" },
       { id: "favorites", label: t("저장한 쿼리"), sourceId: "favorites" },
@@ -4972,10 +4998,19 @@ export default function App() {
                 : null
             }
             onSwitch={(id) => void enterConn(id)}
-            onNewConnection={() => openConnectionEditor(null)}
+            onNewConnection={() => openNewConnection()}
             onClose={(id) => void closeConn(id)}
           />
           <span className="spacer" />
+          <button
+            type="button"
+            className="icon-button appbar-icon"
+            onClick={() => void openConnectionsWindow()}
+            title={t("연결 열기")}
+          >
+            <PlugIcon size={13} />
+            <span className="sr-only">{t("연결 열기")}</span>
+          </button>
           <button
             type="button"
             className="icon-button appbar-icon"
@@ -5901,6 +5936,33 @@ export default function App() {
             closeConnectionDialog();
             void afterOpen(live);
           }}
+        />
+      )}
+      {openPicker !== null && (
+        <ConnectionPickerModal
+          title={t("연결 열기")}
+          conns={conns}
+          saved={openPicker}
+          onPick={pickToOpen}
+          onNew={() => {
+            setOpenPicker(null);
+            openNewConnection();
+          }}
+          onClose={() => setOpenPicker(null)}
+        />
+      )}
+      {driverPick !== null && (
+        <DriverPickerModal
+          onPick={(kind) => {
+            const group = driverPick.group;
+            setDriverPick(null);
+            if (kind === "sqlite") {
+              setFsOpen(true);
+            } else {
+              openNewConnection({ driver: kind, group });
+            }
+          }}
+          onClose={() => setDriverPick(null)}
         />
       )}
       {dumpPicker !== null && (

@@ -269,6 +269,16 @@ export function SnippetIcon({ size = 12, className }: IconProps) {
 }
 
 
+export function PlugIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M6 2.5v3M10 2.5v3" />
+      <path d="M4.5 5.5h7v2a3.5 3.5 0 0 1-7 0z" />
+      <path d="M8 10.5v3" />
+    </svg>
+  );
+}
+
 export function LinkIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>
