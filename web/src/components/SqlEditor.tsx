@@ -188,6 +188,39 @@ const highlightStyle = HighlightStyle.define([
   { tag: tags.labelName, color: "var(--syntax-label)" },
 ]);
 
+// How the editor looks, shared with its Settings preview.
+const editorLook = [editorTheme, syntaxHighlighting(highlightStyle), EditorView.lineWrapping];
+
+// The editor as Settings shows it: the same setup and look over a fixed
+// sample, read-only, so the preview can't drift from the real thing.
+// Its font and size follow the settings through --mono and --editor-font-size.
+export function SqlPreview({ doc }: { doc: string }) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) {
+      return;
+    }
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        extensions: [
+          basicSetup,
+          new LanguageSupport(dialectFor(undefined).language),
+          ...editorLook,
+          EditorState.readOnly.of(true),
+          EditorView.editable.of(false),
+        ],
+      }),
+    });
+    return () => view.destroy();
+  }, [doc]);
+
+  return <div ref={hostRef} className="sql-preview" />;
+}
+
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
   function SqlEditor(
     { tabId, tabIds, initialSql, readOnly, onRun, onSqlChange, schema, favorites, runKey, dialect },
@@ -335,9 +368,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
           ),
           basicSetup,
           languageCompartment.of(sqlLanguage(dialectRef.current)),
-          editorTheme,
-          syntaxHighlighting(highlightStyle),
-          EditorView.lineWrapping,
+          ...editorLook,
           EditorView.contentAttributes.of({
             spellcheck: "false",
             autocorrect: "off",

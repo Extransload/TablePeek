@@ -2636,90 +2636,6 @@ html[data-theme="light"] {
   color-scheme: light;
 }
 
-.settings-modal {
-  width: 620px;
-  max-width: min(620px, 94vw);
-}
-
-.settings-body {
-  max-height: 68vh;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.settings-section {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-section h4 {
-  margin: 0 0 2px;
-  font-size: calc(12px * var(--ui-scale, 1));
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.settings-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.settings-label {
-  min-width: 96px;
-  color: var(--muted);
-  font-size: calc(12px * var(--ui-scale, 1));
-}
-
-.settings-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: calc(12px * var(--ui-scale, 1));
-  color: var(--ink);
-}
-
-.type-preview {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  font-family: var(--mono);
-  font-size: calc(11px * var(--ui-scale, 1));
-  line-height: 1.4;
-}
-
-.settings-inline {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.theme-import {
-  flex: 1;
-  min-width: 220px;
-}
-
-.theme-import input {
-  flex: 1;
-  min-width: 0;
-}
-
-.theme-import-message {
-  margin-left: 104px;
-}
-
-.settings-reset {
-  border-color: transparent;
-  color: var(--faint);
-}
-
 .segmented {
   display: inline-flex;
   border: 1px solid var(--line);
@@ -3223,7 +3139,6 @@ textarea:focus-visible {
 }
 
 .connect-section,
-.settings-section,
 .metrics-card,
 .metrics-chart,
 .log-list,
@@ -3231,19 +3146,9 @@ textarea:focus-visible {
   border-radius: var(--r-md);
 }
 
-.settings-section {
-  border-color: var(--line-soft);
-  background: var(--hover-fill);
-}
-
-.settings-modal {
-  width: 680px;
-  max-width: min(680px, 94vw);
-}
-
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -3331,31 +3236,6 @@ textarea:focus-visible {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.theme-list {
-  position: relative;
-  max-height: 336px;
-  margin-bottom: 12px;
-  padding-right: 4px;
-  overflow-y: auto;
-}
-
-.theme-group + .theme-group {
-  margin-top: 10px;
-}
-
-.theme-group-title {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 2px 0 6px;
-  background: var(--panel);
-  color: var(--muted);
-  font-size: calc(10px * var(--ui-scale, 1));
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .segmented {
@@ -3846,45 +3726,6 @@ input[type="color"]::-webkit-color-swatch {
 
 .schema-kind-dot.kind-sequence {
   --kind-color: #4ade80;
-}
-
-/* Block, not flex: flex items drop the leading spaces that separate tokens. */
-.syntax-preview {
-  display: block;
-  white-space: pre-wrap;
-  padding: 8px 10px;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-sm);
-  background: var(--bg);
-  font-family: var(--mono);
-  font-size: calc(11px * var(--ui-scale, 1));
-  line-height: 1.5;
-}
-
-.syntax-preview-keyword {
-  color: var(--syntax-keyword);
-  font-weight: 600;
-}
-
-.syntax-preview-variable {
-  color: var(--syntax-variable);
-}
-
-.syntax-preview-operator {
-  color: var(--syntax-operator);
-}
-
-.syntax-preview-string {
-  color: var(--syntax-string);
-}
-
-.syntax-preview-type {
-  color: var(--syntax-type);
-}
-
-.syntax-preview-comment {
-  color: var(--syntax-comment);
-  font-style: italic;
 }
 
 .result-loading {
@@ -4580,22 +4421,28 @@ body.col-resizing * {
   color: var(--accent);
 }
 
+/* Settings: a list of categories on the left, and the picked one's pane:
+   titled boxes of rows, each a right-aligned label and its control. */
 .settings-modal {
   display: flex;
   flex-direction: column;
   width: 820px;
   max-width: min(820px, 95vw);
-  max-height: 88vh;
+  height: min(660px, calc(100vh - 48px));
+  /* The fixed height above, not .modal's 80vh cap. */
+  max-height: none;
   overflow: hidden;
 }
 
+.settings-modal .modal-foot {
+  flex: none;
+}
+
 .settings-shell {
+  flex: 1 1 auto;
   display: grid;
-  grid-template-columns: 168px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  min-height: 440px;
-  height: min(720px, 72vh);
-  max-height: min(720px, 72vh);
+  grid-template-columns: 188px minmax(0, 1fr);
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -4603,9 +4450,29 @@ body.col-resizing * {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 9px 7px;
+  padding: 10px 8px;
+  overflow-y: auto;
   border-right: 1px solid var(--line-soft);
   background: color-mix(in srgb, var(--panel) 68%, var(--bg));
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-caption {
+  padding: 10px 10px 4px;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+
+.settings-nav-sep {
+  height: 1px;
+  margin: 7px 6px;
+  background: var(--line-soft);
 }
 
 .settings-nav button {
@@ -4637,63 +4504,86 @@ body.col-resizing * {
   color: var(--accent);
 }
 
-.settings-content {
-  display: flex;
-  flex-direction: column;
+.settings-pane {
   min-width: 0;
   min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 22px;
 }
 
-.settings-pane-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  height: 44px;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--line-soft);
+.settings-group + .settings-group,
+.settings-box + .settings-actions {
+  margin-top: 18px;
 }
 
-.settings-pane-head h3 {
-  margin: 0;
-  font-size: calc(13px * var(--ui-scale, 1));
+.settings-group h4 {
+  margin: 0 0 7px 2px;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
-.settings-pane {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 14px 18px 20px;
+.settings-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--hover-fill);
 }
 
-.settings-pane .settings-section {
-  gap: 9px;
-  padding: 0 0 16px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+.settings-field {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 14px;
 }
 
-.settings-pane .settings-section + .settings-section {
-  padding-top: 16px;
-  border-top: 1px solid var(--line-soft);
-}
-
-.settings-pane .settings-section:last-child {
-  padding-bottom: 0;
-}
-
-.settings-pane .settings-section h4 {
-  margin-bottom: 3px;
+/* Level with its control's row; a long name wraps tight beside it. */
+.settings-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: var(--control-h-sm);
   color: var(--muted);
-  font-size: calc(10px * var(--ui-scale, 1));
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.3;
+  text-align: right;
 }
 
-.settings-pane .settings-label {
-  min-width: 110px;
+.settings-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  min-height: var(--control-h-sm);
+}
+
+.settings-hint {
+  margin: 0;
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+/* A pane's opening line, above its box. */
+.settings-lead {
+  margin-bottom: 10px;
+}
+
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 /* Fields match the 24px buttons beside them. */
@@ -4704,28 +4594,92 @@ body.col-resizing * {
 }
 
 .settings-pane input[type="number"] {
-  width: 80px;
+  width: 90px;
 }
 
-/* A row of actions under a labelled row starts at the field column. */
-.settings-pane .settings-row-indent {
-  margin-left: 118px;
+.settings-pane input[type="password"] {
+  width: 160px;
 }
 
-.settings-pane .theme-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+.settings-font-family {
+  width: 280px;
+  max-width: 100%;
 }
 
-.settings-pane .theme-import-message {
-  margin-left: 118px;
+.settings-theme-url {
+  flex: 1 1 240px;
+  min-width: 0;
 }
 
-.settings-pane .settings-language {
-  margin-left: 0;
+.settings-reset {
+  border-color: transparent;
+  color: var(--faint);
 }
 
-.settings-modal .modal-foot {
-  flex: none;
+/* Unchanged: hidden but in its place, so every row lines up. */
+.settings-reset.unchanged {
+  visibility: hidden;
+}
+
+/* What the pane's settings look like, as that part of the app draws it:
+   only to look at, so no hover, no cursor and no picking text. */
+.settings-preview {
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--ink);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The editor sample is a read-only editor: as tall as its lines, and no
+   focus ring, since nothing in it can be edited. */
+.sql-preview .cm-editor {
+  height: auto;
+}
+
+.sql-preview .cm-editor.cm-focused {
+  outline: none;
+}
+
+/* Rows and header take the grid's own heights (set inline); the rest is
+   CanvasGrid's drawing: 1px lines, the header and row numbers on --head,
+   headers centred and bold. */
+.settings-preview-grid {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg);
+}
+
+.settings-preview-grid :is(th, td) {
+  padding: 0 8px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.settings-preview-grid :is(th, td):last-child {
+  border-right: 0;
+}
+
+.settings-preview-grid th {
+  background: var(--head);
+  color: var(--ink);
+  font-weight: 600;
+  text-align: center;
+}
+
+.settings-preview-grid .gutter {
+  width: 48px;
+  background: var(--head);
+  color: var(--faint);
+  font-weight: 400;
+  text-align: right;
+}
+
+.settings-preview-grid td.numeric {
+  text-align: right;
 }
 
 .sr-only {
@@ -4900,19 +4854,6 @@ button.pending-apply {
   .hover-tooltip {
     animation: none;
   }
-}
-
-/* Settings: one fixed height for every pane; the pane scrolls */
-.settings-modal {
-  height: min(720px, calc(100vh - 48px));
-  max-height: none;
-}
-
-.settings-shell {
-  flex: 1 1 auto;
-  height: auto;
-  min-height: 0;
-  max-height: none;
 }
 
 /* Header connection tab close button */
@@ -5849,27 +5790,11 @@ button.primary.danger:hover {
 }
 
 /* Settings: shortcuts */
-.shortcut-notice {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line-soft));
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  color: var(--muted);
-  font-size: calc(12px * var(--ui-scale, 1));
-  line-height: 1.5;
-}
-
-.shortcut-notice strong {
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.shortcut-list {
-  display: flex;
-  flex-direction: column;
+/* Its rows carry their own spacing and rules. */
+.settings-box.shortcut-list {
+  gap: 0;
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 
 .shortcut-row {
@@ -5877,8 +5802,12 @@ button.primary.danger:hover {
   grid-template-columns: 200px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 6px 0;
+  padding: 5px 0;
   border-bottom: 1px solid var(--line-soft);
+}
+
+.shortcut-row:last-child {
+  border-bottom: 0;
 }
 
 .shortcut-label {
@@ -5944,13 +5873,19 @@ button.shortcut-remove:hover {
 }
 
 button.shortcut-add {
+  min-width: 26px;
   height: 26px;
-  padding: 0 10px;
+  padding: 0 8px;
+  justify-content: center;
   border: 1px dashed var(--line);
   border-radius: 7px;
   background: transparent;
-  color: var(--muted);
+  color: var(--faint);
   font-size: calc(12px * var(--ui-scale, 1));
+}
+
+button.shortcut-add:hover {
+  color: var(--ink);
 }
 
 button.shortcut-add.active {
@@ -8762,23 +8697,6 @@ button.result-set.failed .result-set-status {
   padding: 0;
 }
 
-/* Settings: a font list, and a line written in the font picked. */
-.font-select {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.font-preview {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: calc(13px * var(--ui-scale, 1));
-  text-overflow: ellipsis;
-  /* Kept as written: the table sample spaces its cells. */
-  white-space: pre;
-}
-
 /* A short note over the window ("nothing to run"), gone in a moment. */
 .flash-toast {
   position: fixed;
@@ -9220,7 +9138,7 @@ select:not([multiple]) {
   border-top: 1px solid var(--line-soft);
 }
 
-/* Settings → Tables: the grid's and the editor's scrollbars kept in view,
+/* Settings → Data Table: the grid's and the editor's scrollbars kept in view,
    where the system's overlay ones may show only while scrolling. Either
    setting makes them classic bars (the standard scrollbar properties above
    would hand them back to the system); the axis asked for has its bar even
@@ -9242,27 +9160,21 @@ html.scrollbar-y-always :is(.grid-scroller, .cm-scroller) {
   overflow-y: scroll !important;
 }
 
+/* The settings' editor sample fits its lines: no bars there either way. */
+html .settings-preview .sql-preview .cm-scroller {
+  overflow: hidden !important;
+}
+
 /* Settings → Sidebar: the left sidebar and the right detail panel take
    their own font (names and labels alike) and size; the rest of the app
    keeps the system's. */
 .schema-sidebar,
-.row-detail {
+.row-detail,
+.settings-preview-sidebar {
   --ui: var(--sidebar-font);
   --mono: var(--sidebar-font);
   --ui-scale: var(--sidebar-scale);
   font-family: var(--ui);
-}
-
-/* A font and its size side by side, over the line written in them. */
-.font-select-row {
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-}
-
-.font-select-row select:first-child {
-  flex: 1;
-  min-width: 0;
 }
 
 /* The grid's own cell editor and value menu write in the Data Table font

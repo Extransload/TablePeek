@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { languageLabel, t, type Language } from "../i18n";
-import { THEMES, VALUE_KINDS, palette, themeFromJson } from "../palette";
+import { THEMES, palette, themeFromJson, type ValueKind } from "../palette";
 import { fontGroups, fontInstalled, type FontGroup, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import {
@@ -29,15 +29,21 @@ import {
 } from "../shortcuts";
 import { SYNTAX_PRESETS, type SyntaxPresetId } from "../syntax";
 import {
+  ChevronIcon,
   CodeIcon,
   ColumnsIcon,
   KeyIcon,
+  PanelLeftIcon,
+  PlusIcon,
   SettingsIcon,
   ShieldIcon,
   TableIcon,
+  UpDownIcon,
 } from "./icons";
+import { gridHeightsAt } from "../grid/CanvasGrid";
 import { Spinner } from "./Spinner";
 import { Select } from "./Select";
+import { SqlPreview } from "./SqlEditor";
 
 interface SettingsModalProps {
   settings: AppSettings;
@@ -48,23 +54,47 @@ interface SettingsModalProps {
 
 type SettingsCategory =
   | "general"
-  | "appearance"
+  | "theme"
   | "editor"
-  | "data"
+  | "grid"
+  | "sidebar"
+  | "transfer"
   | "shortcuts"
   | "security";
 
-const SETTINGS_CATEGORIES: {
+interface CategoryItem {
   id: SettingsCategory;
   label: string;
   icon: (props: { size?: number }) => ReactElement;
-}[] = [
-  { id: "general", label: "일반", icon: SettingsIcon },
-  { id: "appearance", label: "모양", icon: ColumnsIcon },
-  { id: "editor", label: "에디터", icon: CodeIcon },
-  { id: "data", label: "데이터", icon: TableIcon },
-  { id: "shortcuts", label: "단축키", icon: KeyIcon },
-  { id: "security", label: "보안", icon: ShieldIcon },
+}
+
+// The list on the left, in groups. The screen's areas each have their own
+// pane (its font and what it shows), as TablePlus splits its fonts into SQL
+// Editor, Data Table and Sidebars.
+const SETTINGS_GROUPS: { label: string | null; items: CategoryItem[] }[] = [
+  {
+    label: null,
+    items: [
+      { id: "general", label: "일반", icon: SettingsIcon },
+      { id: "theme", label: "테마", icon: ColumnsIcon },
+    ],
+  },
+  {
+    label: "화면",
+    items: [
+      { id: "editor", label: "SQL 에디터", icon: CodeIcon },
+      { id: "grid", label: "데이터 테이블", icon: TableIcon },
+      { id: "sidebar", label: "사이드바", icon: PanelLeftIcon },
+    ],
+  },
+  {
+    label: null,
+    items: [
+      { id: "transfer", label: "가져오기·내보내기", icon: UpDownIcon },
+      { id: "shortcuts", label: "단축키", icon: KeyIcon },
+      { id: "security", label: "보안", icon: ShieldIcon },
+    ],
+  },
 ];
 
 // The installed families, asked of the server once a session.
@@ -78,25 +108,74 @@ function loadInstalledFonts(): Promise<InstalledFont[]> {
   return installedFonts;
 }
 
+// A titled box of settings.
+function SettingsGroup({ title, children }: { title?: string; children: ReactNode }) {
+  return (
+    <section className="settings-group">
+      {title ? <h4>{title}</h4> : null}
+      <div className="settings-box">{children}</div>
+    </section>
+  );
+}
+
+// One setting: its name in the label column, and its control beside it. A
+// checkbox names itself and leaves the label empty.
+function SettingsField({
+  label,
+  hint,
+  children,
+}: {
+  label?: string;
+  hint?: string | null;
+  children: ReactNode;
+}) {
+  return (
+    <div className="settings-field">
+      <span className="settings-label">{label ?? ""}</span>
+      <div className="settings-control">
+        <div className="settings-inline">{children}</div>
+        {hint ? <p className="settings-hint">{hint}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function SettingsCheck({
+  checked,
+  onChange,
+  children,
+}: {
+  checked: boolean;
+  onChange(checked: boolean): void;
+  children: ReactNode;
+}) {
+  return (
+    <label className="settings-check">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      {children}
+    </label>
+  );
+}
+
 // One of the three fonts: its family (a saved list no longer offered shows
 // as "custom", a suggested font this machine lacks is marked: it falls back
-// to the system's) and its size, over a line written in both.
-function FontSelect({
+// to the system's) and its size.
+function FontFields({
   label,
+  hint,
   groups,
   value,
   size,
   sizes,
-  preview,
   onChange,
   onSize,
 }: {
   label: string;
+  hint: string;
   groups: FontGroup[];
   value: string;
   size: number;
   sizes: number[];
-  preview: string;
   onChange(value: string): void;
   onSize(size: number): void;
 }) {
@@ -110,9 +189,14 @@ function FontSelect({
       </option>
     ));
   return (
-    <div className="font-select">
-      <div className="font-select-row">
-        <Select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
+    <SettingsGroup title={t("글꼴")}>
+      <SettingsField label={t("글꼴")} hint={hint}>
+        <Select
+          className="settings-font-family"
+          aria-label={t("{name} 글꼴", { name: label })}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        >
           {groups.map((group) =>
             group.label === null ? (
               options(group)
@@ -124,6 +208,8 @@ function FontSelect({
           )}
           {known ? null : <option value={value}>{t("사용자 지정")}</option>}
         </Select>
+      </SettingsField>
+      <SettingsField label={t("크기")}>
         <Select
           aria-label={t("{name} 글자 크기", { name: label })}
           value={size}
@@ -135,11 +221,8 @@ function FontSelect({
             </option>
           ))}
         </Select>
-      </div>
-      <span className="font-preview" style={{ fontFamily: value, fontSize: `${size}px` }}>
-        {preview}
-      </span>
-    </div>
+      </SettingsField>
+    </SettingsGroup>
   );
 }
 
@@ -148,6 +231,118 @@ function FontSelect({
 function sizeChoices(min: number, max: number, current: number): number[] {
   const sizes = Array.from({ length: max - min + 1 }, (_, index) => min + index);
   return sizes.includes(current) ? sizes : [...sizes, current].sort((a, b) => a - b);
+}
+
+// What a pane's settings look like, drawn as the app draws that area.
+function Preview({ children }: { children: ReactNode }) {
+  return (
+    <section className="settings-group">
+      <h4>{t("미리보기")}</h4>
+      <div className="settings-preview" aria-hidden="true">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+const EDITOR_SAMPLE = [
+  "SELECT id, name, count(*) AS orders",
+  "FROM users WHERE email LIKE '%@example.com'",
+  "GROUP BY id, name LIMIT 100; -- 0O 1lI",
+].join("\n");
+
+const GRID_COLUMNS = ["id", "name", "active", "price", "created_at"];
+// Each cell's kind (none for NULL) and its text; the first column is the key.
+const GRID_SAMPLE: [ValueKind | null, string][][] = [
+  [["integer", "1"], ["string", "user_1"], ["boolean", "true"], ["float", "12.5"], ["date", "2026-10-27"]],
+  [["integer", "2"], ["string", "사용자_2"], ["boolean", "false"], ["float", "8"], ["date", "2026-10-26"]],
+  [["integer", "3"], [null, "NULL"], ["boolean", "true"], ["float", "99.9"], ["date", "2026-10-25"]],
+];
+
+// Drawn as CanvasGrid draws the grid: its row and header heights, lines,
+// row numbers and header, a key in the error colour, NULL faint, the rest
+// by kind, and numbers to the right.
+function GridPreview({ settings }: { settings: AppSettings }) {
+  const ink = (kind: ValueKind | null, column: number): string | undefined => {
+    if (kind === null) {
+      return palette.nullInk;
+    }
+    if (!settings.typeColors) {
+      return undefined;
+    }
+    return column === 0 ? palette.error : palette.typeInks[kind];
+  };
+  const heights = gridHeightsAt(settings.gridFontSize);
+  return (
+    <Preview>
+      <table
+        className="settings-preview-grid"
+        style={{ fontFamily: settings.gridFontFamily, fontSize: `${settings.gridFontSize}px` }}
+      >
+        <thead>
+          <tr style={{ height: heights.header }}>
+            <th className="gutter" />
+            {GRID_COLUMNS.map((name) => (
+              <th key={name}>{name}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {GRID_SAMPLE.map((cells, row) => (
+            <tr
+              key={row}
+              style={{
+                height: heights.row,
+                background: settings.rowAlt && row % 2 === 1 ? palette.rowAlt : undefined,
+              }}
+            >
+              <td className="gutter">{row + 1}</td>
+              {cells.map(([kind, text], column) => (
+                <td
+                  key={column}
+                  className={kind === "integer" || kind === "float" ? "numeric" : undefined}
+                  style={{ color: ink(kind, column) }}
+                >
+                  {text}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Preview>
+  );
+}
+
+const SIDEBAR_SAMPLE = ["customers", "orders", "주문_상세"];
+
+// The sidebar's own tree markup, so it draws with the sidebar's styles and
+// takes its font and size as the sidebar does (see .schema-sidebar).
+function SidebarPreview() {
+  return (
+    <Preview>
+      <div className="schema-list settings-preview-sidebar">
+        <div className="schema-section-head">
+          <span className="schema-toggle open">
+            <ChevronIcon size={10} />
+          </span>
+          <span className="schema-section-label">{t("테이블")}</span>
+          <span className="schema-section-count">{SIDEBAR_SAMPLE.length}</span>
+        </div>
+        {SIDEBAR_SAMPLE.map((name) => (
+          <div className="schema-table" key={name}>
+            <div className="schema-table-row">
+              <span className="schema-toggle">
+                <ChevronIcon size={10} />
+              </span>
+              <TableIcon size={11} className="schema-table-icon" />
+              <span className="schema-table-name">{name}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Preview>
+  );
 }
 
 export function SettingsModal({
@@ -194,24 +389,31 @@ export function SettingsModal({
   const [themeMessage, setThemeMessage] = useState<string | null>(null);
   const [themeBusy, setThemeBusy] = useState(false);
   const [category, setCategory] = useState<SettingsCategory>("general");
-  const themeListRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
 
-  // The theme list scrolls on its own; bring the theme in use into view when
+  // Each pane starts at its top; declared first, so the theme pane's
+  // centring below runs after it.
+  useEffect(() => {
+    if (paneRef.current) {
+      paneRef.current.scrollTop = 0;
+    }
+  }, [category]);
+
+  // The theme list runs past the pane; bring the theme in use into view when
   // the pane opens or a Git import adds and selects one off-screen.
   useEffect(() => {
-    if (category !== "appearance") {
+    if (category !== "theme") {
       return;
     }
-    const list = themeListRef.current;
-    const card = list?.querySelector<HTMLElement>(".theme-card.active");
-    if (!list || !card) {
+    const pane = paneRef.current;
+    const card = pane?.querySelector<HTMLElement>(".theme-card.active");
+    if (!pane || !card) {
       return;
     }
-    const visible =
-      card.offsetTop >= list.scrollTop &&
-      card.offsetTop + card.offsetHeight <= list.scrollTop + list.clientHeight;
-    if (!visible) {
-      list.scrollTop = card.offsetTop - list.clientHeight / 2 + card.offsetHeight / 2;
+    const paneBox = pane.getBoundingClientRect();
+    const cardBox = card.getBoundingClientRect();
+    if (cardBox.top < paneBox.top || cardBox.bottom > paneBox.bottom) {
+      pane.scrollTop += cardBox.top - paneBox.top - (pane.clientHeight - cardBox.height) / 2;
     }
   }, [category, settings.theme]);
 
@@ -354,9 +556,392 @@ export function SettingsModal({
     setPasscodeMessage(t("잠금 암호를 해제했습니다"));
   }
 
-  const activeCategory =
-    SETTINGS_CATEGORIES.find((item) => item.id === category) ??
-    SETTINGS_CATEGORIES[0];
+  function renderPane(): ReactNode {
+    switch (category) {
+      case "general":
+        return (
+          <SettingsGroup>
+            <SettingsField label={t("언어")}>
+              <div className="segmented settings-language">
+                {(["ko", "en"] as Language[]).map((language) => (
+                  <button
+                    key={language}
+                    type="button"
+                    className={settings.language === language ? "active" : ""}
+                    onClick={() => onChange({ language })}
+                  >
+                    {languageLabel(language)}
+                  </button>
+                ))}
+              </div>
+            </SettingsField>
+          </SettingsGroup>
+        );
+
+      case "theme":
+        return (
+          <>
+            <SettingsGroup>
+              <SettingsField label={t("강조 색")}>
+                <input
+                  type="color"
+                  value={settings.accent}
+                  onChange={(event) => onChange({ accent: event.target.value })}
+                />
+                <span className="mono dim">{settings.accent}</span>
+              </SettingsField>
+              <SettingsField label={t("Git 테마")} hint={themeMessage}>
+                <input
+                  className="settings-theme-url"
+                  value={themeUrl}
+                  spellCheck={false}
+                  placeholder="https://raw.githubusercontent.com/.../theme.json"
+                  title={t("Base16, VS Code 색상 테마 JSON 또는 TablePeek 테마 JSON을 Git 원본 URL에서 가져옵니다.")}
+                  onChange={(event) => setThemeUrl(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      void importTheme();
+                    }
+                  }}
+                />
+                <button type="button" disabled={themeBusy} onClick={() => void importTheme()}>
+                  {themeBusy ? (
+                    <>
+                      <Spinner size={10} />
+                      {t("가져오는 중")}
+                    </>
+                  ) : (
+                    t("가져오기")
+                  )}
+                </button>
+              </SettingsField>
+            </SettingsGroup>
+            {(["dark", "light"] as const).map((mode) => (
+              <section key={mode} className="settings-group">
+                <h4>{mode === "dark" ? t("다크") : t("라이트")}</h4>
+                <div className="theme-grid">
+                  {THEMES.filter((theme) => theme.mode === mode).map((theme) => (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      data-theme-id={theme.id}
+                      className={`theme-card${settings.theme === theme.id ? " active" : ""}`}
+                      title={t(theme.label)}
+                      onClick={() => onChange({ theme: theme.id, accent: theme.accent })}
+                    >
+                      <span
+                        className="theme-preview"
+                        style={{
+                          background: theme.palette.bg,
+                          borderColor: theme.palette.line,
+                        }}
+                      >
+                        <span className="theme-preview-head" style={{ background: theme.palette.head }} />
+                        <span className="theme-preview-body">
+                          <span className="theme-preview-panel" style={{ background: theme.palette.panel }} />
+                          <span className="theme-preview-lines">
+                            <span style={{ background: theme.palette.ink }} />
+                            <span style={{ background: theme.palette.muted }} />
+                            <span style={{ background: theme.palette.accent }} />
+                          </span>
+                        </span>
+                      </span>
+                      <span className="theme-name">{t(theme.label)}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </>
+        );
+
+      case "editor":
+        return (
+          <>
+            <FontFields
+              label={t("SQL 에디터")}
+              hint={t("에디터와 콘솔에 쓰입니다.")}
+              groups={editorFontGroups}
+              value={settings.fontFamily}
+              size={settings.fontSize}
+              sizes={sizeChoices(EDITOR_FONT_MIN, EDITOR_FONT_MAX, settings.fontSize)}
+              onChange={(fontFamily) => onChange({ fontFamily })}
+              onSize={(fontSize) => onChange({ fontSize })}
+            />
+            <SettingsGroup title={t("편집")}>
+              <SettingsField
+                label={t("구문 강조")}
+                hint={t(SYNTAX_PRESETS.find((preset) => preset.id === settings.syntaxPreset)?.description ?? "")}
+              >
+                <Select
+                  value={settings.syntaxPreset}
+                  onChange={(event) => onChange({ syntaxPreset: event.target.value as SyntaxPresetId })}
+                >
+                  {SYNTAX_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {t(preset.label)}
+                    </option>
+                  ))}
+                </Select>
+              </SettingsField>
+              <SettingsField>
+                <SettingsCheck
+                  checked={settings.uppercaseKeywords}
+                  onChange={(uppercaseKeywords) => onChange({ uppercaseKeywords })}
+                >
+                  {t("정리·축약할 때 키워드를 대문자로")}
+                </SettingsCheck>
+              </SettingsField>
+            </SettingsGroup>
+            <Preview>
+              <SqlPreview doc={EDITOR_SAMPLE} />
+            </Preview>
+          </>
+        );
+
+      case "grid":
+        return (
+          <>
+            <FontFields
+              label={t("데이터 테이블")}
+              hint={t("모든 표와 셀 편집에 쓰입니다.")}
+              groups={gridFontGroups}
+              value={settings.gridFontFamily}
+              size={settings.gridFontSize}
+              sizes={sizeChoices(GRID_FONT_MIN, GRID_FONT_MAX, settings.gridFontSize)}
+              onChange={(gridFontFamily) => onChange({ gridFontFamily })}
+              onSize={(gridFontSize) => onChange({ gridFontSize })}
+            />
+            <SettingsGroup title={t("표시")}>
+              <SettingsField label={t("최대 행")}>
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_ROWS_LIMIT}
+                  value={settings.maxRows}
+                  title={t("쿼리 한 번에 가져오는 최대 행 수입니다.")}
+                  onChange={(event) =>
+                    onChange({
+                      maxRows: Math.min(
+                        MAX_ROWS_LIMIT,
+                        Math.max(1, Math.trunc(Number(event.target.value)) || 1),
+                      ),
+                    })
+                  }
+                />
+              </SettingsField>
+              <SettingsField>
+                <SettingsCheck checked={settings.rowAlt} onChange={(rowAlt) => onChange({ rowAlt })}>
+                  {t("줄무늬 행 배경")}
+                </SettingsCheck>
+              </SettingsField>
+              <SettingsField>
+                <SettingsCheck checked={settings.typeColors} onChange={(typeColors) => onChange({ typeColors })}>
+                  {t("타입별 색상")}
+                </SettingsCheck>
+              </SettingsField>
+              <SettingsField label={t("스크롤바 항상 표시")} hint={t("SQL 에디터에도 적용됩니다.")}>
+                <SettingsCheck checked={settings.scrollbarX} onChange={(scrollbarX) => onChange({ scrollbarX })}>
+                  {t("가로")}
+                </SettingsCheck>
+                <SettingsCheck checked={settings.scrollbarY} onChange={(scrollbarY) => onChange({ scrollbarY })}>
+                  {t("세로")}
+                </SettingsCheck>
+              </SettingsField>
+            </SettingsGroup>
+            <GridPreview settings={settings} />
+          </>
+        );
+
+      case "sidebar":
+        return (
+          <>
+            <FontFields
+              label={t("사이드바")}
+              hint={t("왼쪽 사이드바와 오른쪽 상세 패널에 쓰입니다.")}
+              groups={sidebarFontGroups}
+              value={settings.sidebarFontFamily}
+              size={settings.sidebarFontSize}
+              sizes={sizeChoices(SIDEBAR_FONT_MIN, SIDEBAR_FONT_MAX, settings.sidebarFontSize)}
+              onChange={(sidebarFontFamily) => onChange({ sidebarFontFamily })}
+              onSize={(sidebarFontSize) => onChange({ sidebarFontSize })}
+            />
+            <SidebarPreview />
+          </>
+        );
+
+      case "transfer":
+        return (
+          <SettingsGroup title="CSV">
+            <SettingsField label={t("CSV 구분자")}>
+              <Select value={settings.csvDelimiter} onChange={(event) => onChange({ csvDelimiter: event.target.value })}>
+                <option value=",">{t(", (쉼표)")}</option>
+                <option value={"	"}>Tab</option>
+                <option value=";">{t("; (세미콜론)")}</option>
+                <option value="|">{t("| (파이프)")}</option>
+              </Select>
+            </SettingsField>
+            <SettingsField>
+              <SettingsCheck checked={settings.csvHeader} onChange={(csvHeader) => onChange({ csvHeader })}>
+                {t("첫 행을 헤더로 사용")}
+              </SettingsCheck>
+            </SettingsField>
+            <SettingsField label={t("인코딩")}>
+              <Select
+                value={settings.csvEncoding}
+                onChange={(event) => onChange({ csvEncoding: event.target.value as AppSettings["csvEncoding"] })}
+              >
+                <option value="utf-8">UTF-8</option>
+                <option value="euc-kr">EUC-KR</option>
+                <option value="utf-16le">UTF-16LE</option>
+              </Select>
+            </SettingsField>
+          </SettingsGroup>
+        );
+
+      case "shortcuts":
+        return (
+          <>
+            <p className="settings-hint settings-lead">
+              {t("TablePeek 단축키가 브라우저 단축키보다 먼저 실행됩니다. {keys}는 브라우저가 먼저 처리합니다.", {
+                keys: ["Mod+w", "Mod+t", "Mod+n"].map(formatBinding).join(" · "),
+              })}
+            </p>
+            <div className="settings-box shortcut-list">
+              {KEY_ACTIONS.map((action) => {
+                const changed = settings.keymap[action].join("\n") !== DEFAULT_KEYMAP[action].join("\n");
+                return (
+                  <div className="shortcut-row" key={action}>
+                    <span className="shortcut-label">{t(KEY_ACTION_LABELS[action])}</span>
+                    <div className="shortcut-bindings">
+                      {settings.keymap[action].map((binding) => {
+                        const reserved = isReservedBinding(binding);
+                        return (
+                          <span
+                            key={binding}
+                            className={`shortcut-chip${reserved ? " reserved" : ""}`}
+                            title={
+                              reserved
+                                ? t("브라우저가 예약한 조합이라 브라우저 탭에서는 브라우저 동작이 먼저 실행됩니다")
+                                : undefined
+                            }
+                          >
+                            <kbd>{formatBinding(binding)}</kbd>
+                            {reserved ? <span className="shortcut-warn" aria-hidden="true">!</span> : null}
+                            <button
+                              type="button"
+                              className="shortcut-remove"
+                              onClick={() =>
+                                setBindings(
+                                  action,
+                                  settings.keymap[action].filter((entry) => entry !== binding),
+                                )
+                              }
+                              title={t("이 단축키 지우기")}
+                              aria-label={t("이 단축키 지우기")}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        className={`shortcut-add${capturing === action ? " active" : ""}`}
+                        title={t("누른 뒤 키 조합을 누르세요. Esc로 취소합니다. 다른 동작에 쓰이던 조합은 이쪽으로 옮겨집니다.")}
+                        aria-label={capturing === action ? undefined : t("단축키 추가")}
+                        onClick={() => {
+                          setCaptureHint(null);
+                          setCapturing(capturing === action ? null : action);
+                        }}
+                      >
+                        {capturing === action ? (captureHint ?? t("키 입력 대기…")) : <PlusIcon size={10} />}
+                      </button>
+                    </div>
+                    {/* Kept in its place when hidden, so the rows line up. */}
+                    <button
+                      type="button"
+                      onClick={() => setBindings(action, [...DEFAULT_KEYMAP[action]])}
+                      disabled={!changed}
+                      className={`settings-reset${changed ? "" : " unchanged"}`}
+                      title={t("기본값으로")}
+                    >
+                      {t("기본")}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="settings-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = {} as Keymap;
+                  for (const action of KEY_ACTIONS) {
+                    next[action] = [...DEFAULT_KEYMAP[action]];
+                  }
+                  onChange({ keymap: next });
+                }}
+              >
+                {t("모든 단축키를 기본값으로")}
+              </button>
+            </div>
+          </>
+        );
+
+      case "security":
+        return (
+          <>
+            <SettingsGroup title={t("잠금 암호")}>
+              <SettingsField label={hasPasscode ? t("암호 변경/해제") : t("새 암호")}>
+                <input
+                  type="password"
+                  placeholder={t("암호")}
+                  value={passcode}
+                  onChange={(event) => setPasscode(event.target.value)}
+                />
+                <input
+                  type="password"
+                  placeholder={t("확인")}
+                  value={passcodeConfirm}
+                  onChange={(event) => setPasscodeConfirm(event.target.value)}
+                />
+              </SettingsField>
+              <SettingsField hint={passcodeMessage}>
+                <button type="button" onClick={() => void applyPasscode()}>
+                  {hasPasscode ? t("변경") : t("저장")}
+                </button>
+                {hasPasscode ? (
+                  <>
+                    <button type="button" onClick={() => void removePasscode()}>
+                      {t("해제")}
+                    </button>
+                    <button type="button" onClick={onLock}>
+                      {t("지금 잠금")}
+                    </button>
+                  </>
+                ) : null}
+              </SettingsField>
+            </SettingsGroup>
+            <SettingsGroup title={t("활동 로그")}>
+              <SettingsField label={t("보관 기간(일)")}>
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={settings.activityDays}
+                  onChange={(event) =>
+                    onChange({
+                      activityDays: Math.min(90, Math.max(1, Number(event.target.value) || 7)),
+                    })
+                  }
+                />
+              </SettingsField>
+            </SettingsGroup>
+          </>
+        );
+    }
+  }
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -366,523 +951,36 @@ export function SettingsModal({
       >
         <div className="modal-head">
           <span className="modal-title">{t("설정")}</span>
-          <span className="modal-path">tablepeek</span>
         </div>
         <div className="settings-shell">
           <nav className="settings-nav" aria-label={t("설정")}>
-            {SETTINGS_CATEGORIES.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={category === item.id ? "active" : ""}
-                  onClick={() => setCategory(item.id)}
-                >
-                  <Icon size={12} />
-                  <span>{t(item.label)}</span>
-                </button>
-              );
-            })}
-          </nav>
-          <div className="settings-content">
-            <div className="settings-pane-head">
-              <h3>{t(activeCategory.label)}</h3>
-            </div>
-            <div className="settings-pane">
-              <div className="settings-category" hidden={category !== "general"}>
-                <>
-                  <section className="settings-section">
-                    <h4>{t("표시 언어")}</h4>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("언어")}</span>
-                      <div className="segmented settings-language">
-                        {(["ko", "en"] as Language[]).map((language) => (
-                          <button
-                            key={language}
-                            type="button"
-                            className={settings.language === language ? "active" : ""}
-                            onClick={() => onChange({ language })}
-                          >
-                            {languageLabel(language)}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </section>
-                </>
-              </div>
-
-              <div className="settings-category" hidden={category !== "appearance"}>
-                <>
-                  <section className="settings-section">
-                    <h4>{t("테마")}</h4>
-                    <div className="theme-list" ref={themeListRef}>
-                      {(["dark", "light"] as const).map((mode) => (
-                        <div key={mode} className="theme-group">
-                          <div className="theme-group-title">
-                            {mode === "dark" ? t("다크") : t("라이트")}
-                          </div>
-                          <div className="theme-grid">
-                            {THEMES.filter((theme) => theme.mode === mode).map((theme) => (
-                              <button
-                                key={theme.id}
-                                type="button"
-                                data-theme-id={theme.id}
-                                className={`theme-card${settings.theme === theme.id ? " active" : ""}`}
-                                title={t(theme.label)}
-                                onClick={() =>
-                                  onChange({ theme: theme.id, accent: theme.accent })
-                                }
-                              >
-                                <span
-                                  className="theme-preview"
-                                  style={{
-                                    background: theme.palette.bg,
-                                    borderColor: theme.palette.line,
-                                  }}
-                                >
-                                  <span
-                                    className="theme-preview-head"
-                                    style={{ background: theme.palette.head }}
-                                  />
-                                  <span className="theme-preview-body">
-                                    <span
-                                      className="theme-preview-panel"
-                                      style={{ background: theme.palette.panel }}
-                                    />
-                                    <span className="theme-preview-lines">
-                                      <span style={{ background: theme.palette.ink }} />
-                                      <span style={{ background: theme.palette.muted }} />
-                                      <span style={{ background: theme.palette.accent }} />
-                                    </span>
-                                  </span>
-                                </span>
-                                <span className="theme-name">{t(theme.label)}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("Git 테마")}</span>
-                      <div className="settings-inline theme-import">
-                        <input
-                          value={themeUrl}
-                          spellCheck={false}
-                          placeholder="https://raw.githubusercontent.com/.../theme.json"
-                          onChange={(event) => setThemeUrl(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              void importTheme();
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          disabled={themeBusy}
-                          onClick={() => void importTheme()}
-                        >
-                          {themeBusy ? (
-                            <>
-                              <Spinner size={10} />
-                              {t("가져오는 중")}
-                            </>
-                          ) : (
-                            t("가져오기")
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                    {themeMessage ? (
-                      <p className="helper theme-import-message">{themeMessage}</p>
-                    ) : null}
-                    <p className="helper">
-                      {t("Base16, VS Code 색상 테마 JSON 또는 TablePeek 테마 JSON을 Git 원본 URL에서 가져옵니다.")}
-                    </p>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("강조 색")}</span>
-                      <div className="settings-inline">
-                        <input
-                          type="color"
-                          value={settings.accent}
-                          onChange={(event) => onChange({ accent: event.target.value })}
-                        />
-                        <span className="mono dim">{settings.accent}</span>
-                      </div>
-                    </div>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("SQL 에디터")}</span>
-                      <FontSelect
-                        label={t("SQL 에디터")}
-                        groups={editorFontGroups}
-                        value={settings.fontFamily}
-                        size={settings.fontSize}
-                        sizes={sizeChoices(EDITOR_FONT_MIN, EDITOR_FONT_MAX, settings.fontSize)}
-                        preview="SELECT id, name FROM users; -- 0O 1lI"
-                        onChange={(fontFamily) => onChange({ fontFamily })}
-                        onSize={(fontSize) => onChange({ fontSize })}
-                      />
-                    </div>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("데이터 테이블")}</span>
-                      <FontSelect
-                        label={t("데이터 테이블")}
-                        groups={gridFontGroups}
-                        value={settings.gridFontFamily}
-                        size={settings.gridFontSize}
-                        sizes={sizeChoices(GRID_FONT_MIN, GRID_FONT_MAX, settings.gridFontSize)}
-                        preview="1  user_1  user1@example.com  2026-10-27 09:00"
-                        onChange={(gridFontFamily) => onChange({ gridFontFamily })}
-                        onSize={(gridFontSize) => onChange({ gridFontSize })}
-                      />
-                    </div>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("사이드바")}</span>
-                      <FontSelect
-                        label={t("사이드바")}
-                        groups={sidebarFontGroups}
-                        value={settings.sidebarFontFamily}
-                        size={settings.sidebarFontSize}
-                        sizes={sizeChoices(SIDEBAR_FONT_MIN, SIDEBAR_FONT_MAX, settings.sidebarFontSize)}
-                        preview={t("customers · orders · 가나다 123")}
-                        onChange={(sidebarFontFamily) => onChange({ sidebarFontFamily })}
-                        onSize={(sidebarFontSize) => onChange({ sidebarFontSize })}
-                      />
-                    </div>
-                    <p className="helper">
-                      {t("SQL 에디터는 에디터와 콘솔에, 데이터 테이블은 모든 표에, 사이드바는 왼쪽 사이드바와 오른쪽 상세 패널에 쓰입니다. 메뉴·탭·대화창은 시스템 글꼴입니다.")}
-                    </p>
-                  </section>
-                  <section className="settings-section">
-                    <h4>{t("테이블")}</h4>
-                    <label className="settings-check">
-                      <input
-                        type="checkbox"
-                        checked={settings.rowAlt}
-                        onChange={(event) => onChange({ rowAlt: event.target.checked })}
-                      />
-                      {t("줄무늬 행 배경")}
-                    </label>
-                    <label className="settings-check">
-                      <input
-                        type="checkbox"
-                        checked={settings.typeColors}
-                        onChange={(event) =>
-                          onChange({ typeColors: event.target.checked })
-                        }
-                      />
-                      {t("타입별 색상")}
-                    </label>
-                    <p className="helper">
-                      {t("문자열·숫자·불리언·JSON·배열·날짜 값을 타입별 색으로 구분합니다.")}
-                    </p>
-                    {settings.typeColors ? (
-                      <div className="type-preview" aria-hidden="true">
-                        {VALUE_KINDS.map((kind) => (
-                          <span key={kind} style={{ color: palette.typeInks[kind] }}>
-                            {kind}
-                          </span>
-                        ))}
-                        <span style={{ color: palette.nullInk }}>null</span>
-                      </div>
-                    ) : null}
-                    <label className="settings-check">
-                      <input
-                        type="checkbox"
-                        checked={settings.scrollbarX}
-                        onChange={(event) => onChange({ scrollbarX: event.target.checked })}
-                      />
-                      {t("가로 스크롤바 항상 표시")}
-                    </label>
-                    <label className="settings-check">
-                      <input
-                        type="checkbox"
-                        checked={settings.scrollbarY}
-                        onChange={(event) => onChange({ scrollbarY: event.target.checked })}
-                      />
-                      {t("세로 스크롤바 항상 표시")}
-                    </label>
-                    <p className="helper">
-                      {t("데이터 그리드와 SQL 에디터에 적용됩니다. 끄면 운영체제 설정을 따릅니다 (macOS는 스크롤할 때만 보일 수 있습니다).")}
-                    </p>
-                  </section>
-                </>
-              </div>
-
-              <div className="settings-category" hidden={category !== "editor"}>
-                <section className="settings-section">
-                  <h4>{t("에디터")}</h4>
-                  <label className="settings-check">
-                    <input
-                      type="checkbox"
-                      checked={settings.uppercaseKeywords}
-                      onChange={(event) =>
-                        onChange({ uppercaseKeywords: event.target.checked })
-                      }
-                    />
-                    {t("SQL 정리/축약 시 키워드 대문자 변환")}
-                  </label>
-                  <div className="settings-row">
-                    <span className="settings-label">{t("구문 강조")}</span>
-                    <Select
-                      value={settings.syntaxPreset}
-                      onChange={(event) =>
-                        onChange({
-                          syntaxPreset: event.target.value as SyntaxPresetId,
-                        })
-                      }
-                    >
-                      {SYNTAX_PRESETS.map((preset) => (
-                        <option key={preset.id} value={preset.id}>
-                          {t(preset.label)}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div className="syntax-preview" aria-hidden="true">
-                    <span className="syntax-preview-keyword">SELECT</span>
-                    <span className="syntax-preview-variable"> name</span>
-                    <span className="syntax-preview-operator">,</span>
-                    <span className="syntax-preview-string"> 'tablepeek'</span>
-                    <span className="syntax-preview-keyword"> FROM</span>
-                    <span className="syntax-preview-type"> users</span>
-                    <span className="syntax-preview-comment"> -- preview</span>
-                  </div>
-                  <p className="helper">
-                    {t(SYNTAX_PRESETS.find((preset) => preset.id === settings.syntaxPreset)?.description ?? "")}
-                  </p>
-                  <p className="helper">{t("자동 괄호는 기본으로 켜져 있습니다.")}</p>
-                </section>
-              </div>
-
-              <div className="settings-category" hidden={category !== "data"}>
-                <section className="settings-section">
-                  <h4>{t("쿼리")}</h4>
-                  <div className="settings-row">
-                    <span className="settings-label">{t("최대 행")}</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={MAX_ROWS_LIMIT}
-                      value={settings.maxRows}
-                      onChange={(event) =>
-                        onChange({
-                          maxRows: Math.min(
-                            MAX_ROWS_LIMIT,
-                            Math.max(1, Math.trunc(Number(event.target.value)) || 1),
-                          ),
-                        })
-                      }
-                    />
-                  </div>
-                  <p className="helper">{t("쿼리 한 번에 가져오는 최대 행 수입니다.")}</p>
-                </section>
-                <section className="settings-section">
-                  <h4>{t("가져오기 · 내보내기 기본값")}</h4>
-                  <div className="settings-row">
-                    <span className="settings-label">{t("CSV 구분자")}</span>
-                    <Select
-                      value={settings.csvDelimiter}
-                      onChange={(event) =>
-                        onChange({ csvDelimiter: event.target.value })
-                      }
-                    >
-                      <option value=",">{t(", (쉼표)")}</option>
-                      <option value={"	"}>Tab</option>
-                      <option value=";">{t("; (세미콜론)")}</option>
-                      <option value="|">{t("| (파이프)")}</option>
-                    </Select>
-                  </div>
-                  <label className="settings-check">
-                    <input
-                      type="checkbox"
-                      checked={settings.csvHeader}
-                      onChange={(event) =>
-                        onChange({ csvHeader: event.target.checked })
-                      }
-                    />
-                    {t("첫 행을 헤더로 사용")}
-                  </label>
-                  <div className="settings-row">
-                    <span className="settings-label">{t("인코딩")}</span>
-                    <Select
-                      value={settings.csvEncoding}
-                      onChange={(event) =>
-                        onChange({
-                          csvEncoding: event.target
-                            .value as AppSettings["csvEncoding"],
-                        })
-                      }
-                    >
-                      <option value="utf-8">UTF-8</option>
-                      <option value="euc-kr">EUC-KR</option>
-                      <option value="utf-16le">UTF-16LE</option>
-                    </Select>
-                  </div>
-                </section>
-              </div>
-
-              <div className="settings-category" hidden={category !== "shortcuts"}>
-                <section className="settings-section">
-                  <h4>{t("단축키")}</h4>
-                  <div className="shortcut-notice">
-                    <strong>{t("TablePeek 단축키는 브라우저 기본 동작보다 먼저 실행됩니다.")}</strong>
-                    <span>
-                      {t("예: {save}는 페이지 저장 대신 변경사항을 적용하고, {palette}는 인쇄 대신 명령 팔레트를 엽니다.", {
-                        save: formatBinding("Mod+s"),
-                        palette: formatBinding("Mod+p"),
-                      })}
-                    </span>
-                    <span>
-                      {t("단, {keys}처럼 브라우저가 예약한 조합은 웹페이지가 가로챌 수 없어 브라우저 동작(탭 닫기·새 탭 등)이 먼저 실행됩니다. 이런 동작에는 대체 단축키가 함께 지정돼 있습니다.", {
-                        keys: ["Mod+w", "Mod+t", "Mod+n"].map(formatBinding).join(" · "),
-                      })}
-                    </span>
-                  </div>
-                  <div className="shortcut-list">
-                    {KEY_ACTIONS.map((action) => (
-                      <div className="shortcut-row" key={action}>
-                        <span className="shortcut-label">{t(KEY_ACTION_LABELS[action])}</span>
-                        <div className="shortcut-bindings">
-                          {settings.keymap[action].map((binding) => {
-                            const reserved = isReservedBinding(binding);
-                            return (
-                              <span
-                                key={binding}
-                                className={`shortcut-chip${reserved ? " reserved" : ""}`}
-                                title={
-                                  reserved
-                                    ? t("브라우저가 예약한 조합이라 브라우저 탭에서는 브라우저 동작이 먼저 실행됩니다")
-                                    : undefined
-                                }
-                              >
-                                <kbd>{formatBinding(binding)}</kbd>
-                                {reserved ? <span className="shortcut-warn" aria-hidden="true">!</span> : null}
-                                <button
-                                  type="button"
-                                  className="shortcut-remove"
-                                  onClick={() =>
-                                    setBindings(
-                                      action,
-                                      settings.keymap[action].filter((entry) => entry !== binding),
-                                    )
-                                  }
-                                  title={t("이 단축키 지우기")}
-                                  aria-label={t("이 단축키 지우기")}
-                                >
-                                  ×
-                                </button>
-                              </span>
-                            );
-                          })}
-                          <button
-                            type="button"
-                            className={`shortcut-add${capturing === action ? " active" : ""}`}
-                            onClick={() => {
-                              setCaptureHint(null);
-                              setCapturing(capturing === action ? null : action);
-                            }}
-                          >
-                            {capturing === action ? (captureHint ?? t("키 입력 대기…")) : t("+ 추가")}
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setBindings(action, [...DEFAULT_KEYMAP[action]])}
-                          disabled={settings.keymap[action].join("\n") === DEFAULT_KEYMAP[action].join("\n")}
-                          className="settings-reset"
-                          title={t("기본값으로")}
-                        >
-                          {t("기본")}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="helper">
-                    {t("‘+ 추가’를 누른 뒤 원하는 키 조합을 누르세요. Esc로 취소합니다. 다른 동작에 쓰이던 조합은 이쪽으로 옮겨집니다.")}
-                  </p>
-                  <div>
+            {SETTINGS_GROUPS.map((group, index) => (
+              <div key={index} className="settings-nav-group">
+                {group.label !== null ? (
+                  <span className="settings-nav-caption">{t(group.label)}</span>
+                ) : index > 0 ? (
+                  <span className="settings-nav-sep" aria-hidden="true" />
+                ) : null}
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  return (
                     <button
                       type="button"
-                      onClick={() => {
-                        const next = {} as Keymap;
-                        for (const action of KEY_ACTIONS) {
-                          next[action] = [...DEFAULT_KEYMAP[action]];
-                        }
-                        onChange({ keymap: next });
-                      }}
+                      key={item.id}
+                      className={category === item.id ? "active" : ""}
+                      aria-current={category === item.id ? "true" : undefined}
+                      onClick={() => setCategory(item.id)}
                     >
-                      {t("모든 단축키를 기본값으로")}
+                      <Icon size={12} />
+                      <span>{t(item.label)}</span>
                     </button>
-                  </div>
-                </section>
+                  );
+                })}
               </div>
-
-              <div className="settings-category" hidden={category !== "security"}>
-                <>
-                  <section className="settings-section">
-                    <h4>{t("활동 로그")}</h4>
-                    <div className="settings-row">
-                      <span className="settings-label">{t("보관 기간(일)")}</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={90}
-                        value={settings.activityDays}
-                        onChange={(event) =>
-                          onChange({
-                            activityDays: Math.min(
-                              90,
-                              Math.max(1, Number(event.target.value) || 7),
-                            ),
-                          })
-                        }
-                      />
-                    </div>
-                  </section>
-                  <section className="settings-section">
-                    <h4>{t("보안")}</h4>
-                  <div className="settings-row">
-                    <span className="settings-label">
-                      {hasPasscode ? t("암호 변경/해제") : t("잠금 암호 설정")}
-                    </span>
-                    <input
-                      type="password"
-                      placeholder={t("암호")}
-                      value={passcode}
-                      onChange={(event) => setPasscode(event.target.value)}
-                    />
-                    <input
-                      type="password"
-                      placeholder={t("확인")}
-                      value={passcodeConfirm}
-                      onChange={(event) => setPasscodeConfirm(event.target.value)}
-                    />
-                  </div>
-                  <div className="settings-row settings-row-indent">
-                    <button type="button" onClick={() => void applyPasscode()}>
-                      {hasPasscode ? t("변경") : t("저장")}
-                    </button>
-                    {hasPasscode ? (
-                      <>
-                        <button type="button" onClick={() => void removePasscode()}>
-                          {t("해제")}
-                        </button>
-                        <button type="button" onClick={onLock}>
-                          {t("지금 잠금")}
-                        </button>
-                      </>
-                    ) : null}
-                    {passcodeMessage !== null ? (
-                      <span className="helper">{passcodeMessage}</span>
-                    ) : null}
-                  </div>
-                  </section>
-                </>
-              </div>
-            </div>
+            ))}
+          </nav>
+          <div className="settings-pane" ref={paneRef}>
+            {renderPane()}
           </div>
         </div>
         <div className="modal-foot">

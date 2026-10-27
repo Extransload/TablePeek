@@ -34,6 +34,12 @@ let FONT_HEADER = "";
 let SCALE = 0;
 let FAMILY = "";
 
+// A row's and the header's height at a font size.
+export function gridHeightsAt(size: number): { row: number; header: number } {
+  const scale = size / BASE_FONT_PX;
+  return { row: Math.round(BASE_ROW_H * scale), header: Math.round(BASE_HEADER_H * scale) };
+}
+
 function syncScale(): void {
   const { gridFontSize: size, gridFontFamily: family } = getSettings();
   const scale = size / BASE_FONT_PX;
@@ -42,8 +48,7 @@ function syncScale(): void {
   }
   SCALE = scale;
   FAMILY = family;
-  ROW_H = Math.round(BASE_ROW_H * scale);
-  HEADER_H = Math.round(BASE_HEADER_H * scale);
+  ({ row: ROW_H, header: HEADER_H } = gridHeightsAt(size));
   FONT = `${size}px ${family}`;
   FONT_HEADER = `600 ${size}px ${family}`;
 }
