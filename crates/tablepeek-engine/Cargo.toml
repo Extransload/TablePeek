@@ -7,10 +7,10 @@ edition = "2021"
 arrow = { version = "60.0.0", features = ["ipc"] }
 chrono = "0.4.45"
 futures-util = "=0.3.32"
+fallible-iterator = "0.2"
 mysql_async = { version = "0.37.1", features = ["default-rustls-ring"] }
 tablepeek-types = { path = "../tablepeek-types" }
 rusqlite = { workspace = true }
-rust_decimal = { version = "1.43.0", features = ["db-postgres"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 tiberius = { version = "0.13", default-features = false, features = ["rustls", "chrono", "tds73"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+postgres-protocol = "0.6.12"
 tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 tokio-postgres-rustls = { version = "0.14", features = ["native-certs", "ring"] }
 tokio-util = { version = "0.7", features = ["compat"] }

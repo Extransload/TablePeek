@@ -19,7 +19,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
-use crate::{build_arrow, humanize_uptime_ko, EngineError, QueryData};
+use crate::{build_arrow, humanize_uptime_ko, real_json, EngineError, QueryData};
 
 type MssqlClient = Client<Compat<TcpStream>>;
 
@@ -1730,9 +1730,7 @@ fn column_json(data: ColumnData<'static>) -> Value {
             .map(|number| Value::from(i64::from(number)))
             .unwrap_or(Value::Null),
         ColumnData::I64(value) => value.map(Value::from).unwrap_or(Value::Null),
-        ColumnData::F32(value) => value
-            .map(|number| Value::from(f64::from(number)))
-            .unwrap_or(Value::Null),
+        ColumnData::F32(value) => value.map(real_json).unwrap_or(Value::Null),
         ColumnData::F64(value) => value.map(Value::from).unwrap_or(Value::Null),
         ColumnData::Bit(value) => value.map(Value::Bool).unwrap_or(Value::Null),
         ColumnData::String(value) => value

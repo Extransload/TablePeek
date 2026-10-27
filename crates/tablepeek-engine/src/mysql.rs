@@ -20,7 +20,7 @@ use tablepeek_types::{
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
-use crate::{build_arrow, humanize_uptime_ko, EngineError, QueryData};
+use crate::{build_arrow, humanize_uptime_ko, real_json, EngineError, QueryData};
 
 /// A SELECT's table as information_schema names it (schema, table) and its
 /// primary key columns; None when information_schema has no such table.
@@ -1739,7 +1739,7 @@ fn int_json(value: &MyValue, unsigned: bool) -> Value {
 
 fn float_json(value: &MyValue) -> Value {
     match value {
-        MyValue::Float(number) => Value::from(f64::from(*number)),
+        MyValue::Float(number) => real_json(*number),
         MyValue::Double(number) => Value::from(*number),
         MyValue::Int(number) => Value::from(*number as f64),
         MyValue::UInt(number) => Value::from(*number as f64),
@@ -1759,7 +1759,7 @@ fn text_json(value: &MyValue) -> Value {
         MyValue::Bytes(bytes) => Value::from(String::from_utf8_lossy(bytes).into_owned()),
         MyValue::Int(number) => Value::from(*number),
         MyValue::UInt(number) => json_uint(*number),
-        MyValue::Float(number) => Value::from(f64::from(*number)),
+        MyValue::Float(number) => real_json(*number),
         MyValue::Double(number) => Value::from(*number),
         MyValue::Date(..) => Value::from(value_text(value)),
         MyValue::Time(..) => Value::from(value_text(value)),

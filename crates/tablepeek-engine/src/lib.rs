@@ -2068,6 +2068,42 @@ fn object_definition_sync(
     }))
 }
 
+/// A float as text: a REAL with the digits it was stored with (widened to
+/// f64 as it is, 3.14 would read 3.140000104904175), and infinity and NaN
+/// as PostgreSQL writes them.
+pub(crate) fn float_text<F: Into<f64> + std::fmt::Display + Copy>(value: F) -> String {
+    let wide: f64 = value.into();
+    if wide.is_finite() {
+        value.to_string()
+    } else if wide.is_nan() {
+        "NaN".into()
+    } else if wide > 0.0 {
+        "Infinity".into()
+    } else {
+        "-Infinity".into()
+    }
+}
+
+/// A REAL as a JSON number at the digits it was stored with, or as text
+/// where JSON has no number.
+pub(crate) fn real_json(value: f32) -> Value {
+    let text = float_text(value);
+    match text.parse::<f64>() {
+        Ok(number) if number.is_finite() => Value::from(number),
+        _ => Value::from(text),
+    }
+}
+
+/// A DOUBLE PRECISION as a JSON number, or as text where JSON has none
+/// (serde_json would turn infinity and NaN into null).
+pub(crate) fn double_json(value: f64) -> Value {
+    if value.is_finite() {
+        Value::from(value)
+    } else {
+        Value::from(float_text(value))
+    }
+}
+
 pub(crate) fn humanize_uptime_ko(seconds: i64) -> String {
     let seconds = seconds.max(0);
     if seconds < 60 {
@@ -2120,6 +2156,17 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn floats_keep_their_stored_digits_and_infinities() {
+        assert_eq!(real_json(1.1), serde_json::json!(1.1));
+        assert_eq!(real_json(-1.5e-10), serde_json::json!(-1.5e-10));
+        assert_eq!(real_json(3.4e38), serde_json::json!(3.4e38));
+        assert_eq!(real_json(f32::INFINITY), Value::from("Infinity"));
+        assert_eq!(double_json(0.1), serde_json::json!(0.1));
+        assert_eq!(double_json(f64::NEG_INFINITY), Value::from("-Infinity"));
+        assert_eq!(double_json(f64::NAN), Value::from("NaN"));
     }
 
     #[tokio::test]

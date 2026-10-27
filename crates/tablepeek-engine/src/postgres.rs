@@ -1,10 +1,13 @@
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use fallible_iterator::FallibleIterator;
 use futures_util::StreamExt;
+use postgres_protocol::types::ArrayDimension;
 use rustls::RootCertStore;
 use serde_json::Value;
 use tablepeek_types::{
@@ -13,14 +16,17 @@ use tablepeek_types::{
     TableSchema, TriggerInfo, ValueExpr,
 };
 use tokio_postgres::config::SslMode as PgSslMode;
-use tokio_postgres::types::{FromSqlOwned, ToSql, Type};
+use tokio_postgres::types::{FromSql, Kind, ToSql, Type};
 use tokio_postgres::{Client, NoTls, Row, Statement};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::source_cache::{key_unchanged, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{tx_controls, TxControl};
-use crate::{build_arrow, humanize_uptime_ko, postgres_message, EngineError, QueryData};
+use crate::{
+    build_arrow, double_json, float_text, humanize_uptime_ko, postgres_message, real_json,
+    EngineError, QueryData,
+};
 
 pub struct PostgresInner {
     client: Arc<tokio::sync::Mutex<Client>>,
@@ -1791,61 +1797,273 @@ fn pk_value_string(value: &Value) -> Option<String> {
     }
 }
 
-fn pg_value(row: &Row, index: usize, dtype: &Type) -> Value {
-    match *dtype {
-        Type::INT2 => from_pg::<i16, _>(row, index, dtype, |value| Value::from(i64::from(value))),
-        Type::INT4 => from_pg::<i32, _>(row, index, dtype, |value| Value::from(i64::from(value))),
-        Type::INT8 => from_pg::<i64, _>(row, index, dtype, Value::from),
-        Type::OID => from_pg::<u32, _>(row, index, dtype, |value| Value::from(i64::from(value))),
-        Type::FLOAT4 => from_pg::<f32, _>(row, index, dtype, |value| Value::from(f64::from(value))),
-        Type::FLOAT8 => from_pg::<f64, _>(row, index, dtype, Value::from),
-        Type::NUMERIC => from_pg::<rust_decimal::Decimal, _>(row, index, dtype, |value| {
-            Value::from(value.to_string())
-        }),
-        Type::CHAR => from_pg::<i8, _>(row, index, dtype, |value| {
-            Value::from(char::from(value as u8).to_string())
-        }),
-        Type::BOOL => from_pg::<bool, _>(row, index, dtype, Value::Bool),
-        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
-            from_pg::<String, _>(row, index, dtype, Value::from)
-        }
-        Type::DATE => from_pg::<chrono::NaiveDate, _>(row, index, dtype, |value| {
-            Value::from(value.to_string())
-        }),
-        Type::TIME => from_pg::<chrono::NaiveTime, _>(row, index, dtype, |value| {
-            Value::from(value.to_string())
-        }),
-        Type::TIMESTAMP => from_pg::<chrono::NaiveDateTime, _>(row, index, dtype, |value| {
-            Value::from(value.to_string())
-        }),
-        Type::TIMESTAMPTZ => {
-            from_pg::<chrono::DateTime<chrono::Utc>, _>(row, index, dtype, |value| {
-                Value::from(value.format("%Y-%m-%d %H:%M:%S%:z").to_string())
-            })
-        }
-        Type::UUID => {
-            from_pg::<uuid::Uuid, _>(row, index, dtype, |value| Value::from(value.to_string()))
-        }
-        Type::JSON | Type::JSONB => {
-            from_pg::<Value, _>(row, index, dtype, |value| Value::from(value.to_string()))
-        }
-        Type::BYTEA => from_pg::<Vec<u8>, _>(row, index, dtype, |value| {
-            Value::from(format!("<blob {} bytes>", value.len()))
-        }),
-        _ => Value::from(format!("<{}>", dtype.name())),
+/// A value as the server sent it, in binary, whatever its type.
+struct RawValue<'a>(&'a [u8]);
+
+impl<'a> FromSql<'a> for RawValue<'a> {
+    fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(RawValue(raw))
+    }
+
+    fn accepts(_: &Type) -> bool {
+        true
     }
 }
 
-fn from_pg<T, F>(row: &Row, index: usize, dtype: &Type, convert: F) -> Value
-where
-    T: FromSqlOwned,
-    F: FnOnce(T) -> Value,
-{
-    match row.try_get::<usize, Option<T>>(index) {
-        Ok(Some(value)) => convert(value),
+fn pg_value(row: &Row, index: usize, dtype: &Type) -> Value {
+    match row.try_get::<usize, Option<RawValue>>(index) {
+        Ok(Some(RawValue(raw))) => pg_json(dtype, raw),
         Ok(None) => Value::Null,
-        Err(_) => Value::from(format!("<{}>", dtype.name())),
+        Err(_) => unreadable(dtype),
     }
+}
+
+/// One value for the grid: numbers and booleans as JSON ones, a blob as
+/// its size, and everything else as text.
+fn pg_json(dtype: &Type, raw: &[u8]) -> Value {
+    let value = match *dtype {
+        Type::INT2 => decode::<i16>(dtype, raw).map(|value| Value::from(i64::from(value))),
+        Type::INT4 => decode::<i32>(dtype, raw).map(|value| Value::from(i64::from(value))),
+        Type::INT8 => decode::<i64>(dtype, raw).map(Value::from),
+        Type::OID => decode::<u32>(dtype, raw).map(|value| Value::from(i64::from(value))),
+        Type::FLOAT4 => decode::<f32>(dtype, raw).map(real_json),
+        Type::FLOAT8 => decode::<f64>(dtype, raw).map(double_json),
+        Type::BOOL => decode::<bool>(dtype, raw).map(Value::Bool),
+        Type::BYTEA => Some(Value::from(format!("<blob {} bytes>", raw.len()))),
+        _ => pg_text(dtype, raw).map(Value::from),
+    };
+    value.unwrap_or_else(|| unreadable(dtype))
+}
+
+/// What a value of a type TablePeek can't read shows as.
+fn unreadable(dtype: &Type) -> Value {
+    Value::from(format!("<{}>", dtype.name()))
+}
+
+fn decode<'a, T: FromSql<'a>>(dtype: &Type, raw: &'a [u8]) -> Option<T> {
+    T::from_sql(dtype, raw).ok()
+}
+
+/// A value as PostgreSQL prints it, read from its binary form, so that an
+/// edit sends it back as it came; `None` for a type it can't read.
+fn pg_text(dtype: &Type, raw: &[u8]) -> Option<String> {
+    if let Some(word) = infinite_time(dtype, raw) {
+        return Some(word.to_owned());
+    }
+    let text = match *dtype {
+        Type::INT2 => decode::<i16>(dtype, raw)?.to_string(),
+        Type::INT4 => decode::<i32>(dtype, raw)?.to_string(),
+        Type::INT8 => decode::<i64>(dtype, raw)?.to_string(),
+        Type::OID => decode::<u32>(dtype, raw)?.to_string(),
+        Type::FLOAT4 => float_text(decode::<f32>(dtype, raw)?),
+        Type::FLOAT8 => float_text(decode::<f64>(dtype, raw)?),
+        Type::NUMERIC => numeric_text(raw)?,
+        Type::BOOL => if decode::<bool>(dtype, raw)? {
+            "t"
+        } else {
+            "f"
+        }
+        .to_owned(),
+        Type::CHAR => char::from(decode::<i8>(dtype, raw)? as u8).to_string(),
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
+            decode::<&str>(dtype, raw)?.to_owned()
+        }
+        Type::DATE => decode::<chrono::NaiveDate>(dtype, raw)?.to_string(),
+        Type::TIME => trim_fraction(decode::<chrono::NaiveTime>(dtype, raw)?.to_string()),
+        Type::TIMESTAMP => trim_fraction(decode::<chrono::NaiveDateTime>(dtype, raw)?.to_string()),
+        Type::TIMESTAMPTZ => trim_fraction(
+            decode::<chrono::DateTime<chrono::Utc>>(dtype, raw)?
+                .format("%Y-%m-%d %H:%M:%S%.f%:z")
+                .to_string(),
+        ),
+        Type::UUID => decode::<uuid::Uuid>(dtype, raw)?.to_string(),
+        // The text the server keeps: parsed, a number past f64's digits
+        // would be rounded.
+        Type::JSON => std::str::from_utf8(raw).ok()?.to_owned(),
+        Type::JSONB => match raw.split_first()? {
+            (1, text) => std::str::from_utf8(text).ok()?.to_owned(),
+            _ => return None,
+        },
+        Type::BYTEA => raw.iter().fold(String::from("\\x"), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        }),
+        _ => match dtype.kind() {
+            // An enum travels as its label.
+            Kind::Enum(_) => std::str::from_utf8(raw).ok()?.to_owned(),
+            Kind::Array(member) => array_text(member, raw)?,
+            _ => return None,
+        },
+    };
+    Some(text)
+}
+
+/// The infinite dates and times, which chrono has no value for.
+fn infinite_time(dtype: &Type, raw: &[u8]) -> Option<&'static str> {
+    let (positive, negative) = match *dtype {
+        Type::DATE => (raw == i32::MAX.to_be_bytes(), raw == i32::MIN.to_be_bytes()),
+        Type::TIMESTAMP | Type::TIMESTAMPTZ => {
+            (raw == i64::MAX.to_be_bytes(), raw == i64::MIN.to_be_bytes())
+        }
+        _ => return None,
+    };
+    if positive {
+        Some("infinity")
+    } else if negative {
+        Some("-infinity")
+    } else {
+        None
+    }
+}
+
+/// Fractional seconds without trailing zeros, as PostgreSQL prints them
+/// (chrono pads them to 3, 6 or 9 digits).
+fn trim_fraction(text: String) -> String {
+    let Some(dot) = text.find('.') else {
+        return text;
+    };
+    let digits = text[dot + 1..]
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    let kept = text[dot + 1..dot + 1 + digits].trim_end_matches('0').len();
+    let cut = if kept == 0 { dot } else { dot + 1 + kept };
+    format!("{}{}", &text[..cut], &text[dot + 1 + digits..])
+}
+
+/// A NUMERIC with every digit it has: it can hold far more than any
+/// binary number type, rust_decimal's 28 digits included.
+fn numeric_text(raw: &[u8]) -> Option<String> {
+    let word = |at: usize| {
+        raw.get(at * 2..at * 2 + 2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+    };
+    let digit_count = usize::from(word(0)?);
+    // The first digit's power of 10000.
+    let weight = i32::from(word(1)? as i16);
+    let sign = word(2)?;
+    let scale = usize::from(word(3)?);
+    if raw.len() != 8 + digit_count * 2 {
+        return None;
+    }
+    let digit = |power: i32| {
+        usize::try_from(power)
+            .ok()
+            .filter(|&at| at < digit_count)
+            .and_then(|at| word(4 + at))
+            .unwrap_or(0)
+    };
+    let mut text = match sign {
+        0x0000 => String::new(),
+        0x4000 => String::from("-"),
+        0xC000 => return Some("NaN".into()),
+        0xD000 => return Some("Infinity".into()),
+        0xF000 => return Some("-Infinity".into()),
+        _ => return None,
+    };
+    if weight < 0 {
+        text.push('0');
+    }
+    for power in 0..=weight {
+        if power == 0 {
+            let _ = write!(text, "{}", digit(power));
+        } else {
+            let _ = write!(text, "{:04}", digit(power));
+        }
+    }
+    if scale > 0 {
+        let mut fraction = String::new();
+        let mut power = weight + 1;
+        while fraction.len() < scale {
+            let _ = write!(fraction, "{:04}", digit(power));
+            power += 1;
+        }
+        fraction.truncate(scale);
+        text.push('.');
+        text.push_str(&fraction);
+    }
+    Some(text)
+}
+
+/// An array as PostgreSQL prints it: `{a,"b c",NULL}`, nested braces for
+/// more dimensions, and bounds in front when they don't start at 1.
+fn array_text(member: &Type, raw: &[u8]) -> Option<String> {
+    let array = postgres_protocol::types::array_from_sql(raw).ok()?;
+    let dimensions: Vec<ArrayDimension> = array.dimensions().collect().ok()?;
+    let mut elements = Vec::new();
+    let mut values = array.values();
+    while let Some(value) = values.next().ok()? {
+        elements.push(match value {
+            Some(raw) => array_element(pg_text(member, raw)?),
+            None => "NULL".to_owned(),
+        });
+    }
+    // Dimensions that don't hold the elements sent: better unreadable than wrong.
+    let cells = dimensions
+        .iter()
+        .map(|dimension| i64::from(dimension.len))
+        .product::<i64>();
+    if i64::try_from(elements.len()).ok()? != if dimensions.is_empty() { 0 } else { cells } {
+        return None;
+    }
+    let mut text = String::new();
+    if dimensions
+        .iter()
+        .any(|dimension| dimension.lower_bound != 1)
+    {
+        for dimension in &dimensions {
+            let upper = dimension.lower_bound + dimension.len - 1;
+            let _ = write!(text, "[{}:{upper}]", dimension.lower_bound);
+        }
+        text.push('=');
+    }
+    if dimensions.is_empty() {
+        text.push_str("{}");
+    } else {
+        nest_elements(&dimensions, &mut elements.into_iter(), &mut text);
+    }
+    Some(text)
+}
+
+fn nest_elements(
+    dimensions: &[ArrayDimension],
+    elements: &mut impl Iterator<Item = String>,
+    text: &mut String,
+) {
+    text.push('{');
+    for at in 0..dimensions[0].len {
+        if at > 0 {
+            text.push(',');
+        }
+        if dimensions.len() > 1 {
+            nest_elements(&dimensions[1..], elements, text);
+        } else {
+            text.push_str(&elements.next().unwrap_or_default());
+        }
+    }
+    text.push('}');
+}
+
+/// One array element, quoted where PostgreSQL would quote it.
+fn array_element(text: String) -> String {
+    let plain = !text.is_empty()
+        && !text.eq_ignore_ascii_case("NULL")
+        && !text
+            .chars()
+            .any(|c| matches!(c, '{' | '}' | ',' | '"' | '\\' | '\x0b') || c.is_ascii_whitespace());
+    if plain {
+        return text;
+    }
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for c in text.chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
 }
 
 #[cfg(test)]
@@ -1861,6 +2079,310 @@ mod tests {
             "now()::timestamp with time zone"
         );
         assert_eq!(value_sql(Some(ValueExpr::Now), 3, "date"), "now()::date");
+    }
+
+    /// A NUMERIC on the wire: base-10000 digits after a four-word header.
+    fn numeric(weight: i16, sign: u16, scale: u16, digits: &[u16]) -> Vec<u8> {
+        let mut raw = Vec::new();
+        for word in [digits.len() as u16, weight as u16, sign, scale]
+            .iter()
+            .chain(digits)
+        {
+            raw.extend_from_slice(&word.to_be_bytes());
+        }
+        raw
+    }
+
+    #[test]
+    fn numerics_keep_every_digit() {
+        // NUMERIC(38, 10) at its largest: more than rust_decimal holds.
+        let max = numeric(
+            6,
+            0,
+            10,
+            &[9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9900],
+        );
+        assert_eq!(
+            numeric_text(&max).unwrap(),
+            "9999999999999999999999999999.9999999999"
+        );
+        // The scale's trailing zeros stay, as PostgreSQL prints them.
+        let long = numeric(4, 0, 10, &[1234, 5678, 9012, 3456, 7890, 1234, 5678, 9000]);
+        assert_eq!(
+            numeric_text(&long).unwrap(),
+            "12345678901234567890.1234567890"
+        );
+        assert_eq!(
+            numeric_text(&numeric(0, 0x4000, 2, &[80, 1900])).unwrap(),
+            "-80.19"
+        );
+        assert_eq!(numeric_text(&numeric(-1, 0, 4, &[1])).unwrap(), "0.0001");
+        assert_eq!(
+            numeric_text(&numeric(-2, 0, 8, &[1])).unwrap(),
+            "0.00000001"
+        );
+        assert_eq!(
+            numeric_text(&numeric(-1, 0, 8, &[12, 3456])).unwrap(),
+            "0.00123456"
+        );
+        assert_eq!(numeric_text(&numeric(1, 0, 0, &[1])).unwrap(), "10000");
+        assert_eq!(numeric_text(&numeric(0, 0, 2, &[])).unwrap(), "0.00");
+        assert_eq!(numeric_text(&numeric(0, 0xC000, 0, &[])).unwrap(), "NaN");
+        assert_eq!(
+            numeric_text(&numeric(0, 0xD000, 0, &[])).unwrap(),
+            "Infinity"
+        );
+        assert_eq!(
+            numeric_text(&numeric(0, 0xF000, 0, &[])).unwrap(),
+            "-Infinity"
+        );
+        // A digit count that doesn't match the bytes is unreadable.
+        assert_eq!(numeric_text(&numeric(0, 0, 0, &[1])[..9]), None);
+    }
+
+    /// An array on the wire: dimensions, then each element with its length.
+    fn array(element: &Type, dimensions: &[(i32, i32)], elements: &[Option<&[u8]>]) -> Vec<u8> {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(dimensions.len() as i32).to_be_bytes());
+        raw.extend_from_slice(&i32::from(elements.iter().any(Option::is_none)).to_be_bytes());
+        raw.extend_from_slice(&element.oid().to_be_bytes());
+        for (len, lower_bound) in dimensions {
+            raw.extend_from_slice(&len.to_be_bytes());
+            raw.extend_from_slice(&lower_bound.to_be_bytes());
+        }
+        for value in elements {
+            match value {
+                Some(bytes) => {
+                    raw.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                    raw.extend_from_slice(bytes);
+                }
+                None => raw.extend_from_slice(&(-1i32).to_be_bytes()),
+            }
+        }
+        raw
+    }
+
+    #[test]
+    fn arrays_read_as_postgresql_prints_them() {
+        let text = |dimensions: &[(i32, i32)], elements: &[Option<&str>]| {
+            let elements: Vec<Option<&[u8]>> = elements
+                .iter()
+                .map(|value| value.map(str::as_bytes))
+                .collect();
+            pg_text(
+                &Type::TEXT_ARRAY,
+                &array(&Type::TEXT, dimensions, &elements),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            text(&[(2, 1)], &[Some("sale"), Some("best")]),
+            "{sale,best}"
+        );
+        assert_eq!(
+            text(&[(2, 1)], &[Some("limited"), Some("한정판")]),
+            "{limited,한정판}"
+        );
+        assert_eq!(text(&[], &[]), "{}");
+        assert_eq!(
+            text(
+                &[(7, 1)],
+                &[
+                    Some("a b"),
+                    Some(""),
+                    Some("null"),
+                    Some("x,y"),
+                    Some("q\"t"),
+                    Some("back\\slash"),
+                    None
+                ]
+            ),
+            r#"{"a b","","null","x,y","q\"t","back\\slash",NULL}"#
+        );
+
+        let int = |n: i32| n.to_be_bytes();
+        let (one, two, three, four) = (int(1), int(2), int(3), int(4));
+        let grid = array(
+            &Type::INT4,
+            &[(2, 1), (2, 1)],
+            &[Some(&one), Some(&two), Some(&three), Some(&four)],
+        );
+        assert_eq!(pg_text(&Type::INT4_ARRAY, &grid).unwrap(), "{{1,2},{3,4}}");
+        let from_zero = array(&Type::INT4, &[(2, 0)], &[Some(&one), Some(&two)]);
+        assert_eq!(
+            pg_text(&Type::INT4_ARRAY, &from_zero).unwrap(),
+            "[0:1]={1,2}"
+        );
+        let shifted = array(
+            &Type::INT4,
+            &[(2, 2), (2, 0)],
+            &[Some(&one), Some(&two), Some(&three), Some(&four)],
+        );
+        assert_eq!(
+            pg_text(&Type::INT4_ARRAY, &shifted).unwrap(),
+            "[2:3][0:1]={{1,2},{3,4}}"
+        );
+        // More cells than elements sent: unreadable, not padded.
+        let short = array(&Type::INT4, &[(3, 1)], &[Some(&one), Some(&two)]);
+        assert_eq!(pg_text(&Type::INT4_ARRAY, &short), None);
+    }
+
+    #[test]
+    fn array_elements_read_as_they_do_inside_postgresql_arrays() {
+        let flags = array(&Type::BOOL, &[(3, 1)], &[Some(&[1]), Some(&[0]), None]);
+        assert_eq!(pg_text(&Type::BOOL_ARRAY, &flags).unwrap(), "{t,f,NULL}");
+        let blobs = array(&Type::BYTEA, &[(2, 1)], &[Some(&[0x00, 0xff]), Some(&[])]);
+        assert_eq!(
+            pg_text(&Type::BYTEA_ARRAY, &blobs).unwrap(),
+            r#"{"\\x00ff","\\x"}"#
+        );
+        let half_past = 1_000_000i64 * 60 * 30 + 500_000;
+        let times = array(
+            &Type::TIMESTAMPTZ,
+            &[(1, 1)],
+            &[Some(&half_past.to_be_bytes())],
+        );
+        assert_eq!(
+            pg_text(&Type::TIMESTAMPTZ_ARRAY, &times).unwrap(),
+            r#"{"2000-01-01 00:30:00.5+00:00"}"#
+        );
+        let (big, small) = (
+            numeric(
+                6,
+                0,
+                10,
+                &[9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9900],
+            ),
+            numeric(-1, 0x4000, 4, &[1]),
+        );
+        let numbers = array(&Type::NUMERIC, &[(2, 1)], &[Some(&big), Some(&small)]);
+        assert_eq!(
+            pg_text(&Type::NUMERIC_ARRAY, &numbers).unwrap(),
+            "{9999999999999999999999999999.9999999999,-0.0001}"
+        );
+    }
+
+    #[test]
+    fn enums_read_as_their_labels() {
+        let tier = Type::new(
+            "customer_tier".into(),
+            90_001,
+            Kind::Enum(vec!["free".into(), "pro".into()]),
+            "shop".into(),
+        );
+        assert_eq!(pg_text(&tier, b"pro").unwrap(), "pro");
+        let tiers = Type::new(
+            "_customer_tier".into(),
+            90_002,
+            Kind::Array(tier.clone()),
+            "shop".into(),
+        );
+        let raw = array(&tier, &[(2, 1)], &[Some(b"free"), Some(b"pro")]);
+        assert_eq!(pg_text(&tiers, &raw).unwrap(), "{free,pro}");
+        // A type it has no reading for shows its name.
+        let point = Type::new("point".into(), 600, Kind::Simple, "pg_catalog".into());
+        assert_eq!(pg_json(&point, &[0; 16]), Value::from("<point>"));
+    }
+
+    #[test]
+    fn timestamps_keep_their_fraction_of_a_second() {
+        let at = |text: &str| {
+            let at = chrono::DateTime::parse_from_rfc3339(text).unwrap();
+            let epoch = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z").unwrap();
+            let micros = (at - epoch).num_microseconds().unwrap();
+            pg_text(&Type::TIMESTAMPTZ, &micros.to_be_bytes()).unwrap()
+        };
+        assert_eq!(
+            at("2024-02-29T23:59:59.999+09:00"),
+            "2024-02-29 14:59:59.999+00:00"
+        );
+        assert_eq!(
+            at("2024-02-29T23:59:59.000123+09:00"),
+            "2024-02-29 14:59:59.000123+00:00"
+        );
+        assert_eq!(at("2024-02-29T23:59:59+09:00"), "2024-02-29 14:59:59+00:00");
+        // Without chrono's padding, as PostgreSQL prints it.
+        assert_eq!(
+            at("2024-02-29T23:59:59.5+09:00"),
+            "2024-02-29 14:59:59.5+00:00"
+        );
+        let local = pg_text(&Type::TIMESTAMP, &1_500_000i64.to_be_bytes()).unwrap();
+        assert_eq!(local, "2000-01-01 00:00:01.5");
+        let clock = pg_text(&Type::TIME, &1_250_000i64.to_be_bytes()).unwrap();
+        assert_eq!(clock, "00:00:01.25");
+    }
+
+    #[test]
+    fn infinite_dates_and_times_read_as_words() {
+        for dtype in [Type::TIMESTAMP, Type::TIMESTAMPTZ] {
+            assert_eq!(
+                pg_text(&dtype, &i64::MAX.to_be_bytes()).unwrap(),
+                "infinity"
+            );
+            assert_eq!(
+                pg_text(&dtype, &i64::MIN.to_be_bytes()).unwrap(),
+                "-infinity"
+            );
+        }
+        assert_eq!(
+            pg_text(&Type::DATE, &i32::MAX.to_be_bytes()).unwrap(),
+            "infinity"
+        );
+        assert_eq!(
+            pg_text(&Type::DATE, &i32::MIN.to_be_bytes()).unwrap(),
+            "-infinity"
+        );
+        assert_eq!(
+            pg_text(&Type::DATE, &0i32.to_be_bytes()).unwrap(),
+            "2000-01-01"
+        );
+    }
+
+    #[test]
+    fn grid_values_keep_their_json_kinds() {
+        assert_eq!(pg_json(&Type::INT4, &5i32.to_be_bytes()), Value::from(5));
+        assert_eq!(pg_json(&Type::BOOL, &[1]), Value::Bool(true));
+        assert_eq!(
+            pg_json(&Type::FLOAT4, &1.1f32.to_be_bytes()),
+            serde_json::json!(1.1)
+        );
+        assert_eq!(
+            pg_json(&Type::FLOAT8, &f64::INFINITY.to_be_bytes()),
+            Value::from("Infinity")
+        );
+        assert_eq!(
+            pg_json(&Type::BYTEA, &[0x00, 0xff, 0x10]),
+            Value::from("<blob 3 bytes>")
+        );
+        assert_eq!(pg_json(&Type::TEXT, "한글".as_bytes()), Value::from("한글"));
+        // A payload that doesn't fit its type shows the type's name.
+        assert_eq!(pg_json(&Type::INT4, &[0, 0, 5]), Value::from("<int4>"));
+        // JSON as the server keeps it, a number past f64's digits included.
+        let document = r#"{"n": 12345678901234567890123, "s": "a"}"#;
+        assert_eq!(
+            pg_json(&Type::JSON, document.as_bytes()),
+            Value::from(document)
+        );
+        let mut binary = vec![1];
+        binary.extend_from_slice(document.as_bytes());
+        assert_eq!(pg_json(&Type::JSONB, &binary), Value::from(document));
+        assert_eq!(pg_json(&Type::JSONB, &[2, b'1']), Value::from("<jsonb>"));
+    }
+
+    #[test]
+    fn floats_read_at_their_stored_digits() {
+        assert_eq!(
+            pg_text(&Type::FLOAT4, &1.1f32.to_be_bytes()).unwrap(),
+            "1.1"
+        );
+        assert_eq!(
+            pg_text(&Type::FLOAT4, &f32::INFINITY.to_be_bytes()).unwrap(),
+            "Infinity"
+        );
+        assert_eq!(
+            pg_text(&Type::FLOAT8, &f64::NAN.to_be_bytes()).unwrap(),
+            "NaN"
+        );
     }
 
     fn change(sql: &str) -> Change {
