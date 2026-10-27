@@ -1194,8 +1194,8 @@ select {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 10px 12px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
@@ -1203,13 +1203,13 @@ select {
 .filter-rows {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .filter-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .filter-row.off {
@@ -1223,7 +1223,7 @@ select {
 
 .filter-row select,
 .filter-value {
-  height: 22px;
+  height: 26px;
   background: var(--bg);
   color: var(--ink);
   border: 1px solid var(--line);
@@ -1244,7 +1244,7 @@ select {
 .filter-value {
   flex: 1;
   min-width: 0;
-  padding: 0 6px;
+  padding: 0 9px;
 }
 
 .filter-value:focus {
@@ -1259,9 +1259,9 @@ select {
 /* A row's own Apply, reading Applied while the data is filtered by it. */
 .filter-apply {
   flex: none;
-  min-width: 64px;
-  height: 22px;
-  padding: 0 8px;
+  min-width: 68px;
+  height: 26px;
+  padding: 0 12px;
   justify-content: center;
   font-size: calc(11px * var(--ui-scale, 1));
 }
@@ -1275,8 +1275,8 @@ select {
 /* + copies the row below it, − removes it. */
 .filter-icon {
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   justify-content: center;
   color: var(--muted);
@@ -1295,7 +1295,8 @@ select {
 }
 
 .filter-actions button {
-  height: 22px;
+  height: 26px;
+  padding: 0 12px;
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
@@ -1309,7 +1310,7 @@ select {
 }
 
 .filter-apply-all .filter-apply-more {
-  width: 22px;
+  width: 26px;
   padding: 0;
   justify-content: center;
   border-left: 1px solid color-mix(in srgb, var(--accent-contrast, #fff) 30%, transparent);

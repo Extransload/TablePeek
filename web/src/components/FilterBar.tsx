@@ -23,6 +23,8 @@ interface FilterBarProps {
   defaultColumn?: string | null;
   onFocusHandled?(): void;
   onApply(next: FilterState): void;
+  // The last condition removed: the table shows unfiltered and the bar closes.
+  onEmptied(): void;
 }
 
 // The column list's Raw SQL entry: no column can be named this.
@@ -93,8 +95,9 @@ function opLabel(op: FilterOp): string {
 // TablePlus's filter: conditions in rows, each applied on its own with its
 // Apply button (or Return), which then reads Applied; or all the checked
 // ones at once with Apply All (⌘↩), AND by default, OR from its menu. A
-// row's + adds a copy below it, its − removes it; Clear shows the table
-// unfiltered and keeps the conditions.
+// row's + adds a copy below it, its − removes it (the last one turns the
+// filter off and closes the bar); Clear shows the table unfiltered and
+// keeps the conditions.
 export function FilterBar({
   columns,
   filter,
@@ -103,6 +106,7 @@ export function FilterBar({
   defaultColumn,
   onFocusHandled,
   onApply,
+  onEmptied,
 }: FilterBarProps) {
   const [draft, setDraft] = useState<FilterState>(() => cloneFilter(filter));
   const rowsRef = useRef<HTMLDivElement | null>(null);
@@ -188,12 +192,14 @@ export function FilterBar({
     });
   }
 
-  // The last row goes back to an empty one, as the bar keeps a row. A row in
-  // effect runs the filter again without it: the rows that read Applied
-  // stay in effect, and edits not yet applied stay unapplied.
+  // A row in effect runs the filter again without it: the rows that read
+  // Applied stay in effect, and edits not yet applied stay unapplied.
   function removeRow(id: string): void {
-    const left = draft.rows.filter((row) => row.id !== id);
-    const rows = left.length > 0 ? left : [newRow(columns[0] ?? "")];
+    const rows = draft.rows.filter((row) => row.id !== id);
+    if (rows.length === 0) {
+      onEmptied();
+      return;
+    }
     const removed = draft.rows.find((row) => row.id === id);
     if (removed !== undefined && isApplied(removed)) {
       onApply({ ...draft, rows: rows.map((row) => ({ ...row, applied: isApplied(row) })) });

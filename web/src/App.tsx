@@ -5567,6 +5567,15 @@ export default function App() {
                               sorts: activeDataTab.sorts ?? null,
                             })
                           }
+                          onEmptied={() => {
+                            setFilterOpen((prev) => ({ ...prev, [activeDataTab.id]: false }));
+                            runDataWith(activeConnId, activeDataTab, {
+                              offset: 0,
+                              pageSize: activeDataTab.pageSize,
+                              filter: null,
+                              sorts: activeDataTab.sorts ?? null,
+                            });
+                          }}
                         />
                       ) : null}
                       {/* Several statements' results: one segment each, the
