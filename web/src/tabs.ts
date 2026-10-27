@@ -1,7 +1,7 @@
 import type { QueryMeta } from "./net/socket";
 import type { DefinitionDetail, EngineMeta, QueryOutcome, TabSnapshot, TableDetail } from "./store";
 import type { WindowedRowSource } from "./grid/windowSource";
-import { buildDataSql, buildWhere, type FilterState, type SortState } from "./dataQuery";
+import { buildDataSql, buildWhere, firstRowsSql, type FilterState, type SortState } from "./dataQuery";
 import { quoteIdent } from "./ddl";
 import { definitionTabTitle, type DefinitionKind } from "./sqlTools";
 import { t } from "./i18n";
@@ -382,8 +382,7 @@ export function seedSqlForMeta(meta: EngineMeta | null): string {
     return "SELECT * FROM demo LIMIT 100;";
   }
   if (meta.tables.length > 0) {
-    const quoted = quoteIdent(meta.kind, meta.tables[0]);
-    return `SELECT * FROM ${quoted} LIMIT 100;`;
+    return firstRowsSql(meta.kind, quoteIdent(meta.kind, meta.tables[0]));
   }
   return "";
 }

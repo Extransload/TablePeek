@@ -84,6 +84,7 @@ import {
 import {
   buildCountSql,
   buildDataSql,
+  firstRowsSql,
   buildWhere,
   cycleSort,
   EMPTY_FILTER,
@@ -1945,7 +1946,7 @@ export default function App() {
 
   function pickTable(table: string): void {
     const quoted = quoteIdent(meta?.kind ?? "", table);
-    openInQueryEditor(`SELECT * FROM ${quoted} LIMIT 100;`);
+    openInQueryEditor(firstRowsSql(meta?.kind ?? "", quoted));
   }
 
   function openSqlTab(sql: string, title: string): void {
@@ -3233,7 +3234,7 @@ export default function App() {
       for (const name of tables) {
         const detail = await ensureDetail(conn, name);
         const columns = detail?.columns.map((column) => column.name) ?? null;
-        lines.push(`SELECT ${selectList(columns, kind)} FROM ${quoteIdent(kind, name)} LIMIT 100;`);
+        lines.push(firstRowsSql(kind, quoteIdent(kind, name), selectList(columns, kind)));
       }
       await writeClipboard(lines.join("\n"));
       return;

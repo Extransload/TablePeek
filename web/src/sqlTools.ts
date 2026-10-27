@@ -1,3 +1,4 @@
+import { firstRowsSql } from "./dataQuery";
 import { quoteIdent } from "./ddl";
 import { t } from "./i18n";
 import { escapeString, lexingFor } from "./sqlSplit";
@@ -176,7 +177,7 @@ export interface Snippet {
 export function snippetList(table: string, explainPrefix: string, kind = "postgres"): Snippet[] {
   const quoted = quoteIdent(kind, table);
   return [
-    { name: "SELECT LIMIT", sql: `SELECT * FROM ${quoted} LIMIT 100;` },
+    { name: kind === "mssql" ? "SELECT TOP" : "SELECT LIMIT", sql: firstRowsSql(kind, quoted) },
     { name: "COUNT", sql: `SELECT count(*) FROM ${quoted};` },
     { name: "INSERT", sql: `INSERT INTO ${quoted} (column1, column2) VALUES (value1, value2);` },
     { name: "UPDATE WHERE", sql: `UPDATE ${quoted} SET column1 = value1 WHERE id = 1;` },

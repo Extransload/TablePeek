@@ -17,34 +17,63 @@ pub(crate) fn parse_single_table(sql: &str) -> Option<(Option<String>, String)> 
     if rest.is_empty() || rest.starts_with('(') {
         return None;
     }
-    let end = rest
-        .find(|c: char| c.is_whitespace() || matches!(c, ',' | '(' | ')' | ';'))
-        .unwrap_or(rest.len());
-    let token = &rest[..end];
-    if token.is_empty() {
+    let (mut parts, after) = dotted_name(rest)?;
+    if after.trim_start().starts_with(',') {
         return None;
     }
-    if rest[end..].trim_start().starts_with(',') {
-        return None;
-    }
-    let parts: Vec<String> = token.split('.').map(trim_ident).collect();
     match parts.len() {
-        1 => {
-            if parts[0].is_empty() {
-                None
-            } else {
-                Some((None, parts[0].clone()))
-            }
-        }
+        1 => Some((None, parts.remove(0))),
         2 => {
-            if parts[0].is_empty() || parts[1].is_empty() {
-                None
-            } else {
-                Some((Some(parts[0].clone()), parts[1].clone()))
-            }
+            let table = parts.remove(1);
+            Some((Some(parts.remove(0)), table))
         }
         _ => None,
     }
+}
+
+/// The name `text` starts with, schema-qualified or not, as its unquoted
+/// parts, and the text after it. A part is bare, or quoted in [], `` or ""
+/// with the closing quote doubled inside (`[Edge Cases]`, `[a]]b]`).
+fn dotted_name(text: &str) -> Option<(Vec<String>, &str)> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    loop {
+        let (part, after) = name_part(rest)?;
+        if part.is_empty() {
+            return None;
+        }
+        parts.push(part);
+        match after.strip_prefix('.') {
+            Some(next) => rest = next,
+            None => return Some((parts, after)),
+        }
+    }
+}
+
+fn name_part(text: &str) -> Option<(String, &str)> {
+    let close = match text.chars().next()? {
+        '[' => ']',
+        quote @ ('`' | '"') => quote,
+        _ => {
+            let end = text
+                .find(|c: char| c.is_whitespace() || matches!(c, '.' | ',' | '(' | ')' | ';'))
+                .unwrap_or(text.len());
+            return Some((text[..end].to_string(), &text[end..]));
+        }
+    };
+    let mut name = String::new();
+    let mut chars = text.char_indices().skip(1);
+    while let Some((at, c)) = chars.next() {
+        if c != close {
+            name.push(c);
+        } else if text[at + 1..].starts_with(close) {
+            name.push(close);
+            chars.next();
+        } else {
+            return Some((name, &text[at + 1..]));
+        }
+    }
+    None
 }
 
 fn first_word(sql: &str) -> String {
@@ -274,6 +303,47 @@ fn contains_word(text: &str, word: &str) -> bool {
 mod tests {
     use super::*;
     use TxControl::*;
+
+    #[test]
+    fn single_table_names_keep_their_quoted_spaces_and_dots() {
+        let table = |sql: &str| parse_single_table(sql);
+        let named =
+            |schema: Option<&str>, name: &str| Some((schema.map(String::from), name.to_string()));
+        assert_eq!(table("SELECT * FROM users"), named(None, "users"));
+        assert_eq!(table("SELECT * FROM users;"), named(None, "users"));
+        assert_eq!(
+            table("select id from shop.orders o where id = 1"),
+            named(Some("shop"), "orders")
+        );
+        assert_eq!(
+            table("SELECT * FROM [shop].[Edge Cases] ORDER BY [id] OFFSET 0 ROWS FETCH NEXT 300 ROWS ONLY;"),
+            named(Some("shop"), "Edge Cases")
+        );
+        assert_eq!(
+            table("SELECT * FROM `shop`.`Edge Cases` LIMIT 300"),
+            named(Some("shop"), "Edge Cases")
+        );
+        assert_eq!(
+            table(r#"SELECT * FROM "a.b"."c d""e""#),
+            named(Some("a.b"), "c d\"e")
+        );
+        assert_eq!(
+            table("SELECT * FROM [bracket]]inside]"),
+            named(None, "bracket]inside")
+        );
+        assert_eq!(
+            table("SELECT * FROM `back``tick`"),
+            named(None, "back`tick")
+        );
+        assert_eq!(table("SELECT * FROM [한글 표]"), named(None, "한글 표"));
+        // Not one table, or not a name it can read.
+        assert_eq!(table("SELECT * FROM a, b"), None);
+        assert_eq!(table("SELECT * FROM a JOIN b ON a.id = b.id"), None);
+        assert_eq!(table("SELECT * FROM (SELECT 1) AS t"), None);
+        assert_eq!(table("SELECT * FROM a.b.c"), None);
+        assert_eq!(table("SELECT * FROM [unclosed"), None);
+        assert_eq!(table("SELECT * FROM []"), None);
+    }
 
     #[test]
     fn postgres_transaction_statements() {

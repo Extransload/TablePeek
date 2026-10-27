@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { rowWindowSql } from "../dataQuery";
 import { createTableSql, dependencyOrder, draftsFromDetail, foreignKeySql, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
 import { t } from "../i18n";
@@ -165,32 +166,50 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         if (includeData) {
           const pkIndex = detail.indexes.find((index) => index.primary);
           const pk = pkIndex?.columns ?? detail.columns.filter((c) => c.pk).map((c) => c.name);
-          const order = pk.length > 0 ? ` ORDER BY ${pk.map((name) => quoteIdent(meta.kind, name)).join(", ")}` : "";
-          let offset = 0;
-          let copied = 0;
-          for (;;) {
-            if (copied >= TABLE_ROW_CAP) {
-              parts.push(
-                `-- ${table}: cut off at ${TABLE_ROW_CAP} rows (limit)`,
-              );
-              break;
-            }
-            const sql = `SELECT * FROM ${quoteIdent(meta.kind, table)}${order} LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
-            const detached = await store.runDetached(conn, sql, PAGE_SIZE);
+          const order = pk.length > 0 ? pk.map((name) => quoteIdent(meta.kind, name)).join(", ") : null;
+          if (order === null) {
+            // No key to page by, and a table's order can change between two
+            // reads: one read, so no row is skipped or copied twice.
+            const detached = await store.runDetached(conn, `SELECT * FROM ${quoteIdent(meta.kind, table)}`, TABLE_ROW_CAP);
             try {
               const rows = await collectRows(detached.source);
-              if (rows.length === 0) {
-                break;
+              if (rows.length > 0) {
+                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind));
               }
-              parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind));
-              copied += rows.length;
-              offset += rows.length;
-              job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: copied.toLocaleString() })}`);
-              if (rows.length < PAGE_SIZE) {
-                break;
+              job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: rows.length.toLocaleString() })}`);
+              if (detached.meta.truncated) {
+                parts.push(`-- ${table}: cut off at ${TABLE_ROW_CAP} rows (limit)`);
               }
             } finally {
               detached.source.dispose();
+            }
+          } else {
+            let offset = 0;
+            let copied = 0;
+            for (;;) {
+              if (copied >= TABLE_ROW_CAP) {
+                parts.push(
+                  `-- ${table}: cut off at ${TABLE_ROW_CAP} rows (limit)`,
+                );
+                break;
+              }
+              const sql = `SELECT * FROM ${quoteIdent(meta.kind, table)} ${rowWindowSql(meta.kind, order, PAGE_SIZE, offset)}`;
+              const detached = await store.runDetached(conn, sql, PAGE_SIZE);
+              try {
+                const rows = await collectRows(detached.source);
+                if (rows.length === 0) {
+                  break;
+                }
+                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind));
+                copied += rows.length;
+                offset += rows.length;
+                job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: copied.toLocaleString() })}`);
+                if (rows.length < PAGE_SIZE) {
+                  break;
+                }
+              } finally {
+                detached.source.dispose();
+              }
             }
           }
         }

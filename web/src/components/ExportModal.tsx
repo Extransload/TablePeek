@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildOrderBy, buildWhere } from "../dataQuery";
+import { buildOrderBy, buildWhere, rowWindowSql } from "../dataQuery";
 import {
   createTableSql,
   dependencyOrder,
@@ -196,10 +196,7 @@ async function fetchPage(
   order: string,
   offset: number,
 ): Promise<{ columns: string[]; rows: unknown[][] }> {
-  const sql =
-    kind === "mssql"
-      ? `${base} ORDER BY ${order} OFFSET ${offset} ROWS FETCH NEXT ${PAGE_SIZE} ROWS ONLY`
-      : `${base} ORDER BY ${order} LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
+  const sql = `${base} ${rowWindowSql(kind, order, PAGE_SIZE, offset)}`;
   const detached = await store.runDetached(conn, sql, PAGE_SIZE);
   try {
     return { columns: detached.meta.columns, rows: await readRows(detached.source, 0, PAGE_SIZE) };

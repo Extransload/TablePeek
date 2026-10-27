@@ -292,15 +292,26 @@ export function buildDataSql(input: DataSqlInput): string {
     parts.push(`WHERE ${where}`);
   }
   const order = buildOrderBy(input.sorts, kind) ?? buildPkOrder(input.pk, kind);
-  if (order !== null) {
-    parts.push(`ORDER BY ${order}`);
-  }
-  parts.push(`LIMIT ${sanitizeLimit(input.limit)}`);
-  const offset = sanitizeOffset(input.offset);
-  if (offset > 0) {
-    parts.push(`OFFSET ${offset}`);
-  }
+  parts.push(rowWindowSql(kind, order, sanitizeLimit(input.limit), sanitizeOffset(input.offset)));
   return parts.join(" ");
+}
+
+// The ordered rows from `offset` on, at most `limit` of them. SQL Server has
+// no LIMIT: it pages with OFFSET … FETCH, which needs an ORDER BY, so a table
+// with no order to give is read as it comes.
+export function rowWindowSql(kind: string, order: string | null, limit: number, offset = 0): string {
+  if (kind === "mssql") {
+    return `ORDER BY ${order ?? "(SELECT NULL)"} OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY`;
+  }
+  const window = offset > 0 ? `LIMIT ${limit} OFFSET ${offset}` : `LIMIT ${limit}`;
+  return order === null ? window : `ORDER BY ${order} ${window}`;
+}
+
+// A table's first rows, the query the editor opens a table with.
+export function firstRowsSql(kind: string, quotedTable: string, select = "*", rows = 100): string {
+  return kind === "mssql"
+    ? `SELECT TOP ${rows} ${select} FROM ${quotedTable};`
+    : `SELECT ${select} FROM ${quotedTable} LIMIT ${rows};`;
 }
 
 // What a table view's total counts: its rows under the same filter.
