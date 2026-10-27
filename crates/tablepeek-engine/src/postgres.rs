@@ -996,16 +996,23 @@ async fn table_detail_in(
     .and_then(|row| row.get::<_, Option<i64>>(0))
     .filter(|count| *count >= 0);
     if row_count_estimate.is_none() && inner.kind == "cockroach" {
-        let table_id = i64::from(oid);
+        // CockroachDB leaves reltuples empty, and from v26.3 refuses
+        // crdb_internal, where the estimate used to come from, unless a
+        // session turns allow_unsafe_internals on. The newest statistics'
+        // row count is the estimate (SHOW TABLES shows it only seconds
+        // later); with none collected yet, SHOW TABLES says 0.
+        let estimate_sql = format!(
+            "SELECT COALESCE(\
+             (SELECT row_count FROM [SHOW STATISTICS FOR TABLE {qualified_ref}] \
+              ORDER BY created DESC LIMIT 1), \
+             (SELECT estimated_row_count FROM [SHOW TABLES] \
+              WHERE schema_name = $1 AND table_name = $2))"
+        );
         row_count_estimate = ok_or_recover(
             client,
             fenced,
             client
-                .query_opt(
-                    "SELECT estimated_row_count FROM crdb_internal.table_row_statistics \
-                     WHERE table_id = $1",
-                    &[&table_id],
-                )
+                .query_opt(&estimate_sql, &[&schema_name, &table_name])
                 .await,
         )
         .await

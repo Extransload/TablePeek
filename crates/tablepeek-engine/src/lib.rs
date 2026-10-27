@@ -3599,6 +3599,19 @@ mod tests {
         assert!(id_col.pk);
         assert!(detail.indexes.iter().any(|index| index.primary));
 
+        // The estimate is the table statistics' row count, read without
+        // crdb_internal (refused from v26.3).
+        for sql in [
+            format!(
+                "INSERT INTO {table} (id, name) SELECT i, 'r' FROM generate_series(1, 37) AS g(i)"
+            ),
+            format!("CREATE STATISTICS tp_rows FROM {table}"),
+        ] {
+            engine.execute(&sql, 1).await.unwrap();
+        }
+        let detail = engine.table_detail(&table).await.unwrap();
+        assert_eq!(detail.row_count_estimate, Some(37));
+
         engine
             .execute(&format!("DROP TABLE {table}"), 1)
             .await
