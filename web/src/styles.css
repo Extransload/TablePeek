@@ -7136,6 +7136,47 @@ button.picker-row:focus-visible {
   color: var(--faint);
 }
 
+/* The foreign key viewer: the condition the referenced table is filtered
+   by, a search over its columns, and its rows as a table. */
+.cell-pop-ref {
+  gap: 8px;
+}
+
+.cell-pop-ref-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cell-pop-ref-bar .field-search {
+  flex: 1;
+  margin: 0;
+}
+
+.cell-pop-ref-where {
+  flex: 0 1 auto;
+  max-width: 50%;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-pop-ref-grid {
+  position: relative;
+  flex: 1;
+  min-height: 80px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+}
+
 textarea.cell-pop-text {
   flex: 1;
   width: 100%;

@@ -366,6 +366,10 @@ async function rangeValues(
 }
 
 // Copies and row actions stop at COPY_MAX_ROWS; this says so when they did.
+// Rows the foreign key viewer shows: a key names one, but a key that isn't
+// unique can name more.
+const FK_VIEW_ROWS = 100;
+
 function noteCapped(rows: number, message: string): void {
   if (rows > COPY_MAX_ROWS) {
     store.setInfo(message);
@@ -2923,20 +2927,25 @@ export default function App() {
     openDataTabFiltered(target.table, target.filter);
   }
 
-  // TablePlus's foreign key viewer: Quick Look on a key cell shows the row
-  // it refers to. Null when the cell isn't a key; no values when no row
-  // has that key.
+  // TablePlus's foreign key viewer: Quick Look on a key cell shows the
+  // referenced table filtered to the key, as a table. Null when the cell
+  // isn't a key.
   async function fkReference(row: number, col: number): Promise<FkReference | null> {
     const conn = activeConnIdRef.current;
     const target = await fkTarget(row, col);
     if (conn === null || target === null || "reason" in target) {
       return null;
     }
-    const sql = buildDataSql({ kind: meta?.kind ?? "", table: target.table, filter: target.filter, limit: 1 });
-    const detached = await store.runDetached(conn, sql, 1);
+    const kind = meta?.kind ?? "";
+    const sql = buildDataSql({ kind, table: target.table, filter: target.filter, limit: FK_VIEW_ROWS });
+    const detached = await store.runDetached(conn, sql, FK_VIEW_ROWS);
     try {
-      const rows = await collectRows(detached.source);
-      return { table: target.table, columns: detached.meta.columns, values: rows[0] ?? null };
+      return {
+        table: target.table,
+        where: buildWhere(target.filter, kind) ?? "",
+        columns: detached.meta.columns,
+        rows: await collectRows(detached.source),
+      };
     } finally {
       detached.source.dispose();
     }

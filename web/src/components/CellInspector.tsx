@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { t } from "../i18n";
 import type { RowSource } from "../grid/rowSource";
+import { JsonRowSource } from "../grid/rowSource";
 import { FieldBox } from "./FieldBox";
 import { ChevronIcon, LinkIcon, SearchIcon } from "./icons";
+import { TableGrid } from "./TableGrid";
 import { Spinner } from "./Spinner";
 
 /** A cell's box in client coordinates. */
@@ -13,12 +15,13 @@ export interface CellAnchor {
   bottom: number;
 }
 
-// The row a foreign-key cell refers to: its table's columns and the row's
-// values, none when no row has that key.
+// What a foreign-key cell refers to: its table filtered to the key (the
+// condition as SQL), as columns and rows.
 export interface FkReference {
   table: string;
+  where: string;
   columns: string[];
-  values: unknown[] | null;
+  rows: unknown[][];
 }
 
 interface CellInspectorProps {
@@ -207,6 +210,18 @@ export function CellInspector({
   // A key cell's referenced row: undefined while asked, null for no key.
   const [reference, setReference] = useState<FkReference | null | undefined>(loadReference ? undefined : null);
   const [fieldQuery, setFieldQuery] = useState("");
+  // The referenced rows as a table, showing the columns whose name matches.
+  const referenceRows = useMemo(() => {
+    if (!reference) {
+      return null;
+    }
+    const needle = fieldQuery.trim().toLowerCase();
+    const keep = reference.columns.flatMap((name, index) => (name.toLowerCase().includes(needle) ? [index] : []));
+    return new JsonRowSource(
+      keep.map((index) => reference.columns[index]),
+      reference.rows.map((cells) => keep.map((index) => cells[index])),
+    );
+  }, [reference, fieldQuery]);
 
   useEffect(() => {
     if (!loadReference) {
@@ -348,10 +363,9 @@ export function CellInspector({
 
   // Beside the cell, pointing at it: to the right when that leaves a usable
   // width (narrowing to fit), else to the left, else centered over the grid.
-  const preferred = doc !== null ? 880 : 560;
-  const minWidth = doc !== null ? 520 : 360;
-  // A referenced row lists its fields: taller than one value needs.
-  const height = Math.min(doc !== null ? 560 : reference ? 440 : 320, window.innerHeight - MARGIN * 2);
+  const preferred = doc !== null || reference ? 880 : 560;
+  const minWidth = doc !== null || reference ? 520 : 360;
+  const height = Math.min(doc !== null ? 560 : reference ? 300 : 320, window.innerHeight - MARGIN * 2);
   let width = Math.min(preferred, window.innerWidth - MARGIN * 2);
   let left = (window.innerWidth - width) / 2;
   let top = (window.innerHeight - height) / 2;
@@ -434,37 +448,36 @@ export function CellInspector({
             <div className="cell-pop-loading">
               <Spinner size={16} label={t("셀 불러오는 중")} />
             </div>
-          ) : reference ? (
-            // The row this key refers to, its fields found by name, as
-            // TablePlus's foreign key viewer.
-            <div className="cell-pop-detail full">
+          ) : reference && referenceRows !== null ? (
+            // The referenced table filtered to this key, as a table, its
+            // columns found by name: TablePlus's foreign key viewer.
+            <div className="cell-pop-detail full cell-pop-ref">
               <div className="cell-pop-detail-head">
                 <span className="cell-pop-detail-key">
                   {column} → {reference.table}
                 </span>
                 <span className="cell-pop-detail-kind">{t("외래 키 참조")}</span>
               </div>
-              <label className="field-search">
-                <SearchIcon size={12} />
-                <input
-                  autoFocus
-                  placeholder={t("컬럼 이름…")}
-                  value={fieldQuery}
-                  spellCheck={false}
-                  onChange={(event) => setFieldQuery(event.target.value)}
-                />
-              </label>
-              <div className="field-list">
-                {reference.values === null ? (
-                  <div className="panel-empty">{t("이 키를 가진 행이 없습니다")}</div>
-                ) : (
-                  reference.columns.map((name, index) =>
-                    name.toLowerCase().includes(fieldQuery.trim().toLowerCase()) ? (
-                      <FieldBox key={index} name={name} value={reference.values?.[index]} />
-                    ) : null,
-                  )
-                )}
+              <div className="cell-pop-ref-bar">
+                <code className="cell-pop-ref-where" title={reference.where}>
+                  {reference.where}
+                </code>
+                <label className="field-search">
+                  <SearchIcon size={12} />
+                  <input
+                    autoFocus
+                    placeholder={t("컬럼 이름…")}
+                    value={fieldQuery}
+                    spellCheck={false}
+                    onChange={(event) => setFieldQuery(event.target.value)}
+                  />
+                </label>
               </div>
+              {reference.rows.length === 0 ? (
+                <div className="panel-empty">{t("이 키를 가진 행이 없습니다")}</div>
+              ) : (
+                <TableGrid source={referenceRows} className="cell-pop-ref-grid" />
+              )}
             </div>
           ) : showTree ? (
             <>
