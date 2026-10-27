@@ -13,8 +13,9 @@ TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or conn
 | **Databases** | SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, SQL Server |
 | **Runtime** | Local Rust engine + browser UI |
 | **Transport** | HTTP + WebSocket, Arrow IPC streaming |
-| **Editing** | Primary-key cell edits, row insert/delete, transactions |
-| **Security** | Loopback-only, per-run token, OS keychain, TLS/mTLS, SSH tunnels |
+| **Editing** | Primary-key cell edits, row insert/delete, transactions, `DEFAULT`/`NOW()` set on the server |
+| **Transfer** | CSV/JSON import, CSV/JSON/XML/SQL export, SQL dump and restore, all as cancellable background jobs |
+| **Security** | Loopback-only, per-run token, OS keychain, TLS/mTLS, SSH tunnels, encrypted connection exports |
 | **Themes** | 50 built-in themes + Base16/VS Code theme import |
 
 ## Why TablePeek
@@ -23,7 +24,9 @@ TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or conn
 - **Built for real result sets.** Results stream as Arrow IPC and render on a canvas grid that only paints visible cells. Queries are cancellable, and large tables are fetched in windows instead of loaded all at once.
 - **Five engines, one workflow.** Use the same grid, editor, schema browser, and Quick Look across SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, and SQL Server.
 - **Edits with guardrails.** Cell updates target a single row through its primary key. Row inserts and deletes are explicit, and transaction state is tracked per session.
-- **Inspect, don't guess.** Open any cell in Quick Look for a full value editor, a structured JSON tree, and encoding/HEX views.
+- **Inspect, don't guess.** Open any cell in Quick Look for a full value editor, a structured JSON tree, encoding/HEX views, and, for a foreign key, the row it points to.
+- **Long work stays out of the way.** Imports, exports, dumps, and restores run as background jobs with progress and a stop button, and never cancel the queries the page is running.
+- **Behaves like a desktop app.** Native-feeling menus, per-area fonts, thin scrollbars, 50 themes, and a settings screen organised by the part of the screen it changes.
 - **AI access without write access.** The built-in MCP server exposes schema discovery and read-only queries over stdio.
 
 ## Quick start
@@ -132,11 +135,17 @@ Connection features:
 
 ### The data grid
 
-Filter with `AND`/`OR`, sort by one or more columns, paginate, and jump across foreign keys. Insert, duplicate, and delete rows; edit cells through primary-key-targeted updates; and group changes in explicit transactions.
+Filter with a bar of conditions: operators such as contains, starts with, in list, and between, or a raw `WHERE` fragment. Apply a condition on its own or every checked condition together with `AND`/`OR`. Sort by one or more columns, paginate, and jump across foreign keys. Column widths survive sorting, paging, and filtering.
 
-Type colors distinguish strings, integers, floats, bigints, booleans, JSON, lists, dates, and `NULL`. Colors are derived from the active theme, and custom `typeInks` overrides are supported.
+Insert, duplicate, and delete rows; edit cells through primary-key-targeted updates; set a cell to `DEFAULT` or the current time and read back what the server stored; paste into a selection; and group changes in explicit transactions. The cell menu follows the selection: copy as CSV, JSON, SQL, or Markdown, or as a staged `INSERT`/`UPDATE`.
 
-Export the current result as CSV, JSON, XML, or SQL `INSERT` statements. Import CSV or JSON into a table, hide or reorder columns, and copy values without leaving the keyboard.
+Type colors distinguish strings, integers, floats, bigints, booleans, JSON, lists, dates, binary, and `NULL`. Binary values show as hex and can be written back as bytes. PostgreSQL values print as PostgreSQL prints them. Colors are derived from the active theme, and custom `typeInks` overrides are supported.
+
+### Import, export, dump, and restore
+
+Export the current result as CSV, JSON, XML, or SQL `INSERT` statements. Import a CSV or JSON file into a new or existing table with column matching, type inference, and exact big numbers. Dump selected tables to a SQL file in foreign-key order, with or without data, and restore a dump statement by statement.
+
+Every transfer runs as a background job: a jobs panel shows progress, a failed import or restore reports the statement it stopped at, and a stop button interrupts the statement in flight. A job holds its connection from its first statement, so the page's own queries and a running import never cancel each other. Imports roll back on failure where the engine allows it (MySQL runs `CREATE TABLE` outside the transaction and drops the table instead).
 
 ### Quick Look
 
@@ -145,11 +154,12 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 - A full-width value editor with primary-key saves and `NULL` support
 - A collapsible JSON tree with path copying
 - An encoding/HEX inspector
+- For a foreign key, the referenced row, and the referenced table filtered to that key
 - Copy actions for values, JSON paths, decoded text, and raw hex
 
 ![TablePeek Quick Look showing a structured JSON value](docs/images/quick-look.png)
 
-`Alt`-click opens the cell menu. `Space` opens row details with relationship tabs, including foreign-key navigation.
+`Alt`-click opens the cell menu. `Space` opens row details with relationship tabs, including foreign-key navigation. The right panel keeps a field search and says when no row is selected.
 
 ### Query workbench
 
@@ -162,17 +172,23 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 
 ### Schema and server tools
 
-Browse tables, views, functions, triggers, and sequences from the sidebar. Open Structure and DDL tabs, create tables, create or drop databases, and inspect generated SQL before applying it. MySQL tables expose collation, `ROW_FORMAT`, and comment options. Laravel `Schema::create` output can be copied directly from the table menu.
+Browse tables, views, functions, triggers, and sequences from the sidebar, indented under their section heads; the tree refreshes after the editor creates, drops, or alters anything. Open Structure and DDL tabs, create tables, create or drop databases, and inspect generated SQL before applying it. MySQL tables expose collation, `ROW_FORMAT`, and comment options. Laravel `Schema::create` output can be copied directly from the table menu.
 
 The server info tab shows engine version, database size, uptime, and sessions, with session termination where the engine supports it.
 
+### Connections
+
+The connection home groups saved connections; drag groups to reorder them. Start a new connection from the kind of database you want, or open one from the connection bar. Connection tabs close on a single click and move focus to their neighbour. Saved connections export to a password-sealed `.tablepeek` file and import back on another machine.
+
 ### Settings and themes
+
+Settings are organised by the part of the screen they change, each with its own live preview: General and Theme; SQL editor, Data table, and Sidebar; Import and export; Shortcuts; Activity log. The SQL editor, data table, and sidebar each pick their own font from every face installed on the machine. Scrollbars are the app's own: thin, one size under the pointer, and optionally always in view for the grid and editor.
 
 Fifty built-in themes are included, grouped into dark and light: TablePeek Dark and Light plus Aura, Ayu, Catppuccin, Cobalt2, Dracula, Everforest, GitHub, Gruvbox, Horizon, Kanagawa, Material, Monokai, Night Owl, Nord, One Dark/Light, Panda, Pink Aura, Rosé Pine, Shades of Purple, Snazzy, Solarized, SynthWave '84, Tokyo Night, Tomorrow Night, and Xcode variants. The third-party themes also color the SQL editor while the syntax preset is left on "Theme default"; TablePeek Dark/Light and imported themes derive editor colors from their accent and status colors. You can also import Base16, VS Code, or TablePeek theme JSON from a Git URL.
 
 ![TablePeek appearance settings with themes and type-color preview](docs/images/settings.png)
 
-Settings cover accent color, font and size, alternating row backgrounds, type colors, auto-hiding scrollbars, CSV delimiter and encoding, SQL syntax presets, keyboard shortcuts, and activity-log retention. The interface is available in English and Korean.
+Settings also cover accent color, font sizes, alternating row backgrounds, type colors, CSV delimiter and encoding, SQL syntax presets, keyboard shortcuts, and activity-log retention. The interface is available in English and Korean.
 
 ## MCP for AI clients
 
@@ -290,6 +306,6 @@ cargo test
 
 ## Status
 
-TablePeek is pre-release. The feature set is implemented and exercised across the five drivers, but signed installers and package-manager distribution are still ahead. Source builds are the supported path today.
+TablePeek is pre-release. The feature set is implemented and exercised across the five drivers, and the recent work has been on the everyday surface: filtering, transfer jobs, foreign-key Quick Look, connection management, fonts, scrollbars, and settings. Signed installers and package-manager distribution are still ahead; source builds are the supported path today, and the screenshots above predate the current filter bar, settings layout, and connection home.
 
 See [docs/REMAINING-SCOPE.md](docs/REMAINING-SCOPE.md) for the current scope boundaries and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and protocol details.
