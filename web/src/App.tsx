@@ -4711,11 +4711,12 @@ export default function App() {
         return;
       }
       // In the grid ⌘↩ opens the cell popover or commits the cell being edited;
-      // on a sidebar table it opens the table in a kept tab.
+      // on a sidebar table it opens the table in a kept tab; in the filter bar
+      // it applies every checked condition.
       if (
         action === "run" &&
         event.key === "Enter" &&
-        target?.closest(".table-grid, .schema-table-row, .schema-object-row, .date-picker") != null
+        target?.closest(".table-grid, .schema-table-row, .schema-object-row, .date-picker, .filter-bar") != null
       ) {
         return;
       }
@@ -5508,6 +5509,7 @@ export default function App() {
                         <>
                       {activeDataTab && activeConnId !== null && filterVisible ? (
                         <FilterBar
+                          key={activeDataTab.id}
                           columns={dataMeta?.columns ?? EMPTY_TABLES}
                           filter={activeDataTab.filter ?? EMPTY_FILTER}
                           running={connRunning}
@@ -5519,14 +5521,6 @@ export default function App() {
                               offset: 0,
                               pageSize: activeDataTab.pageSize,
                               filter: next,
-                              sorts: activeDataTab.sorts ?? null,
-                            })
-                          }
-                          onReset={() =>
-                            runDataWith(activeConnId, activeDataTab, {
-                              offset: 0,
-                              pageSize: activeDataTab.pageSize,
-                              filter: null,
                               sorts: activeDataTab.sorts ?? null,
                             })
                           }

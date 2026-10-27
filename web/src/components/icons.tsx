@@ -72,6 +72,14 @@ export function PlusIcon({ size = 12, className }: IconProps) {
   );
 }
 
+export function MinusIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M3.2 8h9.6" />
+    </svg>
+  );
+}
+
 export function CloseIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

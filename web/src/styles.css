@@ -1200,52 +1200,6 @@ select {
   border-bottom: 1px solid var(--line);
 }
 
-.filter-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.filter-logic {
-  display: inline-flex;
-}
-
-.filter-logic button {
-  height: 20px;
-  padding: 0 9px;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: 0;
-  font-family: var(--mono);
-  font-size: calc(11px * var(--ui-scale, 1));
-}
-
-.filter-logic button:first-child {
-  border-radius: 3px 0 0 3px;
-}
-
-.filter-logic button:last-child {
-  border-radius: 0 3px 3px 0;
-}
-
-.filter-logic button.active {
-  background: var(--accent-soft);
-  border-color: var(--accent-line);
-  color: var(--ink);
-}
-
-.filter-hint {
-  color: var(--faint);
-  font-size: calc(11px * var(--ui-scale, 1));
-}
-
-.filter-empty {
-  padding: 2px 0;
-  color: var(--faint);
-  font-size: calc(11px * var(--ui-scale, 1));
-}
-
 .filter-rows {
   display: flex;
   flex-direction: column;
@@ -1302,16 +1256,65 @@ select {
   flex: 1;
 }
 
-.filter-remove {
+/* A row's own Apply, reading Applied while the data is filtered by it. */
+.filter-apply {
   flex: none;
-  padding: 0 5px;
-  background: transparent;
-  color: var(--faint);
+  min-width: 64px;
+  height: 22px;
+  padding: 0 8px;
+  justify-content: center;
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
-.filter-remove:hover {
-  background: transparent;
-  color: var(--error);
+.filter-apply.applied {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+/* + copies the row below it, − removes it. */
+.filter-icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.filter-icon:hover {
+  color: var(--ink);
+}
+
+/* Clear and Apply All (its menu for OR) under the rows, at the right. */
+.filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.filter-actions button {
+  height: 22px;
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.filter-apply-all {
+  display: inline-flex;
+}
+
+.filter-apply-all button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.filter-apply-all .filter-apply-more {
+  width: 22px;
+  padding: 0;
+  justify-content: center;
+  border-left: 1px solid color-mix(in srgb, var(--accent-contrast, #fff) 30%, transparent);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
 .result-action {

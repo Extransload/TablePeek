@@ -48,7 +48,12 @@ export interface FilterRow {
   column: string;
   op: FilterOp;
   value: string;
+  // Checked: taken by Apply All.
   enabled: boolean;
+  // In effect: chosen by the last Apply (its own, or Apply All while it was
+  // checked), as TablePlus marks it "Applied". Rows saved before this existed
+  // count their check (see inEffect).
+  applied?: boolean;
   // TablePlus's Raw SQL: `value` is a WHERE condition used as written, and
   // column and op are ignored.
   raw?: boolean;
@@ -227,13 +232,18 @@ export function buildFragment(row: FilterRow, kind = "postgres"): string | null 
   }
 }
 
+// Whether a row filters the data now.
+export function inEffect(row: FilterRow): boolean {
+  return row.applied ?? row.enabled;
+}
+
 export function buildWhere(filter?: FilterState | null, kind = "postgres"): string | null {
   if (!filter) {
     return null;
   }
   const fragments: string[] = [];
   for (const row of filter.rows) {
-    if (!row.enabled) {
+    if (!inEffect(row)) {
       continue;
     }
     const fragment = buildFragment(row, kind);

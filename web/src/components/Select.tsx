@@ -292,7 +292,8 @@ export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTM
     }
     const opens =
       (event.key === " " && !typing) ||
-      event.key === "Enter" ||
+      // ⌘↩ belongs to whatever holds the field (the filter's Apply All).
+      (event.key === "Enter" && !event.metaKey && !event.ctrlKey) ||
       event.key === "F4" ||
       ((event.key === "ArrowDown" || event.key === "ArrowUp") && (event.altKey || !event.metaKey));
     if (opens) {
