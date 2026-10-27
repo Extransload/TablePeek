@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import { t } from "../i18n";
 import type { RowSource } from "../grid/rowSource";
 import { FieldBox } from "./FieldBox";
-import { ChevronIcon } from "./icons";
+import { ChevronIcon, LinkIcon, SearchIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
 /** A cell's box in client coordinates. */
@@ -11,6 +11,14 @@ export interface CellAnchor {
   top: number;
   right: number;
   bottom: number;
+}
+
+// The row a foreign-key cell refers to: its table's columns and the row's
+// values, none when no row has that key.
+export interface FkReference {
+  table: string;
+  columns: string[];
+  values: unknown[] | null;
 }
 
 interface CellInspectorProps {
@@ -22,6 +30,10 @@ interface CellInspectorProps {
   table: string | null;
   // Where the cell sits on screen; null (scrolled out of view) centers the popover.
   anchor: CellAnchor | null;
+  // The row a foreign-key cell refers to, null for any other cell.
+  loadReference?(): Promise<FkReference | null>;
+  // Opens the referenced table at that row.
+  onOpenReference?(): void;
   onClose(): void;
 }
 
@@ -173,7 +185,17 @@ function inlineValue(row: TreeRow): string {
 
 // TablePlus-style popover beside a cell: a JSON tree on the left, the picked
 // node's value on the right, and Raw for the cell text as stored.
-export function CellInspector({ source, columns, row, col, table, anchor, onClose }: CellInspectorProps) {
+export function CellInspector({
+  source,
+  columns,
+  row,
+  col,
+  table,
+  anchor,
+  loadReference,
+  onOpenReference,
+  onClose,
+}: CellInspectorProps) {
   const [, setNonce] = useState(0);
   const [raw, setRaw] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([ROOT]));
@@ -182,9 +204,29 @@ export function CellInspector({ source, columns, row, col, table, anchor, onClos
   const [copied, setCopied] = useState(false);
   const treeRef = useRef<HTMLDivElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
+  // A key cell's referenced row: undefined while asked, null for no key.
+  const [reference, setReference] = useState<FkReference | null | undefined>(loadReference ? undefined : null);
+  const [fieldQuery, setFieldQuery] = useState("");
+
+  useEffect(() => {
+    if (!loadReference) {
+      setReference(null);
+      return;
+    }
+    let live = true;
+    setReference(undefined);
+    setFieldQuery("");
+    loadReference()
+      .then((found) => live && setReference(found))
+      .catch(() => live && setReference(null));
+    return () => {
+      live = false;
+    };
+    // The cell, not the callback's identity, decides what to load.
+  }, [source, row, col]);
 
   const value = source.cell(row, col);
-  const loading = value === undefined;
+  const loading = value === undefined || reference === undefined;
   const column = columns[col] ?? `#${col + 1}`;
   const text = rawText(value);
   const doc = useMemo(() => documentOf(value), [value]);
@@ -194,7 +236,7 @@ export function CellInspector({ source, columns, row, col, table, anchor, onClos
   );
   const nodes = rows.filter((entry): entry is TreeRow => "path" in entry);
   const current = nodes.find((node) => node.path === selected) ?? nodes[0] ?? null;
-  const showTree = doc !== null && !raw;
+  const showTree = doc !== null && !raw && !reference;
   // Serializing a large document is not free; do it once per picked node.
   const detail = useMemo(() => (current !== null ? detailText(current) : ""), [current]);
   // The right side lists a picked object's or array's members as fields, or
@@ -308,7 +350,8 @@ export function CellInspector({ source, columns, row, col, table, anchor, onClos
   // width (narrowing to fit), else to the left, else centered over the grid.
   const preferred = doc !== null ? 880 : 560;
   const minWidth = doc !== null ? 520 : 360;
-  const height = Math.min(doc !== null ? 560 : 320, window.innerHeight - MARGIN * 2);
+  // A referenced row lists its fields: taller than one value needs.
+  const height = Math.min(doc !== null ? 560 : reference ? 440 : 320, window.innerHeight - MARGIN * 2);
   let width = Math.min(preferred, window.innerWidth - MARGIN * 2);
   let left = (window.innerWidth - width) / 2;
   let top = (window.innerHeight - height) / 2;
@@ -390,6 +433,38 @@ export function CellInspector({ source, columns, row, col, table, anchor, onClos
           {loading ? (
             <div className="cell-pop-loading">
               <Spinner size={16} label={t("셀 불러오는 중")} />
+            </div>
+          ) : reference ? (
+            // The row this key refers to, its fields found by name, as
+            // TablePlus's foreign key viewer.
+            <div className="cell-pop-detail full">
+              <div className="cell-pop-detail-head">
+                <span className="cell-pop-detail-key">
+                  {column} → {reference.table}
+                </span>
+                <span className="cell-pop-detail-kind">{t("외래 키 참조")}</span>
+              </div>
+              <label className="field-search">
+                <SearchIcon size={12} />
+                <input
+                  autoFocus
+                  placeholder={t("컬럼 이름…")}
+                  value={fieldQuery}
+                  spellCheck={false}
+                  onChange={(event) => setFieldQuery(event.target.value)}
+                />
+              </label>
+              <div className="field-list">
+                {reference.values === null ? (
+                  <div className="panel-empty">{t("이 키를 가진 행이 없습니다")}</div>
+                ) : (
+                  reference.columns.map((name, index) =>
+                    name.toLowerCase().includes(fieldQuery.trim().toLowerCase()) ? (
+                      <FieldBox key={index} name={name} value={reference.values?.[index]} />
+                    ) : null,
+                  )
+                )}
+              </div>
             </div>
           ) : showTree ? (
             <>
@@ -503,7 +578,13 @@ export function CellInspector({ source, columns, row, col, table, anchor, onClos
             {` · ${t("{count}번째 행", { count: (row + 1).toLocaleString() })}`}
           </span>
           <span className="spacer" />
-          {doc !== null ? (
+          {reference && onOpenReference ? (
+            <button type="button" onClick={onOpenReference}>
+              <LinkIcon size={10} />
+              {t("참조 테이블 열기")}
+            </button>
+          ) : null}
+          {doc !== null && !reference ? (
             <button
               type="button"
               className={raw ? "active" : ""}

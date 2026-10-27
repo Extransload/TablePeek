@@ -54,7 +54,7 @@ import { BrandLogo } from "./components/BrandLogo";
 import { MetricsModal } from "./components/MetricsModal";
 import { LockScreen } from "./components/LockScreen";
 import { OverviewPanel } from "./components/OverviewPanel";
-import { CellInspector, type CellAnchor } from "./components/CellInspector";
+import { CellInspector, type CellAnchor, type FkReference } from "./components/CellInspector";
 import { RowDetailPanel } from "./components/RowDetailPanel";
 import { ResultBar, StatementMessages, statementStatus, type ShownResult, type StatementMessage } from "./components/ResultBar";
 import { LoadingState, Spinner } from "./components/Spinner";
@@ -95,7 +95,7 @@ import {
   type FilterState,
   type SortState,
 } from "./dataQuery";
-import { buildUpdateSql, isBlobPlaceholder, SqlExpression } from "./export";
+import { buildUpdateSql, collectRows, isBlobPlaceholder, SqlExpression } from "./export";
 import { COPY_MAX_ROWS, copyValue, formatCopy, type CopyFormat } from "./copyFormats";
 import { subscribeJobs } from "./jobs";
 import {
@@ -2866,34 +2866,37 @@ export default function App() {
     store.getState().result?.source.discardPending();
   }
 
-  async function fkJump(row: number, col: number): Promise<void> {
+  // The row a foreign-key cell refers to: its table and the filter that
+  // finds it, or why there is none (not a key column, a NULL key).
+  async function fkTarget(
+    row: number,
+    col: number,
+  ): Promise<{ table: string; filter: FilterState } | { reason: string } | null> {
     const conn = activeConnIdRef.current;
     const tab = currentTab();
     const result = store.getState().result;
     if (conn === null || !result) {
-      return;
+      return null;
     }
     const sourceTable = tab?.kind === "data" ? tab.table : result.meta.sourceTable;
     if (sourceTable === null) {
-      return;
+      return null;
     }
     const column = result.meta.columns[col];
     if (column === undefined) {
-      return;
+      return null;
     }
     const detail = await ensureDetail(conn, sourceTable);
     const fk = detail?.foreign_keys.find((entry) => entry.columns.includes(column));
     if (!fk) {
-      store.setInfo(t("외래 키 컬럼이 아닙니다"));
-      return;
+      return { reason: t("외래 키 컬럼이 아닙니다") };
     }
     const value = result.source.cell(row, col);
     const index = fk.columns.indexOf(column);
     const refColumn = fk.ref_columns[index] ?? fk.ref_columns[0];
     const filter = fkFilterFor(refColumn, value);
     if (filter === null) {
-      store.setInfo(t("NULL 값은 참조 행이 없습니다"));
-      return;
+      return { reason: t("NULL 값은 참조 행이 없습니다") };
     }
     // A key of several columns matches on all of them, when the row has them.
     if (fk.columns.length > 1) {
@@ -2905,7 +2908,38 @@ export default function App() {
         filter.rows = parts.flatMap((part, partIndex) => fkFilterFor(part.ref, part.value, `fk${partIndex}`)?.rows ?? []);
       }
     }
-    openDataTabFiltered(fk.ref_table, filter);
+    return { table: fk.ref_table, filter };
+  }
+
+  async function fkJump(row: number, col: number): Promise<void> {
+    const target = await fkTarget(row, col);
+    if (target === null) {
+      return;
+    }
+    if ("reason" in target) {
+      store.setInfo(target.reason);
+      return;
+    }
+    openDataTabFiltered(target.table, target.filter);
+  }
+
+  // TablePlus's foreign key viewer: Quick Look on a key cell shows the row
+  // it refers to. Null when the cell isn't a key; no values when no row
+  // has that key.
+  async function fkReference(row: number, col: number): Promise<FkReference | null> {
+    const conn = activeConnIdRef.current;
+    const target = await fkTarget(row, col);
+    if (conn === null || target === null || "reason" in target) {
+      return null;
+    }
+    const sql = buildDataSql({ kind: meta?.kind ?? "", table: target.table, filter: target.filter, limit: 1 });
+    const detached = await store.runDetached(conn, sql, 1);
+    try {
+      const rows = await collectRows(detached.source);
+      return { table: target.table, columns: detached.meta.columns, values: rows[0] ?? null };
+    } finally {
+      detached.source.dispose();
+    }
   }
 
   function openDataTabFiltered(table: string, filter: FilterState): void {
@@ -5623,6 +5657,11 @@ export default function App() {
                             col={cellQuickLook.col}
                             anchor={cellQuickLook.anchor}
                             table={activeDataTab ? activeDataTab.table : state.result.meta.sourceTable}
+                            loadReference={() => fkReference(cellQuickLook.row, cellQuickLook.col)}
+                            onOpenReference={() => {
+                              setCellQuickLook(null);
+                              void fkJump(cellQuickLook.row, cellQuickLook.col);
+                            }}
                             onClose={() => {
                               setCellQuickLook(null);
                               gridHostRef.current?.focus();
