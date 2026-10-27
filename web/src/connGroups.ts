@@ -112,6 +112,23 @@ export function updateGroup(
   );
 }
 
+// A group dragged to just before or after another; the list's order is the
+// groups' order on the home screen.
+export function moveGroup(id: string, targetId: string, after: boolean): void {
+  const groups = readAll();
+  const moving = groups.find((group) => group.id === id);
+  if (moving === undefined || id === targetId) {
+    return;
+  }
+  const rest = groups.filter((group) => group.id !== id);
+  const at = rest.findIndex((group) => group.id === targetId);
+  if (at < 0) {
+    return;
+  }
+  rest.splice(after ? at + 1 : at, 0, moving);
+  writeAll(rest);
+}
+
 // The group goes; its connections stay, outside any group.
 export function deleteGroup(id: string): void {
   for (const [connId, meta] of Object.entries(listConnMeta())) {

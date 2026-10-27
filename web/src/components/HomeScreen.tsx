@@ -6,6 +6,7 @@ import {
   GROUP_COLORS,
   isGroupNameTaken,
   listGroups,
+  moveGroup,
   subscribeGroups,
   updateGroup,
   type ConnGroup,
@@ -449,6 +450,7 @@ export function HomeScreen({
         onRowAction={rowAction}
         onContextMenu={(target, x, y) => setMenu({ x, y, target })}
         onMoveToGroup={moveToGroup}
+        onMoveGroup={moveGroup}
       />
     );
   }

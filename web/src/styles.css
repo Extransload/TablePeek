@@ -6938,6 +6938,19 @@ button.picker-row:focus-visible {
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
+/* Drag a group by its header: a line marks where it lands. */
+.launcher-group.drop-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+
+.launcher-group.drop-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
+
+.launcher-group.dragging {
+  opacity: 0.5;
+}
+
 .launcher-drop-hint {
   padding: 10px 12px;
   color: var(--faint);

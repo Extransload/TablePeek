@@ -35,6 +35,8 @@ interface HomeConnectionListProps {
   // null = empty space in the list.
   onContextMenu(target: ListTarget | null, x: number, y: number): void;
   onMoveToGroup(savedId: string, groupId: string): void;
+  // A group dropped just before or after another.
+  onMoveGroup(groupId: string, targetId: string, after: boolean): void;
 }
 
 function savedTarget(connection: SavedConnection) {
@@ -164,11 +166,15 @@ export function HomeConnectionList({
   onRowAction,
   onContextMenu,
   onMoveToGroup,
+  onMoveGroup,
 }: HomeConnectionListProps) {
   // Saved connection being dragged, and the zone under it: a group id, or ""
   // for "no group".
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropZone, setDropZone] = useState<string | null>(null);
+  // Group being dragged to a new place, and where it would land.
+  const [dragGroupId, setDragGroupId] = useState<string | null>(null);
+  const [groupSpot, setGroupSpot] = useState<{ id: string; after: boolean } | null>(null);
   const needle = query.trim().toLowerCase();
   const searching = needle !== "";
   // Groups folded during the current search only; the saved state returns when it clears.
@@ -237,6 +243,21 @@ export function HomeConnectionList({
   function endDrag(): void {
     setDragId(null);
     setDropZone(null);
+    setDragGroupId(null);
+    setGroupSpot(null);
+  }
+
+  // Where a dragged group lands: before or after the group under the
+  // pointer, by which half of it the pointer is in.
+  function groupSpotAt(event: DragEvent<HTMLElement>): { id: string; after: boolean } | null {
+    const target = event.target instanceof Element ? event.target : null;
+    const section = target?.closest<HTMLElement>(".launcher-group[data-group-id]") ?? null;
+    const id = section?.dataset.groupId;
+    if (section === null || id === undefined || id === dragGroupId) {
+      return null;
+    }
+    const box = section.getBoundingClientRect();
+    return { id, after: event.clientY > box.top + box.height / 2 };
   }
 
   // Where a drop lands: the group under the pointer, or "" (no group) anywhere else in the list.
@@ -247,6 +268,15 @@ export function HomeConnectionList({
 
   const dropHandlers = {
     onDragOver(event: DragEvent<HTMLElement>) {
+      if (dragGroupId !== null) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const spot = groupSpotAt(event);
+        if (spot?.id !== groupSpot?.id || spot?.after !== groupSpot?.after) {
+          setGroupSpot(spot);
+        }
+        return;
+      }
       if (dragId === null) {
         return;
       }
@@ -260,11 +290,17 @@ export function HomeConnectionList({
     onDragLeave(event: DragEvent<HTMLElement>) {
       if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
         setDropZone(null);
+        setGroupSpot(null);
       }
     },
     onDrop(event: DragEvent<HTMLElement>) {
       event.preventDefault();
-      if (dragId !== null) {
+      if (dragGroupId !== null) {
+        const spot = groupSpotAt(event);
+        if (spot !== null) {
+          onMoveGroup(dragGroupId, spot.id, spot.after);
+        }
+      } else if (dragId !== null) {
         onMoveToGroup(dragId, zoneAt(event.target));
       }
       endDrag();
@@ -403,7 +439,9 @@ export function HomeConnectionList({
       const target: ListTarget = { kind: "group", group };
       return (
         <div
-          className={`launcher-group${dropZone === group.id ? " drop-target" : ""}`}
+          className={`launcher-group${dropZone === group.id ? " drop-target" : ""}${
+            groupSpot?.id === group.id ? (groupSpot.after ? " drop-after" : " drop-before") : ""
+          }${dragGroupId === group.id ? " dragging" : ""}`}
           key={`group:${group.id}`}
           data-group-id={group.id}
         >
@@ -413,6 +451,14 @@ export function HomeConnectionList({
             tabIndex={0}
             data-nav=""
             aria-expanded={expanded}
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.setData("text/plain", group.name);
+              event.dataTransfer.effectAllowed = "move";
+              // As for a row: Chrome drops a drag whose page changes during dragstart.
+              window.setTimeout(() => setDragGroupId(group.id), 0);
+            }}
+            onDragEnd={endDrag}
             onClick={() => toggleGroup(group)}
             onKeyDown={(event) => activateKeys(event, () => toggleGroup(group))}
             onContextMenu={(event) => menuAt(event, target)}
