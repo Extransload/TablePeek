@@ -179,8 +179,8 @@ const editorTheme = EditorView.theme(
       color: "var(--faint)",
       borderRight: "1px solid var(--line)",
     },
+    // Its bars are the app's own (see styles.css).
     ".cm-scroller": {
-      scrollbarColor: "var(--line) var(--bg)",
       lineHeight: "1.5",
     },
     ".cm-tooltip": {

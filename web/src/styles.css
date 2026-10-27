@@ -74,9 +74,14 @@ body {
   background: transparent;
 }
 
-* {
-  scrollbar-color: #4a4a4a transparent;
-  scrollbar-width: thin;
+/* Firefox has no ::-webkit-scrollbar; elsewhere the standard properties
+   would win over it and hand the bars back to the system's overlay ones,
+   which grow under the pointer. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-color: #4a4a4a transparent;
+    scrollbar-width: thin;
+  }
 }
 
 :focus-visible {
@@ -2847,25 +2852,28 @@ body {
   letter-spacing: 0.005em;
 }
 
+/* Slim bars of one size: under the pointer only their colour changes. */
 ::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar, #55555f);
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover, #6b6b77);
-  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 
-* {
-  scrollbar-color: var(--scrollbar, #55555f) transparent;
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-color: var(--scrollbar, #55555f) transparent;
+  }
 }
 
 button {
@@ -8678,7 +8686,6 @@ button.split-button {
   padding: 5px 8px;
   border-bottom: 1px solid var(--line-soft);
   background: var(--panel);
-  scrollbar-width: thin;
 }
 
 button.result-set {
@@ -9171,18 +9178,17 @@ select:not([multiple]) {
   border-top: 1px solid var(--line-soft);
 }
 
-/* Settings → Data Table: the grid's and the editor's scrollbars kept in view,
-   where the system's overlay ones may show only while scrolling. Either
-   setting makes them classic bars (the standard scrollbar properties above
-   would hand them back to the system); the axis asked for has its bar even
-   with nothing to scroll. */
+/* Settings → Data Table: the grid's and the editor's scrollbars kept in
+   view: the axis asked for has its bar even with nothing to scroll, over a
+   faint track. (Firefox, with the standard properties only, gets its
+   classic bars back here.) */
 html:is(.scrollbar-x-always, .scrollbar-y-always) :is(.grid-scroller, .cm-scroller) {
   scrollbar-width: auto;
   scrollbar-color: auto;
 }
 
 html:is(.scrollbar-x-always, .scrollbar-y-always) :is(.grid-scroller, .cm-scroller)::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--line) 30%, transparent);
+  background: color-mix(in srgb, var(--line) 18%, transparent);
 }
 
 html.scrollbar-x-always :is(.grid-scroller, .cm-scroller) {
