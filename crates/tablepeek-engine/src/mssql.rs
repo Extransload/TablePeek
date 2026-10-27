@@ -19,7 +19,10 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
-use crate::{build_arrow, humanize_uptime_ko, real_json, EngineError, QueryData};
+use crate::{
+    build_arrow, hex_bytes, hex_cell, hex_text, humanize_uptime_ko, not_hex, real_json,
+    EngineError, QueryData,
+};
 
 type MssqlClient = Client<Compat<TcpStream>>;
 
@@ -607,10 +610,36 @@ pub(crate) async fn query(
 /// time as UTC: there the offset comes along.
 fn value_sql(expr: Option<ValueExpr>, position: usize, cast: &str) -> String {
     match expr {
-        None => format!("CAST(@P{position} AS {cast})"),
+        None => bound_sql(position, cast),
         Some(ValueExpr::Default) => "DEFAULT".into(),
         Some(ValueExpr::Now) if cast == "DATETIMEOFFSET" => "SYSDATETIMEOFFSET()".into(),
         Some(ValueExpr::Now) => "GETDATE()".into(),
+    }
+}
+
+/// The cast every binary column takes (see cast_type).
+const BINARY_CAST: &str = "VARBINARY(MAX)";
+
+/// A bound parameter as the column's type: binary from its hex (CONVERT
+/// style 1 reads `0x00FF`; CAST would take the characters), anything else
+/// cast from its text.
+fn bound_sql(position: usize, cast: &str) -> String {
+    if cast == BINARY_CAST {
+        format!("CONVERT({cast}, @P{position}, 1)")
+    } else {
+        format!("CAST(@P{position} AS {cast})")
+    }
+}
+
+/// The text bound for a column: a binary one's hex, however it was typed,
+/// as `0x00FF`.
+fn bound_text(cast: &str, value: Option<String>) -> Result<Option<String>, EngineError> {
+    match value {
+        Some(text) if cast == BINARY_CAST => {
+            let bytes = hex_bytes(&text).ok_or_else(not_hex)?;
+            Ok(Some(hex_text(&bytes, false)))
+        }
+        other => Ok(other),
     }
 }
 
@@ -631,7 +660,7 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
 
     let mut params: Vec<Option<String>> = Vec::with_capacity(target.pk.len() + 1);
     if target.expr.is_none() {
-        params.push(target.value.clone());
+        params.push(bound_text(cast, target.value.clone())?);
     }
     let mut sql = format!(
         "UPDATE {table_ref} SET {} = {} WHERE ",
@@ -644,12 +673,12 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
         }
         let pk_type = column_type_of(&mut client, &schema, &table, &pk.column).await?;
         let pk_cast = cast_type(&pk_type);
-        params.push(pk_value_string(&pk.value));
+        params.push(bound_text(pk_cast, pk_value_string(&pk.value))?);
         let position = params.len();
         let quoted = quote_ident(&pk.column);
+        let bound = bound_sql(position, pk_cast);
         sql.push_str(&format!(
-            "({quoted} = CAST(@P{position} AS {pk_cast}) \
-             OR ({quoted} IS NULL AND @P{position} IS NULL))"
+            "({quoted} = {bound} OR ({quoted} IS NULL AND @P{position} IS NULL))"
         ));
     }
 
@@ -671,6 +700,7 @@ pub(crate) async fn insert_row(
     let (schema_part, table_name) = split_display_table(table);
     let schema = schema_part.unwrap_or_else(|| inner.default_schema.clone());
     let table_ref = qualified(&inner.database, &schema, &table_name);
+    let mut params: Vec<Option<String>> = Vec::with_capacity(values.len());
     let sql = if values.is_empty() {
         format!("INSERT INTO {table_ref} DEFAULT VALUES")
     } else {
@@ -680,26 +710,20 @@ pub(crate) async fn insert_row(
             .collect::<Vec<_>>()
             .join(", ");
         let mut placeholders = Vec::with_capacity(values.len());
-        let mut bound = 0;
         for value in values {
             let column_type =
                 column_type_of(&mut client, &schema, &table_name, &value.column).await?;
             let cast = cast_type(&column_type);
             if value.expr.is_none() {
-                bound += 1;
+                params.push(bound_text(cast, value.value.clone())?);
             }
-            placeholders.push(value_sql(value.expr, bound, cast));
+            placeholders.push(value_sql(value.expr, params.len(), cast));
         }
         format!(
             "INSERT INTO {table_ref} ({columns}) VALUES ({})",
             placeholders.join(", ")
         )
     };
-    let params: Vec<Option<String>> = values
-        .iter()
-        .filter(|value| value.expr.is_none())
-        .map(|value| value.value.clone())
-        .collect();
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
     let result = client.change(&sql, &refs, inner.in_tx()).await;
     if result.is_err() {
@@ -733,11 +757,11 @@ pub(crate) async fn delete_row(
         let cast = cast_type(&column_type);
         let position = index + 1;
         let quoted = quote_ident(&condition.column);
+        let bound = bound_sql(position, cast);
         sql.push_str(&format!(
-            "({quoted} = CAST(@P{position} AS {cast}) \
-             OR ({quoted} IS NULL AND @P{position} IS NULL))"
+            "({quoted} = {bound} OR ({quoted} IS NULL AND @P{position} IS NULL))"
         ));
-        params.push(pk_value_string(&condition.value));
+        params.push(bound_text(cast, pk_value_string(&condition.value))?);
     }
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
     let result = client.change(&sql, &refs, inner.in_tx()).await;
@@ -1740,7 +1764,7 @@ fn column_json(data: ColumnData<'static>) -> Value {
             .map(|guid| Value::from(guid.to_string()))
             .unwrap_or(Value::Null),
         ColumnData::Binary(value) => value
-            .map(|bytes| Value::from(format!("<blob {} bytes>", bytes.len())))
+            .map(|bytes| hex_cell(&bytes, false))
             .unwrap_or(Value::Null),
         ColumnData::Numeric(value) => value
             .map(|number| Value::from(number.to_string()))

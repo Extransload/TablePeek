@@ -24,8 +24,8 @@ use crate::source_cache::{key_unchanged, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{tx_controls, TxControl};
 use crate::{
-    build_arrow, double_json, float_text, humanize_uptime_ko, postgres_message, real_json,
-    EngineError, QueryData,
+    build_arrow, double_json, float_text, hex_bytes, hex_cell, hex_text, humanize_uptime_ko,
+    not_hex, postgres_message, real_json, EngineError, QueryData,
 };
 
 pub struct PostgresInner {
@@ -661,6 +661,19 @@ fn value_sql(expr: Option<ValueExpr>, position: usize, column_type: &str) -> Str
     }
 }
 
+/// A value bound for a column, as text: a bytea takes its hex as shown or as
+/// typed (`0x00FF`, bare), sent in PostgreSQL's own `\x` form, since any
+/// other text cast to bytea would be stored as its own characters.
+fn bound_text(column_type: &str, value: Option<String>) -> Result<Option<String>, EngineError> {
+    match value {
+        Some(text) if column_type == "bytea" => {
+            let bytes = hex_bytes(&text).ok_or_else(not_hex)?;
+            Ok(Some(hex_text(&bytes, true)))
+        }
+        other => Ok(other),
+    }
+}
+
 pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u64, EngineError> {
     if target.pk.is_empty() {
         return Err(EngineError::NotEditable(
@@ -674,7 +687,7 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
 
     let mut params: Vec<Option<String>> = Vec::with_capacity(target.pk.len() + 1);
     if target.expr.is_none() {
-        params.push(target.value.clone());
+        params.push(bound_text(&column_type, target.value.clone())?);
     }
     let mut sql = format!(
         "UPDATE {table} SET {} = {} WHERE ",
@@ -686,7 +699,7 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
             sql.push_str(" AND ");
         }
         let pk_type = column_type_of(&client, &table, &pk.column).await?;
-        params.push(pk_value_string(&pk.value));
+        params.push(bound_text(&pk_type, pk_value_string(&pk.value))?);
         let position = params.len();
         if pk.value.is_null() {
             sql.push_str(&format!(
@@ -726,7 +739,7 @@ pub(crate) async fn insert_row(
         for value in values {
             let column_type = column_type_of(&client, &table_ref, &value.column).await?;
             if value.expr.is_none() {
-                params.push(value.value.clone());
+                params.push(bound_text(&column_type, value.value.clone())?);
             }
             placeholders.push(value_sql(value.expr, params.len(), &column_type));
         }
@@ -770,7 +783,7 @@ pub(crate) async fn delete_row(
                 quote_ident(&condition.column)
             ));
         }
-        params.push(pk_value_string(&condition.value));
+        params.push(bound_text(&pk_type, pk_value_string(&condition.value))?);
     }
     let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
     let changed = client.change(&sql, &refs).await?;
@@ -1818,8 +1831,8 @@ fn pg_value(row: &Row, index: usize, dtype: &Type) -> Value {
     }
 }
 
-/// One value for the grid: numbers and booleans as JSON ones, a blob as
-/// its size, and everything else as text.
+/// One value for the grid: numbers and booleans as JSON ones, everything
+/// else as text (bytea as its hex, `\x00ff`).
 fn pg_json(dtype: &Type, raw: &[u8]) -> Value {
     let value = match *dtype {
         Type::INT2 => decode::<i16>(dtype, raw).map(|value| Value::from(i64::from(value))),
@@ -1829,7 +1842,7 @@ fn pg_json(dtype: &Type, raw: &[u8]) -> Value {
         Type::FLOAT4 => decode::<f32>(dtype, raw).map(real_json),
         Type::FLOAT8 => decode::<f64>(dtype, raw).map(double_json),
         Type::BOOL => decode::<bool>(dtype, raw).map(Value::Bool),
-        Type::BYTEA => Some(Value::from(format!("<blob {} bytes>", raw.len()))),
+        Type::BYTEA => Some(hex_cell(raw, true)),
         _ => pg_text(dtype, raw).map(Value::from),
     };
     value.unwrap_or_else(|| unreadable(dtype))
@@ -2352,7 +2365,7 @@ mod tests {
         );
         assert_eq!(
             pg_json(&Type::BYTEA, &[0x00, 0xff, 0x10]),
-            Value::from("<blob 3 bytes>")
+            Value::from("\\x00ff10")
         );
         assert_eq!(pg_json(&Type::TEXT, "한글".as_bytes()), Value::from("한글"));
         // A payload that doesn't fit its type shows the type's name.

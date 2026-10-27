@@ -1010,7 +1010,6 @@ const EN: Record<string, string> = {
   "{table} 테이블의 모든 행을 삭제할까요?": "Delete all rows in {table}?",
   "값 복사": "Copy value",
   "기본 연결은 닫을 수 없습니다": "The default connection can't be closed",
-  "기본 키가 없어 UPDATE 문을 만들 수 없습니다": "No primary key, so no UPDATE statement can be built",
   "기본 키가 없어 편집할 수 없습니다": "No primary key, so this can't be edited",
   "나머지 {count}개는 왼쪽 트리에서 고르세요": "Pick the other {count} from the tree on the left",
   "대상 행을 찾지 못했습니다. 다른 곳에서 변경·삭제되었을 수 있습니다. 새로고침 후 다시 시도하세요.": "The row was not found. It may have been changed or deleted elsewhere. Refresh and try again.",
@@ -1346,6 +1345,9 @@ const EN: Record<string, string> = {
   "SQL 직접 입력": "Raw SQL",
   "처음 {count}행만 복사했습니다": "Copied the first {count} rows only",
   "처음 {count}행만 복제했습니다": "Duplicated the first {count} rows only",
+  "SET에 쓸 수 있는 열이 없어 UPDATE 문을 만들지 않았습니다": "No column to SET, so no UPDATE statement was made",
+  "너무 커서 표시되지 않는 이진 값은 복제하지 않고 기본값으로 두었습니다":
+    "Binary values too large to show were not duplicated and are left at their defaults",
   "처음 {count}행만 바꿨습니다": "Changed the first {count} rows only",
 };
 

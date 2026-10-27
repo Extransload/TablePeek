@@ -27,7 +27,7 @@ import {
   type CsvOptions,
   type ExportFormat,
 } from "../export";
-import { kindOfType } from "../grid/columns";
+import { declaredAs } from "../grid/columns";
 import type { WindowedRowSource } from "../grid/windowSource";
 import { t } from "../i18n";
 import { cancelJob, startJob, subscribeJobs, type Job, type JobHandle } from "../jobs";
@@ -133,11 +133,6 @@ function keyColumns(detail: TableDetail): string[] {
     return primary.columns;
   }
   return detail.columns.filter((column) => column.pk).map((column) => column.name);
-}
-
-function numericFlags(columns: string[], detail: TableDetail | null, kind: string): boolean[] {
-  const types = new Map((detail?.columns ?? []).map((column) => [column.name, column.decl_type]));
-  return columns.map((name) => types.has(name) && kindOfType(types.get(name) ?? null, kind).kind === "number");
 }
 
 // A result is run again only if running it can't change anything.
@@ -337,6 +332,7 @@ interface Section {
   table: string;
   expected: number;
   numeric(columns: string[]): boolean[];
+  binary(columns: string[]): boolean[];
   drop: string | null;
   // References dropped before any table is, where dropped tables form a cycle.
   unlink: string[];
@@ -440,9 +436,10 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
       if (section.data) {
         const feed = await section.open(signal);
         try {
+          const binary = section.binary(feed.columns);
           await pump(index, feed, (rows) => {
             if (rows.length > 0) {
-              out.push(`${toSqlInserts(section.table, feed.columns, rows, plan.kind)}\n`);
+              out.push(`${toSqlInserts(section.table, feed.columns, rows, plan.kind, binary)}\n`);
             }
           });
           if (feed.truncated) {
@@ -563,7 +560,8 @@ function tableSections(
         name: item.name,
         table: item.name,
         expected: detail?.row_count_estimate ?? 0,
-        numeric: (names) => numericFlags(names, detail, kind),
+        numeric: (names) => declaredAs("number", names, detail, kind),
+        binary: (names) => declaredAs("binary", names, detail, kind),
         drop: sql && flag.drop ? dropIfExistsSql(kind, item.name, item.kind) : null,
         unlink: [],
         structure: sql && flag.structure ? () => structureSql(conn, kind, item, detail) : null,
@@ -641,7 +639,8 @@ function resultSections(
         name: entry.label,
         table: entry.table,
         expected,
-        numeric: (columns) => numericFlags(columns, detail, kind),
+        numeric: (columns) => declaredAs("number", columns, detail, kind),
+        binary: (columns) => declaredAs("binary", columns, detail, kind),
         drop: null,
         unlink: [],
         structure: null,

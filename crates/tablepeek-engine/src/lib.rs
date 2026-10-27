@@ -1537,7 +1537,7 @@ fn edit_sync(inner: &SqliteInner, target: &EditTarget) -> Result<u64, EngineErro
         }
         None => {
             params.push(match &target.value {
-                Some(s) => rusqlite::types::Value::Text(s.clone()),
+                Some(s) => sqlite_bound(&conn, target, s)?,
                 None => rusqlite::types::Value::Null,
             });
             "?1".to_string()
@@ -1552,7 +1552,7 @@ fn edit_sync(inner: &SqliteInner, target: &EditTarget) -> Result<u64, EngineErro
         if i > 0 {
             sql.push_str(" AND ");
         }
-        params.push(json_to_sql(&pk.value));
+        params.push(sqlite_key(&conn, &target.table, pk)?);
         sql.push_str(&format!("{} = ?{}", quote_ident(&pk.column), params.len()));
     }
 
@@ -1681,6 +1681,106 @@ fn has_bind_parameter(sql: &str) -> bool {
     false
 }
 
+/// Whether a column is declared binary: its type names BLOB, as SQLite's own
+/// affinity rule reads it, or is another engine's binary type, as the grid
+/// takes it.
+fn sqlite_blob_column(
+    conn: &SqliteConn<'_>,
+    table: &str,
+    column: &str,
+) -> Result<bool, EngineError> {
+    use rusqlite::OptionalExtension;
+    let declared = conn
+        .query_row(
+            "SELECT type FROM pragma_table_info(?1) WHERE name = ?2 COLLATE NOCASE",
+            &[&table as &dyn rusqlite::ToSql, &column],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(declared.is_some_and(|kind| binary_type(&kind)))
+}
+
+fn binary_type(declared: &str) -> bool {
+    let kind = declared.trim().to_ascii_lowercase();
+    kind.contains("blob")
+        || ["bytea", "bytes", "binary", "varbinary", "image"]
+            .iter()
+            .any(|name| {
+                kind.strip_prefix(name).is_some_and(|rest| {
+                    !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+}
+
+/// An edited cell's text as bound. SQLite keeps any type anywhere, so the
+/// cell's own type decides: a blob, or nothing in a column declared BLOB,
+/// takes hex as bytes, and refuses other text where the column is declared
+/// BLOB (as every engine's binary column does); any other cell keeps text as
+/// text, hex-shaped or not.
+fn sqlite_bound(
+    conn: &SqliteConn<'_>,
+    target: &EditTarget,
+    text: &str,
+) -> Result<rusqlite::types::Value, EngineError> {
+    let held = sqlite_cell_type(conn, target)?;
+    let binary = match held.as_deref() {
+        Some("blob") => true,
+        Some("null") | None => false,
+        Some(_) => return Ok(rusqlite::types::Value::Text(text.to_string())),
+    };
+    if sqlite_blob_column(conn, &target.table, &target.column)? {
+        return Ok(rusqlite::types::Value::Blob(
+            hex_bytes(text).ok_or_else(not_hex)?,
+        ));
+    }
+    match shown_hex_bytes(text) {
+        Some(bytes) if binary => Ok(rusqlite::types::Value::Blob(bytes)),
+        _ => Ok(rusqlite::types::Value::Text(text.to_string())),
+    }
+}
+
+/// The type of what the cell an edit targets holds now (`typeof`), or None
+/// when no row has its key.
+fn sqlite_cell_type(
+    conn: &SqliteConn<'_>,
+    target: &EditTarget,
+) -> Result<Option<String>, EngineError> {
+    use rusqlite::OptionalExtension;
+    let mut sql = format!(
+        "SELECT typeof({}) FROM {} WHERE ",
+        quote_ident(&target.column),
+        quote_ident(&target.table)
+    );
+    let mut params = Vec::with_capacity(target.pk.len());
+    for (index, pk) in target.pk.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(" AND ");
+        }
+        params.push(sqlite_key(conn, &target.table, pk)?);
+        sql.push_str(&format!("{} = ?{}", quote_ident(&pk.column), params.len()));
+    }
+    Ok(conn
+        .query_row(&sql, &sqlite_refs(&params), |row| row.get::<_, String>(0))
+        .optional()?)
+}
+
+/// A key value as bound: a binary key shown as hex stands for its bytes.
+fn sqlite_key(
+    conn: &SqliteConn<'_>,
+    table: &str,
+    key: &PkValue,
+) -> Result<rusqlite::types::Value, EngineError> {
+    if let Value::String(text) = &key.value {
+        if let Some(bytes) = shown_hex_bytes(text) {
+            if sqlite_blob_column(conn, table, &key.column)? {
+                return Ok(rusqlite::types::Value::Blob(bytes));
+            }
+        }
+    }
+    Ok(json_to_sql(&key.value))
+}
+
 fn sqlite_column_default(
     conn: &SqliteConn<'_>,
     table: &str,
@@ -1747,6 +1847,9 @@ fn insert_sync(
                 continue;
             }
             params.push(match &value.value {
+                Some(text) if sqlite_blob_column(&conn, table, &value.column)? => {
+                    rusqlite::types::Value::Blob(hex_bytes(text).ok_or_else(not_hex)?)
+                }
                 Some(text) => rusqlite::types::Value::Text(text.clone()),
                 None => rusqlite::types::Value::Null,
             });
@@ -1778,8 +1881,10 @@ fn delete_sync(inner: &SqliteInner, table: &str, pk: &[PkValue]) -> Result<u64, 
             index + 1
         ));
     }
-    let params: Vec<rusqlite::types::Value> =
-        pk.iter().map(|item| json_to_sql(&item.value)).collect();
+    let params = pk
+        .iter()
+        .map(|item| sqlite_key(&conn, table, item))
+        .collect::<Result<Vec<_>, _>>()?;
     let changed = conn.change(&sql, &sqlite_refs(&params))?;
     Ok(changed as u64)
 }
@@ -2084,6 +2189,82 @@ pub(crate) fn float_text<F: Into<f64> + std::fmt::Display + Copy>(value: F) -> S
     }
 }
 
+/// Past this many bytes a binary cell shows only its size, and can't be
+/// edited back: its hex is twice its size, for every row of a result.
+pub(crate) const BLOB_HEX_MAX: usize = 16 << 10;
+
+/// Binary as hex, as TablePlus shows it, in the engine's own notation:
+/// `\x00ff` on PostgreSQL (its text form), `0x00FF` on the others.
+pub(crate) fn hex_cell(bytes: &[u8], postgres: bool) -> Value {
+    if bytes.len() > BLOB_HEX_MAX {
+        return Value::from(format!("<blob {} bytes>", bytes.len()));
+    }
+    Value::from(hex_text(bytes, postgres))
+}
+
+pub(crate) fn hex_text(bytes: &[u8], postgres: bool) -> String {
+    let digits: &[u8; 16] = if postgres {
+        b"0123456789abcdef"
+    } else {
+        b"0123456789ABCDEF"
+    };
+    let mut text = String::with_capacity(2 + bytes.len() * 2);
+    text.push_str(if postgres { "\\x" } else { "0x" });
+    for byte in bytes {
+        text.push(char::from(digits[usize::from(byte >> 4)]));
+        text.push(char::from(digits[usize::from(byte & 0x0f)]));
+    }
+    text
+}
+
+/// The bytes a binary cell's text stands for: its hex as shown (`\x00ff`,
+/// `0x00FF`), as a literal (`X'00FF'`) or bare; None when it isn't hex, so
+/// text never lands in a binary column as its own characters.
+pub(crate) fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    let digits = if let Some(rest) = text
+        .strip_prefix("\\x")
+        .or_else(|| text.strip_prefix("0x"))
+        .or_else(|| text.strip_prefix("0X"))
+    {
+        rest
+    } else if text.len() >= 3
+        && (text.starts_with("X'") || text.starts_with("x'"))
+        && text.ends_with('\'')
+    {
+        &text[2..text.len() - 1]
+    } else {
+        text
+    };
+    if digits.len() % 2 != 0 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..digits.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).ok())
+        .collect()
+}
+
+/// The bytes of hex written as a cell shows it (`\x00ff`, `0x00FF`,
+/// `X'00FF'`): only then, so text like `ab` stays the characters it is
+/// where it might be either (a key, a SQLite cell of any type).
+pub(crate) fn shown_hex_bytes(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    let marked = ["\\x", "0x", "0X", "X'", "x'"]
+        .iter()
+        .any(|prefix| text.starts_with(prefix));
+    if marked {
+        hex_bytes(text)
+    } else {
+        None
+    }
+}
+
+/// What a binary column refuses: text that isn't hex.
+pub(crate) fn not_hex() -> EngineError {
+    EngineError::BadRequest("이진 값은 16진수로 입력하세요 (예: 0x00FF)".into())
+}
+
 /// A REAL as a JSON number at the digits it was stored with, or as text
 /// where JSON has no number.
 pub(crate) fn real_json(value: f32) -> Value {
@@ -2138,7 +2319,7 @@ fn value_ref_to_json(v: ValueRef<'_>) -> Value {
         ValueRef::Integer(i) => Value::from(i),
         ValueRef::Real(f) => Value::from(f),
         ValueRef::Text(bytes) => Value::from(String::from_utf8_lossy(bytes).into_owned()),
-        ValueRef::Blob(bytes) => Value::from(format!("<blob {} bytes>", bytes.len())),
+        ValueRef::Blob(bytes) => hex_cell(bytes, false),
     }
 }
 
@@ -2156,6 +2337,57 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn binary_shows_as_hex_and_reads_back() {
+        assert_eq!(
+            hex_cell(&[0x00, 0xff, 0x10], true),
+            Value::from("\\x00ff10")
+        );
+        assert_eq!(
+            hex_cell(&[0x00, 0xff, 0x10], false),
+            Value::from("0x00FF10")
+        );
+        assert_eq!(hex_cell(&[], false), Value::from("0x"));
+        // Too big to show: its size, which reads back as no bytes at all.
+        let big = vec![0u8; BLOB_HEX_MAX + 1];
+        let shown = hex_cell(&big, false);
+        assert_eq!(
+            shown,
+            Value::from(format!("<blob {} bytes>", BLOB_HEX_MAX + 1))
+        );
+        assert_eq!(hex_bytes(shown.as_str().unwrap()), None);
+
+        for text in [
+            "\\x00ff10",
+            "0x00FF10",
+            "0X00ff10",
+            "X'00FF10'",
+            "x'00ff10'",
+            "00ff10",
+            " 0x00FF10 ",
+        ] {
+            assert_eq!(hex_bytes(text), Some(vec![0x00, 0xff, 0x10]), "{text}");
+        }
+        assert_eq!(hex_bytes("0x"), Some(vec![]));
+        for text in ["0x0", "0xZZ", "hello", "X'00FF", "\\x0g"] {
+            assert_eq!(hex_bytes(text), None, "{text}");
+        }
+
+        for declared in [
+            "BLOB",
+            "longblob",
+            "VARBINARY(16)",
+            "binary",
+            "bytea",
+            "image",
+        ] {
+            assert!(binary_type(declared), "{declared}");
+        }
+        for declared in ["", "TEXT", "binaryish", "bytes_count", "imagery"] {
+            assert!(!binary_type(declared), "{declared}");
+        }
     }
 
     #[test]
@@ -2558,6 +2790,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_binary_edits_follow_what_the_cell_holds() {
+        let path = temp_db("binary-edits");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE files(id INTEGER PRIMARY KEY, data BLOB, note);
+                 INSERT INTO files VALUES (1, X'CAFE', X'01'), (2, 'cafe', 'x'), (3, NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let engine = Engine::open_file(&path).unwrap();
+        let edit = |id: i64, column: &str, value: &str| EditTarget {
+            table: "files".into(),
+            pk: vec![PkValue {
+                column: "id".into(),
+                value: Value::from(id),
+            }],
+            column: column.into(),
+            value: Some(value.into()),
+            expr: None,
+        };
+        let held = |id: i64, column: &str| {
+            let conn = Connection::open(&path).unwrap();
+            conn.query_row(
+                &format!(
+                    "SELECT typeof({column}) || ':' || hex({column}) FROM files WHERE id = {id}"
+                ),
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+
+        // A blob takes hex as bytes, and a column declared BLOB refuses text.
+        engine.edit(&edit(1, "data", "0xBEEF")).await.unwrap();
+        assert_eq!(held(1, "data"), "blob:BEEF");
+        assert!(engine.edit(&edit(1, "data", "hello")).await.is_err());
+        // Text in a BLOB column stays text, even when it looks like hex.
+        engine.edit(&edit(2, "data", "beef")).await.unwrap();
+        assert_eq!(held(2, "data"), "text:62656566");
+        // An empty cell of a BLOB column takes only hex.
+        assert!(engine.edit(&edit(3, "data", "hello")).await.is_err());
+        engine.edit(&edit(3, "data", "01")).await.unwrap();
+        assert_eq!(held(3, "data"), "blob:01");
+        // A column of no type: a blob takes hex written as shown, else text.
+        engine.edit(&edit(1, "note", "0x02")).await.unwrap();
+        assert_eq!(held(1, "note"), "blob:02");
+        engine.edit(&edit(1, "note", "hi")).await.unwrap();
+        assert_eq!(held(1, "note"), "text:6869");
+        engine.edit(&edit(2, "note", "0x03")).await.unwrap();
+        assert_eq!(held(2, "note"), "text:30783033");
+    }
+
+    #[tokio::test]
     async fn sqlite_statements_and_changes_reach_the_log() {
         let path = temp_db("sql-log");
         {
@@ -2641,13 +2927,22 @@ mod tests {
             .await
             .is_err());
         engine.commit_tx().await.unwrap();
+        // An edit first asks what the cell holds, and a new value whether
+        // its column is binary (which takes hex only), as other engines look
+        // a column's type up.
+        let blob_check = |column: &str| {
+            format!("SELECT type FROM pragma_table_info('people') WHERE name = '{column}' COLLATE NOCASE;")
+        };
         assert_eq!(
             sqls(Some(mark)),
             vec![
                 "BEGIN;".to_string(),
+                "SELECT typeof(\"name\") FROM \"people\" WHERE \"id\" = 1;".to_string(),
                 format!("{update};"),
+                blob_check("id"),
                 format!("{insert};"),
                 format!("{delete};"),
+                blob_check("nope"),
                 format!("{failed};"),
                 "COMMIT;".to_string(),
             ]

@@ -3,7 +3,17 @@ import type { TableDetail } from "../store";
 // What a grid knows about a column beyond its name, as TablePlus shows it:
 // key columns in their own colour, ⌃⌄ on dates (a picker) and on enum and
 // boolean cells (a list), → on foreign keys (open the row it points at).
-export type CellKind = "text" | "number" | "boolean" | "enum" | "set" | "date" | "datetime" | "time" | "json";
+export type CellKind =
+  | "text"
+  | "number"
+  | "boolean"
+  | "enum"
+  | "set"
+  | "date"
+  | "datetime"
+  | "time"
+  | "json"
+  | "binary";
 
 export interface GridColumnSpec {
   kind: CellKind;
@@ -79,6 +89,14 @@ export function kindOfType(declType: string | null, dialect: string): Pick<GridC
   ) {
     return { kind: "number" };
   }
+  // Bytes, which every engine shows as hex; on SQLite any type naming BLOB,
+  // as its affinity rule (and the engine) reads it.
+  if (
+    /^(bytea|bytes|binary|varbinary|image|tinyblob|blob|mediumblob|longblob)\b/.test(type) ||
+    (dialect === "sqlite" && type.includes("blob"))
+  ) {
+    return { kind: "binary" };
+  }
   return { kind: "text" };
 }
 
@@ -96,6 +114,17 @@ export function withResultKinds(
   return Array.from({ length: count }, (_, index) =>
     specs?.[index] ?? (kinds[index] === "boolean" ? { kind: "boolean" } : null),
   );
+}
+
+// Which of a result's columns the table's structure declares of `kind`.
+export function declaredAs(
+  kind: CellKind,
+  columns: string[],
+  detail: TableDetail | undefined | null,
+  dialect: string,
+): boolean[] {
+  const types = new Map((detail?.columns ?? []).map((column) => [column.name, column.decl_type]));
+  return columns.map((name) => types.has(name) && kindOfType(types.get(name) ?? null, dialect).kind === kind);
 }
 
 // Specs for a result's columns, from what the table's structure says; columns

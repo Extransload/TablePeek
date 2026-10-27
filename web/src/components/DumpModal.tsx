@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { rowWindowSql } from "../dataQuery";
 import { createTableSql, dependencyOrder, draftsFromDetail, foreignKeySql, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
+import { declaredAs } from "../grid/columns";
 import { t } from "../i18n";
 import { decodeText, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
 import { cancelJob, startJob } from "../jobs";
@@ -168,6 +169,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
           const pkIndex = detail.indexes.find((index) => index.primary);
           const pk = pkIndex?.columns ?? detail.columns.filter((c) => c.pk).map((c) => c.name);
           const order = pk.length > 0 ? pk.map((name) => quoteIdent(meta.kind, name)).join(", ") : null;
+          const binary = (columns: string[]) => declaredAs("binary", columns, detail, meta.kind);
           if (order === null) {
             // No key to page by, and a table's order can change between two
             // reads: one read, so no row is skipped or copied twice.
@@ -175,7 +177,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
             try {
               const rows = await collectRows(detached.source);
               if (rows.length > 0) {
-                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind));
+                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind, binary(detached.meta.columns)));
               }
               job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: rows.length.toLocaleString() })}`);
               if (detached.meta.truncated) {
@@ -201,7 +203,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
                 if (rows.length === 0) {
                   break;
                 }
-                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind));
+                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind, binary(detached.meta.columns)));
                 copied += rows.length;
                 offset += rows.length;
                 job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: copied.toLocaleString() })}`);

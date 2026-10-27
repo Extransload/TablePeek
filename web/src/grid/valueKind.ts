@@ -5,8 +5,9 @@ const DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 const TIME_PATTERN = /^\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)?$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// What every engine sends in place of a binary value.
-const BINARY_PATTERN = /^<blob \d+ bytes>$/;
+// Binary as the engine shows it: hex (`\x00ff` on PostgreSQL, `0x00FF`
+// elsewhere), or the size of one too big to show.
+const BINARY_PATTERN = /^(?:<blob \d+ bytes>|\\x[0-9a-f]*|0x[0-9A-F]*)$/;
 const INTEGER_TEXT = /^-?\d+$/;
 const DECIMAL_TEXT = /^-?\d+\.\d+$/;
 const JSON_PROBE_LIMIT = 4096;
@@ -105,7 +106,12 @@ export function classifyCell(value: unknown, column: CellKind | undefined): Valu
       return "date";
     case "time":
       return "time";
-    default:
-      return classifyValue(value);
+    case "binary":
+      return "binary";
+    default: {
+      // Hex in a column declared as text is that text, not bytes.
+      const kind = classifyValue(value);
+      return kind === "binary" && column === "text" ? "string" : kind;
+    }
   }
 }

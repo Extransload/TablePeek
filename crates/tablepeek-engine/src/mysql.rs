@@ -20,7 +20,10 @@ use tablepeek_types::{
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
-use crate::{build_arrow, humanize_uptime_ko, real_json, EngineError, QueryData};
+use crate::{
+    build_arrow, hex_bytes, hex_cell, humanize_uptime_ko, not_hex, real_json, shown_hex_bytes,
+    EngineError, QueryData,
+};
 
 /// A SELECT's table as information_schema names it (schema, table) and its
 /// primary key columns; None when information_schema has no such table.
@@ -712,6 +715,16 @@ fn value_sql(expr: Option<ValueExpr>, cast: &str) -> String {
     }
 }
 
+/// A value bound for a column: a binary one takes the bytes its hex stands
+/// for, since CAST(? AS BINARY) of the text would store its characters.
+fn bound_value(cast: &str, value: &Option<String>) -> Result<MyValue, EngineError> {
+    match value {
+        None => Ok(MyValue::NULL),
+        Some(text) if cast == "BINARY" => Ok(MyValue::Bytes(hex_bytes(text).ok_or_else(not_hex)?)),
+        Some(text) => Ok(MyValue::from(text.clone())),
+    }
+}
+
 pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64, EngineError> {
     if target.pk.is_empty() {
         return Err(EngineError::NotEditable(
@@ -737,10 +750,7 @@ pub(crate) async fn edit(inner: &MySqlInner, target: &EditTarget) -> Result<u64,
     );
     let mut params: Vec<MyValue> = Vec::with_capacity(1);
     if target.expr.is_none() {
-        params.push(match &target.value {
-            Some(text) => MyValue::from(text.clone()),
-            None => MyValue::NULL,
-        });
+        params.push(bound_value(cast, &target.value)?);
     }
     for (index, pk) in target.pk.iter().enumerate() {
         if index > 0 {
@@ -774,6 +784,7 @@ pub(crate) async fn insert_row(
         None => ask_database(inner, &mut conn).await?,
     };
     let table_ref = qualified(&schema, &table_name);
+    let mut params: Vec<MyValue> = Vec::with_capacity(values.len());
     let sql = if values.is_empty() {
         format!("INSERT INTO {table_ref} () VALUES ()")
     } else {
@@ -788,20 +799,15 @@ pub(crate) async fn insert_row(
                 column_type_of(&mut conn, &schema, &table_name, &value.column).await?;
             let cast = cast_type(&data_type, &column_type);
             placeholders.push(value_sql(value.expr, cast));
+            if value.expr.is_none() {
+                params.push(bound_value(cast, &value.value)?);
+            }
         }
         format!(
             "INSERT INTO {table_ref} ({columns}) VALUES ({})",
             placeholders.join(", ")
         )
     };
-    let params: Vec<MyValue> = values
-        .iter()
-        .filter(|value| value.expr.is_none())
-        .map(|value| match &value.value {
-            Some(text) => MyValue::from(text.clone()),
-            None => MyValue::NULL,
-        })
-        .collect();
     let result = conn.change(&sql, params, inner.in_tx()).await;
     if let Err(err) = &result {
         after_failed_change(inner, &mut conn, err).await;
@@ -1528,7 +1534,10 @@ fn key_term(column: &str, data_type: &str, value: &Value, no_backslash_escapes: 
             format!("{name} = {text}")
         }
         "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" | "geometry" => {
-            let hex: String = text.bytes().map(|byte| format!("{byte:02X}")).collect();
+            // The key as shown (`0x00FF`) stands for its bytes; text that
+            // isn't hex is the bytes of its own characters.
+            let bytes = shown_hex_bytes(&text).unwrap_or_else(|| text.clone().into_bytes());
+            let hex: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
             format!("{name} = X'{hex}'")
         }
         _ => format!(
@@ -1660,6 +1669,10 @@ fn result_schema(result: &[Column], table: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(schema).into_owned())
 }
 
+// The character set of BINARY, VARBINARY and the BLOBs: bytes, not text.
+// BINARY_FLAG alone also marks text in a _bin collation, read as text.
+const BINARY_CHARSET: u16 = 63;
+
 fn json_value(value: &MyValue, column: &Column) -> Value {
     if matches!(value, MyValue::NULL) {
         return Value::Null;
@@ -1690,8 +1703,10 @@ fn json_value(value: &MyValue, column: &Column) -> Value {
         | ColumnType::MYSQL_TYPE_MEDIUM_BLOB
         | ColumnType::MYSQL_TYPE_LONG_BLOB
         | ColumnType::MYSQL_TYPE_BLOB => {
-            if flags.contains(ColumnFlags::BINARY_FLAG) {
+            if column.character_set() == BINARY_CHARSET {
                 blob_json(value)
+            } else if flags.contains(ColumnFlags::BINARY_FLAG) {
+                soft_text_json(value)
             } else {
                 text_json(value)
             }
@@ -1701,6 +1716,8 @@ fn json_value(value: &MyValue, column: &Column) -> Value {
         | ColumnType::MYSQL_TYPE_STRING => {
             if flags.contains(ColumnFlags::ENUM_FLAG) || flags.contains(ColumnFlags::SET_FLAG) {
                 text_json(value)
+            } else if column.character_set() == BINARY_CHARSET {
+                blob_json(value)
             } else if flags.contains(ColumnFlags::BINARY_FLAG) {
                 soft_text_json(value)
             } else {
@@ -1829,7 +1846,7 @@ fn soft_text_json(value: &MyValue) -> Value {
     match value {
         MyValue::Bytes(bytes) => match std::str::from_utf8(bytes) {
             Ok(text) => Value::from(text.to_string()),
-            Err(_) => Value::from(format!("<blob {} bytes>", bytes.len())),
+            Err(_) => hex_cell(bytes, false),
         },
         other => text_json(other),
     }
@@ -1837,7 +1854,7 @@ fn soft_text_json(value: &MyValue) -> Value {
 
 fn blob_json(value: &MyValue) -> Value {
     match value {
-        MyValue::Bytes(bytes) => Value::from(format!("<blob {} bytes>", bytes.len())),
+        MyValue::Bytes(bytes) => hex_cell(bytes, false),
         other => text_json(other),
     }
 }
@@ -1901,6 +1918,11 @@ mod tests {
         assert_eq!(term("bit", Value::from("101")), "`k` = 101");
         assert_eq!(term("bit", Value::from(true)), "`k` = 1");
         assert_eq!(term("varbinary", Value::from("ab")), "`k` = X'6162'");
+        // A binary key as the grid shows it stands for its bytes.
+        assert_eq!(
+            term("varbinary", Value::from("0x00FF10")),
+            "`k` = X'00FF10'"
+        );
         assert_eq!(
             term("datetime", Value::from("2024-01-05 10:20:30")),
             "`k` = '2024-01-05 10:20:30'"

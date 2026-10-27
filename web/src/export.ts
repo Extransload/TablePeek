@@ -203,6 +203,37 @@ export function sqlLiteral(value: unknown, kind = "postgres"): string {
   return stringLiteral(typeof value === "string" ? value : cellText(value), kind);
 }
 
+// A binary cell too big to show: its size only, which no copy can write back.
+export function isBlobPlaceholder(value: unknown): boolean {
+  return typeof value === "string" && /^<blob \d+ bytes>$/.test(value);
+}
+
+// A binary column's value as the engine takes hex (`\x00ff`, `0x00FF`,
+// `X'00FF'`, or bare but on SQLite, whose columns hold text too) as the
+// engine's binary literal, so it loads back as those bytes, not as the text.
+function binaryLiteral(value: unknown, kind: string): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  const match =
+    /^(?:\\x|0[xX])([0-9a-fA-F]*)$/.exec(text) ??
+    /^[xX]'([0-9a-fA-F]*)'$/.exec(text) ??
+    (kind === "sqlite" ? null : /^([0-9a-fA-F]*)$/.exec(text));
+  const hex = match?.[1];
+  if (hex === undefined || hex.length % 2 !== 0) {
+    return null;
+  }
+  if (kind === "postgres" || kind === "cockroach") {
+    return `'\\x${hex.toLowerCase()}'`;
+  }
+  return kind === "mssql" ? `0x${hex.toUpperCase()}` : `X'${hex.toUpperCase()}'`;
+}
+
+function columnLiteral(value: unknown, kind: string, binary: boolean | undefined): string {
+  return (binary === true ? binaryLiteral(value, kind) : null) ?? sqlLiteral(value, kind);
+}
+
 // The columns a row leaves out: those at DEFAULT, as applying a new row does.
 function omitted(row: unknown[], columnCount: number): string {
   let key = "";
@@ -214,11 +245,13 @@ function omitted(row: unknown[], columnCount: number): string {
   return key;
 }
 
+// `binary` marks the columns holding bytes, written as binary literals.
 export function toSqlInserts(
   table: string,
   columns: string[],
   rows: unknown[][],
   kind = "postgres",
+  binary: readonly boolean[] = [],
 ): string {
   if (columns.length === 0) {
     return "";
@@ -243,7 +276,7 @@ export function toSqlInserts(
       const head = `INSERT INTO ${target} (${kept.map((c) => escapeSqlIdentifier(columns[c], kind)).join(", ")}) VALUES`;
       const lines = new Array<string>(end - start);
       for (let r = start; r < end; r += 1) {
-        lines[r - start] = `  (${kept.map((c) => sqlLiteral(rows[r][c], kind)).join(", ")})`;
+        lines[r - start] = `  (${kept.map((c) => columnLiteral(rows[r][c], kind, binary[c])).join(", ")})`;
       }
       chunks.push(`${head}\n${lines.join(",\n")};`);
     }
@@ -254,6 +287,7 @@ export function toSqlInserts(
 
 // `original`, when given, is the row as the database has it: the key it
 // names finds the row, and a key column staged to something else is set.
+// `binary` marks the columns holding bytes, as for toSqlInserts.
 export function buildUpdateSql(
   table: string,
   columns: string[],
@@ -261,6 +295,7 @@ export function buildUpdateSql(
   pk: string[],
   kind = "postgres",
   original?: unknown[],
+  binary: readonly boolean[] = [],
 ): string | null {
   if (pk.length === 0) {
     return null;
@@ -268,8 +303,12 @@ export function buildUpdateSql(
   const pkSet = new Set(pk);
   const sets: string[] = [];
   for (let c = 0; c < columns.length; c += 1) {
+    // A binary value too big to show is left as the database has it.
+    if (isBlobPlaceholder(row[c])) {
+      continue;
+    }
     if (!pkSet.has(columns[c]) || (original !== undefined && row[c] !== original[c])) {
-      sets.push(`${escapeSqlIdentifier(columns[c], kind)} = ${sqlLiteral(row[c], kind)}`);
+      sets.push(`${escapeSqlIdentifier(columns[c], kind)} = ${columnLiteral(row[c], kind, binary[c])}`);
     }
   }
   if (sets.length === 0) {
@@ -279,7 +318,7 @@ export function buildUpdateSql(
   const wheres: string[] = [];
   for (const key of pk) {
     const index = columns.indexOf(key);
-    wheres.push(`${escapeSqlIdentifier(key, kind)} = ${sqlLiteral(index >= 0 ? keyRow[index] : null, kind)}`);
+    wheres.push(`${escapeSqlIdentifier(key, kind)} = ${columnLiteral(index >= 0 ? keyRow[index] : null, kind, binary[index])}`);
   }
   return `UPDATE ${quoteIdentifier(table, kind)} SET ${sets.join(", ")} WHERE ${wheres.join(" AND ")};`;
 }

@@ -95,7 +95,7 @@ import {
   type FilterState,
   type SortState,
 } from "./dataQuery";
-import { buildUpdateSql, SqlExpression } from "./export";
+import { buildUpdateSql, isBlobPlaceholder, SqlExpression } from "./export";
 import { COPY_MAX_ROWS, copyValue, formatCopy, type CopyFormat } from "./copyFormats";
 import { subscribeJobs } from "./jobs";
 import {
@@ -2504,6 +2504,7 @@ export default function App() {
     }
     let first: number | null = null;
     let last: number | null = null;
+    let tooBig = false;
     for (let offset = 0; offset < values.length; offset += 1) {
       const row = from + offset;
       const fromInsert = source.isInserted(row);
@@ -2519,6 +2520,9 @@ export default function App() {
         }
         if (expr !== null) {
           exprs.push([index, expr]);
+        } else if (isBlobPlaceholder(values[offset][index])) {
+          // Binary too big to show can't be copied: the column is left out.
+          tooBig = true;
         } else {
           staged.set(index, cellToString(values[offset][index]));
         }
@@ -2542,6 +2546,9 @@ export default function App() {
       } else {
         gridHostRef.current?.selectRows(first, last);
       }
+    }
+    if (tooBig) {
+      store.setInfo(t("너무 커서 표시되지 않는 이진 값은 복제하지 않고 기본값으로 두었습니다"));
     }
     noteCapped(to - from + 1, t("처음 {count}행만 복제했습니다", { count: COPY_MAX_ROWS.toLocaleString() }));
   }
@@ -4052,7 +4059,8 @@ export default function App() {
         try {
           // INSERT writes a staged DEFAULT or NOW() as SQL; the rest show its label.
           const values = await rangeValues(source, selection.r0, selection.r1, cols, format === "insert");
-          const target = table !== null ? { table, dialect } : null;
+          const binary = cols.map((c) => gridSpecs?.[c]?.kind === "binary");
+          const target = table !== null ? { table, dialect, binary } : null;
           await writeClipboard(formatCopy(format, { columns: cols.map((c) => columns[c]), rows: values }, target));
           noteCapped(
             selection.r1 - selection.r0 + 1,
@@ -4250,12 +4258,16 @@ export default function App() {
                 const values = (await rowValues(source, r, true)).map(asSql);
                 // The row is found by the key the database has; a staged key goes in SET.
                 const original = columns.map((_, c) => source.baseCell(r, c) ?? null);
-                const sql = buildUpdateSql(table, columns, values, result.meta.pk ?? [], dialect, original);
-                if (sql === null) {
-                  store.setError(t("기본 키가 없어 UPDATE 문을 만들 수 없습니다"));
-                  return;
+                const binary = columns.map((_, c) => gridSpecs?.[c]?.kind === "binary");
+                const sql = buildUpdateSql(table, columns, values, result.meta.pk ?? [], dialect, original, binary);
+                // Nothing to set: every other column is a key or too big to copy.
+                if (sql !== null) {
+                  statements.push(sql);
                 }
-                statements.push(sql);
+              }
+              if (statements.length === 0) {
+                store.setInfo(t("SET에 쓸 수 있는 열이 없어 UPDATE 문을 만들지 않았습니다"));
+                return;
               }
               await writeClipboard(statements.join("\n"));
               noteCapped(
