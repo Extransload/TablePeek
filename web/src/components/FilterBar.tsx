@@ -8,6 +8,7 @@ import {
 } from "../dataQuery";
 import { t } from "../i18n";
 import { CloseIcon, PlusIcon } from "./icons";
+import { Select } from "./Select";
 
 interface FilterBarProps {
   columns: string[];
@@ -195,7 +196,7 @@ export function FilterBar({
                 checked={row.enabled}
                 onChange={(event) => patchRow(row.id, { enabled: event.target.checked })}
               />
-              <select
+              <Select
                 className="filter-column"
                 value={row.raw ? RAW_SQL : row.column}
                 onChange={(event) =>
@@ -216,9 +217,9 @@ export function FilterBar({
                   </option>
                 ))}
                 <option value={RAW_SQL}>{t("SQL 직접 입력")}</option>
-              </select>
+              </Select>
               {row.raw ? null : (
-                <select
+                <Select
                   className="filter-op"
                   value={row.op}
                   onChange={(event) => patchRow(row.id, { op: event.target.value as FilterOp })}
@@ -228,7 +229,7 @@ export function FilterBar({
                       {opLabel(op)}
                     </option>
                   ))}
-                </select>
+                </Select>
               )}
               {needsValue(row) ? (
                 <input

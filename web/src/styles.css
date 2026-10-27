@@ -9173,3 +9173,62 @@ button.result-set.failed .result-set-status {
 .filter-value.raw {
   font-family: var(--mono);
 }
+
+/* Every dropdown draws its own chevron, inset from the edge and in the
+   theme's colour: the native one sits flush against the border. Last in the
+   file, so the `background:` shorthands above don't wipe it. */
+select:not([multiple]) {
+  appearance: none;
+  padding-right: 24px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+
+/* The connection dialog pads its fields itself, at higher specificity. */
+.cm-modal .cm-value select {
+  padding-right: 24px;
+}
+
+/* A dropdown's open list (components/Select.tsx): the menus' panel, above
+   dialogs, scrolling when long, with group names over their entries. */
+.context-menu.select-menu {
+  z-index: 9600;
+  max-width: min(480px, calc(100vw - 8px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.select-menu .select-option {
+  cursor: default;
+  user-select: none;
+}
+
+.select-menu .select-option .context-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-menu .select-option.disabled {
+  color: var(--faint);
+}
+
+.select-group {
+  padding: 7px 8px 3px;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.select-group:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid var(--line-soft);
+}

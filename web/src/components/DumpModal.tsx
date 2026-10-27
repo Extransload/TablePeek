@@ -11,6 +11,7 @@ import { splitSqlRanges } from "../sqlSplit";
 import { store, type EngineMeta, type TableDetail } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { FolderIcon, StopIcon } from "./icons";
+import { Select } from "./Select";
 
 interface DumpModalProps {
   conn: string;
@@ -476,7 +477,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
                 {restoreFile ? <span className="dim">{restoreFile}</span> : null}
                 <label className="field">
                   <span>{t("인코딩")}</span>
-                  <select
+                  <Select
                     value={restoreEncoding}
                     disabled={busy}
                     onChange={(event) => setRestoreEncoding(event.target.value)}
@@ -486,7 +487,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
                         {ENCODING_LABELS[entry]}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 {restoreBytes !== null ? (
                   <span className="panel-count">

@@ -33,6 +33,7 @@ import { ErrorNotice } from "./ErrorNotice";
 import { FolderIcon, StopIcon } from "./icons";
 import { PromptModal } from "./PromptModal";
 import { TableGrid, type TableGridHandle } from "./TableGrid";
+import { Select } from "./Select";
 
 export type ImportFormat = "csv" | "json";
 
@@ -621,7 +622,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                     <label className="field">
                       <span>{t("구분자")}</span>
                       <span className="import-pair">
-                        <select
+                        <Select
                           value={customDelimiter ? "custom" : delimiter}
                           disabled={busy}
                           onChange={(event) => {
@@ -638,7 +639,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                             </option>
                           ))}
                           <option value="custom">{t("직접 입력")}</option>
-                        </select>
+                        </Select>
                         {customDelimiter ? (
                           <input
                             className="import-char mono"
@@ -654,7 +655,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                     <label className="field">
                       <span>{t("따옴표")}</span>
                       <span className="import-pair">
-                        <select
+                        <Select
                           value={customQuote ? "custom" : quote}
                           disabled={busy}
                           onChange={(event) => {
@@ -671,7 +672,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                             </option>
                           ))}
                           <option value="custom">{t("직접 입력")}</option>
-                        </select>
+                        </Select>
                         {customQuote ? (
                           <input
                             className="import-char mono"
@@ -689,13 +690,13 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                 ) : null}
                 <label className="field">
                   <span>{t("인코딩")}</span>
-                  <select value={encoding} disabled={busy} onChange={(event) => setEncoding(event.target.value)}>
+                  <Select value={encoding} disabled={busy} onChange={(event) => setEncoding(event.target.value)}>
                     {IMPORT_ENCODINGS.map((entry) => (
                       <option value={entry} key={entry}>
                         {ENCODING_LABELS[entry]}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 {format === "csv" ? (
                   <label className="check-row inline">
@@ -736,7 +737,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                 ) : (
                   <label className="field">
                     <span>{t("테이블")}</span>
-                    <select
+                    <Select
                       value={target}
                       disabled={busy}
                       onChange={(event) => {
@@ -752,7 +753,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                           {name}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 )}
                 <label className="check-row inline">
@@ -777,7 +778,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                 ) : (
                   <label className="field">
                     <span>{t("컬럼 매칭")}</span>
-                    <select
+                    <Select
                       value={strategy}
                       disabled={busy}
                       onChange={(event) => setStrategy(event.target.value as MatchStrategy)}
@@ -787,13 +788,13 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                           {strategyLabels[entry]}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 )}
                 {modes.length > 1 ? (
                   <label className="field">
                     <span>{t("삽입 방식")}</span>
-                    <select
+                    <Select
                       value={effectiveMode}
                       disabled={busy}
                       onChange={(event) => setMode(event.target.value as InsertMode)}
@@ -805,7 +806,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                             : modeLabels[entry]}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 ) : null}
               </div>

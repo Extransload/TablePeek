@@ -28,6 +28,7 @@ import {
   LinkPasteIcon,
 } from "./icons";
 import { Spinner } from "./Spinner";
+import { Select } from "./Select";
 
 interface ConnectModalProps {
   // Saved profile to edit; omitted for a new connection.
@@ -1010,7 +1011,7 @@ export function ConnectModal({
                     {showPassword ? <EyeOffIcon size={11} /> : <EyeIcon size={11} />}
                   </button>
                 </div>
-                <select
+                <Select
                   className="cm-store"
                   value={form.persistPassword ? "keychain" : "none"}
                   onChange={(event) => update({ persistPassword: event.target.value === "keychain" })}
@@ -1018,7 +1019,7 @@ export function ConnectModal({
                 >
                   <option value="keychain">{t("키체인에 저장")}</option>
                   <option value="none">{t("매번 입력")}</option>
-                </select>
+                </Select>
               </div>
             </Row>
             <Row label={t("데이터베이스")} htmlFor="cm-database">

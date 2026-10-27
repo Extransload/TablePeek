@@ -34,6 +34,7 @@ import {
   TableIcon,
 } from "./icons";
 import { Spinner } from "./Spinner";
+import { Select } from "./Select";
 
 interface SettingsModalProps {
   settings: AppSettings;
@@ -459,7 +460,7 @@ export function SettingsModal({
                     </div>
                     <div className="settings-row">
                       <span className="settings-label">{t("에디터 글자 크기")}</span>
-                      <select
+                      <Select
                         value={settings.fontSize}
                         onChange={(event) => onChange({ fontSize: Number(event.target.value) })}
                       >
@@ -468,11 +469,11 @@ export function SettingsModal({
                             {size}px
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                     <div className="settings-row">
                       <span className="settings-label">{t("시스템 글자 크기")}</span>
-                      <select
+                      <Select
                         value={settings.uiFontSize}
                         onChange={(event) => onChange({ uiFontSize: Number(event.target.value) })}
                       >
@@ -481,7 +482,7 @@ export function SettingsModal({
                             {size}px
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                     <p className="helper">
                       {t("에디터 글꼴은 SQL 에디터·콘솔·데이터 그리드에, 앱 글꼴은 메뉴·패널·탭·사이드바에 쓰입니다. 에디터 글자 크기는 SQL 에디터와 콘솔에, 시스템 글자 크기는 그 밖의 모든 곳(데이터 그리드 포함)에 적용됩니다.")}
@@ -549,7 +550,7 @@ export function SettingsModal({
                   </label>
                   <div className="settings-row">
                     <span className="settings-label">{t("구문 강조")}</span>
-                    <select
+                    <Select
                       value={settings.syntaxPreset}
                       onChange={(event) =>
                         onChange({
@@ -562,7 +563,7 @@ export function SettingsModal({
                           {t(preset.label)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
                   <div className="syntax-preview" aria-hidden="true">
                     <span className="syntax-preview-keyword">SELECT</span>
@@ -606,7 +607,7 @@ export function SettingsModal({
                   <h4>{t("가져오기 · 내보내기 기본값")}</h4>
                   <div className="settings-row">
                     <span className="settings-label">{t("CSV 구분자")}</span>
-                    <select
+                    <Select
                       value={settings.csvDelimiter}
                       onChange={(event) =>
                         onChange({ csvDelimiter: event.target.value })
@@ -616,7 +617,7 @@ export function SettingsModal({
                       <option value={"	"}>Tab</option>
                       <option value=";">{t("; (세미콜론)")}</option>
                       <option value="|">{t("| (파이프)")}</option>
-                    </select>
+                    </Select>
                   </div>
                   <label className="settings-check">
                     <input
@@ -630,7 +631,7 @@ export function SettingsModal({
                   </label>
                   <div className="settings-row">
                     <span className="settings-label">{t("인코딩")}</span>
-                    <select
+                    <Select
                       value={settings.csvEncoding}
                       onChange={(event) =>
                         onChange({
@@ -642,7 +643,7 @@ export function SettingsModal({
                       <option value="utf-8">UTF-8</option>
                       <option value="euc-kr">EUC-KR</option>
                       <option value="utf-16le">UTF-16LE</option>
-                    </select>
+                    </Select>
                   </div>
                 </section>
               </div>

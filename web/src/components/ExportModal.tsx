@@ -39,6 +39,7 @@ import { XlsxWriter } from "../xlsx";
 import { ZipWriter } from "../zip";
 import { ErrorNotice } from "./ErrorNotice";
 import { SearchIcon } from "./icons";
+import { Select } from "./Select";
 
 export interface ExportResultEntry {
   label: string;
@@ -1180,35 +1181,35 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
         <div className="export-options-grid">
           <label className="field">
             <span>{t("구분자")}</span>
-            <select value={csv.delimiter} disabled={running} onChange={(event) => set({ delimiter: event.target.value })}>
+            <Select value={csv.delimiter} disabled={running} onChange={(event) => set({ delimiter: event.target.value })}>
               <option value=",">{t("쉼표 (,)")}</option>
               <option value=";">{t("세미콜론 (;)")}</option>
               <option value={"\t"}>{t("탭")}</option>
               <option value="|">{t("파이프 (|)")}</option>
-            </select>
+            </Select>
           </label>
           <label className="field">
             <span>{t("따옴표")}</span>
-            <select value={csv.quote} disabled={running} onChange={(event) => set({ quote: event.target.value })}>
+            <Select value={csv.quote} disabled={running} onChange={(event) => set({ quote: event.target.value })}>
               <option value={'"'}>{t('큰따옴표 (")')}</option>
               <option value="'">{t("작은따옴표 (')")}</option>
               <option value="">{t("없음")}</option>
-            </select>
+            </Select>
           </label>
           <label className="field">
             <span>{t("줄바꿈")}</span>
-            <select value={csv.lineBreak} disabled={running} onChange={(event) => set({ lineBreak: event.target.value })}>
+            <Select value={csv.lineBreak} disabled={running} onChange={(event) => set({ lineBreak: event.target.value })}>
               <option value={"\r\n"}>CRLF (\r\n)</option>
               <option value={"\n"}>LF (\n)</option>
               <option value={"\r"}>CR (\r)</option>
-            </select>
+            </Select>
           </label>
           <label className="field">
             <span>{t("소수점")}</span>
-            <select value={csv.decimal} disabled={running} onChange={(event) => set({ decimal: event.target.value })}>
+            <Select value={csv.decimal} disabled={running} onChange={(event) => set({ decimal: event.target.value })}>
               <option value=".">{t("마침표 (.)")}</option>
               <option value=",">{t("쉼표 (,)")}</option>
-            </select>
+            </Select>
           </label>
           <div className="export-checks">
             <label className="check-row">
