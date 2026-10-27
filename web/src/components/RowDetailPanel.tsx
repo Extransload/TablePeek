@@ -78,9 +78,10 @@ function sharedValues(source: RowSource, columns: string[], rows: SelectedRows):
   });
 }
 
-// TablePlus-style right panel: the picked row's fields (a result row, or a
-// column or index of the Structure and Index views), or with no row the
-// table's sizes and comment, or nothing when the tab has no table either.
+// TablePlus-style right panel, its field search always on top: the picked
+// row's fields (a result row, or a column or index of the Structure and
+// Index views), or with no row the table's sizes and comment, or "No row
+// selected" when the tab has no table either.
 export function RowDetailPanel({
   source,
   columns,
@@ -173,22 +174,22 @@ export function RowDetailPanel({
 
   return (
     <aside className="row-detail" aria-label={t("행 상세")}>
+      <label className="field-search">
+        <SearchIcon size={12} />
+        <input
+          placeholder={t("필드 검색…")}
+          value={query}
+          spellCheck={false}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </label>
       {fields !== null ? (
-        <>
-          <label className="field-search">
-            <SearchIcon size={12} />
-            <input
-              placeholder={t("필드 검색…")}
-              value={query}
-              spellCheck={false}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <div className="field-list">{fields}</div>
-        </>
+        <div className="field-list">{fields}</div>
       ) : table !== null && detailLoading ? (
         <LoadingState />
-      ) : null}
+      ) : (
+        <div className="panel-empty">{t("선택된 행이 없습니다")}</div>
+      )}
     </aside>
   );
 }
