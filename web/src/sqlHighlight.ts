@@ -20,6 +20,13 @@ const highlighter = tagHighlighter([
 
 const parser = SQLite.language.parser;
 
+const QUOTE_CLASSES: Record<string, string> = {
+  "'": "sx-single",
+  '"': "sx-double",
+  "`": "sx-backtick",
+  "[": "sx-backtick",
+};
+
 export interface SqlToken {
   text: string;
   // Empty for plain text.
@@ -39,11 +46,23 @@ export function sqlTokens(text: string): SqlToken[] {
     return cached;
   }
   const tokens: SqlToken[] = [];
+  // Quoted text by its quote, as the editor colours it (see quoteColors);
+  // a string over several lines comes in pieces, the first with the quote.
+  let quote = "";
   highlightCode(
     text,
     parser.parse(text),
     highlighter,
-    (piece, className) => tokens.push({ text: piece, className }),
+    (piece, className) => {
+      if (className !== "sx-string") {
+        quote = "";
+        tokens.push({ text: piece, className });
+        return;
+      }
+      const opening = [...piece.slice(0, 3)].find((char) => char in QUOTE_CLASSES);
+      quote = opening !== undefined ? QUOTE_CLASSES[opening] : quote || QUOTE_CLASSES["'"];
+      tokens.push({ text: piece, className: `${className} ${quote}` });
+    },
     () => tokens.push({ text: "\n", className: "" }),
   );
   while (cache.size > 0 && (cache.size >= CACHE_ENTRIES || cachedChars + text.length > CACHE_CHARS)) {

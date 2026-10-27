@@ -4606,9 +4606,30 @@ body.col-resizing * {
   max-width: 100%;
 }
 
-.settings-theme-url {
-  flex: 1 1 240px;
-  min-width: 0;
+/* Settings → Theme: the syntax colours in two columns (down the first,
+   then the second), each a name, its colour, the value and a reset. */
+.syntax-colors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(6, auto);
+  grid-auto-flow: column;
+  gap: 6px 18px;
+}
+
+.syntax-color {
+  display: grid;
+  grid-template-columns: 112px auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+}
+
+/* A box's own actions, under its rows at the right. */
+.settings-box-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
 }
 
 .settings-reset {
@@ -7641,12 +7662,24 @@ body.row-resizing * {
 }
 
 /* Read-only SQL colouring (console, history), the editor's palette. */
+.sx-text {
+  color: var(--syntax-text, inherit);
+}
+
 .sx-keyword {
   color: var(--syntax-keyword);
 }
 
 .sx-string {
   color: var(--syntax-string);
+}
+
+.sx-double {
+  color: var(--syntax-string-double, var(--syntax-string));
+}
+
+.sx-backtick {
+  color: var(--syntax-string-backtick, var(--syntax-string));
 }
 
 .sx-number {

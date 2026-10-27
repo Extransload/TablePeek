@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { languageLabel, t, type Language } from "../i18n";
-import { THEMES, palette, themeFromJson, type ValueKind } from "../palette";
+import { THEMES, palette, type ValueKind } from "../palette";
 import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import {
   MAX_ROWS_LIMIT,
+  currentSyntaxColors,
   getPasscodeHash,
   setPasscodeHash,
   sha256Hex,
@@ -27,7 +28,7 @@ import {
   type KeyAction,
   type Keymap,
 } from "../shortcuts";
-import { SYNTAX_PRESETS, type SyntaxPresetId } from "../syntax";
+import { SYNTAX_PRESETS, type SyntaxColorKey, type SyntaxPresetId } from "../syntax";
 import {
   ChevronIcon,
   CodeIcon,
@@ -41,7 +42,6 @@ import {
   UpDownIcon,
 } from "./icons";
 import { gridHeightsAt } from "../grid/CanvasGrid";
-import { Spinner } from "./Spinner";
 import { Select } from "./Select";
 import { SqlPreview } from "./SqlEditor";
 
@@ -259,6 +259,29 @@ const EDITOR_SAMPLE = [
   "GROUP BY id, name LIMIT 100; -- 0O 1lI",
 ].join("\n");
 
+// Every part Settings → Theme colours, in a few lines.
+const THEME_SAMPLE = [
+  "-- comment",
+  "SELECT id, \"Name\", `code`, count(*) AS total, NULL, TRUE",
+  "FROM users WHERE email LIKE '%@example.com' AND age >= 30;",
+].join("\n");
+
+// The colours Settings → Theme offers, as TablePlus lists them; a row may
+// set parts that read as one (NULL and booleans, operators and punctuation).
+const SYNTAX_COLOR_ROWS: { label: string; keys: SyntaxColorKey[] }[] = [
+  { label: "키워드", keys: ["keyword"] },
+  { label: "함수", keys: ["function"] },
+  { label: "타입", keys: ["type"] },
+  { label: "숫자", keys: ["number"] },
+  { label: "NULL·참거짓", keys: ["null", "bool"] },
+  { label: "연산자·기호", keys: ["operator", "punctuation"] },
+  { label: "작은따옴표 문자열", keys: ["string"] },
+  { label: "큰따옴표 문자열", keys: ["stringDouble"] },
+  { label: "백틱 문자열", keys: ["stringBacktick"] },
+  { label: "주석", keys: ["comment"] },
+  { label: "그 밖의 글자", keys: ["text"] },
+];
+
 const GRID_COLUMNS = ["id", "name", "active", "price", "created_at"];
 // Each cell's kind (none for NULL) and its text; the first column is the key.
 const GRID_SAMPLE: [ValueKind | null, string][][] = [
@@ -367,7 +390,6 @@ export function SettingsModal({
   const [hasPasscode, setHasPasscode] = useState(
     () => getPasscodeHash() !== null,
   );
-  const [themeUrl, setThemeUrl] = useState("");
   // Empty until the server answers: the suggested fonts show meanwhile.
   const [fontFamilies, setFontFamilies] = useState<InstalledFont[]>([]);
 
@@ -394,36 +416,15 @@ export function SettingsModal({
     () => fontGroups("sidebar", fontFamilies),
     [fontFamilies],
   );
-  const [themeMessage, setThemeMessage] = useState<string | null>(null);
-  const [themeBusy, setThemeBusy] = useState(false);
   const [category, setCategory] = useState<SettingsCategory>("general");
   const paneRef = useRef<HTMLDivElement>(null);
 
-  // Each pane starts at its top; declared first, so the theme pane's
-  // centring below runs after it.
+  // Each pane starts at its top.
   useEffect(() => {
     if (paneRef.current) {
       paneRef.current.scrollTop = 0;
     }
   }, [category]);
-
-  // The theme list runs past the pane; bring the theme in use into view when
-  // the pane opens or a Git import adds and selects one off-screen.
-  useEffect(() => {
-    if (category !== "theme") {
-      return;
-    }
-    const pane = paneRef.current;
-    const card = pane?.querySelector<HTMLElement>(".theme-card.active");
-    if (!pane || !card) {
-      return;
-    }
-    const paneBox = pane.getBoundingClientRect();
-    const cardBox = card.getBoundingClientRect();
-    if (cardBox.top < paneBox.top || cardBox.bottom > paneBox.bottom) {
-      pane.scrollTop += cardBox.top - paneBox.top - (pane.clientHeight - cardBox.height) / 2;
-    }
-  }, [category, settings.theme]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -492,43 +493,24 @@ export function SettingsModal({
     onChange({ keymap: next });
   }
 
-  async function importTheme(): Promise<void> {
-    if (themeBusy) {
-      return;
-    }
-    let url: URL;
-    try {
-      url = new URL(themeUrl.trim());
-    } catch {
-      setThemeMessage(t("올바른 URL을 입력하세요"));
-      return;
-    }
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      setThemeMessage(t("http(s) URL만 가져올 수 있습니다"));
-      return;
-    }
-    setThemeBusy(true);
-    setThemeMessage(null);
-    try {
-      const response = await fetch(url, {
-        headers: { accept: "application/json" },
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+  // A colour picked for parts of the current theme's syntax, or none to go
+  // back to the theme's own.
+  function pickSyntaxColor(keys: SyntaxColorKey[], color: string | null): void {
+    const picks = { ...settings.syntaxColors[settings.theme] };
+    for (const key of keys) {
+      if (color === null) {
+        delete picks[key];
+      } else {
+        picks[key] = color;
       }
-      const theme = themeFromJson(await response.json());
-      onChange({ theme: theme.id, accent: theme.accent });
-      setThemeUrl("");
-      setThemeMessage(t("{name} 테마를 가져왔습니다", { name: t(theme.label) }));
-    } catch (err) {
-      setThemeMessage(
-        err instanceof Error && err.message
-          ? t("가져오지 못했습니다: {message}", { message: err.message })
-          : t("가져오지 못했습니다"),
-      );
-    } finally {
-      setThemeBusy(false);
     }
+    const next = { ...settings.syntaxColors };
+    if (Object.keys(picks).length === 0) {
+      delete next[settings.theme];
+    } else {
+      next[settings.theme] = picks;
+    }
+    onChange({ syntaxColors: next });
   }
 
   async function applyPasscode(): Promise<void> {
@@ -586,7 +568,9 @@ export function SettingsModal({
           </SettingsGroup>
         );
 
-      case "theme":
+      case "theme": {
+        const colors = currentSyntaxColors(settings);
+        const picked = settings.syntaxColors[settings.theme] ?? {};
         return (
           <>
             <SettingsGroup>
@@ -598,32 +582,52 @@ export function SettingsModal({
                 />
                 <span className="mono dim">{settings.accent}</span>
               </SettingsField>
-              <SettingsField label={t("Git 테마")} hint={themeMessage}>
-                <input
-                  className="settings-theme-url"
-                  value={themeUrl}
-                  spellCheck={false}
-                  placeholder="https://raw.githubusercontent.com/.../theme.json"
-                  title={t("Base16, VS Code 색상 테마 JSON 또는 TablePeek 테마 JSON을 Git 원본 URL에서 가져옵니다.")}
-                  onChange={(event) => setThemeUrl(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      void importTheme();
-                    }
-                  }}
-                />
-                <button type="button" disabled={themeBusy} onClick={() => void importTheme()}>
-                  {themeBusy ? (
-                    <>
-                      <Spinner size={10} />
-                      {t("가져오는 중")}
-                    </>
-                  ) : (
-                    t("가져오기")
-                  )}
-                </button>
-              </SettingsField>
             </SettingsGroup>
+            {/* The colours picked here belong to the theme in use. */}
+            <SettingsGroup title={t("SQL 에디터 색")}>
+              <div className="syntax-colors">
+                {SYNTAX_COLOR_ROWS.map((row) => {
+                  const color = colors[row.keys[0]];
+                  const changed = row.keys.some((key) => picked[key] !== undefined);
+                  return (
+                    <div className="syntax-color" key={row.label}>
+                      <span className="settings-label">{t(row.label)}</span>
+                      <input
+                        type="color"
+                        aria-label={t(row.label)}
+                        value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#000000"}
+                        onChange={(event) => pickSyntaxColor(row.keys, event.target.value)}
+                      />
+                      <span className="mono dim">{color}</span>
+                      <button
+                        type="button"
+                        className={`settings-reset${changed ? "" : " unchanged"}`}
+                        disabled={!changed}
+                        title={t("기본값으로")}
+                        onClick={() => pickSyntaxColor(row.keys, null)}
+                      >
+                        {t("기본")}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="settings-box-actions">
+                <span className="settings-hint">
+                  {t("이 테마에만 저장되며, SQL 에디터 탭의 구문 강조 위에 덮입니다.")}
+                </span>
+                <button
+                  type="button"
+                  disabled={Object.keys(picked).length === 0}
+                  onClick={() => pickSyntaxColor(SYNTAX_COLOR_ROWS.flatMap((row) => row.keys), null)}
+                >
+                  {t("모두 기본값으로")}
+                </button>
+              </div>
+            </SettingsGroup>
+            <Preview>
+              <SqlPreview doc={THEME_SAMPLE} />
+            </Preview>
             {(["dark", "light"] as const).map((mode) => (
               <section key={mode} className="settings-group">
                 <h4>{mode === "dark" ? t("다크") : t("라이트")}</h4>
@@ -662,6 +666,7 @@ export function SettingsModal({
             ))}
           </>
         );
+      }
 
       case "editor":
         return (

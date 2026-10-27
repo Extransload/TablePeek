@@ -8,9 +8,16 @@ import {
   keywordCompletionSource,
   type SQLDialect,
 } from "@codemirror/lang-sql";
-import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
-import { Compartment, EditorState, Prec } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { HighlightStyle, LanguageSupport, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { Compartment, EditorState, Prec, RangeSetBuilder } from "@codemirror/state";
+import {
+  Decoration,
+  EditorView,
+  keymap,
+  ViewPlugin,
+  type DecorationSet,
+  type ViewUpdate,
+} from "@codemirror/view";
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { isolateHistory } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
@@ -130,11 +137,22 @@ const editorTheme = EditorView.theme(
       color: "var(--ink)",
       fontSize: "var(--editor-font-size, 12px)",
     },
+    ".cm-sql-single": {
+      color: "var(--syntax-string)",
+    },
+    ".cm-sql-double": {
+      color: "var(--syntax-string-double, var(--syntax-string))",
+    },
+    ".cm-sql-backtick": {
+      color: "var(--syntax-string-backtick, var(--syntax-string))",
+    },
     "&.cm-focused": {
       outline: "none",
     },
+    // The "other text" colour is the code's own; popups keep the ink.
     ".cm-content": {
       caretColor: "var(--accent)",
+      color: "var(--syntax-text, var(--ink))",
       fontFamily: "var(--mono)",
     },
     ".cm-cursor, .cm-dropCursor": {
@@ -175,7 +193,7 @@ const editorTheme = EditorView.theme(
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.keyword, color: "var(--syntax-keyword)" },
-  { tag: [tags.string, tags.special(tags.string)], color: "var(--syntax-string)" },
+  // Strings are coloured by their quote (quoteColors), not here.
   { tag: tags.number, color: "var(--syntax-number)" },
   { tag: tags.comment, color: "var(--syntax-comment)", fontStyle: "italic" },
   { tag: tags.variableName, color: "var(--syntax-variable)" },
@@ -188,8 +206,58 @@ const highlightStyle = HighlightStyle.define([
   { tag: tags.labelName, color: "var(--syntax-label)" },
 ]);
 
+// Quoted text by its quote, as TablePlus colours 'single', "double" and
+// `backtick` (or [bracket]) quoted text apart: the grammar tags strings and
+// quoted names alike, so the quote decides.
+const QUOTE_MARKS: Record<string, Decoration> = {
+  "'": Decoration.mark({ class: "cm-sql-single" }),
+  '"': Decoration.mark({ class: "cm-sql-double" }),
+  "`": Decoration.mark({ class: "cm-sql-backtick" }),
+  "[": Decoration.mark({ class: "cm-sql-backtick" }),
+};
+const QUOTED_NODES = new Set(["String", "QuotedIdentifier", "Bytes"]);
+
+function quoteDecorations(view: EditorView): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  let last = -1;
+  for (const { from, to } of view.visibleRanges) {
+    syntaxTree(view.state).iterate({
+      from,
+      to,
+      enter: (node) => {
+        if (!QUOTED_NODES.has(node.name) || node.from < last) {
+          return;
+        }
+        // A prefix may come first: N'…', E'…', x'…'.
+        const head = view.state.doc.sliceString(node.from, Math.min(node.to, node.from + 3));
+        const quote = [...head].find((char) => char in QUOTE_MARKS) ?? "'";
+        builder.add(node.from, node.to, QUOTE_MARKS[quote]);
+        last = node.to;
+      },
+    });
+  }
+  return builder.finish();
+}
+
+const quoteColors = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = quoteDecorations(view);
+    }
+
+    update(update: ViewUpdate): void {
+      if (update.docChanged || update.viewportChanged || syntaxTree(update.startState) !== syntaxTree(update.state)) {
+        this.decorations = quoteDecorations(update.view);
+      }
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
+
 // How the editor looks, shared with its Settings preview.
-const editorLook = [editorTheme, syntaxHighlighting(highlightStyle), EditorView.lineWrapping];
+const editorLook = [editorTheme, syntaxHighlighting(highlightStyle), quoteColors, EditorView.lineWrapping];
 
 // The editor as Settings shows it: the same setup and look over a fixed
 // sample, read-only, so the preview can't drift from the real thing.

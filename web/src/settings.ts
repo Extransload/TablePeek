@@ -12,9 +12,13 @@ import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT, declareFaces } from "./fonts";
 import { setLanguage, type Language } from "./i18n";
 import { KEYMAP_VERSION, normalizeKeymap, type Keymap } from "./shortcuts";
 import {
+  EXTRA_SYNTAX_VARIABLES,
+  SYNTAX_COLOR_KEYS,
   syntaxColors,
   syntaxPresetById,
   SYNTAX_VARIABLES,
+  type SyntaxColorKey,
+  type SyntaxColorPicks,
   type SyntaxPresetId,
 } from "./syntax";
 
@@ -44,6 +48,9 @@ export interface AppSettings {
   scrollbarY: boolean;
   uppercaseKeywords: boolean;
   syntaxPreset: SyntaxPresetId;
+  // Colours picked in Settings → Theme over the syntax colours, by theme:
+  // like TablePlus's, a theme's colours stay with it.
+  syntaxColors: Record<string, SyntaxColorPicks>;
   activityDays: number;
   csvDelimiter: string;
   csvHeader: boolean;
@@ -85,6 +92,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   scrollbarY: true,
   uppercaseKeywords: true,
   syntaxPreset: "tablepeek",
+  syntaxColors: {},
   activityDays: 7,
   csvDelimiter: ",",
   csvHeader: true,
@@ -128,6 +136,7 @@ function readSettings(): AppSettings {
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
+      syntaxColors: readSyntaxColors(parsed.syntaxColors),
       fontSize: clampSize(parsed.fontSize, EDITOR_FONT_MIN, EDITOR_FONT_MAX, DEFAULT_SETTINGS.fontSize),
       gridFontSize: clampSize(
         parsed.gridFontSize ?? uiFontSize,
@@ -152,6 +161,29 @@ function readSettings(): AppSettings {
   } catch {
     return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
   }
+}
+
+// Saved colour picks: hex colours of known parts only, under each theme.
+function readSyntaxColors(value: unknown): Record<string, SyntaxColorPicks> {
+  const picks: Record<string, SyntaxColorPicks> = {};
+  if (typeof value !== "object" || value === null) {
+    return picks;
+  }
+  for (const [theme, colors] of Object.entries(value)) {
+    if (typeof colors !== "object" || colors === null) {
+      continue;
+    }
+    const kept: SyntaxColorPicks = {};
+    for (const [key, color] of Object.entries(colors)) {
+      if (SYNTAX_COLOR_KEYS.includes(key as SyntaxColorKey) && typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color)) {
+        kept[key as SyntaxColorKey] = color;
+      }
+    }
+    if (Object.keys(kept).length > 0) {
+      picks[theme] = kept;
+    }
+  }
+  return picks;
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -225,6 +257,18 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--sidebar-scale", String(settings.sidebarFontSize / BASE_UI_PX));
   root.style.setProperty("--grid-font", settings.gridFontFamily);
   root.style.setProperty("--grid-scale", String(settings.gridFontSize / BASE_UI_PX));
+  const syntax = syntaxColorsWith(settings, theme, palette);
+  for (const [key, variable] of Object.entries({ ...SYNTAX_VARIABLES, ...EXTRA_SYNTAX_VARIABLES })) {
+    root.style.setProperty(variable, syntax[key as SyntaxColorKey]);
+  }
+  root.classList.toggle("scrollbar-x-always", settings.scrollbarX);
+  root.classList.toggle("scrollbar-y-always", settings.scrollbarY);
+  window.dispatchEvent(new CustomEvent("tablepeek:theme"));
+}
+
+// The syntax colours in use: the preset's (the theme's own for "theme
+// default"), then the colours picked for this theme over them.
+function syntaxColorsWith(settings: AppSettings, theme: Theme, palette: Palette): Record<SyntaxColorKey, string> {
   const syntax = { ...syntaxColors(settings.syntaxPreset, theme.mode) };
   if (settings.syntaxPreset === "tablepeek") {
     Object.assign(syntax, theme.syntax ?? {
@@ -242,12 +286,19 @@ export function applySettings(settings: AppSettings): void {
       label: palette.warn,
     });
   }
-  for (const [key, variable] of Object.entries(SYNTAX_VARIABLES)) {
-    root.style.setProperty(variable, syntax[key as keyof typeof syntax]);
-  }
-  root.classList.toggle("scrollbar-x-always", settings.scrollbarX);
-  root.classList.toggle("scrollbar-y-always", settings.scrollbarY);
-  window.dispatchEvent(new CustomEvent("tablepeek:theme"));
+  return {
+    ...syntax,
+    stringDouble: syntax.string,
+    stringBacktick: syntax.string,
+    text: palette.ink,
+    ...settings.syntaxColors[theme.id],
+  };
+}
+
+// The syntax colours `settings` draw in, for Settings to show.
+export function currentSyntaxColors(settings: AppSettings): Record<SyntaxColorKey, string> {
+  const theme = themeById(settings.theme);
+  return syntaxColorsWith(settings, theme, themePalette(theme, settings.accent, settings.rowAlt));
 }
 
 export function getSettings(): AppSettings {

@@ -256,3 +256,19 @@ export const SYNTAX_VARIABLES: Record<keyof SyntaxColors, string> = {
   function: "--syntax-function",
   label: "--syntax-label",
 };
+
+// What Settings → Theme recolours: the preset's colours, strings told apart
+// by their quote (as TablePlus colours 'single', "double" and `backtick`
+// quoted text apart), and plain text. Unpicked, the last three follow the
+// string colour and the theme's ink.
+export type SyntaxColorKey = keyof SyntaxColors | "stringDouble" | "stringBacktick" | "text";
+
+export type SyntaxColorPicks = Partial<Record<SyntaxColorKey, string>>;
+
+export const EXTRA_SYNTAX_VARIABLES: Record<Exclude<SyntaxColorKey, keyof SyntaxColors>, string> = {
+  stringDouble: "--syntax-string-double",
+  stringBacktick: "--syntax-string-backtick",
+  text: "--syntax-text",
+};
+
+export const SYNTAX_COLOR_KEYS = [...Object.keys(SYNTAX_VARIABLES), ...Object.keys(EXTRA_SYNTAX_VARIABLES)] as SyntaxColorKey[];

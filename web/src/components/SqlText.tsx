@@ -11,8 +11,9 @@ export const SqlText = memo(function SqlText({ sql, highlight = true }: SqlTextP
   if (!highlight) {
     return <>{sql}</>;
   }
+  // Plain text in the editor's "other text" colour.
   return (
-    <>
+    <span className="sx-text">
       {sqlTokens(sql).map((token, index) =>
         token.className === "" ? (
           token.text
@@ -22,6 +23,6 @@ export const SqlText = memo(function SqlText({ sql, highlight = true }: SqlTextP
           </span>
         ),
       )}
-    </>
+    </span>
   );
 });
