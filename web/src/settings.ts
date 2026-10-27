@@ -8,7 +8,7 @@ import {
   type Theme,
   type ThemeId,
 } from "./palette";
-import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT } from "./fonts";
+import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT, declareFaces } from "./fonts";
 import { setLanguage, type Language } from "./i18n";
 import { KEYMAP_VERSION, normalizeKeymap, type Keymap } from "./shortcuts";
 import {
@@ -214,6 +214,7 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--scrollbar", mixHex(palette.faint, palette.bg, 0.25));
   root.style.setProperty("--scrollbar-hover", palette.muted);
   root.style.setProperty("--hover-fill", palette.hoverFill);
+  declareFaces([settings.fontFamily, settings.gridFontFamily, settings.sidebarFontFamily]);
   root.style.setProperty("--mono", settings.fontFamily);
   root.style.setProperty("--ui", SYSTEM_UI_FONT);
   root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);

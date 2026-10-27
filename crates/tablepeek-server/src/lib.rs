@@ -2788,12 +2788,32 @@ async fn fonts_route(
     Ok(Json(FAMILIES.get_or_init(|| found).clone()))
 }
 
+/// One face of a family: its PostScript name, as TablePlus lists fonts.
+struct InstalledFace {
+    name: String,
+    weight: u16,
+    italic: bool,
+}
+
+/// One family as listed: its Korean name when it has one, monospaced when
+/// all its faces are, and its faces.
+struct InstalledFamily {
+    korean: Option<String>,
+    monospace: bool,
+    faces: Vec<InstalledFace>,
+}
+
 /// Every family once, by the name CSS knows it by, with its Korean name when
-/// the font has one (HYwulM is HY울릉도M), monospaced when all its faces are.
+/// the font has one (HYwulM is HY울릉도M), monospaced when all its faces are,
+/// and every face of it by PostScript name (JetBrainsMonoNF-Regular), lighter
+/// and upright first.
 fn installed_fonts() -> Value {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
-    let mut families: HashMap<String, (Option<String>, bool)> = HashMap::new();
+    let mut families: HashMap<String, InstalledFamily> = HashMap::new();
+    // A PostScript name names one font: listed once, under the family that
+    // has it first.
+    let mut seen: HashSet<String> = HashSet::new();
     for face in db.faces() {
         let Some((name, _)) = face.families.first() else {
             continue;
@@ -2807,17 +2827,48 @@ fn installed_fonts() -> Value {
             .iter()
             .find(|(local, language)| *language == fontdb::Language::Korean_Korea && local != name)
             .map(|(local, _)| local.clone());
-        let entry = families.entry(name.clone()).or_insert((None, true));
-        entry.0 = entry.0.take().or(korean);
-        entry.1 &= face.monospaced;
+        let entry = families.entry(name.clone()).or_insert(InstalledFamily {
+            korean: None,
+            monospace: true,
+            faces: Vec::new(),
+        });
+        entry.korean = entry.korean.take().or(korean);
+        entry.monospace &= face.monospaced;
+        let postscript = face.post_script_name.trim();
+        if !postscript.is_empty()
+            && !postscript.starts_with('.')
+            && seen.insert(postscript.to_string())
+        {
+            entry.faces.push(InstalledFace {
+                name: postscript.to_string(),
+                weight: face.weight.0,
+                italic: face.style != fontdb::Style::Normal,
+            });
+        }
     }
-    let mut list: Vec<(String, (Option<String>, bool))> = families.into_iter().collect();
+    // A family whose every face is listed under another has nothing to pick.
+    let mut list: Vec<(String, InstalledFamily)> = families
+        .into_iter()
+        .filter(|(_, family)| !family.faces.is_empty())
+        .collect();
     list.sort_by_key(|(name, _)| name.to_lowercase());
     json!({
         "families": list
             .into_iter()
-            .map(|(name, (korean, monospace))| {
-                json!({ "name": name, "korean": korean, "monospace": monospace })
+            .map(|(name, mut family)| {
+                family
+                    .faces
+                    .sort_by(|a, b| (a.italic, a.weight, &a.name).cmp(&(b.italic, b.weight, &b.name)));
+                json!({
+                    "name": name,
+                    "korean": family.korean,
+                    "monospace": family.monospace,
+                    "faces": family
+                        .faces
+                        .iter()
+                        .map(|face| json!({ "name": face.name, "weight": face.weight, "italic": face.italic }))
+                        .collect::<Vec<_>>(),
+                })
             })
             .collect::<Vec<_>>(),
     })

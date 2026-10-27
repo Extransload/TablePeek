@@ -215,7 +215,12 @@ export function SqlPreview({ doc }: { doc: string }) {
         ],
       }),
     });
-    return () => view.destroy();
+    const remeasure = () => view.requestMeasure();
+    document.fonts.addEventListener("loadingdone", remeasure);
+    return () => {
+      document.fonts.removeEventListener("loadingdone", remeasure);
+      view.destroy();
+    };
   }, [doc]);
 
   return <div ref={hostRef} className="sql-preview" />;
@@ -401,7 +406,12 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       }
       const view = new EditorView({ parent: host, state: makeState("") });
       viewRef.current = view;
+      // A face picked in Settings loads after the editor measured its lines
+      // and letters in the fallback.
+      const remeasure = () => view.requestMeasure();
+      document.fonts.addEventListener("loadingdone", remeasure);
       return () => {
+        document.fonts.removeEventListener("loadingdone", remeasure);
         flushPending();
         viewRef.current = null;
         view.destroy();

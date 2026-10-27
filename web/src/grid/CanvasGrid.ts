@@ -321,6 +321,9 @@ export class CanvasGrid {
     // Browsers send ⌘V to the focused element or to the body, depending on
     // the selection; the document hears it either way.
     document.addEventListener("paste", this.onPaste);
+    // A face picked in Settings loads after the frame that first asks for
+    // it, which drew in the fallback.
+    document.fonts.addEventListener("loadingdone", this.onFontsLoaded);
 
     this.updateSizer();
     this.resizeSurface();
@@ -664,6 +667,7 @@ export class CanvasGrid {
     this.canvas.removeEventListener("dblclick", this.onDblClick);
     this.canvas.removeEventListener("keydown", this.onKeyDown);
     document.removeEventListener("paste", this.onPaste);
+    document.fonts.removeEventListener("loadingdone", this.onFontsLoaded);
     this.canvas.removeEventListener("focus", this.onFocus);
     this.canvas.removeEventListener("blur", this.onBlur);
     this.canvas.removeEventListener("wheel", this.onWheel);
@@ -1992,6 +1996,12 @@ export class CanvasGrid {
         this.notifySelection();
       }
     }
+    this.schedulePaint();
+  };
+
+  private readonly onFontsLoaded = (): void => {
+    // Letters were measured in the fallback.
+    this.charW = 0;
     this.schedulePaint();
   };
 

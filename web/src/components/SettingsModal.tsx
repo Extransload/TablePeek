@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, palette, themeFromJson, type ValueKind } from "../palette";
-import { fontGroups, fontInstalled, type FontGroup, type InstalledFont } from "../fonts";
+import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import {
   MAX_ROWS_LIMIT,
@@ -157,9 +157,8 @@ function SettingsCheck({
   );
 }
 
-// One of the three fonts: its family (a saved list no longer offered shows
-// as "custom", a suggested font this machine lacks is marked: it falls back
-// to the system's) and its size.
+// One of the three fonts: its face (a saved list no longer offered shows
+// under its first family's name) and its size.
 function FontFields({
   label,
   hint,
@@ -179,13 +178,22 @@ function FontFields({
   onChange(value: string): void;
   onSize(size: number): void;
 }) {
-  const known = groups.some((group) => group.choices.some((choice) => choice.value === value));
+  const choices = groups.flatMap((group) => group.choices);
+  const known = choices.some((choice) => choice.value === value);
+  // A face picked before its family changed (its bold installed or removed,
+  // say) is still that face: its saved list is brought up to date.
+  const face = known ? null : pickedFace(value);
+  const updated = face === null ? undefined : choices.find((choice) => pickedFace(choice.value) === face)?.value;
+  useEffect(() => {
+    if (updated !== undefined) {
+      onChange(updated);
+    }
+    // onChange is a new function each render; the update is all that matters.
+  }, [updated]);
   const options = (group: FontGroup) =>
     group.choices.map((choice) => (
       <option key={choice.value} value={choice.value}>
-        {choice.family !== undefined && !fontInstalled(choice.family)
-          ? `${t(choice.label)} — ${t("미설치")}`
-          : t(choice.label)}
+        {t(choice.label)}
       </option>
     ));
   return (
@@ -206,7 +214,7 @@ function FontFields({
               </optgroup>
             ),
           )}
-          {known ? null : <option value={value}>{t("사용자 지정")}</option>}
+          {known || updated !== undefined ? null : <option value={value}>{fontListLabel(value)}</option>}
         </Select>
       </SettingsField>
       <SettingsField label={t("크기")}>
@@ -375,16 +383,16 @@ export function SettingsModal({
     };
   }, []);
   const editorFontGroups = useMemo(
-    () => fontGroups("editor", fontFamilies, settings.fontFamily),
-    [fontFamilies, settings.fontFamily],
+    () => fontGroups("editor", fontFamilies),
+    [fontFamilies],
   );
   const gridFontGroups = useMemo(
-    () => fontGroups("grid", fontFamilies, settings.gridFontFamily),
-    [fontFamilies, settings.gridFontFamily],
+    () => fontGroups("grid", fontFamilies),
+    [fontFamilies],
   );
   const sidebarFontGroups = useMemo(
-    () => fontGroups("sidebar", fontFamilies, settings.sidebarFontFamily),
-    [fontFamilies, settings.sidebarFontFamily],
+    () => fontGroups("sidebar", fontFamilies),
+    [fontFamilies],
   );
   const [themeMessage, setThemeMessage] = useState<string | null>(null);
   const [themeBusy, setThemeBusy] = useState(false);
