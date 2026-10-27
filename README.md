@@ -253,7 +253,19 @@ make check        # formatting, Rust checks, TypeScript checks
 make test-docker  # integration tests against Docker-backed databases
 ```
 
-The Docker suite expects the test containers described in the repository. Individual tools are available too:
+### Test databases
+
+`testdb/compose.yml` runs throwaway PostgreSQL, MySQL, CockroachDB, and SQL Server servers in Docker, seeded with the rows the engine's live tests read. Start every engine, or only the ones `ENGINE` names:
+
+```sh
+make test-db ENGINE=postgres          # or ENGINE="mysql mssql"; all four when omitted
+make test-live ENGINE=postgres        # the engine's live tests against them
+make test-db-down ENGINE=postgres     # stop them and throw the data away
+```
+
+`make test-db` prints the host, port, and account for each one, so you can also add them as connections in TablePeek and try the app on a real server. Ports are bound to `127.0.0.1` only, and the accounts are test-only: never reuse them on a real server. MySQL listens on 3307; set `TABLEPEEK_TEST_MYSQL_PORT=3329` (for `make test-db` and `make test-live` alike) when that port is taken. SQL Server has no arm64 image, so on Apple Silicon it runs under emulation and takes a minute to start.
+
+Individual tools are available too:
 
 ```sh
 cd web && npm run typecheck
@@ -271,6 +283,7 @@ cargo test
 | `crates/tablepeek-engine` | Drivers, sessions, query execution, Arrow IPC, row operations |
 | `crates/tablepeek-types` | Shared request, result, and connection types |
 | `web` | React UI, CodeMirror editor, canvas grid, themes, i18n |
+| `testdb` | Docker Compose test databases and their seed data |
 | `docs` | Architecture, MCP, remaining scope, and manual checklists |
 
 ## Status

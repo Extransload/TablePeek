@@ -1,0 +1,72 @@
+# Throwaway databases for TablePeek's live tests and for trying the app on
+# real servers. Start one engine or several with `make test-db ENGINE=…`.
+#
+# Every port is bound to 127.0.0.1 only. These accounts are the ones the
+# engine tests expect (crates/tablepeek-engine/src/lib.rs) and exist nowhere
+# else: never reuse them on a real server. Nothing is kept on a volume, so
+# `make test-db-down` throws the data away.
+name: tablepeek-testdb
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: tablepeek
+      POSTGRES_PASSWORD: tablepeek_test_pw
+      POSTGRES_DB: tablepeek_test
+    volumes:
+      - ./postgres.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      # Over TCP: the server the image runs while seeding listens on a socket only.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "tablepeek", "-d", "tablepeek_test"]
+      interval: 2s
+      retries: 60
+
+  mysql:
+    image: mysql:8.0
+    ports:
+      # 3307 unless TABLEPEEK_TEST_MYSQL_PORT says otherwise (the tests read it too).
+      - "127.0.0.1:${TABLEPEEK_TEST_MYSQL_PORT:-3307}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pw
+      MYSQL_DATABASE: tablepeek_test
+    volumes:
+      - ./mysql.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      # Over TCP: the server the image runs while seeding skips networking.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_pw", "--silent"]
+      interval: 2s
+      retries: 90
+
+  cockroach:
+    image: cockroachdb/cockroach:latest
+    command: start-single-node --insecure
+    ports:
+      - "127.0.0.1:26258:26257"
+    volumes:
+      # Seeded by `make test-db`; the image runs no init scripts of its own here.
+      - ./cockroach.sql:/seed/cockroach.sql:ro
+    healthcheck:
+      test: ["CMD", "/cockroach/cockroach", "sql", "--insecure", "-e", "SELECT 1"]
+      interval: 2s
+      retries: 60
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    # No arm64 build: Apple Silicon runs it under emulation, so it starts slowly.
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:14330:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: MsSql_test_pw1
+    volumes:
+      # Seeded by `make test-db`; the image has no init scripts.
+      - ./mssql.sql:/seed/mssql.sql:ro
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S", "localhost", "-U", "sa", "-P", "MsSql_test_pw1", "-Q", "SELECT 1"]
+      interval: 5s
+      retries: 60
+      start_period: 20s

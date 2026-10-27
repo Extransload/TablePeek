@@ -20,7 +20,20 @@ else
 SERVE_ARGS :=
 endif
 
-.PHONY: all help install web build run mcp test test-docker check fmt clean distclean
+# Throwaway test databases (testdb/compose.yml): every engine, or the ones
+# ENGINE names, e.g. ENGINE=postgres or ENGINE="mysql mssql".
+TESTDB_ENGINES := postgres mysql cockroach mssql
+ENGINE ?= $(TESTDB_ENGINES)
+TESTDB := docker compose -f testdb/compose.yml
+# MySQL's host port; the tests read the same variable.
+TABLEPEEK_TEST_MYSQL_PORT ?= 3307
+export TABLEPEEK_TEST_MYSQL_PORT
+TESTDB_ENV := $(if $(filter postgres,$(ENGINE)),TABLEPEEK_TEST_PG=1) \
+	$(if $(filter mysql,$(ENGINE)),TABLEPEEK_TEST_MYSQL=1) \
+	$(if $(filter cockroach,$(ENGINE)),TABLEPEEK_TEST_COCKROACH=1) \
+	$(if $(filter mssql,$(ENGINE)),TABLEPEEK_TEST_MSSQL=1)
+
+.PHONY: all help install web build run mcp test test-docker test-db test-db-down test-live check fmt clean distclean testdb-engines
 
 all: build
 
@@ -37,6 +50,11 @@ help:
 		'  make mcp                     Run the MCP stdio server' \
 		'  make test                    Run Rust tests and TypeScript checks' \
 		'  make test-docker             Run Docker-backed integration tests' \
+		'  make test-db                 Start the test databases in Docker, seeded' \
+		'  make test-db ENGINE=postgres Start only some (postgres mysql cockroach mssql)' \
+		'  make test-live ENGINE=mysql  Run the engine live tests against them' \
+		'  make test-db-down            Stop them and throw their data away' \
+		'  TABLEPEEK_TEST_MYSQL_PORT=3329 make test-db ENGINE=mysql   Another MySQL port' \
 		'  make check                   Check formatting, Rust, and TypeScript' \
 		'  make fmt                     Format Rust code' \
 		'  make clean                   Remove Rust and web build artifacts' \
@@ -64,6 +82,26 @@ test: web
 
 test-docker: web
 	TABLEPEEK_TEST_PG=1 TABLEPEEK_TEST_MYSQL=1 TABLEPEEK_TEST_COCKROACH=1 TABLEPEEK_TEST_MSSQL=1 TABLEPEEK_TEST_DOCKER=1 $(CARGO) test
+
+testdb-engines:
+	@unknown='$(filter-out $(TESTDB_ENGINES),$(ENGINE))'; \
+	if [ -n "$$unknown" ]; then echo "Unknown ENGINE: $$unknown (use: $(TESTDB_ENGINES))" >&2; exit 2; fi
+
+test-db: testdb-engines
+	$(TESTDB) up -d --wait $(ENGINE)
+	$(if $(filter cockroach,$(ENGINE)),$(TESTDB) exec -T cockroach /cockroach/cockroach sql --insecure -d defaultdb -f /seed/cockroach.sql > /dev/null)
+	$(if $(filter mssql,$(ENGINE)),$(TESTDB) exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -b -i /seed/mssql.sql > /dev/null)
+	@printf '%s\n' 'Ready on 127.0.0.1 (test-only accounts):'
+	$(if $(filter postgres,$(ENGINE)),@printf '%s\n' '  PostgreSQL   port 5433   tablepeek / tablepeek_test_pw   database tablepeek_test')
+	$(if $(filter mysql,$(ENGINE)),@printf '%s\n' '  MySQL        port $(TABLEPEEK_TEST_MYSQL_PORT)   root / root_pw                  database tablepeek_test')
+	$(if $(filter cockroach,$(ENGINE)),@printf '%s\n' '  CockroachDB  port 26258  root (no password; SSL off)    database defaultdb')
+	$(if $(filter mssql,$(ENGINE)),@printf '%s\n' '  SQL Server   port 14330  sa / MsSql_test_pw1             database tablepeek_test')
+
+test-db-down: testdb-engines
+	$(if $(filter-out $(ENGINE),$(TESTDB_ENGINES)),$(TESTDB) rm --stop --force --volumes $(ENGINE),$(TESTDB) down --volumes)
+
+test-live: testdb-engines
+	$(TESTDB_ENV) $(CARGO) test -p tablepeek-engine -- --test-threads=1
 
 check: web
 	$(CARGO) fmt --all --check
