@@ -23,6 +23,7 @@ import { isolateHistory } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { scrollbarsFor } from "../scrollbars";
 import { completeSql, type SqlWord } from "../sqlComplete";
 import { statementAt } from "../sqlSplit";
 
@@ -474,12 +475,16 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       }
       const view = new EditorView({ parent: host, state: makeState("") });
       viewRef.current = view;
+      // The app's bars, kept in view as Settings asks.
+      const bars = scrollbarsFor(view.scrollDOM, true);
+      bars.watch(view.contentDOM);
       // A face picked in Settings loads after the editor measured its lines
       // and letters in the fallback.
       const remeasure = () => view.requestMeasure();
       document.fonts.addEventListener("loadingdone", remeasure);
       return () => {
         document.fonts.removeEventListener("loadingdone", remeasure);
+        bars.destroy();
         flushPending();
         viewRef.current = null;
         view.destroy();

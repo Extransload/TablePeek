@@ -48,40 +48,21 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* The app draws its own scrollbars (scrollbars.ts): Chrome on macOS no
+   longer styles ::-webkit-scrollbar, and its own bars are 16px classic ones
+   or overlay ones that widen under the pointer. Every element's are hidden.
+   An area that wants none sets --app-scrollbar: none, for itself only. */
+@property --app-scrollbar {
+  syntax: "*";
+  inherits: false;
+}
+
+* {
+  scrollbar-width: none;
+}
+
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #4a4a4a;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  border-radius: 5px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #5c5c5c;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-/* Firefox has no ::-webkit-scrollbar; elsewhere the standard properties
-   would win over it and hand the bars back to the system's overlay ones,
-   which grow under the pointer. */
-@supports not selector(::-webkit-scrollbar) {
-  * {
-    scrollbar-color: #4a4a4a transparent;
-    scrollbar-width: thin;
-  }
+  display: none;
 }
 
 :focus-visible {
@@ -268,11 +249,7 @@ select {
   align-items: stretch;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;
-}
-
-.tab-strip::-webkit-scrollbar {
-  display: none;
+  --app-scrollbar: none;
 }
 
 .tab {
@@ -2852,28 +2829,47 @@ body {
   letter-spacing: 0.005em;
 }
 
-/* Slim bars of one size: under the pointer only their colour changes. */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* The app's scrollbars (scrollbars.ts): a 10px track over a scroll area's
+   edge holding a 4px pill, one size always; under the pointer only its
+   colour changes. Shown while the area is hovered or scrolls. */
+.app-scrollbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--scrollbar, #55555f);
-  border: 2px solid transparent;
-  background-clip: padding-box;
+.app-scrollbar.idle {
+  visibility: hidden;
+}
+
+.app-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: 3px solid transparent;
   border-radius: 999px;
+  background: var(--scrollbar, #55555f);
+  background-clip: padding-box;
 }
 
-::-webkit-scrollbar-thumb:hover {
+.app-scrollbar.shown {
+  opacity: 1;
+}
+
+.app-scrollbar.shown .app-scrollbar-thumb {
+  pointer-events: auto;
+}
+
+.app-scrollbar-thumb:hover,
+.app-scrollbar-thumb.dragging {
   background: var(--scrollbar-hover, #6b6b77);
   background-clip: padding-box;
-}
-
-@supports not selector(::-webkit-scrollbar) {
-  * {
-    scrollbar-color: var(--scrollbar, #55555f) transparent;
-  }
 }
 
 button {
@@ -4249,11 +4245,7 @@ textarea:focus-visible {
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;
-}
-
-.conn-bar-track::-webkit-scrollbar {
-  display: none;
+  --app-scrollbar: none;
 }
 
 .conn-bar-empty {
@@ -9178,25 +9170,16 @@ select:not([multiple]) {
   border-top: 1px solid var(--line-soft);
 }
 
-/* Settings → Data Table: the grid's and the editor's scrollbars kept in
-   view: the axis asked for has its bar even with nothing to scroll, over a
-   faint track. (Firefox, with the standard properties only, gets its
-   classic bars back here.) */
-html:is(.scrollbar-x-always, .scrollbar-y-always) :is(.grid-scroller, .cm-scroller) {
-  scrollbar-width: auto;
-  scrollbar-color: auto;
+/* Settings → Data Table: the grid's and the editor's bars (pinned) kept in
+   view, not only while hovered or scrolling. */
+html.scrollbar-y-always .app-scrollbar.pinned.y,
+html.scrollbar-x-always .app-scrollbar.pinned.x {
+  opacity: 1;
 }
 
-html:is(.scrollbar-x-always, .scrollbar-y-always) :is(.grid-scroller, .cm-scroller)::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--line) 18%, transparent);
-}
-
-html.scrollbar-x-always :is(.grid-scroller, .cm-scroller) {
-  overflow-x: scroll !important;
-}
-
-html.scrollbar-y-always :is(.grid-scroller, .cm-scroller) {
-  overflow-y: scroll !important;
+html.scrollbar-y-always .app-scrollbar.pinned.y .app-scrollbar-thumb,
+html.scrollbar-x-always .app-scrollbar.pinned.x .app-scrollbar-thumb {
+  pointer-events: auto;
 }
 
 /* The settings' editor sample fits its lines: no bars there either way. */

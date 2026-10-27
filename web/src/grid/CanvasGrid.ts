@@ -7,6 +7,7 @@ import { isDateKind, type CellKind, type GridColumnSpec } from "./columns";
 import { COPY_MAX_ROWS, parseClipboardTable, toPlainText } from "../copyFormats";
 import { t } from "../i18n";
 import { IS_MAC } from "../shortcuts";
+import { scrollbarsFor, type ScrollArea } from "../scrollbars";
 
 // Sizes at the default system font size (12px); scaled by syncScale().
 const BASE_FONT_PX = 12;
@@ -184,6 +185,8 @@ export class CanvasGrid {
   private readonly fitButton: HTMLButtonElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly ro: ResizeObserver;
+  // The app's bars over the scroller, kept in view as Settings asks.
+  private readonly bars: ScrollArea;
 
   private source: RowSource | null = null;
   private widths: number[] = [];
@@ -303,6 +306,8 @@ export class CanvasGrid {
     this.fitButton = fitButton;
     this.ctx = ctx;
     this.ro = new ResizeObserver(this.onResize);
+    this.bars = scrollbarsFor(scroller, true);
+    this.bars.watch(sizer);
 
     scroller.addEventListener("scroll", this.onScroll);
     canvas.addEventListener("pointerdown", this.onPointerDown);
@@ -656,6 +661,7 @@ export class CanvasGrid {
       this.disposeUpdates = null;
     }
     this.ro.disconnect();
+    this.bars.destroy();
     this.scroller.removeEventListener("scroll", this.onScroll);
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
