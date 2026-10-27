@@ -90,8 +90,10 @@ testdb-engines:
 test-db: testdb-engines
 	$(TESTDB) up -d --wait $(ENGINE)
 	$(if $(filter cockroach,$(ENGINE)),$(TESTDB) exec -T cockroach /cockroach/cockroach sql --insecure -d defaultdb -f /seed/cockroach.sql > /dev/null)
-	$(if $(filter mssql,$(ENGINE)),$(TESTDB) exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -b -i /seed/mssql.sql > /dev/null)
-	@printf '%s\n' 'Ready on 127.0.0.1 (test-only accounts):'
+	$(if $(filter cockroach,$(ENGINE)),$(TESTDB) exec -T cockroach /cockroach/cockroach sql --insecure -d defaultdb -f /seed/cockroach-shop.sql > /dev/null)
+	$(if $(filter mssql,$(ENGINE)),$(TESTDB) exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -b -r0 -i /seed/mssql.sql > /dev/null)
+	$(if $(filter mssql,$(ENGINE)),$(TESTDB) exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -b -r0 -i /seed/mssql-shop.sql > /dev/null)
+	@printf '%s\n' 'Ready on 127.0.0.1 (test-only accounts; sample data in schema shop, or database shop on MySQL):'
 	$(if $(filter postgres,$(ENGINE)),@printf '%s\n' '  PostgreSQL   port 5433   tablepeek / tablepeek_test_pw   database tablepeek_test')
 	$(if $(filter mysql,$(ENGINE)),@printf '%s\n' '  MySQL        port $(TABLEPEEK_TEST_MYSQL_PORT)   root / root_pw                  database tablepeek_test')
 	$(if $(filter cockroach,$(ENGINE)),@printf '%s\n' '  CockroachDB  port 26258  root (no password; SSL off)    database defaultdb')

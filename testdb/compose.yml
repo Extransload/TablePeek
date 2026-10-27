@@ -17,7 +17,8 @@ services:
       POSTGRES_PASSWORD: tablepeek_test_pw
       POSTGRES_DB: tablepeek_test
     volumes:
-      - ./postgres.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+      - ./postgres.sql:/docker-entrypoint-initdb.d/10-tests.sql:ro
+      - ./postgres-shop.sql:/docker-entrypoint-initdb.d/20-shop.sql:ro
     healthcheck:
       # Over TCP: the server the image runs while seeding listens on a socket only.
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "tablepeek", "-d", "tablepeek_test"]
@@ -33,7 +34,8 @@ services:
       MYSQL_ROOT_PASSWORD: root_pw
       MYSQL_DATABASE: tablepeek_test
     volumes:
-      - ./mysql.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+      - ./mysql.sql:/docker-entrypoint-initdb.d/10-tests.sql:ro
+      - ./mysql-shop.sql:/docker-entrypoint-initdb.d/20-shop.sql:ro
     healthcheck:
       # Over TCP: the server the image runs while seeding skips networking.
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_pw", "--silent"]
@@ -47,7 +49,9 @@ services:
       - "127.0.0.1:26258:26257"
     volumes:
       # Seeded by `make test-db`; the image runs no init scripts of its own here.
-      - ./cockroach.sql:/seed/cockroach.sql:ro
+      # The whole folder, so an edited seed reaches a running container (a
+      # mounted single file would keep pointing at the one it replaced).
+      - ./:/seed:ro
     healthcheck:
       test: ["CMD", "/cockroach/cockroach", "sql", "--insecure", "-e", "SELECT 1"]
       interval: 2s
@@ -63,8 +67,9 @@ services:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: MsSql_test_pw1
     volumes:
-      # Seeded by `make test-db`; the image has no init scripts.
-      - ./mssql.sql:/seed/mssql.sql:ro
+      # Seeded by `make test-db`; the image has no init scripts. The whole
+      # folder, as for cockroach.
+      - ./:/seed:ro
     healthcheck:
       test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S", "localhost", "-U", "sa", "-P", "MsSql_test_pw1", "-Q", "SELECT 1"]
       interval: 5s
