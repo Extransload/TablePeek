@@ -36,7 +36,10 @@ export interface AppSettings {
   uiFontSize: number;
   rowAlt: boolean;
   typeColors: boolean;
-  hideScroller: boolean;
+  // The grid's and the editor's scrollbars kept in view on each axis,
+  // instead of the system's, which may show only while scrolling.
+  scrollbarX: boolean;
+  scrollbarY: boolean;
   uppercaseKeywords: boolean;
   syntaxPreset: SyntaxPresetId;
   activityDays: number;
@@ -70,7 +73,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uiFontSize: 12,
   rowAlt: true,
   typeColors: true,
-  hideScroller: false,
+  scrollbarX: true,
+  scrollbarY: true,
   uppercaseKeywords: true,
   syntaxPreset: "tablepeek",
   activityDays: 7,
@@ -96,9 +100,13 @@ function readSettings(): AppSettings {
     if (raw === null) {
       return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
     }
-    const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    const { hideScroller, ...parsed } = JSON.parse(raw) as Partial<AppSettings> & { hideScroller?: boolean };
+    // "Hide scrollbars" from earlier versions: neither kept in view.
+    const shown = hideScroller === true ? false : DEFAULT_SETTINGS.scrollbarX;
     return {
       ...DEFAULT_SETTINGS,
+      scrollbarX: shown,
+      scrollbarY: shown,
       ...parsed,
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
@@ -203,7 +211,8 @@ export function applySettings(settings: AppSettings): void {
   for (const [key, variable] of Object.entries(SYNTAX_VARIABLES)) {
     root.style.setProperty(variable, syntax[key as keyof typeof syntax]);
   }
-  root.classList.toggle("hide-scroller", settings.hideScroller);
+  root.classList.toggle("scrollbar-x-always", settings.scrollbarX);
+  root.classList.toggle("scrollbar-y-always", settings.scrollbarY);
   window.dispatchEvent(new CustomEvent("tablepeek:theme"));
 }
 

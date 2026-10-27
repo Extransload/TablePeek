@@ -569,13 +569,22 @@ export function SettingsModal({
                     <label className="settings-check">
                       <input
                         type="checkbox"
-                        checked={settings.hideScroller}
-                        onChange={(event) =>
-                          onChange({ hideScroller: event.target.checked })
-                        }
+                        checked={settings.scrollbarX}
+                        onChange={(event) => onChange({ scrollbarX: event.target.checked })}
                       />
-                      {t("스크롤바 자동 숨김")}
+                      {t("가로 스크롤바 항상 표시")}
                     </label>
+                    <label className="settings-check">
+                      <input
+                        type="checkbox"
+                        checked={settings.scrollbarY}
+                        onChange={(event) => onChange({ scrollbarY: event.target.checked })}
+                      />
+                      {t("세로 스크롤바 항상 표시")}
+                    </label>
+                    <p className="helper">
+                      {t("데이터 그리드와 SQL 에디터에 적용됩니다. 끄면 운영체제 설정을 따릅니다 (macOS는 스크롤할 때만 보일 수 있습니다).")}
+                    </p>
                   </section>
                 </>
               </div>

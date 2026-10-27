@@ -2636,12 +2636,6 @@ html[data-theme="light"] {
   color-scheme: light;
 }
 
-html.hide-scroller .grid-scroller::-webkit-scrollbar,
-html.hide-scroller .cm-scroller::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
 .settings-modal {
   width: 620px;
   max-width: min(620px, 94vw);
@@ -9244,4 +9238,26 @@ select:not([multiple]) {
 .select-group:not(:first-child) {
   margin-top: 4px;
   border-top: 1px solid var(--line-soft);
+}
+
+/* Settings → Tables: the grid's and the editor's scrollbars kept in view,
+   where the system's overlay ones may show only while scrolling. Either
+   setting makes them classic bars (the standard scrollbar properties above
+   would hand them back to the system); the axis asked for has its bar even
+   with nothing to scroll. */
+html:is(.scrollbar-x-always, .scrollbar-y-always) :is(.grid-scroller, .cm-scroller) {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+html:is(.scrollbar-x-always, .scrollbar-y-always) :is(.grid-scroller, .cm-scroller)::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--line) 30%, transparent);
+}
+
+html.scrollbar-x-always :is(.grid-scroller, .cm-scroller) {
+  overflow-x: scroll !important;
+}
+
+html.scrollbar-y-always :is(.grid-scroller, .cm-scroller) {
+  overflow-y: scroll !important;
 }

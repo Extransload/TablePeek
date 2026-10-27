@@ -176,7 +176,10 @@ const EN: Record<string, string> = {
   "줄무늬 행 배경": "Alternating row background",
   "타입별 색상": "Color by type",
   "문자열·숫자·불리언·JSON·배열·날짜 값을 타입별 색으로 구분합니다.": "Color values by type: string, number, boolean, JSON, array, and date.",
-  "스크롤바 자동 숨김": "Auto-hide scrollbars",
+  "가로 스크롤바 항상 표시": "Always show the horizontal scrollbar",
+  "세로 스크롤바 항상 표시": "Always show the vertical scrollbar",
+  "데이터 그리드와 SQL 에디터에 적용됩니다. 끄면 운영체제 설정을 따릅니다 (macOS는 스크롤할 때만 보일 수 있습니다).":
+    "Applies to the data grid and the SQL editor. Off, the system decides (macOS may show them only while scrolling).",
   "가져오기 · 내보내기 기본값": "Import and export defaults",
   "CSV 구분자": "CSV delimiter",
   "첫 행을 헤더로 사용": "Use first row as header",
