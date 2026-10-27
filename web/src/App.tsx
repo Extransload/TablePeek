@@ -1251,11 +1251,27 @@ export default function App() {
       JSON.stringify(spec.filter ?? null) === JSON.stringify(tab.filter ?? null) &&
       JSON.stringify(spec.sorts ?? null) === JSON.stringify(tab.sorts ?? null);
     const countKey = buildWhere(spec.filter, meta?.kind ?? "") ?? "";
+    // The table in front read again: its columns keep their widths (and the
+    // same rows their scroll), so the header doesn't jump when a sort, page
+    // or filter swaps the rows under it, as TablePlus keeps it.
+    const keepView =
+      live !== null &&
+      live.kind === "data" &&
+      live.source !== undefined &&
+      activeConnIdRef.current === conn &&
+      known?.activeId === tab.id;
+    if (keepView) {
+      gridHostRef.current?.keepViewOnNextResult(reload ? "all" : "columns");
+    }
     void store.runQuery(conn, sql, spec.pageSize, tab.id).then((outcome) => {
       // A run for another tab may already have started (the next table's load).
       setRunningTabId((value) => (value === tab.id ? null : value));
       const applied = handleOutcome(conn, tab.id, outcome);
       if (!applied || outcome.kind !== "ok") {
+        // No rows came to keep the view for: another table mustn't inherit it.
+        if (keepView) {
+          gridHostRef.current?.keepViewOnNextResult(null);
+        }
         return;
       }
       if (outcome.result.meta.rowCount === 0 && spec.offset > 0) {

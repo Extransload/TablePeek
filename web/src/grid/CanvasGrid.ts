@@ -236,7 +236,10 @@ export class CanvasGrid {
   private viewW = 0;
   private viewH = 0;
   private knownRowCount = 0;
-  private keepViewOnce = false;
+  // What the next source keeps of the view when its columns are the same:
+  // everything (the same rows read again), or the columns' widths and the
+  // sideways scroll (the rows sorted, paged or filtered, read from the top).
+  private keepViewOnce: "all" | "columns" | null = null;
   // The system font scale and the font this grid was last laid out with.
   private scaleSeen = SCALE;
   private fontSeen = FONT;
@@ -402,19 +405,21 @@ export class CanvasGrid {
       this.holdUntil = performance.now() + HOLD_MS;
       this.holdTimer = window.setTimeout(() => this.endHold(), HOLD_MS);
     }
-    const keepView =
-      this.keepViewOnce &&
+    const sameColumns =
       previous !== null &&
       source !== null &&
       previous.columns.length === source.columns.length &&
       previous.columns.every((name, index) => name === source.columns[index]);
-    this.keepViewOnce = false;
+    const keep = sameColumns ? this.keepViewOnce : null;
+    this.keepViewOnce = null;
     this.source = source;
     if (source && source.onUpdate) {
       this.disposeUpdates = source.onUpdate(this.onSourceUpdate);
     }
-    if (!keepView) {
+    if (keep === null) {
       this.scroller.scrollLeft = 0;
+    }
+    if (keep !== "all") {
       this.scroller.scrollTop = 0;
     }
     this.hoverRow = null;
@@ -429,7 +434,7 @@ export class CanvasGrid {
 
     const colCount = source ? source.columns.length : 0;
     const rowCount = source ? source.rowCount : 0;
-    if (!keepView) {
+    if (keep === null) {
       const widths = new Array<number>(colCount);
       for (let c = 0; c < colCount; c++) {
         widths[c] = Math.round(COL_DEFAULT * SCALE);
@@ -507,8 +512,11 @@ export class CanvasGrid {
     this.fitButton.style.height = `${HEADER_H}px`;
   }
 
-  keepViewOnNextSource(): void {
-    this.keepViewOnce = true;
+  // null takes back a request whose run brought no rows (it failed or was
+  // stopped), so it can't carry over to another table.
+  keepViewOnNextSource(scope: "all" | "columns" | null = "all"): void {
+    // A reload asked for already keeps more than a re-sort would.
+    this.keepViewOnce = scope === null ? null : this.keepViewOnce === "all" ? "all" : scope;
   }
 
   setEditable(handlers: GridEditHandlers | null): void {

@@ -20,7 +20,7 @@ import { DatePicker } from "./DatePicker";
 export interface TableGridHandle {
   beginEdit(row: number, col: number): void;
   focus(): void;
-  keepViewOnNextSource(): void;
+  keepViewOnNextSource(scope?: "all" | "columns" | null): void;
   selectCell(row: number, col: number): void;
   selectRows(from: number, to: number): void;
   selection(): GridSelection | null;
@@ -196,7 +196,7 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
     () => ({
       beginEdit: (row, col) => gridRef.current?.beginEdit(row, col),
       focus: () => gridRef.current?.focus(),
-      keepViewOnNextSource: () => gridRef.current?.keepViewOnNextSource(),
+      keepViewOnNextSource: (scope) => gridRef.current?.keepViewOnNextSource(scope),
       selectCell: (row, col) => gridRef.current?.selectCell(row, col),
       selectRows: (from, to) => gridRef.current?.selectRows(from, to),
       selection: () => gridRef.current?.selection() ?? null,

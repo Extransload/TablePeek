@@ -13,7 +13,10 @@ import { TableGrid, type TableGridHandle } from "./TableGrid";
 export interface GridHostHandle {
   beginEdit(row: number, col: number): void;
   focus(): void;
-  keepViewOnNextResult(): void;
+  // "columns": the rows will be sorted, paged or filtered (widths and the
+  // sideways scroll stay); "all", the default: the same rows read again;
+  // null: the run asked for brought nothing, so the request is taken back.
+  keepViewOnNextResult(scope?: "all" | "columns" | null): void;
   selectCell(row: number, col: number): void;
   selectRows(from: number, to: number): void;
   selection(): GridSelection | null;
@@ -99,7 +102,7 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     () => ({
       beginEdit: (row, col) => tableRef.current?.beginEdit(row, col),
       focus: () => tableRef.current?.focus(),
-      keepViewOnNextResult: () => tableRef.current?.keepViewOnNextSource(),
+      keepViewOnNextResult: (scope) => tableRef.current?.keepViewOnNextSource(scope),
       selectCell: (row, col) => tableRef.current?.selectCell(row, col),
       selectRows: (from, to) => tableRef.current?.selectRows(from, to),
       selection: () => tableRef.current?.selection() ?? null,
