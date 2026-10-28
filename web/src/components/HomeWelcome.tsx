@@ -38,6 +38,7 @@ export function HomeWelcome({ onNewConnection, onOpenFile, onImportFile }: HomeW
           <li>{t("사용자 이름과 비밀번호")}</li>
           <li>{t("데이터베이스 이름")}</li>
           <li>{t("필요하면 SSH 터널이나 SSL 인증서")}</li>
+          <li>{t("SQLite라면 데이터베이스 파일 하나면 됩니다")}</li>
         </ul>
         <p>{t("postgres://… 같은 연결 URL을 호스트 칸에 붙여 넣으면 나머지가 자동으로 채워집니다.")}</p>
       </div>

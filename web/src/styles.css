@@ -3768,8 +3768,10 @@ input[type="color"]::-webkit-color-swatch {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
-/* The system's file dialog is on its way: same pill, over everything. */
+/* The system's file dialog is on its way: same pill, over everything, and
+   at once (no loading delay), since the dialog itself is what's awaited. */
 .file-pick-pending {
+  --loading-delay: 0ms;
   position: fixed;
   top: 14px;
   left: 50%;

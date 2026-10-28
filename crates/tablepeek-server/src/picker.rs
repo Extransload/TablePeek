@@ -86,14 +86,6 @@ fn failure(output: &Output) -> PickError {
     })
 }
 
-/// Starts the macOS panel helper ahead of the first pick: a fresh process
-/// takes about a second to show its first panel, a warm one a tenth of that.
-/// Elsewhere each pick starts its own dialog, and this does nothing.
-pub fn warm() {
-    #[cfg(target_os = "macos")]
-    mac::warm();
-}
-
 #[cfg(target_os = "macos")]
 fn platform_pick(
     title: &str,
@@ -114,10 +106,11 @@ fn platform_pick(
     )
 }
 
-/// One long-lived `osascript` (JavaScript for Automation) that keeps AppKit
-/// and an open panel loaded. Per request (one JSON line on stdin) it writes
-/// `{"shown": true}` once the panel is up, then `{"path": …}` (null when
-/// cancelled) or `{"error": …}`.
+/// One long-lived `osascript` (JavaScript for Automation), started by the
+/// first pick, that keeps AppKit and an open panel loaded: its first panel
+/// takes about a second, the ones after a tenth of that. Per request (one
+/// JSON line on stdin) it writes `{"shown": true}` once the panel is up, then
+/// `{"path": …}` (null when cancelled) or `{"error": …}`.
 #[cfg(target_os = "macos")]
 mod mac {
     use std::io::{BufRead, BufReader, Write};
@@ -220,15 +213,6 @@ app.run;
     }
 
     static HELPER: Mutex<Option<Helper>> = Mutex::new(None);
-
-    pub(super) fn warm() {
-        let mut slot = HELPER
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if slot.is_none() {
-            *slot = Helper::spawn().ok();
-        }
-    }
 
     pub(super) fn pick(
         request: &serde_json::Value,

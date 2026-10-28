@@ -276,25 +276,24 @@ impl ConnSlot {
         }
     }
 
-    /// What this slot's history and safe mode are filed under: its saved
-    /// profile, its SQLite file, the demo, or, for a server connection that was
-    /// never saved, this session alone.
+    /// What this slot's history and safe mode are filed under: its SQLite
+    /// file (opened as a file or through a saved profile alike), its saved
+    /// profile, the demo, or, for a server connection that was never saved,
+    /// this session alone.
     fn history_scope(&self) -> String {
+        // One file, one scope, however its path was spelled (relative,
+        // through a symlink, with ".."), and never two files under one.
+        if let Some(path) = self.engine.sqlite_file() {
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            return format!("file:{}", path.display());
+        }
         if let Some(id) = &self.saved_id {
             return store::saved_scope(id);
         }
         if self.origin.is_some() {
             return format!("{}{}", store::SESSION_PREFIX, self.id);
         }
-        match self.engine.sqlite_file() {
-            // One file, one scope, however its path was spelled (relative,
-            // through a symlink, with ".."), and never two files under one.
-            Some(path) => {
-                let path = std::fs::canonicalize(&path).unwrap_or(path);
-                format!("file:{}", path.display())
-            }
-            None => "demo".to_string(),
-        }
+        "demo".to_string()
     }
 
     fn set_holder(&self, holder: Holder) {
@@ -706,7 +705,6 @@ pub fn app(state: AppState) -> Router {
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
-    picker::warm();
     // Slots opened before the server (the --db or --demo one) were not
     // registered through register_slot.
     for slot in state.registry.lock().await.list() {
@@ -1179,6 +1177,12 @@ async fn open(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
+    if let Some(path) = req.path.as_deref() {
+        if let Some(slot) = open_file_slot(&state, path).await {
+            let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
+            return Ok(Json(json!({ "conn": slot.id, "meta": meta })));
+        }
+    }
     let outcome = match req.path.as_deref() {
         None => Engine::open_demo(state.demo_rows),
         Some(path) => Engine::open_file(std::path::Path::new(path)),
@@ -1195,6 +1199,20 @@ async fn open(
         }
         Err(err) => Err(engine_error(err)),
     }
+}
+
+/// The slot already open on this SQLite file, however its path was spelled.
+/// Opening a file again, as a file or through a saved profile, goes to it:
+/// two engines on one file would only contend for its lock.
+async fn open_file_slot(state: &AppState, path: &str) -> Option<Arc<ConnSlot>> {
+    let wanted = std::fs::canonicalize(path.trim()).ok()?;
+    let slots = state.registry.lock().await.list();
+    slots.into_iter().find(|slot| {
+        slot.engine
+            .sqlite_file()
+            .and_then(|file| std::fs::canonicalize(file).ok())
+            .is_some_and(|file| file == wanted)
+    })
 }
 
 fn bad_request(code: &str, message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
@@ -1554,6 +1572,13 @@ async fn connect(
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
+    }
+    // A file already open is entered, not opened twice.
+    if let Some(path) = req.sqlite.as_ref().filter(|_| req.driver == "sqlite") {
+        if let Some(slot) = open_file_slot(&state, &path.path).await {
+            let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
+            return Ok(Json(json!({ "conn": slot.id, "meta": meta })));
+        }
     }
     let origin = SlotOrigin {
         label: None,
@@ -2352,6 +2377,15 @@ async fn connection_connect(
             "unsupported_driver",
             "지원하지 않는 드라이버입니다",
         ));
+    }
+    // A file already open (as a file, or through this or another profile) is
+    // entered, not opened twice.
+    if let Some(sqlite) = saved.sqlite.as_ref().filter(|_| saved.driver == "sqlite") {
+        if let Some(slot) = open_file_slot(&state, &sqlite.path).await {
+            let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
+            let _ = state.store.lock().await.touch_connection(&id, unix_now());
+            return Ok(Json(json!({ "conn": slot.id, "meta": meta })));
+        }
     }
 
     let mut request = ConnectRequest {
@@ -4716,7 +4750,36 @@ mod tests {
         let slot = state.registry.lock().await.get(conn).unwrap();
         assert_eq!(slot.saved_id.as_deref(), Some(id.as_str()));
         assert_eq!(slot.label, "로컬 파일");
-        assert_eq!(slot.history_scope(), store::saved_scope(&id));
+        // History goes with the file, shared with opening it as a file.
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        assert_eq!(
+            slot.history_scope(),
+            format!("file:{}", canonical.display())
+        );
+
+        // The file again, however it is reached, is the same connection.
+        let slots = state.registry.lock().await.list().len();
+        let spelled_otherwise = dir.join(".").join("app.db").display().to_string();
+        let reopened = open(
+            State(state.clone()),
+            test_headers(),
+            Json(OpenRequest {
+                path: Some(spelled_otherwise),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reopened.0["conn"], json!(conn));
+        let again = connection_connect(
+            State(state.clone()),
+            AxumPath(id.clone()),
+            test_headers(),
+            Bytes::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.0["conn"], json!(conn));
+        assert_eq!(state.registry.lock().await.list().len(), slots);
 
         let tested = connections_test(
             State(state.clone()),

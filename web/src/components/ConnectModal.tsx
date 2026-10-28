@@ -638,7 +638,20 @@ export function ConnectModal({
     return true;
   }
 
+  // Files the form points at must be there and readable; a SQLite profile's
+  // database file is checked on save as well.
   async function checkFiles(): Promise<boolean> {
+    if (form.driver === "sqlite") {
+      const path = form.path.trim();
+      const stat = await store.statPath(path);
+      if (!stat.exists || !stat.is_file || !stat.readable) {
+        const text = t("데이터베이스 파일을 읽을 수 없습니다: {path}", { path });
+        setProblems([{ field: "path", message: text }]);
+        setStatus({ kind: "error", text });
+        return false;
+      }
+      return true;
+    }
     const files: { path: string; label: string }[] = [];
     if (form.driver !== "mssql" && form.sslMode !== "disable") {
       if (form.sslRootCert.trim() !== "") {
@@ -717,6 +730,9 @@ export function ConnectModal({
     }
     setBusy("save");
     try {
+      if (form.driver === "sqlite" && !(await checkFiles())) {
+        return;
+      }
       await persist();
       onClose();
     } catch (err) {
