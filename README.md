@@ -163,12 +163,13 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 
 ### Query workbench
 
-- CodeMirror 6 editor with SQL completion and IME-safe input
+- CodeMirror 6 editor with IME-safe input and context-aware SQL completion: columns with their types, tables, `JOIN … ON` conditions from foreign keys (or guessed from names like `user_id`), common functions with signatures, statement templates with Tab-through fields, enum values inside strings, fuzzy matching (`usnm` → `user_name`), and an info panel beside the list; options you pick often rank first
 - Query tabs, snippets, execution history, and favorites
 - Command palette (`Mod+P`), new tab (`Mod+T`), close tab (`Mod+W`)
 - Safe mode that asks for confirmation before `UPDATE`/`DELETE` without a `WHERE` clause
 - Visual `EXPLAIN` / `EXPLAIN ANALYZE` plans with cost, estimated/actual rows, and raw JSON
 - Query cancellation and live timing
+- Chart and pivot views of any result or table: bar, line, area, pie/donut, and scatter charts with time bucketing and top-N grouping, and pivot tables with totals that copy as TSV
 
 ### Schema and server tools
 
@@ -176,9 +177,11 @@ Browse tables, views, functions, triggers, and sequences from the sidebar, inden
 
 The server info tab shows engine version, database size, uptime, and sessions, with session termination where the engine supports it.
 
+The ER diagram tab (the diagram button in the top bar, between the connections and settings buttons, or `Mod+P` → "ER diagram") draws every table with its columns and foreign keys, laid out automatically. Pan, zoom, drag cards (positions are remembered), search for a table, highlight a table's relations, show keys only, and double-click a table to open its data. A table's context menu in the sidebar opens the diagram centred on it.
+
 ### Connections
 
-The connection home groups saved connections; drag groups to reorder them. Start a new connection from the kind of database you want, or open one from the connection bar. Connection tabs close on a single click and move focus to their neighbour. Saved connections export to a password-sealed `.tablepeek` file and import back on another machine.
+The connection home groups saved connections; drag groups to reorder them. Start a new connection from the kind of database you want, or open one from the connection bar. A SQLite connection is saved like any other, with a name, colour, tags, and the database file; files are picked with the operating system's own open dialog, and the same file opened twice goes to the one connection already open. Connection tabs close on a single click and move focus to their neighbour. Saved connections export to a password-sealed `.tablepeek` file and import back on another machine.
 
 ### Settings and themes
 

@@ -84,7 +84,7 @@
   - C→S: `query{sql,max_rows,window}` · `fetch{offset,limit}` · `cancel` · `edit{session,table,pk,column,value,row,col}` · `insert_row{table,values[{column,value}]}` · `delete_row{table,pk[{column,value}]}` · `tx{begin|commit|rollback}`
   - S→C: `meta` → (행>0이면) Arrow IPC 바이너리 → `window{offset,count}` · `error{message,cancelled}` · `edited` · `row_change{op,rows_affected,invalidate}` · `tx{state,invalidate?}`
 - **세션·편집 (M3·M9)**: 결과 세션 상한 8(최근 사용 유지). 셀 편집은 PK 단일 행 UPDATE, 행 추가는 지정 컬럼 INSERT(빈 배열=DEFAULT VALUES), 행 삭제는 PK 일치 DELETE. 성공 시 서버가 세션 스냅샷 셀을 패치(M9: 행 추가/삭제는 `row_change.invalidate=true`를 보내고 전 세션을 비움 → UI가 활성 탭 재실행). 트랜잭션 중 편집은 저널(old 값) 기록, 구조적 변경(행 추가/삭제)은 저널에 `Structural` 마커 → `rollback` 시 전 세션 무효화(`tx.invalidate=true`), `commit`/`begin` 시 저널 폐기.
-- **REST**: `/api/meta` · `/api/open`(SQLite/데모 전환. 이미 열린 파일이면 그 연결로, 저장 프로필 연결도 같음. SQLite 기록·안전 모드는 프로필이 아닌 파일 기준) · `/api/connect`(postgres·mysql·cockroach·mssql 직접/SSH, sqlite 파일 경로) · `/api/fs/list` · `/api/fs/pick`(OS 파일 선택 창) · `/api/schema` · `/api/connections`(CRUD + `/{id}/connect`, sqlite 파일 프로필 포함) · `/api/history`(GET/DELETE) · `/api/favorites`(CRUD) · `/api/table`(컬럼·인덱스·외래 키·DDL·추정 행 수·크기) · `/api/server`(버전·크기·가동 시간·세션 목록) · `/api/objects`(뷰·함수·트리거·시퀀스) · `/api/definition`(뷰/함수/트리거/시퀀스 DDL) · `/api/kill`(세션 종료, 지원 엔진만) — 전부 토큰 인증.
+- **REST**: `/api/meta` · `/api/open`(SQLite/데모 전환. 이미 열린 파일이면 그 연결로, 저장 프로필 연결도 같음. SQLite 기록·안전 모드는 프로필이 아닌 파일 기준) · `/api/connect`(postgres·mysql·cockroach·mssql 직접/SSH, sqlite 파일 경로) · `/api/fs/list` · `/api/fs/pick`(OS 파일 선택 창) · `/api/schema` · `/api/relations`(`conn`·`system`, 연결의 외래 키 전체 `{relations:[{table,columns,ref_table,ref_columns}]}`, 테이블 이름은 `/api/schema` 표기) · `/api/connections`(CRUD + `/{id}/connect`, sqlite 파일 프로필 포함) · `/api/history`(GET/DELETE) · `/api/favorites`(CRUD) · `/api/table`(컬럼·인덱스·외래 키·DDL·추정 행 수·크기) · `/api/server`(버전·크기·가동 시간·세션 목록) · `/api/objects`(뷰·함수·트리거·시퀀스) · `/api/definition`(뷰/함수/트리거/시퀀스 DDL) · `/api/kill`(세션 종료, 지원 엔진만) — 전부 토큰 인증.
 - **드라이버 취소·한계 (M6~M9)**: SQLite `interrupt` · PG `pg_cancel_backend` · MySQL `KILL QUERY`(실제 실행 중 쿼리에만 유효) · CockroachDB `pg_cancel_backend` · SQL Server `KILL {spid}` + 세션 죽음 감지 시 재접속. MSSQL 트랜잭션은 TDS Transaction Manager RPC 사용(배치 경유 `BEGIN TRAN`은 오류 266). MSSQL 구조 조회는 `sys.*` 카탈로그, DDL 스크립트 재구성.
 - **전송 규약**: 행 1개 = Arrow IPC 배치 1개(BATCH_CHUNK 65,536행), Decimal/문자열 타입 매핑은 엔진 `arrow_schema` 참조.
 
@@ -114,6 +114,7 @@
 - **설정 모달**: 좌측 카테고리(일반·테마 / 화면: SQL 에디터·데이터 테이블·사이드바 / 가져오기·내보내기·단축키·보안) + 우측 pane 구조. 화면 영역 pane은 그 영역의 글꼴·동작과 미리보기를 함께 둔다(SQL 에디터 미리보기는 실제 에디터 설정의 읽기 전용 CodeMirror). 선택된 pane만 그리며, 입력 중인 값은 모달 상태에 남는다.
 - **연결 홈**: 저장 연결 카드에서 삭제를 지원한다. 삭제는 저장 목록과 connMeta만 제거하고 이미 열린 세션은 유지한다.
 - **Canvas 그리드**: 셀 값 타입별 잉크 색(`textInk`)과 헤더 ellipsis(`fitText`)를 적용해 라이트/다크 테마 모두에서 텍스트 대비와 컬럼 경계를 보장한다.
+- **차트·피벗**: 쿼리 결과 바와 테이블 탭의 보기 전환에 `데이터 | 차트 | 피벗`이 있다. 보기와 설정은 탭(`analysis`)에 저장된다. 쿼리 탭은 결과 행을, 테이블 탭은 필터를 적용한 테이블 전체를 별도 job 쿼리로 읽으며 둘 다 최대 50,000행(`ANALYSIS_ROW_CAP`)까지다. 집계·버킷·상위 N+기타·축 눈금은 순수 모듈 `web/src/chartData.ts`가 맡고, 차트는 직접 그린 SVG(라이브러리 없음, 테마 CSS 변수 색), 피벗은 Canvas 그리드 + TSV 복사로 보여 준다.
 
 ## 9. 열린 결정
 

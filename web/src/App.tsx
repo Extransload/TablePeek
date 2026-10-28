@@ -54,9 +54,11 @@ import { BrandLogo } from "./components/BrandLogo";
 import { MetricsModal } from "./components/MetricsModal";
 import { LockScreen } from "./components/LockScreen";
 import { OverviewPanel } from "./components/OverviewPanel";
+import { ErDiagram } from "./components/ErDiagram";
 import { CellInspector, type CellAnchor, type FkReference } from "./components/CellInspector";
 import { RowDetailPanel } from "./components/RowDetailPanel";
-import { ResultBar, StatementMessages, statementStatus, type ShownResult, type StatementMessage } from "./components/ResultBar";
+import { ResultBar, StatementMessages, statementStatus, type ResultView, type ShownResult, type StatementMessage } from "./components/ResultBar";
+import { AnalysisPane } from "./components/AnalysisPane";
 import { LoadingState, Spinner } from "./components/Spinner";
 import { SchemaSidebar, type TableAction } from "./components/SchemaSidebar";
 import { SidebarPanel } from "./components/SidebarPanel";
@@ -71,6 +73,7 @@ import { UserManagerModal } from "./components/UserManagerModal";
 import { TabStrip } from "./components/TabStrip";
 import {
   CheckIcon,
+  DiagramIcon,
   JobsIcon,
   MoreIcon,
   PanelIcon,
@@ -129,7 +132,8 @@ import {
   type ReviewItem,
   type SafeMode,
 } from "./sqlTools";
-import { forgetSchema, loadSchema } from "./schemaCache";
+import { forgetSchema, loadRelations, loadSchema } from "./schemaCache";
+import type { CompletionColumn, CompletionRelation } from "./sqlComplete";
 import { splitSqlStatements } from "./sqlSplit";
 import { loadAutoSave } from "./savedQueries";
 import { isDateKind, specsForTable, withResultKinds } from "./grid/columns";
@@ -160,6 +164,7 @@ import {
   countFor,
   createDataTab,
   createDefinitionTab,
+  createDiagramTab,
   createOverviewTab,
   createQueryTab,
   createServerTab,
@@ -683,7 +688,9 @@ export default function App() {
   // the result pane shows rows, the message view's note wouldn't be seen.
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimerRef = useRef(0);
-  const [schemaMap, setSchemaMap] = useState<Record<string, string[]>>({});
+  // What SQL completion knows of the connection: tables with their columns, and its foreign keys.
+  const [schemaMap, setSchemaMap] = useState<Record<string, CompletionColumn[]>>({});
+  const [relationList, setRelationList] = useState<CompletionRelation[]>([]);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   // null keeps the stylesheet's default width.
   const [sidebarWidth, setSidebarWidth] = useState<number | null>(() =>
@@ -1029,6 +1036,7 @@ export default function App() {
   useEffect(() => {
     if (activeConnId === null) {
       setSchemaMap({});
+      setRelationList([]);
       return;
     }
     let alive = true;
@@ -1038,13 +1046,37 @@ export default function App() {
         if (!alive) {
           return;
         }
-        const map: Record<string, string[]> = {};
+        const map: Record<string, CompletionColumn[]> = {};
         for (const table of tables) {
-          map[table.name] = table.columns.map((column) => column.name);
+          map[table.name] = table.columns.map((column) => ({
+            name: column.name,
+            type: column.decl_type,
+            notNull: column.not_null,
+            pk: column.pk,
+          }));
         }
         setSchemaMap(map);
       })
       .catch(() => {});
+    // A server without /api/relations still completes; joins then come from names alone.
+    void loadRelations(activeConnId, false, schemaKey)
+      .then((relations) => {
+        if (alive) {
+          setRelationList(
+            relations.map((relation) => ({
+              table: relation.table,
+              columns: relation.columns,
+              refTable: relation.ref_table,
+              refColumns: relation.ref_columns,
+            })),
+          );
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setRelationList([]);
+        }
+      });
     return () => {
       alive = false;
     };
@@ -2356,6 +2388,27 @@ export default function App() {
     activateNewTab(conn, createOverviewTab());
   }
 
+  // One diagram tab per connection; opening it for a table centres that table.
+  function openDiagramTab(table?: string): void {
+    const conn = activeConnIdRef.current;
+    if (conn === null) {
+      return;
+    }
+    const current = tabsOf(conn);
+    if (current === null) {
+      return;
+    }
+    const existing = current.tabs.find((tab) => tab.kind === "diagram");
+    if (existing === undefined) {
+      activateNewTab(conn, createDiagramTab(table));
+      return;
+    }
+    if (table !== undefined) {
+      setTabsFor(conn, patchTab(current, existing.id, { focus: table, focusSeq: (existing.focusSeq ?? 0) + 1 }));
+    }
+    activate(existing.id);
+  }
+
   function setTableView(view: TableView): void {
     const conn = activeConnIdRef.current;
     const tab = currentTab();
@@ -2379,6 +2432,20 @@ export default function App() {
         }
       });
     }
+  }
+
+  // The Data view's grid, or the Chart or Pivot of the same rows in its
+  // place, kept with the tab (a query's result or a table's rows).
+  function setAnalysisView(view: "grid" | "chart" | "pivot"): void {
+    const id = currentTab()?.id;
+    const next = view === "grid" ? null : view;
+    updateActiveTabs((current) => {
+      const tab = id !== undefined ? tabById(current, id) : null;
+      if (tab === null || (tab.kind !== "query" && tab.kind !== "data") || (tab.analysis?.view ?? null) === next) {
+        return current;
+      }
+      return patchTab(current, tab.id, { analysis: { ...tab.analysis, view: next } });
+    });
   }
 
   function cycleTableView(delta: -1 | 1): void {
@@ -3829,6 +3896,7 @@ export default function App() {
       { id: "open-views", label: t("뷰 열기"), sourceId: "views" },
       { id: "open-structure", label: t("테이블 구조 보기"), sourceId: "structure" },
       { id: "server-info", label: t("서버 정보"), run: openServerTab },
+      { id: "er-diagram", label: t("ER 다이어그램"), disabled: meta === null, run: () => openDiagramTab() },
       { id: "export", label: t("결과 내보내기"), disabled: result === null, run: openExport },
       {
         id: "export-tables",
@@ -4856,6 +4924,10 @@ export default function App() {
   // The query tab's last run as its result bar reports it. Picking one of
   // several statements' results patches the tab, so this is the one shown.
   const activeQueryTab = activeTab !== null && activeTab.kind === "query" ? activeTab : null;
+  // The Chart or Pivot the tab in front keeps in place of its rows' grid.
+  const analysisTab = activeQueryTab ?? (dataView ? activeDataTab : null);
+  const analysisView = analysisTab?.analysis?.view ?? null;
+  const paneView: ResultView = resultView === "grid" && analysisView !== null ? analysisView : resultView;
   const shownResult: ShownResult | null =
     activeQueryTab === null
       ? null
@@ -4895,20 +4967,32 @@ export default function App() {
         {(
           [
             ["data", t("데이터")],
+            ["chart", t("차트")],
+            ["pivot", t("피벗")],
             ["structure", t("구조")],
             ["index", t("인덱스")],
           ] as const
-        ).map(([view, label]) => (
-          <button
-            type="button"
-            key={view}
-            className={(activeDataTab.view ?? "data") === view ? "active" : ""}
-            onClick={() => setTableView(view)}
-            title={`${label} (⌘⌃[ / ⌘⌃])`}
-          >
-            {label}
-          </button>
-        ))}
+        ).map(([view, label]) => {
+          // Chart and Pivot are the Data view's rows shown another way.
+          const tableView = view === "chart" || view === "pivot" ? "data" : view;
+          const shown = dataView ? (analysisView ?? "data") : (activeDataTab.view ?? "data");
+          return (
+            <button
+              type="button"
+              key={view}
+              className={shown === view ? "active" : ""}
+              onClick={() => {
+                setTableView(tableView);
+                if (tableView === "data") {
+                  setAnalysisView(view === "chart" || view === "pivot" ? view : "grid");
+                }
+              }}
+              title={tableView === view ? `${label} (⌘⌃[ / ⌘⌃])` : label}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
     ) : null;
   // The Structure or Index view's picked rows, which the panel shows instead
@@ -4920,7 +5004,7 @@ export default function App() {
   // The grid row the panel can describe, if the current tab shows a grid.
   const gridTab =
     activeTab !== null && (activeTab.kind === "query" || (activeTab.kind === "data" && dataView));
-  const detailResult = gridTab && resultView === "grid" ? state.result : null;
+  const detailResult = gridTab && paneView === "grid" ? state.result : null;
   // The table the panel describes when no row is picked.
   const detailTable =
     activeTab !== null && (activeTab.kind === "data" || activeTab.kind === "structure")
@@ -5098,6 +5182,15 @@ export default function App() {
           <button
             type="button"
             className="icon-button appbar-icon"
+            onClick={() => openDiagramTab()}
+            title={t("ER 다이어그램")}
+          >
+            <DiagramIcon size={13} />
+            <span className="sr-only">{t("ER 다이어그램")}</span>
+          </button>
+          <button
+            type="button"
+            className="icon-button appbar-icon"
             onClick={() => setSettingsOpen(true)}
             title={withHint(t("설정"), shortcutHint(settings.keymap, "openSettings"))}
           >
@@ -5271,6 +5364,7 @@ export default function App() {
                   onOpenInEditor={pickTable}
                   onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
                   onOpenOverview={openOverviewTab}
+                  onOpenDiagram={openDiagramTab}
                   onOpenServer={openServerTab}
                   onOpenDefinition={openDefinitionTab}
                   onTogglePin={togglePin}
@@ -5336,6 +5430,14 @@ export default function App() {
                         onRun={run}
                         onSqlChange={handleSqlChange}
                         schema={schemaMap}
+                        relations={relationList}
+                        loadValues={async (table, column) => {
+                          if (activeConnId === null) {
+                            return null;
+                          }
+                          const detail = await ensureDetail(activeConnId, table);
+                          return detail?.columns.find((entry) => entry.name === column)?.enum_values ?? null;
+                        }}
                         favorites={favoriteSnippets}
                         runKey={settings.keymap.run[0]?.replaceAll("+", "-") ?? null}
                         dialect={meta?.kind}
@@ -5447,6 +5549,17 @@ export default function App() {
                       refreshKey={schemaKey}
                       onOpenData={(table) => openDataTab(table)}
                       onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
+                    />
+                  ) : activeTab?.kind === "diagram" && activeConnId !== null ? (
+                    <ErDiagram
+                      key={`${activeConnId}:${activeTab.id}`}
+                      conn={activeConnId}
+                      refreshKey={schemaKey}
+                      storageKey={stableKeyOf(activeConnId)}
+                      tabId={activeTab.id}
+                      focus={activeTab.focus}
+                      focusSeq={activeTab.focusSeq}
+                      onOpenData={(table) => openDataTab(table, { pin: true })}
                     />
                   ) : activeTab?.kind === "server" && activeConnId !== null ? (
                     <ServerInfoPanel key={`${activeConnId}:${activeTab.id}`} conn={activeConnId} />
@@ -5652,7 +5765,7 @@ export default function App() {
                         <div className="data-notice info">{tServer(state.info)}</div>
                       ) : null}
                       <div className="result-body">
-                        <div className={`result-layer${resultView === "grid" ? "" : " hidden"}`}>
+                        <div className={`result-layer${paneView === "grid" ? "" : " hidden"}`}>
                           <GridHost
                             ref={gridHostRef}
                             result={state.result}
@@ -5703,7 +5816,37 @@ export default function App() {
                             <ExplainPlanPanel result={state.result!} kind={meta?.kind ?? ""} />
                           </div>
                         ) : null}
-                        {cellQuickLook && state.result && resultView === "grid" ? (
+                        {paneView === "chart" || paneView === "pivot" ? (
+                          <div className="result-layer analysis-layer">
+                            <AnalysisPane
+                              view={paneView}
+                              state={analysisTab?.analysis}
+                              result={state.result}
+                              table={
+                                activeDataTab !== null && activeConnId !== null
+                                  ? {
+                                      conn: activeConnId,
+                                      kind: meta?.kind ?? "",
+                                      table: activeDataTab.table,
+                                      filter: activeDataTab.filter ?? null,
+                                      sorts: activeDataTab.sorts ?? null,
+                                      pk: activeDataTab.pkColumns ?? activeDataTab.meta?.pk ?? null,
+                                      columns: activeDataTab.columns ?? null,
+                                    }
+                                  : null
+                              }
+                              awaiting={resultLoading}
+                              themeKey={`${settings.theme}:${settings.accent}:${settings.rowAlt}`}
+                              onChange={(analysis) => {
+                                const id = analysisTab?.id;
+                                if (id !== undefined) {
+                                  updateActiveTabs((current) => patchTab(current, id, { analysis }));
+                                }
+                              }}
+                            />
+                          </div>
+                        ) : null}
+                        {cellQuickLook && state.result && paneView === "grid" ? (
                           <CellInspector
                             source={state.result.source}
                             columns={state.result.meta.columns}
@@ -5763,11 +5906,18 @@ export default function App() {
                       {/* Under the result, as the Data view's footer is (CSS order). */}
                       {activeQueryTab !== null ? (
                         <ResultBar
-                          view={resultView}
+                          view={paneView}
                           planAvailable={planAvailable}
                           shown={shownResult}
                           canExport={state.result !== null && state.result.meta.columns.length > 0}
-                          onView={setResultView}
+                          onView={(view) => {
+                            if (view === "grid" || view === "chart" || view === "pivot") {
+                              setAnalysisView(view);
+                              setResultView("grid");
+                            } else {
+                              setResultView(view);
+                            }
+                          }}
                           onExport={openExport}
                         />
                       ) : null}

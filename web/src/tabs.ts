@@ -1,6 +1,7 @@
 import type { QueryMeta } from "./net/socket";
 import type { DefinitionDetail, EngineMeta, QueryOutcome, TabSnapshot, TableDetail } from "./store";
 import type { WindowedRowSource } from "./grid/windowSource";
+import type { AnalysisState } from "./chartData";
 import { buildDataSql, buildWhere, firstRowsSql, type FilterState, type SortState } from "./dataQuery";
 import { quoteIdent } from "./ddl";
 import { definitionTabTitle, type DefinitionKind } from "./sqlTools";
@@ -19,6 +20,8 @@ export interface QueryTab {
   meta?: QueryMeta;
   info?: string;
   error?: string;
+  // The Chart or Pivot view of the result, and how each is set up.
+  analysis?: AnalysisState;
 }
 
 // TablePlus's Data | Structure | Index, one grid each.
@@ -53,6 +56,9 @@ export interface DataTab {
   // The strip element of the temporary tab this one replaced, so the strip
   // updates that element in place instead of animating a new one in.
   slot?: string;
+  // The Chart or Pivot view in place of the Data view's grid, and how each
+  // is set up.
+  analysis?: AnalysisState;
 }
 
 export interface StructureTab {
@@ -75,6 +81,16 @@ export interface OverviewTab {
   title: string;
 }
 
+// The connection's ER diagram. `focus` is a table to centre on; each new
+// request bumps `focusSeq` so the open diagram moves to it again.
+export interface DiagramTab {
+  id: string;
+  kind: "diagram";
+  title: string;
+  focus?: string;
+  focusSeq?: number;
+}
+
 export interface DefinitionTab {
   id: string;
   kind: "definition";
@@ -90,6 +106,7 @@ export type WorkbenchTab =
   | StructureTab
   | ServerTab
   | OverviewTab
+  | DiagramTab
   | DefinitionTab;
 
 export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
@@ -97,6 +114,7 @@ export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<StructureTab, "id" | "kind">> &
   Partial<Omit<ServerTab, "id" | "kind">> &
   Partial<Omit<OverviewTab, "id" | "kind">> &
+  Partial<Omit<DiagramTab, "id" | "kind">> &
   Partial<Omit<DefinitionTab, "id" | "kind">>;
 
 export interface TabsState {
@@ -160,6 +178,15 @@ export function createOverviewTab(): OverviewTab {
     id: nextId(),
     kind: "overview",
     title: t("테이블 개요"),
+  };
+}
+
+export function createDiagramTab(focus?: string): DiagramTab {
+  return {
+    id: nextId(),
+    kind: "diagram",
+    title: t("ER 다이어그램"),
+    ...(focus !== undefined ? { focus, focusSeq: 1 } : {}),
   };
 }
 

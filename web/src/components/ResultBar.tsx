@@ -3,7 +3,8 @@ import { t, tServer } from "../i18n";
 import { ErrorNotice } from "./ErrorNotice";
 import { DownloadIcon } from "./icons";
 
-export type ResultView = "grid" | "message" | "plan";
+// Chart and Pivot show the same rows as the Data grid, summarised.
+export type ResultView = "grid" | "chart" | "pivot" | "message" | "plan";
 
 // What the query tab in front last ran to: rows, a failure, or a note in
 // place of rows (cancelled, expired).
@@ -55,18 +56,16 @@ interface ResultBarProps {
 }
 
 // The query result's footer, laid out as the Data view's: TablePlus's
-// Data | Message switch, the rows and time of the result shown, and Export.
+// Data | Message switch (with Chart and Pivot of the rows beside Data), the
+// rows and time of the result shown, and Export.
 export function ResultBar({ view, planAvailable, shown, canExport, onView, onExport }: ResultBarProps) {
-  const views: [ResultView, string][] = planAvailable
-    ? [
-        ["grid", t("데이터")],
-        ["plan", t("계획")],
-        ["message", t("메시지")],
-      ]
-    : [
-        ["grid", t("데이터")],
-        ["message", t("메시지")],
-      ];
+  const views: [ResultView, string][] = [
+    ["grid", t("데이터")],
+    ["chart", t("차트")],
+    ["pivot", t("피벗")],
+    ...(planAvailable ? ([["plan", t("계획")]] as [ResultView, string][]) : []),
+    ["message", t("메시지")],
+  ];
   return (
     <div className="data-toolbar result-bar">
       <div className="footer-start">

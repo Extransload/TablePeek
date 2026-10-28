@@ -13,8 +13,8 @@ use mysql_async::{
 use serde_json::Value;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    MySqlConfig, ObjectDefinition, PkValue, ServerInfo, ServerSession, SslMode, TableDetail,
-    TableSchema, TriggerInfo, ValueExpr,
+    MySqlConfig, ObjectDefinition, PkValue, Relation, ServerInfo, ServerSession, SslMode,
+    TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
@@ -382,6 +382,25 @@ const SCHEMA_COLUMNS_SYS_SQL: &str = "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COL
      WHERE c.TABLE_SCHEMA IN (DATABASE(), 'information_schema', 'mysql', 'performance_schema', 'sys') \
      ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION";
 
+// A schema other than the current database comes back so the name can carry
+// it, the way the schema list names those tables.
+const RELATIONS_SQL: &str = "SELECT \
+     IF(TABLE_SCHEMA = DATABASE(), NULL, TABLE_SCHEMA), TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, \
+     IF(REFERENCED_TABLE_SCHEMA = DATABASE(), NULL, REFERENCED_TABLE_SCHEMA), \
+     REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+     FROM information_schema.KEY_COLUMN_USAGE \
+     WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL \
+     ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION";
+
+const RELATIONS_SYS_SQL: &str = "SELECT \
+     IF(TABLE_SCHEMA = DATABASE(), NULL, TABLE_SCHEMA), TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, \
+     IF(REFERENCED_TABLE_SCHEMA = DATABASE(), NULL, REFERENCED_TABLE_SCHEMA), \
+     REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+     FROM information_schema.KEY_COLUMN_USAGE \
+     WHERE TABLE_SCHEMA IN (DATABASE(), 'information_schema', 'mysql', 'performance_schema', 'sys') \
+       AND REFERENCED_TABLE_NAME IS NOT NULL \
+     ORDER BY TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION";
+
 const COLUMN_SQL_SCHEMA: &str = "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, \
      EXISTS (SELECT 1 FROM information_schema.KEY_COLUMN_USAGE k \
              WHERE k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME \
@@ -513,6 +532,54 @@ pub(crate) async fn schema(
             None => table,
         };
         out.push(TableSchema { name, columns });
+    }
+    Ok(out)
+}
+
+pub(crate) async fn relations(
+    inner: &MySqlInner,
+    include_system: bool,
+) -> Result<Vec<Relation>, EngineError> {
+    let mut conn = inner.conn().await;
+    type FkRow = (
+        Option<String>,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+    );
+    let rows: Vec<FkRow> = conn
+        .query(if include_system {
+            RELATIONS_SYS_SQL
+        } else {
+            RELATIONS_SQL
+        })
+        .await
+        .map_err(mysql_err)?;
+    let qualify = |schema: Option<String>, table: String| match schema {
+        Some(schema) => format!("{schema}.{table}"),
+        None => table,
+    };
+    let mut out: Vec<Relation> = Vec::new();
+    let mut current: Option<(Option<String>, String, String)> = None;
+    for (schema, table, constraint, column, ref_schema, ref_table, ref_column) in rows {
+        let key = (schema, table, constraint);
+        if current.as_ref() != Some(&key) {
+            let (schema, table, _) = key.clone();
+            out.push(Relation {
+                table: qualify(schema, table),
+                columns: Vec::new(),
+                ref_table: qualify(ref_schema, ref_table),
+                ref_columns: Vec::new(),
+            });
+            current = Some(key);
+        }
+        if let Some(relation) = out.last_mut() {
+            relation.columns.push(column);
+            relation.ref_columns.push(ref_column);
+        }
     }
     Ok(out)
 }

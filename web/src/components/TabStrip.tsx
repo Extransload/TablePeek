@@ -5,6 +5,7 @@ import type { WorkbenchTab } from "../tabs";
 import {
   CloseIcon,
   CodeIcon,
+  DiagramIcon,
   FileIcon,
   ListIcon,
   ServerIcon,
@@ -29,6 +30,8 @@ function tabIcon(tab: WorkbenchTab): ReactElement {
       return <ServerIcon {...props} />;
     case "overview":
       return <ListIcon {...props} />;
+    case "diagram":
+      return <DiagramIcon {...props} />;
   }
 }
 
@@ -46,6 +49,8 @@ function tabKindLabel(tab: WorkbenchTab): string {
       return t("서버");
     case "overview":
       return t("개요");
+    case "diagram":
+      return t("다이어그램");
   }
 }
 
@@ -79,6 +84,9 @@ function defaultTitle(title: string): string {
   }
   if (title === "테이블 개요" || title === "Table overview") {
     return t("테이블 개요");
+  }
+  if (title === "ER 다이어그램" || title === "ER diagram") {
+    return t("ER 다이어그램");
   }
   if (title === "서버 정보" || title === "Server info") {
     return t("서버 정보");

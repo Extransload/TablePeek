@@ -3104,6 +3104,184 @@ textarea:focus-visible {
   box-shadow: var(--shadow-2);
 }
 
+/* ── SQL completion: a list with a kind badge, the match in the accent,
+   details on the right, and a panel beside it saying what the option is. ── */
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete {
+  padding: 4px;
+  background: var(--panel);
+}
+
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul {
+  min-width: 260px;
+  max-width: min(560px, 70vw);
+  max-height: 300px;
+  font-family: var(--ui);
+}
+
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 8px 0 4px;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  line-height: 24px;
+}
+
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--accent-line);
+  color: var(--ink);
+}
+
+.cm-editor .cm-tooltip-autocomplete .cm-completionLabel {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: calc(12px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-editor .cm-tooltip-autocomplete .cm-completionMatchedText {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.cm-editor .cm-tooltip-autocomplete .cm-completionDetail {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 12px;
+  overflow: hidden;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-style: normal;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-editor .cm-tooltip-autocomplete li[aria-selected] .cm-completionDetail {
+  color: var(--muted);
+}
+
+/* A join's or condition's text is the point: it reads in full, details beside. */
+.cm-editor .cm-tooltip-autocomplete li.ac-condition .cm-completionLabel,
+.cm-editor .cm-tooltip-autocomplete li.ac-snippet .cm-completionLabel {
+  flex: 0 1 auto;
+}
+
+.ac-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--kind-color) 18%, transparent);
+  color: var(--kind-color);
+  font-family: var(--mono);
+  font-size: calc(10px * var(--ui-scale, 1));
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ac-column { --kind-color: var(--syntax-variable, var(--accent)); }
+.ac-table { --kind-color: var(--syntax-type, var(--accent)); }
+.ac-alias { --kind-color: var(--syntax-label, var(--muted)); }
+.ac-join,
+.ac-condition { --kind-color: var(--accent); }
+.ac-function { --kind-color: var(--syntax-function, var(--accent)); }
+.ac-keyword { --kind-color: var(--syntax-keyword, var(--accent)); }
+.ac-type { --kind-color: var(--syntax-type, var(--accent)); }
+.ac-snippet { --kind-color: var(--ok); }
+.ac-saved { --kind-color: var(--warn); }
+.ac-value { --kind-color: var(--syntax-string, var(--ok)); }
+
+.cm-editor .cm-tooltip.cm-completionInfo {
+  max-width: 360px;
+  padding: 10px 12px;
+  background: var(--panel);
+  font-family: var(--ui);
+}
+
+.ac-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.ac-info-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ac-info-title {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-info-row {
+  display: flex;
+  gap: 10px;
+}
+
+.ac-info-label {
+  flex: none;
+  width: 56px;
+  color: var(--faint);
+}
+
+.ac-info-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ac-info .mono {
+  font-family: var(--mono);
+}
+
+.ac-info-columns {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  column-gap: 6px;
+  row-gap: 2px;
+}
+
+.ac-info-column {
+  display: contents;
+}
+
+.ac-info-pk {
+  font-size: calc(10px * var(--ui-scale, 1));
+}
+
+.ac-info-type,
+.ac-info-more,
+.ac-info-note {
+  color: var(--faint);
+}
+
+.ac-info-code {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--syntax-text, var(--ink));
+  font-family: var(--mono);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .menu-panel {
   padding: 5px;
 }
@@ -9338,4 +9516,746 @@ button.driver-tile.selected {
 .driver-tile-name {
   font-weight: 600;
   font-size: calc(12px * var(--ui-scale, 1));
+}
+
+/* ── ER diagram ─────────────────────────────────────────────────
+   One world layer moved by a CSS transform; card and row heights are fixed
+   (ErDiagram.tsx aims lines at rows by these numbers). */
+.er-head {
+  gap: 10px;
+}
+
+/* A narrow pane shrinks the search box, not the title, counts and controls
+   into two lines or clipped buttons. */
+.er-head > :not(.er-search):not(.spacer) {
+  flex: none;
+  white-space: nowrap;
+}
+
+.er-search {
+  position: relative;
+  display: flex;
+  flex: 0 1 190px;
+  align-items: center;
+  min-width: 90px;
+  margin-left: 4px;
+}
+
+.er-search input {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 44px 0 22px;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.er-search-icon {
+  position: absolute;
+  left: 7px;
+  color: var(--faint);
+  pointer-events: none;
+}
+
+.er-search-count {
+  position: absolute;
+  right: 7px;
+  color: var(--faint);
+  font-size: calc(10px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.er-columns-toggle button {
+  height: 20px;
+  padding: 0 8px;
+}
+
+.er-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.er-zoom button.icon-button {
+  width: 22px;
+  padding: 0;
+  justify-content: center;
+}
+
+.er-zoom-label {
+  min-width: 38px;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.er-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle, var(--line) 1px, transparent 1.2px);
+  background-size: 20px 20px;
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+}
+
+.er-viewport.panning,
+.er-viewport.dragging {
+  cursor: grabbing;
+}
+
+.er-world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.er-world.moving {
+  will-change: transform;
+}
+
+.er-world.animate {
+  transition: transform 240ms var(--ease-out);
+}
+
+.er-links {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.er-link path {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+}
+
+.er-link .er-link-line {
+  stroke: var(--faint);
+}
+
+.er-link.on path {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.er-link.dim {
+  opacity: 0.18;
+}
+
+.er-card {
+  position: absolute;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: default;
+  user-select: none;
+  transition: opacity var(--motion-fast) ease, border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
+}
+
+.er-card.near {
+  border-color: var(--accent-line);
+}
+
+.er-card.focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-2);
+}
+
+/* The card itself stays opaque so lines behind it don't show through. */
+.er-card.dim {
+  border-color: var(--line-soft);
+  box-shadow: none;
+}
+
+.er-card.dim > * {
+  opacity: 0.38;
+}
+
+.er-card.raised {
+  z-index: 1;
+}
+
+.er-card.dragging {
+  z-index: 2;
+  box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-3);
+  cursor: grabbing;
+}
+
+.er-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--head);
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.er-card.match .er-card-head {
+  background: var(--accent-soft);
+}
+
+.er-card-icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.er-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.er-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.er-row.hot {
+  background: var(--accent-soft);
+}
+
+.er-row.more {
+  padding-left: 26px;
+  color: var(--faint);
+  font-family: var(--ui);
+  font-size: 11px;
+}
+
+.er-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.er-row-type {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.er-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+}
+
+.er-mark.pk {
+  color: var(--warn);
+}
+
+.er-mark.fk {
+  color: var(--accent);
+}
+
+/* Zoomed far out the rows can't be read; skip painting their text. */
+.er-world.far .er-row > * {
+  visibility: hidden;
+}
+
+.er-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+}
+
+.er-empty {
+  position: absolute;
+  inset: 0;
+}
+
+.er-note {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: 4px 9px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .er-world.animate,
+  .er-card {
+    transition: none;
+  }
+}
+
+/* Chart and Pivot views of a result: their settings in a bar along the top
+   (the Data view's footer stays below), then the chart or the pivot grid. */
+.result-layer.analysis-layer {
+  background: var(--bg);
+}
+
+.analysis-pane,
+.analysis-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.analysis-controls {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-height: 38px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.analysis-controls .view-tabs {
+  margin-right: 0;
+}
+
+.analysis-controls .view-tabs button,
+.analysis-controls button.analysis-copy {
+  height: 24px;
+  border-radius: var(--r-sm);
+}
+
+.analysis-field {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.analysis-field > span:first-child {
+  color: var(--faint);
+}
+
+.analysis-controls select {
+  max-width: 180px;
+  height: 24px;
+  padding-left: 8px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.analysis-check {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  cursor: pointer;
+}
+
+.analysis-meta {
+  display: inline-flex;
+  flex: 1 1 160px;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+
+.analysis-meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analysis-meta > .warn {
+  flex: none;
+  max-width: 60%;
+}
+
+.analysis-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--faint);
+  font-size: calc(12px * var(--ui-scale, 1));
+  text-align: center;
+}
+
+.analysis-empty.err {
+  color: var(--error);
+}
+
+.analysis-empty button {
+  height: 26px;
+  border-radius: var(--r-sm);
+}
+
+/* The Y picker: a field-like button, its list below. */
+.analysis-picker {
+  position: relative;
+  flex: none;
+}
+
+button.analysis-picker-button {
+  max-width: 220px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+button.analysis-picker-button:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--line) 48%, var(--muted));
+}
+
+button.analysis-picker-button.active {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+button.analysis-picker-button svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.analysis-picker-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analysis-picker-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  max-height: 280px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+
+.analysis-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+  cursor: pointer;
+}
+
+.analysis-picker-row:hover {
+  background: var(--hover-fill);
+}
+
+/* The pivot's row dimensions: a chip each, then a list to add one. */
+.analysis-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.analysis-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.analysis-chip:not(:has(button)) {
+  padding-right: 8px;
+}
+
+.analysis-chip button.icon-button {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 999px;
+}
+
+.analysis-controls select.analysis-add {
+  max-width: 120px;
+  color: var(--muted);
+}
+
+.pivot-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The chart: its legend, then the plot filling the rest. A pie keeps its
+   legend at the side, a list of slices with their values. */
+.chart-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px 12px 10px;
+}
+
+.chart-body.pie {
+  flex-direction: row;
+  gap: 16px;
+}
+
+.chart-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chart-svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: visible;
+}
+
+.chart-svg text {
+  font-family: var(--ui);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-tick {
+  fill: var(--muted);
+}
+
+.chart-grid {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-grid.faint {
+  stroke-dasharray: 2 3;
+  opacity: 0.7;
+}
+
+.chart-zero,
+.chart-axis-line {
+  stroke: var(--line);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-hover-band {
+  fill: var(--hover-fill);
+  pointer-events: none;
+}
+
+.chart-guide {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+
+.chart-hover-dot {
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+.chart-slice-label {
+  fill: #ffffff;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.35);
+  stroke-width: 2px;
+  pointer-events: none;
+}
+
+.chart-svg text.chart-donut-value {
+  fill: var(--ink);
+  font-size: calc(18px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+
+.chart-legend {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  min-height: 18px;
+  margin-bottom: 4px;
+  padding-left: 4px;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.chart-legend-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.chart-swatch.line {
+  height: 3px;
+  border-radius: 2px;
+}
+
+.chart-pie-legend {
+  display: flex;
+  flex: 0 1 280px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 160px;
+  overflow: auto;
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.chart-pie-entry {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+}
+
+.chart-pie-entry.active {
+  background: var(--hover-fill);
+}
+
+.chart-pie-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-pie-value,
+.chart-pie-share {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+  text-align: right;
+}
+
+/* The values under the pointer, as the app's tooltips look. */
+.chart-tip {
+  position: absolute;
+  z-index: 5;
+  min-width: 140px;
+  max-width: 320px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--head) 92%, #000000);
+  color: var(--ink);
+  box-shadow: var(--shadow-2);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  pointer-events: none;
+}
+
+html[data-mode="light"] .chart-tip {
+  background: var(--panel);
+}
+
+.chart-tip-title {
+  margin-bottom: 5px;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-tip-row {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.6;
+}
+
+.chart-tip-row.muted {
+  grid-template-columns: minmax(0, 1fr) auto;
+  color: var(--muted);
+}
+
+.chart-tip-name {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-tip-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.chart-tip-foot {
+  margin-top: 4px;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--ui-scale, 1));
 }

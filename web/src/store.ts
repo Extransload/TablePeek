@@ -49,6 +49,15 @@ export interface TableSchema {
   columns: TableSchemaColumn[];
 }
 
+// A foreign key: `table`(`columns`) refers to `ref_table`(`ref_columns`),
+// tables named as /api/schema names them.
+export interface Relation {
+  table: string;
+  columns: string[];
+  ref_table: string;
+  ref_columns: string[];
+}
+
 export interface TableDetailColumn {
   name: string;
   decl_type: string | null;
@@ -1265,6 +1274,15 @@ async function fetchSchema(
   );
 }
 
+// Every foreign key of the connection at once (autocomplete's joins, the ER diagram).
+async function fetchRelations(conn: string, includeSystem = false): Promise<Relation[]> {
+  const system = includeSystem ? "&system=1" : "";
+  const body = await api<{ relations: Relation[] }>(
+    `/api/relations?conn=${encodeURIComponent(conn)}${system}`,
+  );
+  return body.relations;
+}
+
 async function fetchTableDetail(
   conn: string,
   name: string,
@@ -1620,6 +1638,7 @@ export const store = {
   testConnection,
   deleteConnection,
   fetchSchema,
+  fetchRelations,
   fetchTableDetail,
   fetchServer,
   fetchObjects,

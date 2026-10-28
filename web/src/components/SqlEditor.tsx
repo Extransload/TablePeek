@@ -18,13 +18,29 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
-import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import {
+  acceptCompletion,
+  autocompletion,
+  pickedCompletion,
+  snippet,
+  type Completion,
+  type CompletionContext,
+  type CompletionResult,
+} from "@codemirror/autocomplete";
 import { isolateHistory } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { scrollbarsFor } from "../scrollbars";
-import { completeSql, type SqlWord } from "../sqlComplete";
+import { t } from "../i18n";
+import {
+  completeSql,
+  valueSlotAt,
+  type CompletionColumn,
+  type CompletionRelation,
+  type SqlCompletionOption,
+  type SqlWord,
+} from "../sqlComplete";
 import { statementAt } from "../sqlSplit";
 
 export interface FavoriteSnippet {
@@ -58,7 +74,12 @@ interface SqlEditorProps {
   readOnly?: boolean;
   onRun: () => void;
   onSqlChange(tabId: string, sql: string): void;
-  schema: Record<string, string[]>;
+  // Table to its columns, and the connection's foreign keys, for completion.
+  schema: Record<string, CompletionColumn[]>;
+  relations?: CompletionRelation[];
+  // A column's known values (an enum's labels), offered inside a string
+  // compared with it; null when it has none.
+  loadValues?: (table: string, column: string) => Promise<string[] | null>;
   favorites: FavoriteSnippet[];
   // CodeMirror key for onRun; null leaves running to the app's shortcuts.
   runKey?: string | null;
@@ -129,6 +150,183 @@ function wordsOf(dialect: SQLDialect): SqlWord[] {
 
 // How far either side of the cursor completion reads a long script (a dump).
 const COMPLETION_WINDOW = 50_000;
+
+// What a completion in the list is, beyond CodeMirror's fields: an option
+// sqlComplete made, a saved query, or a column's known value.
+type CompletionKind = SqlCompletionOption["kind"] | "saved" | "value";
+interface TpCompletion extends Completion {
+  tp: { kind: CompletionKind; option?: SqlCompletionOption; saved?: FavoriteSnippet; usageKey?: string };
+}
+
+// The mark before each option: a letter on its kind's colour.
+const BADGES: Record<CompletionKind, { mark: string; title: string }> = {
+  column: { mark: "C", title: "컬럼" },
+  table: { mark: "T", title: "테이블" },
+  alias: { mark: "A", title: "별칭" },
+  join: { mark: "⋈", title: "조인" },
+  condition: { mark: "=", title: "조인 조건" },
+  function: { mark: "ƒ", title: "함수" },
+  keyword: { mark: "K", title: "키워드" },
+  type: { mark: "τ", title: "타입" },
+  snippet: { mark: "{}", title: "문장" },
+  saved: { mark: "★", title: "저장한 쿼리" },
+  value: { mark: "v", title: "값" },
+};
+
+// How often each option was picked, kept across sessions so the ones used
+// most rank first among equals. Capped: the least used go first.
+const USAGE_KEY = "tablepeek.completion-usage";
+const USAGE_CAP = 500;
+let usage: Map<string, number> | null = null;
+
+function usageMap(): Map<string, number> {
+  if (usage === null) {
+    usage = new Map();
+    try {
+      const stored: unknown = JSON.parse(window.localStorage.getItem(USAGE_KEY) ?? "{}");
+      if (stored !== null && typeof stored === "object") {
+        for (const [key, count] of Object.entries(stored)) {
+          if (typeof count === "number" && count > 0) {
+            usage.set(key, count);
+          }
+        }
+      }
+    } catch {}
+  }
+  return usage;
+}
+
+function recordUsage(key: string): void {
+  const map = usageMap();
+  map.set(key, (map.get(key) ?? 0) + 1);
+  if (map.size > USAGE_CAP) {
+    const least = [...map.entries()].sort((a, b) => a[1] - b[1]).slice(0, map.size - USAGE_CAP);
+    for (const [key] of least) {
+      map.delete(key);
+    }
+  }
+  try {
+    window.localStorage.setItem(USAGE_KEY, JSON.stringify(Object.fromEntries(map)));
+  } catch {}
+}
+
+function el(tag: string, className: string, text?: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = className;
+  if (text !== undefined) {
+    node.textContent = text;
+  }
+  return node;
+}
+
+// The panel beside the selected option: what a column, table, join,
+// function, statement or saved query is, from what completion knows.
+function completionInfo(
+  completion: TpCompletion,
+  schema: Record<string, CompletionColumn[]>,
+  relations: readonly CompletionRelation[],
+): HTMLElement | null {
+  const { kind, option, saved } = completion.tp;
+  const box = el("div", "ac-info");
+  const head = el("div", "ac-info-head");
+  head.append(el("span", `ac-badge ac-${kind}`, BADGES[kind].mark), el("span", "ac-info-title"));
+  box.append(head);
+  const title = head.lastElementChild as HTMLElement;
+  const line = (label: string, value: string, mono = true): void => {
+    const row = el("div", "ac-info-row");
+    row.append(el("span", "ac-info-label", label), el("span", mono ? "ac-info-value mono" : "ac-info-value", value));
+    box.append(row);
+  };
+  if (kind === "saved" && saved !== undefined) {
+    title.textContent = saved.name;
+    box.append(el("pre", "ac-info-code", saved.sql.split("\n").slice(0, 12).join("\n")));
+    return box;
+  }
+  if (option === undefined) {
+    return null;
+  }
+  if (kind === "column" && option.column !== undefined && option.table !== undefined) {
+    const column = option.column;
+    title.textContent = column.name;
+    line(t("타입"), column.type ?? "—");
+    line(t("테이블"), option.table);
+    const flags = [column.pk ? t("기본 키") : "", column.notNull ? "NOT NULL" : ""].filter((flag) => flag !== "");
+    if (flags.length > 0) {
+      line(t("제약"), flags.join(" · "), false);
+    }
+    for (const relation of relations) {
+      const at = relation.table === option.table ? relation.columns.indexOf(column.name) : -1;
+      if (at >= 0) {
+        line(t("참조"), `${relation.refTable}.${relation.refColumns[at] ?? ""}`);
+      }
+    }
+    return box;
+  }
+  if (kind === "table" && option.table !== undefined) {
+    const key = option.table;
+    const columns = schema[key] ?? [];
+    title.textContent = key;
+    const list = el("div", "ac-info-columns");
+    for (const column of columns.slice(0, 14)) {
+      const row = el("div", "ac-info-column");
+      row.append(
+        el("span", column.pk ? "ac-info-pk" : "ac-info-pk off", column.pk ? "🔑" : ""),
+        el("span", "mono", column.name),
+        el("span", "ac-info-type mono", column.type ?? ""),
+      );
+      list.append(row);
+    }
+    box.append(list);
+    if (columns.length > 14) {
+      box.append(el("div", "ac-info-more", t("외 {count}개 컬럼", { count: columns.length - 14 })));
+    }
+    const refersTo = [...new Set(relations.filter((relation) => relation.table === key).map((relation) => relation.refTable))];
+    const referredBy = [...new Set(relations.filter((relation) => relation.refTable === key).map((relation) => relation.table))];
+    if (refersTo.length > 0) {
+      line(t("참조"), refersTo.join(", "));
+    }
+    if (referredBy.length > 0) {
+      line(t("참조됨"), referredBy.join(", "));
+    }
+    return box;
+  }
+  if ((kind === "join" || kind === "condition") && option.relation !== undefined) {
+    const relation = option.relation;
+    title.textContent = kind === "join" ? `JOIN ${option.label}` : t("조인 조건");
+    box.append(el("pre", "ac-info-code", option.apply ?? option.label));
+    box.append(
+      el(
+        "div",
+        "ac-info-note",
+        option.guessed
+          ? t("외래 키는 없고 이름으로 추정했습니다: {from} → {to}", {
+              from: `${relation.table}.${relation.columns.join(", ")}`,
+              to: `${relation.refTable}.${relation.refColumns.join(", ")}`,
+            })
+          : t("외래 키: {from} → {to}", {
+              from: `${relation.table}.${relation.columns.join(", ")}`,
+              to: `${relation.refTable}.${relation.refColumns.join(", ")}`,
+            }),
+      ),
+    );
+    return box;
+  }
+  if (kind === "function" && option.signature !== undefined) {
+    title.textContent = option.label;
+    box.append(el("pre", "ac-info-code", option.signature));
+    if (option.about !== undefined) {
+      box.append(el("div", "ac-info-note", t(option.about)));
+    }
+    return box;
+  }
+  if (kind === "snippet" && option.snippet !== undefined) {
+    title.textContent = t("문장 채우기");
+    box.append(el("pre", "ac-info-code", option.snippet.replace(/\$\{([^}]*)\}/g, "‹$1›")));
+    box.append(el("div", "ac-info-note", t("Tab으로 다음 칸으로 이동합니다")));
+    return box;
+  }
+  return null;
+}
 
 const editorTheme = EditorView.theme(
   {
@@ -297,7 +495,20 @@ export function SqlPreview({ doc }: { doc: string }) {
 
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
   function SqlEditor(
-    { tabId, tabIds, initialSql, readOnly, onRun, onSqlChange, schema, favorites, runKey, dialect },
+    {
+      tabId,
+      tabIds,
+      initialSql,
+      readOnly,
+      onRun,
+      onSqlChange,
+      schema,
+      relations,
+      loadValues,
+      favorites,
+      runKey,
+      dialect,
+    },
     ref,
   ) {
     const hostRef = useRef<HTMLDivElement | null>(null);
@@ -313,6 +524,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const onSqlChangeRef = useRef(onSqlChange);
     const favoritesRef = useRef(favorites);
     const schemaRef = useRef(schema);
+    const relationsRef = useRef(relations ?? []);
+    const loadValuesRef = useRef(loadValues);
     const runKeyRef = useRef(runKey === undefined ? "Mod-Enter" : runKey);
     const pendingRef = useRef<{ tabId: string; sql: string; timer: number } | null>(null);
     const [languageCompartment] = useState(() => new Compartment());
@@ -323,6 +536,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     readOnlyRef.current = readOnly ?? false;
     favoritesRef.current = favorites;
     schemaRef.current = schema;
+    relationsRef.current = relations ?? [];
+    loadValuesRef.current = loadValues;
     runKeyRef.current = runKey === undefined ? "Mod-Enter" : runKey;
 
     function flushPending(): void {
@@ -359,38 +574,75 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       pendingRef.current = null;
     }
 
-    // Columns, tables and keywords by where the cursor is (see sqlComplete),
-    // after the saved queries whose keyword starts with what was typed.
-    function sqlCompletion(context: CompletionContext): CompletionResult | null {
+    // Columns, tables, joins, functions and keywords by where the cursor is
+    // (see sqlComplete), after the saved queries whose keyword starts with
+    // what was typed; inside a string compared with a column, its values.
+    function sqlCompletion(context: CompletionContext): CompletionResult | Promise<CompletionResult | null> | null {
       const { state, pos } = context;
       const dialect = dialectFor(dialectRef.current);
       const start = pos > COMPLETION_WINDOW ? state.doc.lineAt(pos - COMPLETION_WINDOW).from : 0;
       const end =
         state.doc.length - pos > COMPLETION_WINDOW ? state.doc.lineAt(pos + COMPLETION_WINDOW).to : state.doc.length;
-      const found = completeSql(state.sliceDoc(start, end), pos - start, {
+      const text = state.sliceDoc(start, end);
+      const config = {
         schema: schemaRef.current,
+        relations: relationsRef.current,
         words: wordsOf(dialect),
+        usage: (key: string) => usageMap().get(key) ?? 0,
         dialect: dialectRef.current,
         identifierQuotes: dialect.spec.identifierQuotes ?? '"',
         caseInsensitiveIdentifiers: dialect.spec.caseInsensitiveIdentifiers,
         explicit: context.explicit,
-      });
+      };
+      const loadValues = loadValuesRef.current;
+      const slot = loadValues === undefined ? null : valueSlotAt(text, pos - start, config);
+      if (slot !== null && loadValues !== undefined) {
+        return loadValues(slot.table, slot.column).then((values) => {
+          const wanted = slot.typed.toLowerCase();
+          const options: TpCompletion[] = (values ?? [])
+            .filter((value) => value.toLowerCase().includes(wanted))
+            // Those starting with the text first, each group in the column's own order.
+            .sort((a, b) => Number(!a.toLowerCase().startsWith(wanted)) - Number(!b.toLowerCase().startsWith(wanted)))
+            .map((value) => ({
+              label: value,
+              detail: slot.column,
+              apply: value.replaceAll(slot.quote, slot.quote + slot.quote) + (slot.closed ? "" : slot.quote),
+              tp: { kind: "value", usageKey: `value:${slot.table}.${slot.column}=${value}` },
+            }));
+          return options.length === 0 ? null : { from: start + slot.from, to: start + slot.to, options, filter: false };
+        });
+      }
+      const found = completeSql(text, pos - start, config);
       if (found === null) {
         return null;
       }
       const typed = found.typed.toLowerCase();
-      const favorites: Completion[] = found.bare
+      const favorites: TpCompletion[] = found.bare
         ? favoritesRef.current
             .filter((favorite) => favorite.keyword.toLowerCase().startsWith(typed))
             .map((favorite) => ({
               label: favorite.keyword,
               detail: favorite.name,
-              info: favorite.sql,
               apply: favorite.sql,
-              type: "keyword",
+              tp: { kind: "saved", saved: favorite, usageKey: `saved:${favorite.keyword}` },
             }))
         : [];
-      const options = [...favorites, ...found.options];
+      const info = (completion: Completion): HTMLElement | null =>
+        completionInfo(completion as TpCompletion, schemaRef.current, relationsRef.current);
+      const options: TpCompletion[] = [
+        ...favorites.map((favorite) => ({ ...favorite, info })),
+        ...found.options.map((option) => ({
+          label: option.label,
+          ...(option.detail !== undefined ? { detail: option.detail } : {}),
+          ...(option.snippet !== undefined
+            ? { apply: snippet(option.snippet) }
+            : option.apply !== undefined
+              ? { apply: option.apply }
+              : {}),
+          info,
+          tp: { kind: option.kind, option, usageKey: option.usageKey },
+        })),
+      ];
       if (options.length === 0) {
         return null;
       }
@@ -402,11 +654,18 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         // back keywords that merely contain the text.
         filter: false,
         getMatch: (completion) => {
+          const option = (completion as TpCompletion).tp.option;
+          if (option !== undefined) {
+            return option.matched;
+          }
           const at = completion.label.toLowerCase().indexOf(typed);
           return typed === "" || at < 0 ? [] : [at, at + typed.length];
         },
         // Each keystroke ranks the list anew.
-        update: (_current, _from, _to, next) => sqlCompletion(next),
+        update: (_current, _from, _to, next) => {
+          const again = sqlCompletion(next);
+          return again instanceof Promise ? null : again;
+        },
       };
     }
 
@@ -438,9 +697,30 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
                 key: "Mod-d",
                 run: selectNextOccurrence,
               },
+              // Tab takes the highlighted completion, as Return does.
+              {
+                key: "Tab",
+                run: acceptCompletion,
+              },
             ]),
           ),
           basicSetup,
+          autocompletion({
+            icons: false,
+            maxRenderedOptions: 80,
+            optionClass: (completion) => `ac-option ac-${(completion as TpCompletion).tp?.kind ?? "keyword"}`,
+            addToOptions: [
+              {
+                position: 20,
+                render: (completion) => {
+                  const kind = (completion as TpCompletion).tp?.kind ?? "keyword";
+                  const badge = el("span", `ac-badge ac-${kind}`, BADGES[kind].mark);
+                  badge.title = t(BADGES[kind].title);
+                  return badge;
+                },
+              },
+            ],
+          }),
           languageCompartment.of(sqlLanguage(dialectRef.current)),
           ...editorLook,
           EditorView.contentAttributes.of({
@@ -461,6 +741,12 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
               const id = currentTabRef.current;
               if (id !== null) {
                 queueChange(id, update.state.doc.toString());
+              }
+            }
+            for (const transaction of update.transactions) {
+              const picked = transaction.annotation(pickedCompletion) as TpCompletion | undefined;
+              if (picked?.tp?.usageKey !== undefined) {
+                recordUsage(picked.tp.usageKey);
               }
             }
           }),

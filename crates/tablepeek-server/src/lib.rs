@@ -663,6 +663,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/fs/pick", post(fs_pick))
         .route("/api/fonts", get(fonts_route))
         .route("/api/schema", get(schema_route))
+        .route("/api/relations", get(relations_route))
         .route("/api/count", get(count_route))
         .route("/api/exec", post(exec_route))
         .route("/api/job", post(job_route))
@@ -868,6 +869,23 @@ async fn schema_route(
         .await
         .map(Json)
         .map_err(engine_error)
+}
+
+async fn relations_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let relations = slot
+        .engine
+        .relations(params.include_system())
+        .await
+        .map_err(engine_error)?;
+    Ok(Json(json!({ "relations": relations })))
 }
 
 #[derive(Deserialize)]
@@ -6759,6 +6777,47 @@ mod tests {
         .await
         .unwrap();
         assert!(ok.0.demo);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn relations_route_lists_foreign_keys_of_a_conn() {
+        let dir = temp_dir("relations-route");
+        let state = test_state(&dir);
+        let headers = test_headers();
+        let params = |conn: Option<&str>| {
+            Query(ConnQuery {
+                conn: conn.map(str::to_string),
+                system: None,
+            })
+        };
+
+        let err = relations_route(State(state.clone()), HeaderMap::new(), params(None))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        let missing = relations_route(State(state.clone()), headers.clone(), params(Some("nope")))
+            .await
+            .unwrap_err();
+        assert_eq!(missing.0, StatusCode::NOT_FOUND);
+
+        let slot = slot_for(&state, None).await.unwrap();
+        for sql in [
+            "CREATE TABLE users (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users (id))",
+        ] {
+            slot.engine.execute(sql, 1).await.unwrap();
+        }
+        let ok = relations_route(State(state.clone()), headers, params(None))
+            .await
+            .unwrap();
+        assert_eq!(
+            ok.0,
+            json!({ "relations": [
+                { "table": "orders", "columns": ["user_id"], "ref_table": "users", "ref_columns": ["id"] }
+            ] })
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

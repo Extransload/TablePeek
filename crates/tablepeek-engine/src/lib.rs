@@ -15,8 +15,8 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    MssqlConfig, MySqlConfig, ObjectDefinition, PkValue, PostgresConfig, QueryResult, ServerInfo,
-    TableDetail, TableSchema, TriggerInfo, ValueExpr,
+    MssqlConfig, MySqlConfig, ObjectDefinition, PkValue, PostgresConfig, QueryResult, Relation,
+    ServerInfo, TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 
 mod mssql;
@@ -788,6 +788,20 @@ impl Engine {
         }
     }
 
+    /// Every foreign key between the tables the schema list shows, in one call.
+    pub async fn relations(&self, include_system: bool) -> Result<Vec<Relation>, EngineError> {
+        match self.backend_snapshot()? {
+            Backend::Sqlite { inner } => {
+                tokio::task::spawn_blocking(move || relations_sync(&inner, include_system))
+                    .await
+                    .map_err(|e| EngineError::Internal(e.to_string()))?
+            }
+            Backend::Postgres { inner } => postgres::relations(&inner, include_system).await,
+            Backend::MySql { inner } => mysql::relations(&inner, include_system).await,
+            Backend::Mssql { inner } => mssql::relations(&inner, include_system).await,
+        }
+    }
+
     pub async fn table_count(&self, name: &str) -> Result<i64, EngineError> {
         match self.backend_snapshot()? {
             Backend::Sqlite { inner } => {
@@ -1278,6 +1292,62 @@ fn schema_sync(inner: &SqliteInner, include_system: bool) -> Result<Vec<TableSch
         tables.push(TableSchema { name, columns });
     }
     Ok(tables)
+}
+
+fn relations_sync(inner: &SqliteInner, include_system: bool) -> Result<Vec<Relation>, EngineError> {
+    let conn = lock_conn(inner)?;
+    let names = sqlite_table_names(&conn, include_system)?;
+
+    const FK_SQL: &str = "SELECT id, \"table\", \"from\", \"to\" \
+         FROM pragma_foreign_key_list(?1) ORDER BY id, seq";
+    let mut relations = Vec::new();
+    for table in names {
+        let mut fk_stmt = conn.prepare_bound(FK_SQL, &[&table])?;
+        let steps = fk_stmt
+            .query_map([&table], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let first = relations.len();
+        let mut current: Option<i64> = None;
+        for (id, ref_table, column, ref_column) in steps {
+            if current != Some(id) {
+                current = Some(id);
+                relations.push(Relation {
+                    table: table.clone(),
+                    columns: Vec::new(),
+                    ref_table,
+                    ref_columns: Vec::new(),
+                });
+            }
+            if let Some(relation) = relations.last_mut() {
+                relation.columns.push(column);
+                relation.ref_columns.extend(ref_column);
+            }
+        }
+        // `REFERENCES parent` without a column list points at the parent's
+        // primary key, which the pragma leaves blank.
+        for relation in &mut relations[first..] {
+            if relation.ref_columns.is_empty() {
+                relation.ref_columns = sqlite_pk_columns(&conn, &relation.ref_table)?;
+            }
+        }
+    }
+    Ok(relations)
+}
+
+fn sqlite_pk_columns(conn: &SqliteConn<'_>, table: &str) -> Result<Vec<String>, EngineError> {
+    const PK_SQL: &str = "SELECT name FROM pragma_table_info(?1) WHERE pk > 0 ORDER BY pk";
+    let mut stmt = conn.prepare_bound(PK_SQL, &[&table])?;
+    let columns = stmt
+        .query_map([table], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns)
 }
 
 fn table_count_sync(inner: &SqliteInner, name: &str) -> Result<i64, EngineError> {
@@ -5180,5 +5250,169 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.is_interrupted(), "expected interrupt, got {err:?}");
+    }
+
+    fn relation(table: &str, columns: &[&str], ref_table: &str, ref_columns: &[&str]) -> Relation {
+        let owned = |names: &[&str]| names.iter().map(|name| name.to_string()).collect();
+        Relation {
+            table: table.into(),
+            columns: owned(columns),
+            ref_table: ref_table.into(),
+            ref_columns: owned(ref_columns),
+        }
+    }
+
+    /// The relations among the given tables, in a fixed order.
+    async fn relations_of(engine: &Engine, tables: &[&str]) -> Vec<Relation> {
+        let mut relations: Vec<Relation> = engine
+            .relations(false)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|relation| tables.contains(&relation.table.as_str()))
+            .collect();
+        relations.sort_by(|a, b| (&a.table, &a.columns).cmp(&(&b.table, &b.columns)));
+        relations
+    }
+
+    #[tokio::test]
+    async fn sqlite_relations_list_every_foreign_key() {
+        let engine = Engine::open_demo(1).unwrap();
+        for sql in [
+            "CREATE TABLE parent (a INTEGER, b INTEGER, PRIMARY KEY (a, b))",
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, pb INTEGER, pa INTEGER, \
+             FOREIGN KEY (pb, pa) REFERENCES parent (b, a))",
+            "CREATE TABLE note (id INTEGER PRIMARY KEY, child_id INTEGER REFERENCES child, \
+             x INTEGER, y INTEGER, FOREIGN KEY (x, y) REFERENCES parent)",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let all = engine.relations(false).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            relations_of(&engine, &["child", "note"]).await,
+            vec![
+                relation("child", &["pb", "pa"], "parent", &["b", "a"]),
+                relation("note", &["child_id"], "child", &["id"]),
+                relation("note", &["x", "y"], "parent", &["a", "b"]),
+            ]
+        );
+    }
+
+    /// Creates a composite and a single-column key, one of them from a table
+    /// outside the default schema, checks them, and drops the tables again.
+    async fn check_server_relations(engine: &Engine, setup: &[&str], teardown: &[&str]) {
+        for sql in teardown.iter().chain(setup) {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let relations = relations_of(engine, &["tp_rel_child", "tp_rel.tp_rel_item"]).await;
+        for sql in teardown {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        assert_eq!(
+            relations,
+            vec![
+                relation("tp_rel.tp_rel_item", &["child_id"], "tp_rel_child", &["id"]),
+                relation("tp_rel_child", &["pb", "pa"], "tp_rel_parent", &["b", "a"]),
+            ]
+        );
+    }
+
+    const PG_RELATION_SETUP: &[&str] = &[
+        "CREATE SCHEMA tp_rel",
+        "CREATE TABLE tp_rel_parent (a INT, b INT, PRIMARY KEY (a, b))",
+        "CREATE TABLE tp_rel_child (id INT PRIMARY KEY, pb INT, pa INT, \
+         FOREIGN KEY (pb, pa) REFERENCES tp_rel_parent (b, a))",
+        "CREATE TABLE tp_rel.tp_rel_item (id INT PRIMARY KEY, \
+         child_id INT REFERENCES tp_rel_child (id))",
+    ];
+    const PG_RELATION_TEARDOWN: &[&str] = &[
+        "DROP TABLE IF EXISTS tp_rel.tp_rel_item",
+        "DROP SCHEMA IF EXISTS tp_rel",
+        "DROP TABLE IF EXISTS tp_rel_child",
+        "DROP TABLE IF EXISTS tp_rel_parent",
+    ];
+
+    #[tokio::test]
+    async fn pg_relations_list_every_foreign_key() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        check_server_relations(&engine, PG_RELATION_SETUP, PG_RELATION_TEARDOWN).await;
+    }
+
+    #[tokio::test]
+    async fn cockroach_relations_list_every_foreign_key() {
+        let Some(config) = cockroach_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_cockroach(&config).await.unwrap();
+        check_server_relations(&engine, PG_RELATION_SETUP, PG_RELATION_TEARDOWN).await;
+    }
+
+    #[tokio::test]
+    async fn mysql_relations_list_every_foreign_key() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS tp_rel_child",
+            "DROP TABLE IF EXISTS tp_rel_parent",
+            "CREATE TABLE tp_rel_parent (a INT, b INT, PRIMARY KEY (a, b), KEY ba (b, a))",
+            "CREATE TABLE tp_rel_child (id INT PRIMARY KEY, pb INT, pa INT, \
+             FOREIGN KEY (pb, pa) REFERENCES tp_rel_parent (b, a))",
+            "CREATE TABLE tp_rel_item (id INT PRIMARY KEY, child_id INT, \
+             FOREIGN KEY (child_id) REFERENCES tp_rel_child (id))",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let relations = relations_of(&engine, &["tp_rel_child", "tp_rel_item"]).await;
+        for sql in [
+            "DROP TABLE tp_rel_item",
+            "DROP TABLE tp_rel_child",
+            "DROP TABLE tp_rel_parent",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        assert_eq!(
+            relations,
+            vec![
+                relation("tp_rel_child", &["pb", "pa"], "tp_rel_parent", &["b", "a"]),
+                relation("tp_rel_item", &["child_id"], "tp_rel_child", &["id"]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mssql_relations_list_every_foreign_key() {
+        let Some(config) = mssql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mssql(&config).await.unwrap();
+        check_server_relations(
+            &engine,
+            &[
+                "EXEC('CREATE SCHEMA tp_rel')",
+                "CREATE TABLE tp_rel_parent (a INT NOT NULL, b INT NOT NULL, \
+                 PRIMARY KEY (a, b), UNIQUE (b, a))",
+                "CREATE TABLE tp_rel_child (id INT PRIMARY KEY, pb INT, pa INT, \
+                 FOREIGN KEY (pb, pa) REFERENCES tp_rel_parent (b, a))",
+                "CREATE TABLE tp_rel.tp_rel_item (id INT PRIMARY KEY, \
+                 child_id INT REFERENCES tp_rel_child (id))",
+            ],
+            &[
+                "DROP TABLE IF EXISTS tp_rel.tp_rel_item",
+                "IF SCHEMA_ID('tp_rel') IS NOT NULL EXEC('DROP SCHEMA tp_rel')",
+                "DROP TABLE IF EXISTS tp_rel_child",
+                "DROP TABLE IF EXISTS tp_rel_parent",
+            ],
+        )
+        .await;
     }
 }

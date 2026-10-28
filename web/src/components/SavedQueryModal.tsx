@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
 import { store, type Favorite } from "../store";
+import type { CompletionColumn } from "../sqlComplete";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { Spinner } from "./Spinner";
 
@@ -12,7 +13,7 @@ interface SavedQueryModalProps {
 }
 
 const EDITOR_TAB = "saved-query-editor";
-const NO_SCHEMA: Record<string, string[]> = {};
+const NO_SCHEMA: Record<string, CompletionColumn[]> = {};
 
 // TablePlus's saved query window: name, keyword for autocompletion, and the SQL.
 export function SavedQueryModal({ query, folder = null, onClose }: SavedQueryModalProps) {

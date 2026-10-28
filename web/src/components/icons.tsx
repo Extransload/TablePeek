@@ -481,3 +481,21 @@ export function MoreIcon({ size = 12, className }: IconProps) {
     </svg>
   );
 }
+
+export function DiagramIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <rect x="1.8" y="2.4" width="5" height="4.2" rx="0.8" />
+      <rect x="9.2" y="9.4" width="5" height="4.2" rx="0.8" />
+      <path d="M6.8 4.5h2.4v7h0" />
+    </svg>
+  );
+}
+
+export function FitIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M2.6 5.6v-3h3M10.4 2.6h3v3M13.4 10.4v3h-3M5.6 13.4h-3v-3" />
+    </svg>
+  );
+}

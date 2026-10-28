@@ -57,6 +57,8 @@ interface SchemaSidebarProps {
   onOpenInEditor(table: string): void;
   onOpenStructure(table: string): void;
   onOpenOverview(): void;
+  // The ER diagram, centred on `table` when one is given.
+  onOpenDiagram(table?: string): void;
   onOpenServer(): void;
   onOpenDefinition(kind: DefinitionKind, name: string): void;
   onTogglePin(table: string): void;
@@ -174,6 +176,7 @@ export function SchemaSidebar({
   onOpenInEditor,
   onOpenStructure,
   onOpenOverview,
+  onOpenDiagram,
   onOpenServer,
   onOpenDefinition,
   onTogglePin,
@@ -624,6 +627,7 @@ export function SchemaSidebar({
       { label: t("새 탭에서 열기"), onSelect: () => onOpenDataNewTab(table) },
       { label: t("구조 보기"), onSelect: () => onOpenStructure(table) },
       { label: t("쿼리 편집기에서 열기"), onSelect: () => onOpenInEditor(table) },
+      { label: t("다이어그램에서 보기"), onSelect: () => onOpenDiagram(table) },
       {
         label: pinnedSet.has(table) ? t("상단 고정 해제") : t("상단에 고정"),
         separatorBefore: true,
@@ -1038,6 +1042,7 @@ export function SchemaSidebar({
               ],
             },
             { label: t("테이블 개요"), onSelect: onOpenOverview },
+            { label: t("ER 다이어그램"), onSelect: () => onOpenDiagram() },
             { label: t("서버 정보"), onSelect: onOpenServer },
             { label: t("사용자 관리"), onSelect: onOpenUsers },
             {

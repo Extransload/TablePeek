@@ -1,9 +1,10 @@
-import { store, type ObjectList, type TableSchema } from "./store";
+import { store, type ObjectList, type Relation, type TableSchema } from "./store";
 
-// Schema per connection, shared by the sidebar and SQL autocomplete. Switching
-// back to a connection shows the cached copy at once; it is fetched again in
-// the background once older than STALE_MS, or right away when `version`
-// (the connection's meta key) changes. Concurrent callers share one request.
+// Schema per connection, shared by the sidebar, SQL autocomplete and the ER
+// diagram. Switching back to a connection shows the cached copy at once; it
+// is fetched again in the background once older than STALE_MS, or right away
+// when `version` (the connection's meta key) changes. Concurrent callers
+// share one request.
 const STALE_MS = 30_000;
 
 interface Slot<T> {
@@ -15,6 +16,7 @@ interface Slot<T> {
 
 const tablesCache = new Map<string, Slot<TableSchema[]>>();
 const objectsCache = new Map<string, Slot<ObjectList>>();
+const relationsCache = new Map<string, Slot<Relation[]>>();
 
 function keyOf(conn: string, system: boolean): string {
   return `${conn}\u0000${system ? "1" : "0"}`;
@@ -93,9 +95,23 @@ export function loadObjects(
   return load(objectsCache, keyOf(conn, system), version, () => store.fetchObjects(conn, system), force);
 }
 
+export function peekRelations(conn: string, system: boolean): Relation[] | null {
+  return relationsCache.get(keyOf(conn, system))?.value ?? null;
+}
+
+// The connection's foreign keys, all at once.
+export function loadRelations(
+  conn: string,
+  system: boolean,
+  version: string,
+  force = false,
+): Promise<Relation[]> {
+  return load(relationsCache, keyOf(conn, system), version, () => store.fetchRelations(conn, system), force);
+}
+
 export function forgetSchema(conn: string): void {
   const prefix = `${conn}\u0000`;
-  for (const cache of [tablesCache, objectsCache] as Map<string, unknown>[]) {
+  for (const cache of [tablesCache, objectsCache, relationsCache] as Map<string, unknown>[]) {
     for (const key of [...cache.keys()]) {
       if (key.startsWith(prefix)) {
         cache.delete(key);

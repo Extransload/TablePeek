@@ -6,8 +6,8 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    MssqlConfig, ObjectDefinition, PkValue, ServerInfo, ServerSession, TableDetail, TableSchema,
-    TriggerInfo, ValueExpr,
+    MssqlConfig, ObjectDefinition, PkValue, Relation, ServerInfo, ServerSession, TableDetail,
+    TableSchema, TriggerInfo, ValueExpr,
 };
 use tiberius::{
     AuthMethod, Client, ColumnData, Config, EncryptionLevel, ExecuteResult, FromSqlOwned,
@@ -302,6 +302,20 @@ const TABLE_LIST_SQL: &str = "SELECT s.name, t.name
      JOIN sys.schemas s ON s.schema_id = t.schema_id
      ORDER BY s.name, t.name";
 
+// Foreign keys of the tables TABLE_LIST_SQL lists, one row per column pair.
+const RELATIONS_SQL: &str = "SELECT s.name, t.name, fk.name, pc.name, rs.name, rt.name, rc.name
+     FROM sys.foreign_keys fk
+     JOIN sys.tables t ON t.object_id = fk.parent_object_id
+     JOIN sys.schemas s ON s.schema_id = t.schema_id
+     JOIN sys.objects rt ON rt.object_id = fk.referenced_object_id
+     JOIN sys.schemas rs ON rs.schema_id = rt.schema_id
+     JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+     JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id
+       AND pc.column_id = fkc.parent_column_id
+     JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id
+       AND rc.column_id = fkc.referenced_column_id
+     ORDER BY s.name, t.name, fk.name, fkc.constraint_column_id";
+
 const COLUMN_SQL: &str = "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM_LENGTH,
             c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.IS_NULLABLE, c.COLUMN_DEFAULT,
             CASE WHEN EXISTS (
@@ -488,6 +502,43 @@ pub(crate) async fn schema(
             name: display_name(&schema_name, &table_name),
             columns,
         });
+    }
+    Ok(out)
+}
+
+pub(crate) async fn relations(
+    inner: &MssqlInner,
+    include_system: bool,
+) -> Result<Vec<Relation>, EngineError> {
+    let _ = include_system;
+    let mut guard = inner.client().await?;
+    let mut client = take_client(&mut guard, &inner.log)?;
+    let rows = client
+        .query(RELATIONS_SQL, &[])
+        .await
+        .map_err(mssql_err)?
+        .into_first_result()
+        .await
+        .map_err(mssql_err)?;
+    let mut out: Vec<Relation> = Vec::new();
+    let mut current: Option<(String, String, String)> = None;
+    for row in rows {
+        let values: Vec<ColumnData<'static>> = row.into_iter().collect();
+        let text = |index: usize| cd_string(values.get(index)).unwrap_or_default();
+        let key = (text(0), text(1), text(2));
+        if current.as_ref() != Some(&key) {
+            out.push(Relation {
+                table: display_name(&key.0, &key.1),
+                columns: Vec::new(),
+                ref_table: display_name(&text(4), &text(5)),
+                ref_columns: Vec::new(),
+            });
+            current = Some(key);
+        }
+        if let Some(relation) = out.last_mut() {
+            relation.columns.push(text(3));
+            relation.ref_columns.push(text(6));
+        }
     }
     Ok(out)
 }

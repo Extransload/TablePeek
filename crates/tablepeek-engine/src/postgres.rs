@@ -12,8 +12,8 @@ use rustls::RootCertStore;
 use serde_json::Value;
 use tablepeek_types::{
     ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    ObjectDefinition, PkValue, PostgresConfig, ServerInfo, ServerSession, SslMode, TableDetail,
-    TableSchema, TriggerInfo, ValueExpr,
+    ObjectDefinition, PkValue, PostgresConfig, Relation, ServerInfo, ServerSession, SslMode,
+    TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 use tokio_postgres::config::SslMode as PgSslMode;
 use tokio_postgres::types::{FromSql, Kind, ToSql, Type};
@@ -525,6 +525,25 @@ pub(crate) async fn schema(
         }
     }
     Ok(out)
+}
+
+pub(crate) async fn relations(
+    inner: &PostgresInner,
+    include_system: bool,
+) -> Result<Vec<Relation>, EngineError> {
+    let client = inner.conn().await;
+    let rows = client
+        .query(&relations_sql(inner.kind, include_system), &[])
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|row| Relation {
+            table: display_name(&row.get::<_, String>(0), &row.get::<_, String>(1)),
+            columns: row.get::<_, Option<Vec<String>>>(2).unwrap_or_default(),
+            ref_table: display_name(&row.get::<_, String>(3), &row.get::<_, String>(4)),
+            ref_columns: row.get::<_, Option<Vec<String>>>(5).unwrap_or_default(),
+        })
+        .collect())
 }
 
 pub(crate) async fn query(
@@ -1622,13 +1641,19 @@ pub(crate) async fn tx(inner: &PostgresInner, statement: &str) -> Result<(), Eng
     Ok(())
 }
 
-fn schema_sql(kind: &str, include_system: bool) -> String {
+/// The WHERE conditions of the table list, so other catalog queries over
+/// `pg_class c` / `pg_namespace n` cover exactly the tables it shows.
+fn table_list_filters(kind: &str, include_system: bool) -> String {
     let tables = table_list_sql(kind, include_system);
-    let filters = tables
+    tables
         .split_once("WHERE ")
         .and_then(|(_, rest)| rest.split_once("\n     ORDER BY"))
         .map(|(filters, _)| filters.to_string())
-        .unwrap_or_else(|| "true".to_string());
+        .unwrap_or_else(|| "true".to_string())
+}
+
+fn schema_sql(kind: &str, include_system: bool) -> String {
+    let filters = table_list_filters(kind, include_system);
     format!(
         "SELECT n.nspname, c.relname, a.attname,
             format_type(a.atttypid, a.atttypmod),
@@ -1647,6 +1672,28 @@ fn schema_sql(kind: &str, include_system: bool) -> String {
      LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
      WHERE {filters}
      ORDER BY n.nspname, c.relname, a.attnum"
+    )
+}
+
+fn relations_sql(kind: &str, include_system: bool) -> String {
+    let filters = table_list_filters(kind, include_system);
+    format!(
+        "SELECT n.nspname, c.relname,
+            (SELECT array_agg(a.attname::text ORDER BY k.ord)
+             FROM unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
+             JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum),
+            fn.nspname, fc.relname,
+            (SELECT array_agg(a.attname::text ORDER BY k.ord)
+             FROM unnest(con.confkey) WITH ORDINALITY k(attnum, ord)
+             JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum)
+     FROM pg_constraint con
+     JOIN pg_class c ON c.oid = con.conrelid
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     JOIN pg_class fc ON fc.oid = con.confrelid
+     JOIN pg_namespace fn ON fn.oid = fc.relnamespace
+     WHERE con.contype = 'f'
+       AND {filters}
+     ORDER BY n.nspname, c.relname, con.conname"
     )
 }
 

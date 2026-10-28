@@ -106,6 +106,16 @@ pub struct TableSchema {
     pub columns: Vec<ColumnSchema>,
 }
 
+/// 테이블 간 외래 키 관계 (/api/relations). Table names are spelled the way
+/// the schema list spells them; multi-column keys keep their column order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relation {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+}
+
 /// 인덱스 정보 (/api/table)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexInfo {
