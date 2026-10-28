@@ -134,7 +134,7 @@ export interface DefinitionDetail {
 }
 
 export type SslMode = "disable" | "prefer" | "require";
-export type Driver = "postgres" | "mysql" | "cockroach" | "mssql";
+export type Driver = "postgres" | "mysql" | "cockroach" | "mssql" | "sqlite";
 
 export interface DbInput {
   host: string;
@@ -178,12 +178,18 @@ export interface HttpTunnelInput {
   password?: string;
 }
 
+// A SQLite profile is just the database file on this machine.
+export interface SqliteInput {
+  path: string;
+}
+
 export interface ConnectInput {
   driver: Driver;
   postgres?: PostgresInput;
   mysql?: MysqlInput;
   cockroach?: CockroachInput;
   mssql?: MssqlInput;
+  sqlite?: SqliteInput;
   ssh?: SshInput;
   http_tunnel?: HttpTunnelInput;
 }
@@ -230,6 +236,7 @@ export interface SavedConnection {
   mysql?: SavedMysql;
   cockroach?: SavedCockroach;
   mssql?: SavedMssql;
+  sqlite?: SqliteInput;
   ssh?: SavedSsh;
   http_tunnel?: SavedHttpTunnel;
   persist_password: boolean;
@@ -314,6 +321,8 @@ export interface StoreState {
   tx: TxState;
   connId: string | null;
   tabId: string | null;
+  // The system's file dialog was asked for and isn't on screen yet.
+  filePickOpening: boolean;
 }
 
 export interface TabSnapshot {
@@ -373,6 +382,7 @@ let state: StoreState = {
   tx: "none",
   connId: null,
   tabId: null,
+  filePickOpening: false,
 };
 
 const listeners = new Set<() => void>();
@@ -1487,6 +1497,73 @@ async function statPath(path: string): Promise<PathStat> {
   return api<PathStat>(`/api/fs/stat?path=${encodeURIComponent(path)}`);
 }
 
+export interface PickFileOptions {
+  title: string;
+  filter?: { name: string; extensions: string[] };
+  // Folder to open in; a leading "~" is the home folder.
+  dir?: string;
+  hidden?: boolean;
+}
+
+type PickLine =
+  | { shown: true }
+  | { path: string | null }
+  | { error: { code: string; message: string } };
+
+// The system's own open-file dialog, shown by the server on this machine:
+// the picked path, or null when cancelled. `filePickOpening` holds until the
+// dialog is on screen. Fails with code "native_picker_unavailable" where the
+// system has no such dialog, "picker_busy" while one is already up.
+async function pickFile(options: PickFileOptions): Promise<string | null> {
+  setState({ filePickOpening: true });
+  try {
+    let response: Response;
+    try {
+      response = await fetch("/api/fs/pick", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-tablepeek-token": tokenValue },
+        body: JSON.stringify(options),
+      });
+    } catch {
+      throw new Error(t(NETWORK_ERROR));
+    }
+    if (!response.ok || response.body === null) {
+      const body = (await response.json().catch(() => null)) as { code?: string; message?: string } | null;
+      throw new ApiRequestError(body?.message ?? `HTTP ${response.status}`, body?.code ?? "");
+    }
+    // One JSON line as the dialog comes up, one when it closes.
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let pending = "";
+    for (;;) {
+      let chunk: ReadableStreamReadResult<string>;
+      try {
+        chunk = await reader.read();
+      } catch {
+        throw new Error(t(NETWORK_ERROR));
+      }
+      if (chunk.done) {
+        throw new Error(t(NETWORK_ERROR));
+      }
+      pending += chunk.value;
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        const line = JSON.parse(pending.slice(0, newline)) as PickLine;
+        pending = pending.slice(newline + 1);
+        if ("shown" in line) {
+          setState({ filePickOpening: false });
+        } else if ("error" in line) {
+          throw new ApiRequestError(line.error.message, line.error.code);
+        } else {
+          return line.path;
+        }
+        newline = pending.indexOf("\n");
+      }
+    }
+  } finally {
+    setState({ filePickOpening: false });
+  }
+}
+
 function setError(message: string | null): void {
   setState({ error: message });
 }
@@ -1525,6 +1602,7 @@ export const store = {
   openDb,
   listDir,
   statPath,
+  pickFile,
   setError,
   setInfo,
   warmSocket,

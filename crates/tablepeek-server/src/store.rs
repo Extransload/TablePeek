@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
-use tablepeek_types::{HttpTunnelConfig, MssqlConfig, MySqlConfig, PostgresConfig, SshConfig};
+use tablepeek_types::{
+    HttpTunnelConfig, MssqlConfig, MySqlConfig, PostgresConfig, SqliteConfig, SshConfig,
+};
 
 /// Runs kept per connection; the oldest fall off first.
 pub const HISTORY_CAP: usize = 1_000;
@@ -88,6 +90,8 @@ pub struct SavedConnection {
     pub mysql: Option<MySqlConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mssql: Option<MssqlConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite: Option<SqliteConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SavedSsh>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -810,6 +814,7 @@ mod tests {
             cockroach: None,
             mysql: None,
             mssql: None,
+            sqlite: None,
             ssh: Some(SavedSsh::from_config(&ssh)),
             http_tunnel: None,
             persist_password: true,
@@ -836,6 +841,7 @@ mod tests {
                 ssl_client_key: None,
             }),
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
             persist_password: true,
@@ -862,6 +868,7 @@ mod tests {
             }),
             mysql: None,
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
             persist_password: true,
@@ -885,6 +892,7 @@ mod tests {
                 database: "app".into(),
                 encrypt: false,
             }),
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
             persist_password: true,

@@ -3,7 +3,7 @@ import type { Driver } from "../store";
 import { DriverIcon, driverName } from "./DriverIcon";
 import { DownloadIcon, FileIcon, PlusIcon } from "./icons";
 
-const CHOICES: (Driver | "sqlite")[] = ["postgres", "mysql", "mssql", "cockroach", "sqlite"];
+const CHOICES: Driver[] = ["postgres", "mysql", "mssql", "cockroach", "sqlite"];
 
 interface HomeWelcomeProps {
   onNewConnection(options?: { driver?: Driver }): void;
@@ -24,7 +24,7 @@ export function HomeWelcome({ onNewConnection, onOpenFile, onImportFile }: HomeW
           <button
             type="button"
             key={choice}
-            onClick={() => (choice === "sqlite" ? onOpenFile() : onNewConnection({ driver: choice }))}
+            onClick={() => onNewConnection({ driver: choice })}
           >
             <DriverIcon kind={choice} size={20} />
             <span>{driverName(choice)}</span>

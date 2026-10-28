@@ -35,7 +35,7 @@ import { EmptyWorkspace } from "./components/EmptyWorkspace";
 import { ErrorNotice } from "./components/ErrorNotice";
 import { ExportModal, type ExportTarget } from "./components/ExportModal";
 import { FilterBar } from "./components/FilterBar";
-import { FsModal } from "./components/FsModal";
+import { FsModal, SQLITE_EXTENSIONS } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
 import type { SelectedRows } from "./grid/CanvasGrid";
 import type { RowSource } from "./grid/rowSource";
@@ -522,6 +522,8 @@ export default function App() {
   const [busySaved, setBusySaved] = useState<string | null>(null);
   const [fsOpen, setFsOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
+  // The system's open dialog is up (it answers when it closes).
+  const pickingFileRef = useRef(false);
   // A new connection's kind of database being picked (the group it goes into).
   const [driverPick, setDriverPick] = useState<{ group?: string } | null>(null);
   // The connections window from the bar's plug button: saved ones to open.
@@ -3593,8 +3595,34 @@ export default function App() {
   }
 
   // "asking": the connection dialog now asks for a password. A profile that keeps
+  // The system's open dialog; where there is none, the in-app file list.
+  async function openSqliteFile(): Promise<void> {
+    if (pickingFileRef.current) {
+      return;
+    }
+    pickingFileRef.current = true;
+    try {
+      const path = await store.pickFile({
+        title: t("SQLite 파일 열기"),
+        filter: { name: "SQLite", extensions: SQLITE_EXTENSIONS },
+      });
+      if (path !== null) {
+        await openPathFile(path);
+      }
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === "native_picker_unavailable") {
+        setFsOpen(true);
+      } else {
+        store.setError(errorOf(err, t("파일 선택 창을 열지 못했습니다")));
+      }
+    } finally {
+      pickingFileRef.current = false;
+    }
+  }
+
   // its password connects at once; one that doesn't asks first, since a try
-  // without the password only logs a failed login.
+  // without the password only logs a failed login. A SQLite profile is a file
+  // with no password, so it always connects at once.
   // A second call while the first is connecting shares it (busySaved, the
   // state that hides a second click, isn't set until the next render).
   function connectSavedById(id: string): Promise<"entered" | "asking" | "failed"> {
@@ -3613,7 +3641,7 @@ export default function App() {
         store.setError(t("연결을 찾을 수 없습니다"));
         return "failed";
       }
-      if (!saved.has_password) {
+      if (saved.driver !== "sqlite" && !saved.has_password) {
         openConnectionEditor(saved, t("비밀번호를 입력해 연결하세요 (없으면 비워 두세요)"), "db");
         return "asking";
       }
@@ -3844,7 +3872,7 @@ export default function App() {
           }
         },
       },
-      { id: "open-file", label: t("SQLite 파일 열기"), run: () => setFsOpen(true) },
+      { id: "open-file", label: t("SQLite 파일 열기"), run: () => void openSqliteFile() },
       { id: "create-table", label: t("새 테이블 생성"), run: () => setCreateTableOpen(true) },
       {
         id: "import-csv",
@@ -5084,7 +5112,7 @@ export default function App() {
           onOpenConn={(id) => void enterConn(id)}
           onOpenNewWindow={openNewWindow}
           onCloseConn={(id) => void closeConn(id)}
-          onOpenFile={() => setFsOpen(true)}
+          onOpenFile={() => void openSqliteFile()}
           onNewConnection={openNewConnection}
           onBackupOrRestore={(kind) => void startBackupOrRestore(kind)}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -5955,6 +5983,12 @@ export default function App() {
             if (path === null) {
               void openDemo();
             } else {
+      {state.filePickOpening ? (
+        <div className="file-pick-pending" role="status">
+          <Spinner size={12} />
+          {t("파일 선택 창을 여는 중…")}
+        </div>
+      ) : null}
               void openPathFile(path);
             }
           }}
@@ -6018,11 +6052,7 @@ export default function App() {
           onPick={(kind) => {
             const group = driverPick.group;
             setDriverPick(null);
-            if (kind === "sqlite") {
-              setFsOpen(true);
-            } else {
-              openNewConnection({ driver: kind, group });
-            }
+            openNewConnection({ driver: kind, group });
           }}
           onClose={() => setDriverPick(null)}
         />

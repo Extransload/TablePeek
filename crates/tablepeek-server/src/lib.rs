@@ -24,6 +24,7 @@ use tablepeek_types::{
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 
+pub mod picker;
 pub mod store;
 pub mod transfer;
 pub mod tunnel;
@@ -660,6 +661,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/conns/{id}", delete(conns_delete))
         .route("/api/fs/list", get(fs_list))
         .route("/api/fs/stat", get(fs_stat))
+        .route("/api/fs/pick", post(fs_pick))
         .route("/api/fonts", get(fonts_route))
         .route("/api/schema", get(schema_route))
         .route("/api/count", get(count_route))
@@ -704,6 +706,7 @@ pub fn app(state: AppState) -> Router {
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
+    picker::warm();
     // Slots opened before the server (the --db or --demo one) were not
     // registered through register_slot.
     for slot in state.registry.lock().await.list() {
@@ -1327,6 +1330,7 @@ async fn connect_with(
         "cockroach" => connect_cockroach(state, req, origin).await,
         "mysql" => connect_mysql(state, req, origin).await,
         "mssql" => connect_mssql(state, req, origin).await,
+        "sqlite" => connect_sqlite(state, req, origin).await,
         _ => Err(ConnectError::new(
             StatusCode::BAD_REQUEST,
             "unsupported_driver",
@@ -1337,6 +1341,46 @@ async fn connect_with(
         slot.remember(slot.engine.epoch(), meta);
     }
     outcome
+}
+
+async fn connect_sqlite(
+    state: &AppState,
+    req: ConnectRequest,
+    origin: SlotOrigin,
+) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
+    let path = req
+        .sqlite
+        .as_ref()
+        .map(|config| config.path.trim())
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            ConnectError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "SQLite 파일 경로를 입력하세요",
+            )
+        })?;
+    // Same status and code as /api/open for a missing file or one that is not SQLite.
+    let engine = Engine::open_file(std::path::Path::new(path)).map_err(|err| match &err {
+        EngineError::NotFound(_) => {
+            ConnectError::new(StatusCode::NOT_FOUND, "not_found", err.to_string())
+        }
+        EngineError::NotAFile(_) => ConnectError::new(
+            StatusCode::BAD_REQUEST,
+            "not_a_sqlite_file",
+            err.to_string(),
+        ),
+        _ => connect_failed(err.to_string()),
+    })?;
+    let label = origin.label.unwrap_or_else(|| path.to_string());
+    // No origin: a saved profile files history under its id, an unsaved one
+    // under the file like /api/open, and neither offers a database switch.
+    let slot = register_slot(state, label, origin.saved_id, None, engine).await;
+    let meta = slot
+        .refresh_summary(false)
+        .await
+        .map_err(|err| connect_failed(err.to_string()))?;
+    Ok((slot, meta))
 }
 
 async fn connect_postgres(
@@ -1585,10 +1629,25 @@ fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, &'static s
             .mssql
             .is_none()
             .then_some("SQL Server 접속 정보가 없습니다"),
+        "sqlite" => connect
+            .sqlite
+            .as_ref()
+            .is_none_or(|c| c.path.trim().is_empty())
+            .then_some("SQLite 파일 경로를 입력하세요"),
         _ => return Some(("unsupported_driver", "지원하지 않는 드라이버입니다")),
     };
     if let Some(message) = missing {
         return Some(("invalid_request", message));
+    }
+    if connect.driver == "sqlite" {
+        // A local file needs no host, and there is nothing to tunnel to.
+        if connect.ssh.is_some() || connect.http_tunnel.is_some() {
+            return Some((
+                "invalid_request",
+                "SQLite 연결에는 SSH·HTTP 터널을 쓸 수 없습니다",
+            ));
+        }
+        return None;
     }
     let host = match connect.driver.as_str() {
         "mysql" => connect.mysql.as_ref().map(|c| c.host.as_str()),
@@ -1613,6 +1672,7 @@ fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, &'static s
 
 fn request_db_password(connect: &ConnectRequest) -> Option<&str> {
     match connect.driver.as_str() {
+        "sqlite" => None,
         "mysql" => connect.mysql.as_ref().and_then(|c| c.password.as_deref()),
         "cockroach" => connect
             .cockroach
@@ -1629,6 +1689,7 @@ fn request_db_password(connect: &ConnectRequest) -> Option<&str> {
 
 fn set_request_db_password(connect: &mut ConnectRequest, password: String) {
     match connect.driver.as_str() {
+        "sqlite" => {}
         "mysql" => {
             if let Some(config) = connect.mysql.as_mut() {
                 config.password = Some(password);
@@ -1672,13 +1733,15 @@ async fn save_connection(
     }
     validate_connect_request(&req.connect)?;
 
+    // A SQLite profile has no secrets, so it never keeps any in the keychain.
+    let persist_password = req.persist_password && req.connect.driver != "sqlite";
     let password_account = store::connection_account(id, &req.connect.driver);
     let ssh_account = store::connection_account(id, "ssh");
     let http_account = store::connection_account(id, "http");
     let fresh = previous.is_none();
     // Every keychain write remembers what it replaced so a later failure can undo it.
     let mut written: Vec<(String, Option<String>)> = Vec::new();
-    if req.persist_password {
+    if persist_password {
         let carried = previous
             .filter(|old| old.persist_password && old.driver != req.connect.driver)
             .and_then(|old| store::get_password(&store::connection_account(id, &old.driver)));
@@ -1742,13 +1805,14 @@ async fn save_connection(
         cockroach,
         mysql,
         mssql,
+        sqlite: req.connect.sqlite.clone(),
         ssh: req.connect.ssh.as_ref().map(store::SavedSsh::from_config),
         http_tunnel: req
             .connect
             .http_tunnel
             .as_ref()
             .map(store::SavedHttpTunnel::from_config),
-        persist_password: req.persist_password,
+        persist_password,
         last_used: previous.map(|old| old.last_used).unwrap_or(0),
     };
     let outcome = {
@@ -1774,7 +1838,7 @@ async fn save_connection(
     // Drop secrets the saved profile no longer refers to. The old driver's
     // account goes only once its password has been moved to the new account.
     let had_secrets = previous.is_some_and(|old| old.persist_password);
-    if !req.persist_password {
+    if !persist_password {
         if had_secrets {
             delete_connection_passwords(id);
         }
@@ -2282,6 +2346,7 @@ async fn connection_connect(
         && saved.driver != "cockroach"
         && saved.driver != "mysql"
         && saved.driver != "mssql"
+        && saved.driver != "sqlite"
     {
         return Err(bad_request(
             "unsupported_driver",
@@ -2295,6 +2360,7 @@ async fn connection_connect(
         cockroach: saved.cockroach.clone(),
         mysql: saved.mysql.clone(),
         mssql: saved.mssql.clone(),
+        sqlite: saved.sqlite.clone(),
         ssh: None,
         http_tunnel: None,
     };
@@ -2365,8 +2431,10 @@ async fn connection_connect(
         Err(err) => {
             // Tunnel failures (SSH/HTTP) are reported as they are, not as a DB password prompt.
             let tunnel_error = err.message.starts_with("SSH") || err.message.starts_with("HTTP");
+            // A SQLite file has no password, so its errors are never a password prompt.
             let needs_password = !supplied_password
                 && !tunnel_error
+                && saved.driver != "sqlite"
                 && (err.message.contains("password")
                     || err.message.contains("비밀번호")
                     || err.message.contains("invalid configuration"));
@@ -2766,6 +2834,89 @@ async fn fs_stat(
         return Err(bad_request("fs_error", "경로가 비어 있습니다"));
     }
     Ok(Json(path_stat(path)))
+}
+
+#[derive(Deserialize)]
+struct PickFilterBody {
+    name: String,
+    extensions: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct PickBody {
+    title: String,
+    #[serde(default)]
+    filter: Option<PickFilterBody>,
+    /// Folder to open in; a leading `~` is the home folder.
+    #[serde(default)]
+    dir: Option<String>,
+    #[serde(default)]
+    hidden: bool,
+}
+
+/// Shows the system's open-file dialog, answering in NDJSON as it goes:
+/// `{"shown": true}` once the dialog is on screen, then one of
+/// `{"path": …}` (null when cancelled) or `{"error": {"code", "message"}}`,
+/// the code `native_picker_unavailable` where there is no such dialog and
+/// `picker_busy` while another is up.
+async fn fs_pick(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PickBody>,
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let dir = body
+        .dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| match dir.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                default_dir().join(rest.trim_start_matches(['/', '\\']))
+            }
+            _ => PathBuf::from(dir),
+        });
+    let request = picker::PickRequest {
+        title: body.title,
+        filter: body.filter.map(|filter| picker::PickFilter {
+            name: filter.name,
+            extensions: filter.extensions,
+        }),
+        dir,
+        hidden: body.hidden,
+    };
+    let (lines, mut rx) = mpsc::unbounded_channel::<Bytes>();
+    tokio::task::spawn_blocking(move || {
+        let line = |value: Value| Bytes::from(format!("{value}\n"));
+        let picked = picker::pick_file(&request, &mut || {
+            let _ = lines.send(line(json!({ "shown": true })));
+        });
+        let error =
+            |code: &str, message: String| json!({ "error": { "code": code, "message": message } });
+        let last = match picked {
+            Ok(path) => json!({ "path": path }),
+            Err(picker::PickError::Unavailable) => error(
+                "native_picker_unavailable",
+                "이 시스템에서는 파일 선택 창을 열 수 없습니다".into(),
+            ),
+            Err(picker::PickError::Busy) => {
+                error("picker_busy", "파일 선택 창이 이미 열려 있습니다".into())
+            }
+            Err(picker::PickError::Failed(message)) => error("internal", message),
+        };
+        let _ = lines.send(line(last));
+    });
+    let stream = futures_util::stream::poll_fn(move |cx| {
+        rx.poll_recv(cx)
+            .map(|line| line.map(Ok::<_, std::convert::Infallible>))
+    });
+    Ok((
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(stream),
+    )
+        .into_response())
 }
 
 /// The font families installed on this machine, for the settings' font
@@ -4373,6 +4524,7 @@ mod tests {
             cockroach: None,
             mysql: None,
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
         }
@@ -4395,6 +4547,7 @@ mod tests {
                 ssl_client_key: None,
             }),
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
         }
@@ -4417,6 +4570,7 @@ mod tests {
             }),
             mysql: None,
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
         }
@@ -4436,6 +4590,7 @@ mod tests {
                 database: "tablepeek_test".into(),
                 encrypt: false,
             }),
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
         }
@@ -4453,7 +4608,7 @@ mod tests {
     async fn connect_rejects_unsupported_driver() {
         let dir = temp_dir("connect-driver");
         let state = test_state(&dir);
-        let err = connect_for_test(&state, test_connect_request("sqlite"))
+        let err = connect_for_test(&state, test_connect_request("oracle"))
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -4472,6 +4627,7 @@ mod tests {
             cockroach: None,
             mysql: None,
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
         };
@@ -4492,6 +4648,7 @@ mod tests {
             cockroach: None,
             mysql: None,
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
         };
@@ -4512,6 +4669,7 @@ mod tests {
             cockroach: None,
             mysql: None,
             mssql: None,
+            sqlite: None,
             ssh: None,
             http_tunnel: None,
         };
@@ -4520,6 +4678,158 @@ mod tests {
         assert_eq!(err.code, "connect_failed");
         assert_eq!(err.message, "SQL Server 접속 정보가 없습니다");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn sqlite_connect(path: &str) -> ConnectRequest {
+        serde_json::from_value(json!({ "driver": "sqlite", "sqlite": { "path": path } })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn saved_sqlite_profile_connects_to_its_file() {
+        let dir = temp_dir("sqlite-profile");
+        let file = dir.join("app.db");
+        // SQLite reads an empty file as an empty database.
+        std::fs::write(&file, b"").unwrap();
+        let path = file.display().to_string();
+        let state = test_state(&dir);
+        let id = create_test_connection(&state, "로컬 파일", sqlite_connect(&path)).await;
+
+        let listed = connections_list(State(state.clone()), test_headers())
+            .await
+            .unwrap();
+        let item = &listed.0["connections"][0];
+        assert_eq!(item["driver"], json!("sqlite"));
+        assert_eq!(item["sqlite"]["path"], json!(path));
+        assert_eq!(item["has_password"], json!(false));
+
+        let opened = connection_connect(
+            State(state.clone()),
+            AxumPath(id.clone()),
+            test_headers(),
+            Bytes::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(opened.0["meta"]["kind"], json!("sqlite"));
+        assert_eq!(opened.0["meta"]["path"], json!(path));
+        let conn = opened.0["conn"].as_str().unwrap();
+        let slot = state.registry.lock().await.get(conn).unwrap();
+        assert_eq!(slot.saved_id.as_deref(), Some(id.as_str()));
+        assert_eq!(slot.label, "로컬 파일");
+        assert_eq!(slot.history_scope(), store::saved_scope(&id));
+
+        let tested = connections_test(
+            State(state.clone()),
+            test_headers(),
+            Json(TestConnectionRequest {
+                connect: sqlite_connect(&path),
+                saved_id: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tested.0["ok"], json!(true));
+        assert_eq!(tested.0["kind"], json!("sqlite"));
+        assert_eq!(tested.0["tables"], json!(0));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_profile_needs_a_path() {
+        let dir = temp_dir("sqlite-empty-path");
+        let state = test_state(&dir);
+        let err = connections_create(
+            State(state.clone()),
+            test_headers(),
+            Json(NewConnectionRequest {
+                name: "빈 경로".into(),
+                connect: sqlite_connect("  "),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1.code, "invalid_request");
+        assert_eq!(err.1.message, "SQLite 파일 경로를 입력하세요");
+
+        let missing_config: ConnectRequest =
+            serde_json::from_value(json!({ "driver": "sqlite" })).unwrap();
+        let err = connect_for_test(&state, missing_config).await.unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, "invalid_request");
+        assert_eq!(err.message, "SQLite 파일 경로를 입력하세요");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_connect_reports_missing_and_foreign_files() {
+        let dir = temp_dir("sqlite-bad-files");
+        let state = test_state(&dir);
+        let gone = dir.join("gone.db").display().to_string();
+        let err = connect_for_test(&state, sqlite_connect(&gone))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert_eq!(err.code, "not_found");
+
+        let text = dir.join("notes.txt");
+        std::fs::write(
+            &text,
+            "this is plain text, not a database file at all\n".repeat(8),
+        )
+        .unwrap();
+        let err = connect_for_test(&state, sqlite_connect(&text.display().to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, "not_a_sqlite_file");
+
+        // A saved profile whose file went away reports that, not a password prompt.
+        let id = create_test_connection(&state, "사라진 파일", sqlite_connect(&gone)).await;
+        let err = connection_connect(
+            State(state.clone()),
+            AxumPath(id),
+            test_headers(),
+            Bytes::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+        assert_eq!(err.1.code, "not_found");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_profile_survives_export_and_import() {
+        let source = test_state(&temp_dir("sqlite-export"));
+        let id = create_test_connection(&source, "로컬", sqlite_connect("/data/app.db")).await;
+        let exported = connections_export(
+            State(source.clone()),
+            test_headers(),
+            Json(export_request(vec![id], "correct horse")),
+        )
+        .await
+        .unwrap();
+        let file = exported.0["file"].as_str().unwrap().to_string();
+
+        let target = test_state(&temp_dir("sqlite-import"));
+        let imported = connections_import(
+            State(target.clone()),
+            test_headers(),
+            Json(import_request(&file, "correct horse")),
+        )
+        .await
+        .unwrap();
+        let created = imported.0["connections"].as_array().unwrap();
+        assert_eq!(created.len(), 1);
+        let store = target.store.lock().await;
+        let saved = store
+            .find_connection(created[0]["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(saved.driver, "sqlite");
+        assert_eq!(saved.sqlite.as_ref().unwrap().path, "/data/app.db");
+        assert!(!saved.persist_password);
     }
 
     #[tokio::test]

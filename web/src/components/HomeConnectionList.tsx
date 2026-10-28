@@ -43,8 +43,12 @@ function savedTarget(connection: SavedConnection) {
   return connection.postgres ?? connection.cockroach ?? connection.mysql ?? connection.mssql ?? null;
 }
 
-// "host : database", as TablePlus lists connections.
+// "host : database", as TablePlus lists connections; a SQLite profile shows
+// its file's path, as an open file's row does (the name is usually its basename).
 export function savedAddress(connection: SavedConnection): string {
+  if (connection.sqlite) {
+    return connection.sqlite.path;
+  }
   const db = savedTarget(connection);
   if (db === null) {
     return t("설정 없음");
@@ -53,6 +57,9 @@ export function savedAddress(connection: SavedConnection): string {
 }
 
 function savedDetail(connection: SavedConnection): string {
+  if (connection.sqlite) {
+    return connection.sqlite.path;
+  }
   const db = savedTarget(connection);
   if (db === null) {
     return connection.name;
@@ -96,8 +103,8 @@ export function openAddress(conn: ConnSummary): string {
   return conn.demo ? t("인메모리 데모") : (conn.path ?? conn.label);
 }
 
-// Connections a search shows: name, host, database, tags or group name
-// containing the query, ignoring case. A matching group shows all of its own.
+// Connections a search shows: name, host, database, SQLite file path, tags or
+// group name containing the query, ignoring case. A matching group shows all of its own.
 export function filterConnections(
   saved: SavedConnection[],
   metaById: Record<string, ConnMeta>,
@@ -114,6 +121,7 @@ export function filterConnections(
       connection.name,
       db?.host ?? "",
       db?.database ?? "",
+      connection.sqlite?.path ?? "",
       ...(meta?.tags ?? []),
       groupName.get(meta?.group ?? "") ?? "",
     ];

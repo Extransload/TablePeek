@@ -257,6 +257,7 @@ pub fn export_connect(saved: &SavedConnection, secret: impl Fn(&str) -> Option<S
         "cockroach" => saved.cockroach.as_ref().map(serde_json::to_value),
         "mysql" => saved.mysql.as_ref().map(serde_json::to_value),
         "mssql" => saved.mssql.as_ref().map(serde_json::to_value),
+        "sqlite" => saved.sqlite.as_ref().map(serde_json::to_value),
         _ => None,
     };
     if let Some(Ok(mut db)) = db {

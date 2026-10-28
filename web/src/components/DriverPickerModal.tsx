@@ -3,12 +3,10 @@ import { t } from "../i18n";
 import type { Driver } from "../store";
 import { DriverIcon } from "./DriverIcon";
 
-export type DriverChoice = Driver | "sqlite";
-
 // Arrow keys walk the tiles in reading order.
 const STEPS: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
 
-const CHOICES: { kind: DriverChoice; label: string }[] = [
+const CHOICES: { kind: Driver; label: string }[] = [
   { kind: "postgres", label: "PostgreSQL" },
   { kind: "mysql", label: "MySQL" },
   { kind: "mssql", label: "SQL Server" },
@@ -17,14 +15,14 @@ const CHOICES: { kind: DriverChoice; label: string }[] = [
 ];
 
 interface DriverPickerModalProps {
-  onPick(kind: DriverChoice): void;
+  onPick(kind: Driver): void;
   onClose(): void;
 }
 
 // A new connection starts, as in TablePlus, by picking the kind of database:
 // nothing is picked until the user picks it. Double-click or Enter creates.
 export function DriverPickerModal({ onPick, onClose }: DriverPickerModalProps) {
-  const [picked, setPicked] = useState<DriverChoice | null>(null);
+  const [picked, setPicked] = useState<Driver | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const tileId = useId();
 

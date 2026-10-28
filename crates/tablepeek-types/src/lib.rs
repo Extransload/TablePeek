@@ -291,6 +291,12 @@ pub struct HttpTunnelConfig {
     pub password: Option<String>,
 }
 
+/// SQLite 파일 접속 설정 (저장된 연결 프로필에서 파일 경로를 기억한다)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqliteConfig {
+    pub path: String,
+}
+
 /// 원격 접속 요청 (/api/connect)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectRequest {
@@ -303,6 +309,8 @@ pub struct ConnectRequest {
     pub mysql: Option<MySqlConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mssql: Option<MssqlConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite: Option<SqliteConfig>,
     #[serde(default, skip_serializing)]
     pub ssh: Option<SshConfig>,
     #[serde(default, skip_serializing)]

@@ -3768,6 +3768,32 @@ input[type="color"]::-webkit-color-swatch {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
+/* The system's file dialog is on its way: same pill, over everything. */
+.file-pick-pending {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  z-index: 80;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  box-shadow: var(--shadow-2);
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+  transform: translateX(-50%);
+  backdrop-filter: blur(8px);
+  animation: tablepeek-delayed-in var(--motion-fast) ease var(--loading-delay) both;
+}
+
+.file-pick-pending .spinner {
+  color: var(--accent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -5345,6 +5371,14 @@ button.cm-file-clear {
 button.cm-file-clear:hover {
   background: var(--hover-fill);
   color: var(--ink);
+}
+
+/* "파일 선택…" beside a SQLite profile's database path. */
+.cm-modal button.cm-path-pick {
+  flex: none;
+  gap: 6px;
+  height: 30px;
+  border-radius: 8px;
 }
 
 .cm-switch {

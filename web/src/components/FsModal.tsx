@@ -10,7 +10,9 @@ interface FsModalProps {
   onOpenDb(path: string | null): void;
 }
 
-const DB_FILE_PATTERN = /\.(db|sqlite|sqlite3|db3)$/i;
+export const SQLITE_EXTENSIONS = ["db", "sqlite", "sqlite3", "db3"];
+
+const DB_FILE_PATTERN = new RegExp(`\\.(${SQLITE_EXTENSIONS.join("|")})$`, "i");
 
 function formatSize(size: number | null): string {
   if (size === null) {

@@ -27,6 +27,10 @@ function dbInput(db: SavedDb): DbInput {
 }
 
 export function inputFromSaved(saved: SavedConnection): ConnectInput {
+  // A SQLite profile is only its file: no password, SSL or tunnel.
+  if (saved.sqlite) {
+    return { driver: "sqlite", sqlite: { path: saved.sqlite.path } };
+  }
   let input: ConnectInput;
   if (saved.mysql) {
     input = { driver: "mysql", mysql: dbInput(saved.mysql) };

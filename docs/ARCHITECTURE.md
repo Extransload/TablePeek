@@ -19,7 +19,7 @@
 | 결과 전송 | M0: JSON → M2 이후: Arrow IPC 스트리밍 (적용) | 컬럼형 버퍼로 zero-copy 정렬·필터, 윈도우 페치로 전량 로드 회피 |
 | 렌더링 | Canvas 가상화 그리드 (M1 적용, M3 셀 편집) | DOM 테이블은 대량 행에서 한계 |
 | SQL 에디터 | CodeMirror 6 (M1 적용) | 브라우저 네이티브 IME가 최대 리스크를 제거 |
-| 파일 탐색 | 엔진측 디렉터리 API(`/api/fs/list`) + 브라우저 모달 | 경로 직접 입력은 오타·미검증 위험 |
+| 파일 탐색 | OS 기본 파일 선택 창(`/api/fs/pick`: macOS `NSOpenPanel`(서버 시작 때 띄워 둔 JXA 헬퍼, 첫 표시 ~0.4초), Windows `OpenFileDialog`, Linux zenity/kdialog). 없는 환경은 엔진측 디렉터리 API(`/api/fs/list`) + 브라우저 모달 | 서버가 루프백 전용이라 선택 창이 브라우저와 같은 화면에 뜸. 경로 직접 입력은 오타·미검증 위험 |
 | 원격 접속 | SSH 터널 내장(russh, M4) + OS 키체인(keyring) | 클라우드 릴레이·서버 비용 불필요, 비밀 정보는 키체인만 |
 | 편집 안전 | PK 기반 단일 셀 UPDATE + 명시적 트랜잭션(M3), 행 추가/삭제(M9) | 안전한 최소 편집 표면. 세션 스냅샷 패치로 일관성 유지. 구조 변경 시 전 세션 무효화 |
 | 다중 DB | SQLite · PostgreSQL · MySQL/MariaDB · CockroachDB · SQL Server | 드라이버 선택은 연결 모달에서. 서버 프로세스당 활성 DB 1개(교체형) |
@@ -84,7 +84,7 @@
   - C→S: `query{sql,max_rows,window}` · `fetch{offset,limit}` · `cancel` · `edit{session,table,pk,column,value,row,col}` · `insert_row{table,values[{column,value}]}` · `delete_row{table,pk[{column,value}]}` · `tx{begin|commit|rollback}`
   - S→C: `meta` → (행>0이면) Arrow IPC 바이너리 → `window{offset,count}` · `error{message,cancelled}` · `edited` · `row_change{op,rows_affected,invalidate}` · `tx{state,invalidate?}`
 - **세션·편집 (M3·M9)**: 결과 세션 상한 8(최근 사용 유지). 셀 편집은 PK 단일 행 UPDATE, 행 추가는 지정 컬럼 INSERT(빈 배열=DEFAULT VALUES), 행 삭제는 PK 일치 DELETE. 성공 시 서버가 세션 스냅샷 셀을 패치(M9: 행 추가/삭제는 `row_change.invalidate=true`를 보내고 전 세션을 비움 → UI가 활성 탭 재실행). 트랜잭션 중 편집은 저널(old 값) 기록, 구조적 변경(행 추가/삭제)은 저널에 `Structural` 마커 → `rollback` 시 전 세션 무효화(`tx.invalidate=true`), `commit`/`begin` 시 저널 폐기.
-- **REST**: `/api/meta` · `/api/open`(SQLite/데모 전환) · `/api/connect`(postgres·mysql·cockroach·mssql 직접/SSH) · `/api/fs/list` · `/api/schema` · `/api/connections`(CRUD + `/{id}/connect`) · `/api/history`(GET/DELETE) · `/api/favorites`(CRUD) · `/api/table`(컬럼·인덱스·외래 키·DDL·추정 행 수·크기) · `/api/server`(버전·크기·가동 시간·세션 목록) · `/api/objects`(뷰·함수·트리거·시퀀스) · `/api/definition`(뷰/함수/트리거/시퀀스 DDL) · `/api/kill`(세션 종료, 지원 엔진만) — 전부 토큰 인증.
+- **REST**: `/api/meta` · `/api/open`(SQLite/데모 전환) · `/api/connect`(postgres·mysql·cockroach·mssql 직접/SSH, sqlite 파일 경로) · `/api/fs/list` · `/api/fs/pick`(OS 파일 선택 창) · `/api/schema` · `/api/connections`(CRUD + `/{id}/connect`, sqlite 파일 프로필 포함) · `/api/history`(GET/DELETE) · `/api/favorites`(CRUD) · `/api/table`(컬럼·인덱스·외래 키·DDL·추정 행 수·크기) · `/api/server`(버전·크기·가동 시간·세션 목록) · `/api/objects`(뷰·함수·트리거·시퀀스) · `/api/definition`(뷰/함수/트리거/시퀀스 DDL) · `/api/kill`(세션 종료, 지원 엔진만) — 전부 토큰 인증.
 - **드라이버 취소·한계 (M6~M9)**: SQLite `interrupt` · PG `pg_cancel_backend` · MySQL `KILL QUERY`(실제 실행 중 쿼리에만 유효) · CockroachDB `pg_cancel_backend` · SQL Server `KILL {spid}` + 세션 죽음 감지 시 재접속. MSSQL 트랜잭션은 TDS Transaction Manager RPC 사용(배치 경유 `BEGIN TRAN`은 오류 266). MSSQL 구조 조회는 `sys.*` 카탈로그, DDL 스크립트 재구성.
 - **전송 규약**: 행 1개 = Arrow IPC 배치 1개(BATCH_CHUNK 65,536행), Decimal/문자열 타입 매핑은 엔진 `arrow_schema` 참조.
 

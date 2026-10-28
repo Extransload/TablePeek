@@ -18,6 +18,7 @@ import {
 import { DriverIcon } from "./DriverIcon";
 import { ErrorNotice } from "./ErrorNotice";
 import { FilePickerModal } from "./FilePickerModal";
+import { SQLITE_EXTENSIONS } from "./FsModal";
 import {
   CheckIcon,
   CloseIcon,
@@ -50,12 +51,13 @@ interface ConnectModalProps {
 }
 
 type SshAuth = "password" | "key";
-type FileField = "sslClientKey" | "sslClientCert" | "sslRootCert" | "sshKeyPath";
+type FileField = "sslClientKey" | "sslClientCert" | "sslRootCert" | "sshKeyPath" | "path";
 type FieldKey =
   | "host"
   | "port"
   | "user"
   | "database"
+  | "path"
   | "password"
   | "sslClientKey"
   | "sslClientCert"
@@ -81,6 +83,8 @@ interface ConnectForm {
   password: string;
   persistPassword: boolean;
   database: string;
+  // The database file of a SQLite profile.
+  path: string;
   sslMode: SslMode;
   sslRootCert: string;
   sslClientCert: string;
@@ -120,20 +124,26 @@ function errorStatus(err: unknown, fallback: string): Status {
   };
 }
 
-const DRIVERS: Driver[] = ["postgres", "mysql", "mssql", "cockroach"];
+// The radio row switches between server drivers only; a SQLite profile is a
+// file, so it keeps its own form and never shows the row.
+type ServerDriver = Exclude<Driver, "sqlite">;
+const DRIVERS: ServerDriver[] = ["postgres", "mysql", "mssql", "cockroach"];
 const DEFAULT_PORT: Record<Driver, string> = {
   postgres: "5432",
   cockroach: "26257",
   mysql: "3306",
   mssql: "1433",
+  // A file has no port.
+  sqlite: "",
 };
 const DRIVER_LABEL: Record<Driver, string> = {
   postgres: "PostgreSQL",
   cockroach: "CockroachDB",
   mysql: "MySQL",
   mssql: "SQL Server",
+  sqlite: "SQLite",
 };
-const DRIVER_SUB: Record<Driver, string> = {
+const DRIVER_SUB: Record<ServerDriver, string> = {
   postgres: "기본 포트 5432",
   cockroach: "PG 호환 · 26257",
   mysql: "MariaDB · 3306",
@@ -170,6 +180,7 @@ const EMPTY_FORM: ConnectForm = {
   // New profiles keep their passwords in the OS keychain unless told otherwise.
   persistPassword: true,
   database: "",
+  path: "",
   sslMode: "prefer",
   sslRootCert: "",
   sslClientCert: "",
@@ -190,7 +201,9 @@ const EMPTY_FORM: ConnectForm = {
 };
 
 function normDriver(value: string): Driver {
-  return value === "mysql" || value === "cockroach" || value === "mssql" ? value : "postgres";
+  return value === "mysql" || value === "cockroach" || value === "mssql" || value === "sqlite"
+    ? value
+    : "postgres";
 }
 
 function formFromSaved(saved: SavedConnection): ConnectForm {
@@ -211,6 +224,7 @@ function formFromSaved(saved: SavedConnection): ConnectForm {
     user: db?.user ?? "",
     persistPassword: saved.persist_password,
     database: db?.database ?? "",
+    path: saved.sqlite?.path ?? "",
     sslMode: tls?.ssl_mode ?? "disable",
     sslRootCert: tls?.ssl_root_cert ?? "",
     sslClientCert: tls?.ssl_client_cert ?? "",
@@ -289,6 +303,9 @@ function parseConnectionUrl(text: string): Partial<ConnectForm> | null {
 }
 
 function autoName(form: ConnectForm): string {
+  if (form.driver === "sqlite") {
+    return basename(form.path.trim()) || "SQLite";
+  }
   const host = form.host.trim() || "localhost";
   const database = form.database.trim();
   return database === "" ? host : `${database} @ ${host}`;
@@ -300,11 +317,15 @@ function validPort(value: string): boolean {
 }
 
 function basename(path: string): string {
-  const index = path.lastIndexOf("/");
+  const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return index >= 0 ? path.slice(index + 1) : path;
 }
 
 function buildInput(form: ConnectForm): ConnectInput {
+  // A file needs no password, SSL or tunnel.
+  if (form.driver === "sqlite") {
+    return { driver: "sqlite", sqlite: { path: form.path.trim() } };
+  }
   const database: DbInput = {
     host: form.host.trim(),
     port: Number(form.port.trim()),
@@ -368,6 +389,11 @@ function buildInput(form: ConnectForm): ConnectInput {
 
 // "save" only needs a well-formed profile; "connect" also needs what the server will ask for.
 function problemsOf(form: ConnectForm, purpose: "save" | "connect", storedSecrets: boolean): Problem[] {
+  if (form.driver === "sqlite") {
+    return form.path.trim() === ""
+      ? [{ field: "path", message: t("SQLite 파일 경로를 입력하세요") }]
+      : [];
+  }
   const problems: Problem[] = [];
   // Stored secrets only count while the profile keeps storing them.
   const hasStored = storedSecrets && form.persistPassword;
@@ -539,6 +565,7 @@ export function ConnectModal({
   const saveRef = useRef<() => void>(() => {});
   const requestCloseRef = useRef<() => void>(() => {});
   const pickerOpenRef = useRef(false);
+  const pickingRef = useRef(false);
   const initialRef = useRef(form);
   const backdropDownRef = useRef(false);
   pickerOpenRef.current = picker !== null;
@@ -653,10 +680,12 @@ export function ConnectModal({
   async function persist(): Promise<string> {
     const name = form.name.trim() || autoName(form);
     const input = buildInput(form);
+    // A SQLite file has no password to keep.
+    const persistPassword = form.driver !== "sqlite" && form.persistPassword;
     let id = savedId;
     if (id !== null) {
       try {
-        await store.updateConnection(id, name, input, form.persistPassword);
+        await store.updateConnection(id, name, input, persistPassword);
       } catch (err) {
         // Deleted elsewhere while the dialog was open: save it as a new profile.
         if (!(err instanceof ApiRequestError && err.code === "not_found")) {
@@ -666,7 +695,7 @@ export function ConnectModal({
       }
     }
     if (id === null) {
-      id = await store.createConnection(name, input, form.persistPassword);
+      id = await store.createConnection(name, input, persistPassword);
       setSavedId(id);
     }
     setConnMeta(id, {
@@ -676,7 +705,7 @@ export function ConnectModal({
     });
     const typedSecret =
       form.password !== "" || form.sshPassword !== "" || form.httpPassword !== "";
-    setStoredSecrets(form.persistPassword && (storedSecrets || typedSecret));
+    setStoredSecrets(persistPassword && (storedSecrets || typedSecret));
     initialRef.current = form;
     onSaved();
     return id;
@@ -768,7 +797,7 @@ export function ConnectModal({
 
   // One-click versions of the fixes an explained error suggests.
   function errorActions(help: ErrorHelp): ReactNode {
-    if (form.driver === "mssql" || busy !== null) {
+    if (form.driver === "mssql" || form.driver === "sqlite" || busy !== null) {
       return null;
     }
     if (help.action === "ssl-off" && form.sslMode !== "disable") {
@@ -807,6 +836,34 @@ export function ConnectModal({
 
   function fileValue(field: FileField): string {
     return form[field];
+  }
+
+  // The system's open dialog, in the current file's folder (an SSH key's in
+  // ~/.ssh), showing only SQLite files for a database path; where there is
+  // none, the in-app file list.
+  async function pickFile(field: FileField, title: string): Promise<void> {
+    if (pickingRef.current) {
+      return;
+    }
+    pickingRef.current = true;
+    const current = fileValue(field).trim();
+    const slash = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"));
+    const dir = slash > 0 ? current.slice(0, slash) : field === "sshKeyPath" ? "~/.ssh" : undefined;
+    const filter = field === "path" ? { name: "SQLite", extensions: SQLITE_EXTENSIONS } : undefined;
+    try {
+      const path = await store.pickFile({ title, filter, dir, hidden: field === "sshKeyPath" });
+      if (path !== null) {
+        update({ [field]: path } as Partial<ConnectForm>);
+      }
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === "native_picker_unavailable") {
+        setPicker({ field, title });
+      } else {
+        setStatus({ kind: "error", text: err instanceof Error ? err.message : t("파일 선택 창을 열지 못했습니다") });
+      }
+    } finally {
+      pickingRef.current = false;
+    }
   }
 
   const storedPlaceholder = isEdit && storedSecrets ? t("저장된 비밀번호 사용") : "";
@@ -855,25 +912,27 @@ export function ConnectModal({
             </div>
           ) : null}
 
-          <div className="cm-drivers" role="radiogroup" aria-label={t("데이터베이스 종류")}>
-            {DRIVERS.map((driver) => (
-              <button
-                key={driver}
-                type="button"
-                role="radio"
-                aria-checked={form.driver === driver}
-                className={`cm-driver${form.driver === driver ? " active" : ""}`}
-                onClick={() => changeDriver(driver)}
-              >
-                <DriverIcon kind={driver} size={28} />
-                <span className="cm-driver-text">
-                  <span className="cm-driver-name">{DRIVER_LABEL[driver]}</span>
-                  <span className="cm-driver-sub">{t(DRIVER_SUB[driver])}</span>
-                </span>
-                {form.driver === driver ? <CheckIcon size={11} className="cm-driver-check" /> : null}
-              </button>
-            ))}
-          </div>
+          {form.driver !== "sqlite" ? (
+            <div className="cm-drivers" role="radiogroup" aria-label={t("데이터베이스 종류")}>
+              {DRIVERS.map((driver) => (
+                <button
+                  key={driver}
+                  type="button"
+                  role="radio"
+                  aria-checked={form.driver === driver}
+                  className={`cm-driver${form.driver === driver ? " active" : ""}`}
+                  onClick={() => changeDriver(driver)}
+                >
+                  <DriverIcon kind={driver} size={28} />
+                  <span className="cm-driver-text">
+                    <span className="cm-driver-name">{DRIVER_LABEL[driver]}</span>
+                    <span className="cm-driver-sub">{t(DRIVER_SUB[driver])}</span>
+                  </span>
+                  {form.driver === driver ? <CheckIcon size={11} className="cm-driver-check" /> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <section className="cm-card">
             <Row label={t("이름")} htmlFor="cm-name">
@@ -934,188 +993,214 @@ export function ConnectModal({
             </Row>
           </section>
 
-          <section className="cm-card">
-            <Row label={t("호스트")} htmlFor="cm-host">
-              <div className="cm-pair">
-                <div className="cm-input-wrap">
+          {form.driver === "sqlite" ? (
+            <section className="cm-card">
+              <Row label={t("데이터베이스 경로")} htmlFor="cm-path">
+                <div className="cm-pair">
                   <input
-                    id="cm-host"
-                    className={invalid.has("host") ? "invalid" : ""}
-                    value={form.host}
+                    id="cm-path"
+                    className={invalid.has("path") ? "invalid" : ""}
+                    value={form.path}
                     spellCheck={false}
-                    placeholder={t("호스트 또는 연결 URL 붙여넣기")}
-                    onChange={(event) => update({ host: event.target.value })}
-                    onPaste={(event) => {
-                      const text = event.clipboardData.getData("text");
-                      if (!URL_LIKE.test(text.trim())) {
-                        return;
-                      }
-                      // Never let a URL (and the password inside it) land in the host field.
-                      event.preventDefault();
-                      const patch = parseConnectionUrl(text);
-                      if (patch === null) {
-                        setStatus({ kind: "error", text: t("연결 URL을 인식하지 못했습니다") });
-                        return;
-                      }
-                      update(patch);
-                      setStatus({
-                        kind: "ok",
-                        text: /sslmode=verify/i.test(text)
-                          ? t("URL에서 채웠습니다 · verify 모드는 Require로 설정했습니다")
-                          : t("URL에서 접속 정보를 채웠습니다"),
-                      });
-                    }}
-                  />
-                  <LinkPasteIcon size={11} className="cm-input-icon" />
-                </div>
-                <span className="cm-inline-label">{t("포트")}</span>
-                <input
-                  className={`cm-port${invalid.has("port") ? " invalid" : ""}`}
-                  inputMode="numeric"
-                  value={form.port}
-                  onChange={(event) => update({ port: event.target.value.replace(/[^0-9]/g, "") })}
-                  aria-label={t("포트")}
-                />
-              </div>
-            </Row>
-            <Row label={t("사용자")} htmlFor="cm-user">
-              <input
-                id="cm-user"
-                className={invalid.has("user") ? "invalid" : ""}
-                value={form.user}
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(event) => update({ user: event.target.value })}
-              />
-            </Row>
-            <Row label={t("비밀번호")} htmlFor="cm-password">
-              <div className="cm-pair">
-                <div className="cm-input-wrap">
-                  <input
-                    id="cm-password"
-                    ref={passwordRef}
-                    className={invalid.has("password") ? "invalid" : ""}
-                    type={showPassword ? "text" : "password"}
-                    value={form.password}
-                    placeholder={storedPlaceholder}
-                    autoComplete="new-password"
-                    onChange={(event) => update({ password: event.target.value })}
+                    autoComplete="off"
+                    placeholder={t("SQLite 파일 경로")}
+                    onChange={(event) => update({ path: event.target.value })}
                   />
                   <button
                     type="button"
-                    className="cm-eye"
-                    onClick={() => setShowPassword((value) => !value)}
-                    title={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
-                    aria-label={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
+                    className="cm-path-pick"
+                    onClick={() => void pickFile("path", t("SQLite 파일 선택"))}
                   >
-                    {showPassword ? <EyeOffIcon size={11} /> : <EyeIcon size={11} />}
+                    <FileIcon size={11} />
+                    {t("파일 선택…")}
                   </button>
                 </div>
-                <Select
-                  className="cm-store"
-                  value={form.persistPassword ? "keychain" : "none"}
-                  onChange={(event) => update({ persistPassword: event.target.value === "keychain" })}
-                  title={t("DB·SSH·프록시 비밀번호 저장 방식")}
-                >
-                  <option value="keychain">{t("키체인에 저장")}</option>
-                  <option value="none">{t("매번 입력")}</option>
-                </Select>
-              </div>
-            </Row>
-            <Row label={t("데이터베이스")} htmlFor="cm-database">
-              <input
-                id="cm-database"
-                className={invalid.has("database") ? "invalid" : ""}
-                value={form.database}
-                spellCheck={false}
-                onChange={(event) => update({ database: event.target.value })}
-              />
-            </Row>
-            {form.driver === "mssql" ? (
-              <Row label={t("암호화")}>
-                <label className="cm-switch">
-                  <input
-                    type="checkbox"
-                    checked={form.encrypt}
-                    onChange={(event) => update({ encrypt: event.target.checked })}
-                  />
-                  <span>{t("TLS로 암호화 (자체 서명 인증서 허용)")}</span>
-                </label>
               </Row>
-            ) : (
-              <>
-                <Row label={t("SSL 모드")}>
-                  <div className="cm-segmented" role="radiogroup" aria-label={t("SSL 모드")}>
-                    {SSL_MODES.map((mode) => (
-                      <button
-                        key={mode.value}
-                        type="button"
-                        role="radio"
-                        aria-checked={form.sslMode === mode.value}
-                        className={form.sslMode === mode.value ? "active" : ""}
-                        onClick={() => update({ sslMode: mode.value })}
-                      >
-                        {t(mode.label)}
-                      </button>
-                    ))}
+            </section>
+          ) : (
+            <>
+              <section className="cm-card">
+                <Row label={t("호스트")} htmlFor="cm-host">
+                  <div className="cm-pair">
+                    <div className="cm-input-wrap">
+                      <input
+                        id="cm-host"
+                        className={invalid.has("host") ? "invalid" : ""}
+                        value={form.host}
+                        spellCheck={false}
+                        placeholder={t("호스트 또는 연결 URL 붙여넣기")}
+                        onChange={(event) => update({ host: event.target.value })}
+                        onPaste={(event) => {
+                          const text = event.clipboardData.getData("text");
+                          if (!URL_LIKE.test(text.trim())) {
+                            return;
+                          }
+                          // Never let a URL (and the password inside it) land in the host field.
+                          event.preventDefault();
+                          const patch = parseConnectionUrl(text);
+                          if (patch === null) {
+                            setStatus({ kind: "error", text: t("연결 URL을 인식하지 못했습니다") });
+                            return;
+                          }
+                          update(patch);
+                          setStatus({
+                            kind: "ok",
+                            text: /sslmode=verify/i.test(text)
+                              ? t("URL에서 채웠습니다 · verify 모드는 Require로 설정했습니다")
+                              : t("URL에서 접속 정보를 채웠습니다"),
+                          });
+                        }}
+                      />
+                      <LinkPasteIcon size={11} className="cm-input-icon" />
+                    </div>
+                    <span className="cm-inline-label">{t("포트")}</span>
+                    <input
+                      className={`cm-port${invalid.has("port") ? " invalid" : ""}`}
+                      inputMode="numeric"
+                      value={form.port}
+                      onChange={(event) => update({ port: event.target.value.replace(/[^0-9]/g, "") })}
+                      aria-label={t("포트")}
+                    />
                   </div>
                 </Row>
-                {form.sslMode !== "disable" ? (
-                  <Row label={t("SSL 키")}>
-                    <div className="cm-files">
-                      <FileSlot
-                        label={t("클라이언트 키")}
-                        value={form.sslClientKey}
-                        invalid={invalid.has("sslClientKey")}
-                        onPick={() => setPicker({ field: "sslClientKey", title: t("클라이언트 키 선택") })}
-                        onClear={() => update({ sslClientKey: "" })}
+                <Row label={t("사용자")} htmlFor="cm-user">
+                  <input
+                    id="cm-user"
+                    className={invalid.has("user") ? "invalid" : ""}
+                    value={form.user}
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={(event) => update({ user: event.target.value })}
+                  />
+                </Row>
+                <Row label={t("비밀번호")} htmlFor="cm-password">
+                  <div className="cm-pair">
+                    <div className="cm-input-wrap">
+                      <input
+                        id="cm-password"
+                        ref={passwordRef}
+                        className={invalid.has("password") ? "invalid" : ""}
+                        type={showPassword ? "text" : "password"}
+                        value={form.password}
+                        placeholder={storedPlaceholder}
+                        autoComplete="new-password"
+                        onChange={(event) => update({ password: event.target.value })}
                       />
-                      <FileSlot
-                        label={t("클라이언트 인증서")}
-                        value={form.sslClientCert}
-                        invalid={invalid.has("sslClientCert")}
-                        onPick={() =>
-                          setPicker({ field: "sslClientCert", title: t("클라이언트 인증서 선택") })
-                        }
-                        onClear={() => update({ sslClientCert: "" })}
-                      />
-                      <FileSlot
-                        label={t("CA 인증서")}
-                        value={form.sslRootCert}
-                        invalid={false}
-                        onPick={() => setPicker({ field: "sslRootCert", title: t("CA 인증서 선택") })}
-                        onClear={() => update({ sslRootCert: "" })}
-                      />
+                      <button
+                        type="button"
+                        className="cm-eye"
+                        onClick={() => setShowPassword((value) => !value)}
+                        title={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
+                        aria-label={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
+                      >
+                        {showPassword ? <EyeOffIcon size={11} /> : <EyeIcon size={11} />}
+                      </button>
                     </div>
+                    <Select
+                      className="cm-store"
+                      value={form.persistPassword ? "keychain" : "none"}
+                      onChange={(event) => update({ persistPassword: event.target.value === "keychain" })}
+                      title={t("DB·SSH·프록시 비밀번호 저장 방식")}
+                    >
+                      <option value="keychain">{t("키체인에 저장")}</option>
+                      <option value="none">{t("매번 입력")}</option>
+                    </Select>
+                  </div>
+                </Row>
+                <Row label={t("데이터베이스")} htmlFor="cm-database">
+                  <input
+                    id="cm-database"
+                    className={invalid.has("database") ? "invalid" : ""}
+                    value={form.database}
+                    spellCheck={false}
+                    onChange={(event) => update({ database: event.target.value })}
+                  />
+                </Row>
+                {form.driver === "mssql" ? (
+                  <Row label={t("암호화")}>
+                    <label className="cm-switch">
+                      <input
+                        type="checkbox"
+                        checked={form.encrypt}
+                        onChange={(event) => update({ encrypt: event.target.checked })}
+                      />
+                      <span>{t("TLS로 암호화 (자체 서명 인증서 허용)")}</span>
+                    </label>
                   </Row>
-                ) : null}
-              </>
-            )}
-          </section>
+                ) : (
+                  <>
+                    <Row label={t("SSL 모드")}>
+                      <div className="cm-segmented" role="radiogroup" aria-label={t("SSL 모드")}>
+                        {SSL_MODES.map((mode) => (
+                          <button
+                            key={mode.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={form.sslMode === mode.value}
+                            className={form.sslMode === mode.value ? "active" : ""}
+                            onClick={() => update({ sslMode: mode.value })}
+                          >
+                            {t(mode.label)}
+                          </button>
+                        ))}
+                      </div>
+                    </Row>
+                    {form.sslMode !== "disable" ? (
+                      <Row label={t("SSL 키")}>
+                        <div className="cm-files">
+                          <FileSlot
+                            label={t("클라이언트 키")}
+                            value={form.sslClientKey}
+                            invalid={invalid.has("sslClientKey")}
+                            onPick={() => void pickFile("sslClientKey", t("클라이언트 키 선택"))}
+                            onClear={() => update({ sslClientKey: "" })}
+                          />
+                          <FileSlot
+                            label={t("클라이언트 인증서")}
+                            value={form.sslClientCert}
+                            invalid={invalid.has("sslClientCert")}
+                            onPick={() => void pickFile("sslClientCert", t("클라이언트 인증서 선택"))}
+                            onClear={() => update({ sslClientCert: "" })}
+                          />
+                          <FileSlot
+                            label={t("CA 인증서")}
+                            value={form.sslRootCert}
+                            invalid={false}
+                            onPick={() => void pickFile("sslRootCert", t("CA 인증서 선택"))}
+                            onClear={() => update({ sslRootCert: "" })}
+                          />
+                        </div>
+                      </Row>
+                    ) : null}
+                  </>
+                )}
+              </section>
 
-          <div className="cm-tunnels">
-            <button
-              type="button"
-              className={`cm-tunnel${form.sshEnabled ? " active" : ""}`}
-              aria-pressed={form.sshEnabled}
-              onClick={() => update({ sshEnabled: !form.sshEnabled, httpEnabled: false })}
-            >
-              {t("SSH 터널")}
-            </button>
-            <button
-              type="button"
-              className={`cm-tunnel${form.httpEnabled ? " active" : ""}`}
-              aria-pressed={form.httpEnabled}
-              onClick={() => update({ httpEnabled: !form.httpEnabled, sshEnabled: false })}
-            >
-              {t("HTTP 프록시")}
-            </button>
-            <span className="cm-tunnel-hint">
-              {form.sshEnabled || form.httpEnabled
-                ? t("DB 호스트는 터널 서버에서 본 주소로 입력하세요 (예: 127.0.0.1)")
-                : t("방화벽 너머의 DB라면 터널을 켜세요")}
-            </span>
-          </div>
+              <div className="cm-tunnels">
+                <button
+                  type="button"
+                  className={`cm-tunnel${form.sshEnabled ? " active" : ""}`}
+                  aria-pressed={form.sshEnabled}
+                  onClick={() => update({ sshEnabled: !form.sshEnabled, httpEnabled: false })}
+                >
+                  {t("SSH 터널")}
+                </button>
+                <button
+                  type="button"
+                  className={`cm-tunnel${form.httpEnabled ? " active" : ""}`}
+                  aria-pressed={form.httpEnabled}
+                  onClick={() => update({ httpEnabled: !form.httpEnabled, sshEnabled: false })}
+                >
+                  {t("HTTP 프록시")}
+                </button>
+                <span className="cm-tunnel-hint">
+                  {form.sshEnabled || form.httpEnabled
+                    ? t("DB 호스트는 터널 서버에서 본 주소로 입력하세요 (예: 127.0.0.1)")
+                    : t("방화벽 너머의 DB라면 터널을 켜세요")}
+                </span>
+              </div>
+            </>
+          )}
 
           {form.sshEnabled ? (
             <section className="cm-card cm-reveal">
@@ -1190,7 +1275,7 @@ export function ConnectModal({
                       label={t("개인 키")}
                       value={form.sshKeyPath}
                       invalid={invalid.has("sshKeyPath")}
-                      onPick={() => setPicker({ field: "sshKeyPath", title: t("SSH 개인 키 선택") })}
+                      onPick={() => void pickFile("sshKeyPath", t("SSH 개인 키 선택"))}
                       onClear={() => update({ sshKeyPath: "" })}
                     />
                   </div>
