@@ -36,6 +36,9 @@ export interface TableGridProps {
   // No source yet because rows are on their way: the last ones drawn stay a
   // moment, so switching tables doesn't flash an empty grid.
   awaitingRows?: boolean;
+  // The table the rows come from (columnWidths.ts): column widths set by hand
+  // are kept for it and come back when it opens again. Absent: none are kept.
+  widthsKey?: string | null;
   specs?: (GridColumnSpec | null)[] | null;
   // null or absent: read-only.
   editing?: GridEditHandlers | null;
@@ -151,7 +154,7 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
   // After the specs and the editing handlers, so the first fit of a new
   // source's columns leaves room for the cell buttons they bring.
   useLayoutEffect(() => {
-    gridRef.current?.setSource(props.source, props.awaitingRows === true);
+    gridRef.current?.setSource(props.source, props.awaitingRows === true, props.widthsKey ?? null);
     // A picker opened on the old rows must not write into the new ones.
     setPicker(null);
   }, [props.source]);

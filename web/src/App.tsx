@@ -105,6 +105,7 @@ import {
   withTableColor,
   type TableColorMap,
 } from "./tableColors";
+import { columnWidthsKey } from "./columnWidths";
 import {
   getPasscodeHash,
   getSettings,
@@ -521,9 +522,9 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [busySaved, setBusySaved] = useState<string | null>(null);
   const [fsOpen, setFsOpen] = useState(false);
-  const [connectOpen, setConnectOpen] = useState(false);
   // The system's open dialog is up (it answers when it closes).
   const pickingFileRef = useRef(false);
+  const [connectOpen, setConnectOpen] = useState(false);
   // A new connection's kind of database being picked (the group it goes into).
   const [driverPick, setDriverPick] = useState<{ group?: string } | null>(null);
   // The connections window from the bar's plug button: saved ones to open.
@@ -3594,7 +3595,6 @@ export default function App() {
     }
   }
 
-  // "asking": the connection dialog now asks for a password. A profile that keeps
   // The system's open dialog; where there is none, the in-app file list.
   async function openSqliteFile(): Promise<void> {
     if (pickingFileRef.current) {
@@ -3620,6 +3620,7 @@ export default function App() {
     }
   }
 
+  // "asking": the connection dialog now asks for a password. A profile that keeps
   // its password connects at once; one that doesn't asks first, since a try
   // without the password only logs a failed login. A SQLite profile is a file
   // with no password, so it always connects at once.
@@ -5656,6 +5657,13 @@ export default function App() {
                             ref={gridHostRef}
                             result={state.result}
                             awaitingRows={resultLoading}
+                            widthsKey={
+                              activeDataTab !== null &&
+                              state.result !== null &&
+                              state.result.meta.sourceTable === activeDataTab.table
+                                ? columnWidthsKey(stableKeyOf(state.result.conn), activeDataTab.table)
+                                : null
+                            }
                             sortColumns={sortIndicators}
                             onHeaderClick={activeDataTab ? handleHeaderClick : undefined}
                             onSelectionChange={handleSelectionChange}
@@ -5975,6 +5983,12 @@ export default function App() {
           onClose={() => setPaletteOpen(false)}
         />
       ) : null}
+      {state.filePickOpening ? (
+        <div className="file-pick-pending" role="status">
+          <Spinner size={12} />
+          {t("파일 선택 창을 여는 중…")}
+        </div>
+      ) : null}
       {fsOpen && (
         <FsModal
           onClose={() => setFsOpen(false)}
@@ -5983,12 +5997,6 @@ export default function App() {
             if (path === null) {
               void openDemo();
             } else {
-      {state.filePickOpening ? (
-        <div className="file-pick-pending" role="status">
-          <Spinner size={12} />
-          {t("파일 선택 창을 여는 중…")}
-        </div>
-      ) : null}
               void openPathFile(path);
             }
           }}

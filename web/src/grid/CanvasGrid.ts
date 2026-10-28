@@ -8,6 +8,7 @@ import { COPY_MAX_ROWS, parseClipboardTable, toPlainText } from "../copyFormats"
 import { t } from "../i18n";
 import { IS_MAC } from "../shortcuts";
 import { scrollbarsFor, type ScrollArea } from "../scrollbars";
+import { forgetColumnWidths, loadColumnWidths, saveColumnWidth } from "../columnWidths";
 
 // Sizes at the default system font size (12px); scaled by syncScale().
 const BASE_FONT_PX = 12;
@@ -231,6 +232,11 @@ export class CanvasGrid {
   // A new source's columns still to be sized to their contents, once its
   // first rows are in.
   private autoFit = false;
+  // Where this source's hand-set column widths are remembered (a table's), or
+  // null for results that keep none; and the columns that came with one, which
+  // the opening fit leaves as they are.
+  private widthsKey: string | null = null;
+  private readonly storedCols = new Set<number>();
   private layoutListener: (() => void) | null = null;
   private keyMoveListener: ((row: number) => void) | null = null;
 
@@ -403,7 +409,9 @@ export class CanvasGrid {
   // come, or for HOLD_MS, so a quick switch goes straight from one table to
   // the next instead of through a blank grid. Nothing can be picked from that
   // frame: its source is already gone.
-  setSource(source: RowSource | null, awaitingRows = false): void {
+  // `widthsKey`: the table the rows come from (see columnWidths.ts); widths
+  // set on its columns by hand come back with it.
+  setSource(source: RowSource | null, awaitingRows = false, widthsKey: string | null = null): void {
     if (this.editor) {
       this.cancelEdit();
     }
@@ -426,6 +434,7 @@ export class CanvasGrid {
     const keep = sameColumns ? this.keepViewOnce : null;
     this.keepViewOnce = null;
     this.source = source;
+    this.widthsKey = source === null ? null : widthsKey;
     if (source && source.onUpdate) {
       this.disposeUpdates = source.onUpdate(this.onSourceUpdate);
     }
@@ -453,6 +462,7 @@ export class CanvasGrid {
         widths[c] = Math.round(COL_DEFAULT * SCALE);
       }
       this.widths = widths;
+      this.applyStoredWidths();
       this.autoFit = true;
     }
     this.knownRowCount = rowCount;
@@ -491,16 +501,19 @@ export class CanvasGrid {
       return;
     }
     this.autoFit = false;
-    this.fitToContents();
+    this.fitToContents(this.storedCols);
   }
 
   // Every column as wide as what it holds, up to FIT_MAX: what a table opens
-  // with, and what the corner button goes back to.
-  private fitToContents(): void {
+  // with (but the columns in `keep`), and what the corner button goes back to.
+  private fitToContents(keep?: ReadonlySet<number>): void {
     this.hoverColEdge = null;
     const { min, cap } = this.fitPolicy;
     const from = Math.floor(this.virtualScrollY() / ROW_H);
     for (let c = 0; c < this.widths.length; c++) {
+      if (keep?.has(c)) {
+        continue;
+      }
       this.widths[c] = Math.max(Math.round(min * SCALE), this.fitWidth(c, Math.round(cap * SCALE), from));
     }
     this.rebuildOffsets();
@@ -509,10 +522,42 @@ export class CanvasGrid {
     this.schedulePaint();
   }
 
+  // The widths the source's table remembers, over the defaults just set.
+  private applyStoredWidths(): void {
+    this.storedCols.clear();
+    const src = this.source;
+    if (src === null || this.widthsKey === null) {
+      return;
+    }
+    const stored = loadColumnWidths(this.widthsKey);
+    src.columns.forEach((name, c) => {
+      const width = stored[name];
+      if (width !== undefined) {
+        this.widths[c] = clamp(Math.round(width * SCALE), COL_MIN, COL_MAX);
+        this.storedCols.add(c);
+      }
+    });
+  }
+
+  // A width the user gave a column, kept for its table.
+  private rememberWidth(col: number): void {
+    const src = this.source;
+    if (src === null || this.widthsKey === null || col >= src.columns.length) {
+      return;
+    }
+    saveColumnWidth(this.widthsKey, src.columns[col], this.widths[col] / SCALE);
+    this.storedCols.add(col);
+  }
+
   private readonly onFitClick = (): void => {
     if (this.source === null) {
       return;
     }
+    // Back to fitting what they hold: the table forgets its hand-set widths.
+    if (this.widthsKey !== null) {
+      forgetColumnWidths(this.widthsKey);
+    }
+    this.storedCols.clear();
     this.fitToContents();
     this.canvas.focus({ preventScroll: true });
   };
@@ -1940,6 +1985,7 @@ export class CanvasGrid {
       this.resizeSurface();
       this.schedulePaint();
     }
+    this.rememberWidth(col);
   }
 
   private readonly onResize = (): void => {
@@ -1983,6 +2029,7 @@ export class CanvasGrid {
     const src = this.source;
     if (src !== null && src.columns.length !== this.widths.length) {
       this.widths = src.columns.map(() => Math.round(COL_DEFAULT * SCALE));
+      this.applyStoredWidths();
       this.autoFit = true;
       this.rebuildOffsets();
       this.updateSizer();
@@ -2275,7 +2322,11 @@ export class CanvasGrid {
         this.headerClick(pending.col, { shiftKey: pending.shiftKey });
       }
     }
-    if (this.drag.kind !== "none") {
+    const drag = this.drag;
+    if (drag.kind === "resize" && this.widths[drag.col] !== drag.startW) {
+      this.rememberWidth(drag.col);
+    }
+    if (drag.kind !== "none") {
       this.drag = { kind: "none" };
     }
     const pressed = this.pendingAccessory;

@@ -28,6 +28,8 @@ interface GridHostProps {
   result: GridResult | null;
   // No result yet because one is loading (see TableGrid).
   awaitingRows?: boolean;
+  // See TableGrid: the table whose hand-set column widths these rows keep.
+  widthsKey?: string | null;
   // What the table's structure says about each result column.
   specs?: (GridColumnSpec | null)[] | null;
   sortColumns?: SortIndicator[];
@@ -117,6 +119,7 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
       ref={tableRef}
       source={result?.source ?? null}
       awaitingRows={props.awaitingRows}
+      widthsKey={props.widthsKey}
       specs={specs ?? null}
       editing={editing}
       sortColumns={props.sortColumns}
