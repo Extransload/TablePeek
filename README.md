@@ -4,7 +4,7 @@
 
 TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or connect to PostgreSQL, MySQL/MariaDB, CockroachDB, and SQL Server. Query, inspect, edit, and explore data without a cloud relay or a heavyweight desktop shell.
 
-![TablePeek data grid showing the orders table with type-colored values](docs/images/grid.png)
+![TablePeek data grid showing a PostgreSQL products table with type-colored numbers, text, arrays, JSON, bytes, and NULLs (Catppuccin Mocha theme)](docs/images/grid.png)
 
 ## At a glance
 
@@ -157,7 +157,7 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 - For a foreign key, the referenced row, and the referenced table filtered to that key
 - Copy actions for values, JSON paths, decoded text, and raw hex
 
-![TablePeek Quick Look showing a structured JSON value](docs/images/quick-look.png)
+![TablePeek Quick Look showing a JSON value as a tree beside its fields](docs/images/quick-look.png)
 
 `Alt`-click opens the cell menu. `Space` opens row details with relationship tabs, including foreign-key navigation. The right panel keeps a field search and says when no row is selected.
 
@@ -171,6 +171,10 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 - Query cancellation and live timing
 - Chart and pivot views of any result or table: bar, line, area, pie/donut, and scatter charts with time bucketing and top-N grouping, and pivot tables with totals that copy as TSV
 
+![TablePeek SQL completion suggesting joins from foreign keys, with ON conditions and an info panel](docs/images/completion.png)
+
+![TablePeek chart view showing monthly order totals as a bar chart with a value tooltip](docs/images/chart.png)
+
 ### Schema and server tools
 
 Browse tables, views, functions, triggers, and sequences from the sidebar, indented under their section heads; the tree refreshes after the editor creates, drops, or alters anything. Open Structure and DDL tabs, create tables, create or drop databases, and inspect generated SQL before applying it. MySQL tables expose collation, `ROW_FORMAT`, and comment options. Laravel `Schema::create` output can be copied directly from the table menu.
@@ -178,6 +182,8 @@ Browse tables, views, functions, triggers, and sequences from the sidebar, inden
 The server info tab shows engine version, database size, uptime, and sessions, with session termination where the engine supports it.
 
 The ER diagram tab (the diagram button in the top bar, between the connections and settings buttons, or `Mod+P` → "ER diagram") draws every table with its columns and foreign keys, laid out automatically. Pan, zoom, drag cards (positions are remembered), search for a table, highlight a table's relations, show keys only, and double-click a table to open its data. A table's context menu in the sidebar opens the diagram centred on it.
+
+![TablePeek ER diagram with the shop schema laid out and one table's relations highlighted](docs/images/er.png)
 
 ### Connections
 
@@ -189,7 +195,7 @@ Settings are organised by the part of the screen they change, each with its own 
 
 Fifty built-in themes are included, grouped into dark and light: TablePeek Dark and Light plus Aura, Ayu, Catppuccin, Cobalt2, Dracula, Everforest, GitHub, Gruvbox, Horizon, Kanagawa, Material, Monokai, Night Owl, Nord, One Dark/Light, Panda, Pink Aura, Rosé Pine, Shades of Purple, Snazzy, Solarized, SynthWave '84, Tokyo Night, Tomorrow Night, and Xcode variants. The third-party themes also color the SQL editor while the syntax preset is left on "Theme default"; TablePeek Dark/Light and imported themes derive editor colors from their accent and status colors. You can also import Base16, VS Code, or TablePeek theme JSON from a Git URL.
 
-![TablePeek appearance settings with themes and type-color preview](docs/images/settings.png)
+![TablePeek theme settings with accent color, SQL editor colors, a live preview, and theme cards](docs/images/settings.png)
 
 Settings also cover accent color, font sizes, alternating row backgrounds, type colors, CSV delimiter and encoding, SQL syntax presets, keyboard shortcuts, and activity-log retention. The interface is available in English and Korean.
 
@@ -309,6 +315,6 @@ cargo test
 
 ## Status
 
-TablePeek is pre-release. The feature set is implemented and exercised across the five drivers, and the recent work has been on the everyday surface: filtering, transfer jobs, foreign-key Quick Look, connection management, fonts, scrollbars, and settings. Signed installers and package-manager distribution are still ahead; source builds are the supported path today, and the screenshots above predate the current filter bar, settings layout, and connection home.
+TablePeek is pre-release. The feature set is implemented and exercised across the five drivers, and the recent work has been on the everyday surface: filtering, transfer jobs, foreign-key Quick Look, connection management, schema-aware SQL completion, the ER diagram, chart and pivot views, fonts, scrollbars, and settings. Signed installers and package-manager distribution are still ahead; source builds are the supported path today.
 
 See [docs/REMAINING-SCOPE.md](docs/REMAINING-SCOPE.md) for the current scope boundaries and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and protocol details.
