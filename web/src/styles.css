@@ -4766,6 +4766,11 @@ body.col-resizing * {
   gap: 6px 18px;
 }
 
+/* The data table's thirteen colours: seven down the first column. */
+.syntax-colors.grid-colors {
+  grid-template-rows: repeat(7, auto);
+}
+
 .syntax-color {
   display: grid;
   grid-template-columns: 112px auto minmax(0, 1fr) auto;

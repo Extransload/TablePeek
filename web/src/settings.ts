@@ -4,9 +4,11 @@ import {
   defaultTypeInks,
   mixHex,
   themeById,
+  VALUE_KINDS,
   type Palette,
   type Theme,
   type ThemeId,
+  type ValueKind,
 } from "./palette";
 import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT, declareFaces } from "./fonts";
 import { setLanguage, type Language } from "./i18n";
@@ -24,6 +26,11 @@ import {
 
 export type ThemeMode = ThemeId;
 export type CsvEncoding = "utf-8" | "euc-kr" | "utf-16le";
+// The parts of the data table a colour can be picked for: each kind of value
+// and NULL.
+export type GridColorKey = ValueKind | "null";
+export type GridColorPicks = Partial<Record<GridColorKey, string>>;
+export const GRID_COLOR_KEYS: GridColorKey[] = [...VALUE_KINDS, "null"];
 
 export interface AppSettings {
   language: Language;
@@ -51,6 +58,8 @@ export interface AppSettings {
   // Colours picked in Settings → Theme over the syntax colours, by theme:
   // like TablePlus's, a theme's colours stay with it.
   syntaxColors: Record<string, SyntaxColorPicks>;
+  // The same for the data table's colours by kind of value, by theme.
+  gridColors: Record<string, GridColorPicks>;
   activityDays: number;
   csvDelimiter: string;
   csvHeader: boolean;
@@ -93,6 +102,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uppercaseKeywords: true,
   syntaxPreset: "tablepeek",
   syntaxColors: {},
+  gridColors: {},
   activityDays: 7,
   csvDelimiter: ",",
   csvHeader: true,
@@ -136,7 +146,8 @@ function readSettings(): AppSettings {
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
-      syntaxColors: readSyntaxColors(parsed.syntaxColors),
+      syntaxColors: readColorPicks(parsed.syntaxColors, SYNTAX_COLOR_KEYS),
+      gridColors: readColorPicks(parsed.gridColors, GRID_COLOR_KEYS),
       fontSize: clampSize(parsed.fontSize, EDITOR_FONT_MIN, EDITOR_FONT_MAX, DEFAULT_SETTINGS.fontSize),
       gridFontSize: clampSize(
         parsed.gridFontSize ?? uiFontSize,
@@ -164,8 +175,8 @@ function readSettings(): AppSettings {
 }
 
 // Saved colour picks: hex colours of known parts only, under each theme.
-function readSyntaxColors(value: unknown): Record<string, SyntaxColorPicks> {
-  const picks: Record<string, SyntaxColorPicks> = {};
+function readColorPicks<K extends string>(value: unknown, keys: readonly K[]): Record<string, Partial<Record<K, string>>> {
+  const picks: Record<string, Partial<Record<K, string>>> = {};
   if (typeof value !== "object" || value === null) {
     return picks;
   }
@@ -173,10 +184,10 @@ function readSyntaxColors(value: unknown): Record<string, SyntaxColorPicks> {
     if (typeof colors !== "object" || colors === null) {
       continue;
     }
-    const kept: SyntaxColorPicks = {};
+    const kept: Partial<Record<K, string>> = {};
     for (const [key, color] of Object.entries(colors)) {
-      if (SYNTAX_COLOR_KEYS.includes(key as SyntaxColorKey) && typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color)) {
-        kept[key as SyntaxColorKey] = color;
+      if (keys.includes(key as K) && typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color)) {
+        kept[key as K] = color;
       }
     }
     if (Object.keys(kept).length > 0) {
@@ -198,12 +209,20 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function themePalette(theme: Theme, accent: string, rowAlt: boolean): Palette {
+// The theme's palette as `settings` draw it: their accent, the alternate row
+// background or not, and the data table colours picked for this theme.
+function themePalette(theme: Theme, settings: AppSettings): Palette {
+  const { accent, rowAlt } = settings;
   const palette = { ...theme.palette };
+  const { null: nullInk, ...kinds } = settings.gridColors[theme.id] ?? {};
   palette.typeInks = {
     ...defaultTypeInks(theme.mode),
     ...(theme.palette.typeInks ?? {}),
+    ...kinds,
   };
+  if (nullInk !== undefined) {
+    palette.nullInk = nullInk;
+  }
   palette.accent = accent;
   palette.accentHover = mixHex(accent, theme.mode === "light" ? "#000000" : "#ffffff", 0.14);
   palette.onAccent = contrastInk(accent);
@@ -220,7 +239,7 @@ export function applySettings(settings: AppSettings): void {
   const root = document.documentElement;
   setLanguage(settings.language);
   const theme = themeById(settings.theme);
-  const palette = themePalette(theme, settings.accent, settings.rowAlt);
+  const palette = themePalette(theme, settings);
   applyPalette(palette);
   root.dataset.theme = theme.id;
   root.dataset.mode = theme.mode;
@@ -261,6 +280,13 @@ export function applySettings(settings: AppSettings): void {
   for (const [key, variable] of Object.entries({ ...SYNTAX_VARIABLES, ...EXTRA_SYNTAX_VARIABLES })) {
     root.style.setProperty(variable, syntax[key as SyntaxColorKey]);
   }
+  // The data table's colours by kind of value, for views drawn in HTML (the
+  // MongoDB cards and type badges) to colour values as the grid does; with
+  // type colours off they read in the ordinary ink, as the grid's do.
+  for (const kind of VALUE_KINDS) {
+    root.style.setProperty(`--type-${kind}`, settings.typeColors ? palette.typeInks[kind] : palette.ink);
+  }
+  root.style.setProperty("--type-null", palette.nullInk);
   root.classList.toggle("scrollbar-x-always", settings.scrollbarX);
   root.classList.toggle("scrollbar-y-always", settings.scrollbarY);
   window.dispatchEvent(new CustomEvent("tablepeek:theme"));
@@ -298,7 +324,13 @@ function syntaxColorsWith(settings: AppSettings, theme: Theme, palette: Palette)
 // The syntax colours `settings` draw in, for Settings to show.
 export function currentSyntaxColors(settings: AppSettings): Record<SyntaxColorKey, string> {
   const theme = themeById(settings.theme);
-  return syntaxColorsWith(settings, theme, themePalette(theme, settings.accent, settings.rowAlt));
+  return syntaxColorsWith(settings, theme, themePalette(theme, settings));
+}
+
+// The data table colours `settings` draw in, for Settings to show.
+export function currentGridColors(settings: AppSettings): Record<GridColorKey, string> {
+  const palette = themePalette(themeById(settings.theme), settings);
+  return { ...palette.typeInks, null: palette.nullInk };
 }
 
 export function getSettings(): AppSettings {

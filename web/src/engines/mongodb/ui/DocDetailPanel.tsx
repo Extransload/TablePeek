@@ -58,9 +58,11 @@ interface DocDetailPanelProps {
   rows: SelectedRows | null;
   readOnly: boolean;
   save: SaveEdits;
+  // Closes the panel: its edge dragged past half the panel's narrowest width.
+  onClose(): void;
 }
 
-export function DocDetailPanel({ ns, table, rows, readOnly, save }: DocDetailPanelProps) {
+export function DocDetailPanel({ ns, table, rows, readOnly, save, onClose }: DocDetailPanelProps) {
   const [width, setWidth] = useState<number | null>(loadWidth);
   const [query, setQuery] = useState("");
   const panelRef = useRef<HTMLElement | null>(null);
@@ -81,16 +83,27 @@ export function DocDetailPanel({ ns, table, rows, readOnly, save }: DocDetailPan
     let next = startWidth;
     handle.classList.add("dragging");
     document.body.classList.add("col-resizing");
-    const move = (e: globalThis.PointerEvent): void => {
-      // The panel is on the right: moving left widens it.
-      next = clampWidth(startWidth - (e.clientX - startX));
-      setWidth(next);
-    };
-    const up = (): void => {
+    const end = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       handle.classList.remove("dragging");
       document.body.classList.remove("col-resizing");
+    };
+    const move = (e: globalThis.PointerEvent): void => {
+      // The panel is on the right: moving left widens it.
+      const raw = startWidth - (e.clientX - startX);
+      // Dragged under half its narrowest width, the panel closes at once; the
+      // saved width stays for when it opens again.
+      if (raw < DETAIL_MIN / 2) {
+        end();
+        onClose();
+        return;
+      }
+      next = clampWidth(raw);
+      setWidth(next);
+    };
+    const up = (): void => {
+      end();
       saveWidth(next);
     };
     window.addEventListener("pointermove", move);

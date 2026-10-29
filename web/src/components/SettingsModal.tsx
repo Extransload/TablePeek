@@ -5,6 +5,7 @@ import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFo
 import { store } from "../store";
 import {
   MAX_ROWS_LIMIT,
+  currentGridColors,
   currentSyntaxColors,
   getPasscodeHash,
   setPasscodeHash,
@@ -16,6 +17,7 @@ import {
   SIDEBAR_FONT_MAX,
   SIDEBAR_FONT_MIN,
   type AppSettings,
+  type GridColorKey,
 } from "../settings";
 import {
   DEFAULT_KEYMAP,
@@ -253,20 +255,14 @@ function Preview({ children }: { children: ReactNode }) {
   );
 }
 
+// Every part the SQL editor colours, and letters that look alike in a font.
 const EDITOR_SAMPLE = [
-  "SELECT id, name, count(*) AS orders",
-  "FROM users WHERE email LIKE '%@example.com'",
-  "GROUP BY id, name LIMIT 100; -- 0O 1lI",
-].join("\n");
-
-// Every part Settings → Theme colours, in a few lines.
-const THEME_SAMPLE = [
-  "-- comment",
+  "-- comment · 0O 1lI",
   "SELECT id, \"Name\", `code`, count(*) AS total, NULL, TRUE",
   "FROM users WHERE email LIKE '%@example.com' AND age >= 30;",
 ].join("\n");
 
-// The colours Settings → Theme offers, as TablePlus lists them; a row may
+// The colours Settings → SQL Editor offers, as TablePlus lists them; a row may
 // set parts that read as one (NULL and booleans, operators and punctuation).
 const SYNTAX_COLOR_ROWS: { label: string; keys: SyntaxColorKey[] }[] = [
   { label: "키워드", keys: ["keyword"] },
@@ -282,12 +278,29 @@ const SYNTAX_COLOR_ROWS: { label: string; keys: SyntaxColorKey[] }[] = [
   { label: "그 밖의 글자", keys: ["text"] },
 ];
 
-const GRID_COLUMNS = ["id", "name", "active", "price", "created_at"];
+// Data table colours by kind of value, in the order the grid shows them most.
+const GRID_COLOR_ROWS: { label: string; keys: GridColorKey[] }[] = [
+  { label: "문자열", keys: ["string"] },
+  { label: "정수", keys: ["integer"] },
+  { label: "실수", keys: ["float"] },
+  { label: "큰 정수", keys: ["bigint"] },
+  { label: "불리언", keys: ["boolean"] },
+  { label: "날짜·시각", keys: ["date"] },
+  { label: "시간(TIME)", keys: ["time"] },
+  { label: "JSON", keys: ["json"] },
+  { label: "배열", keys: ["list"] },
+  { label: "열거형", keys: ["enum"] },
+  { label: "UUID", keys: ["uuid"] },
+  { label: "이진", keys: ["binary"] },
+  { label: "NULL", keys: ["null"] },
+];
+
+const GRID_COLUMNS = ["id", "name", "active", "price", "tags", "meta", "created_at"];
 // Each cell's kind (none for NULL) and its text; the first column is the key.
 const GRID_SAMPLE: [ValueKind | null, string][][] = [
-  [["integer", "1"], ["string", "user_1"], ["boolean", "true"], ["float", "12.5"], ["date", "2026-10-27"]],
-  [["integer", "2"], ["string", "사용자_2"], ["boolean", "false"], ["float", "8"], ["date", "2026-10-26"]],
-  [["integer", "3"], [null, "NULL"], ["boolean", "true"], ["float", "99.9"], ["date", "2026-10-25"]],
+  [["integer", "1"], ["string", "user_1"], ["boolean", "true"], ["float", "12.5"], ["list", "{a,b}"], ["json", '{"v":1}'], ["date", "2026-10-27"]],
+  [["integer", "2"], ["string", "사용자_2"], ["boolean", "false"], ["float", "8"], ["list", "{}"], ["json", '{"v":2}'], ["date", "2026-10-26"]],
+  [["integer", "3"], [null, "NULL"], ["boolean", "true"], ["float", "99.9"], [null, "NULL"], ["json", "[]"], ["date", "2026-10-25"]],
 ];
 
 // Drawn as CanvasGrid draws the grid: its row and header heights, lines,
@@ -342,6 +355,66 @@ function GridPreview({ settings }: { settings: AppSettings }) {
         </tbody>
       </table>
     </Preview>
+  );
+}
+
+// A box of colour picks for the theme in use: each part's colour, its value
+// and a reset, then a note and "reset all" under them.
+function ColorPicks<K extends string>({
+  rows,
+  colors,
+  picked,
+  hint,
+  className,
+  onPick,
+}: {
+  rows: { label: string; keys: K[] }[];
+  colors: Record<K, string>;
+  picked: Partial<Record<K, string>>;
+  hint: string;
+  className?: string;
+  onPick(keys: K[], color: string | null): void;
+}) {
+  return (
+    <>
+      <div className={`syntax-colors${className ? ` ${className}` : ""}`}>
+        {rows.map((row) => {
+          const color = colors[row.keys[0]];
+          const changed = row.keys.some((key) => picked[key] !== undefined);
+          return (
+            <div className="syntax-color" key={row.label}>
+              <span className="settings-label">{t(row.label)}</span>
+              <input
+                type="color"
+                aria-label={t(row.label)}
+                value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#000000"}
+                onChange={(event) => onPick(row.keys, event.target.value)}
+              />
+              <span className="mono dim">{color}</span>
+              <button
+                type="button"
+                className={`settings-reset${changed ? "" : " unchanged"}`}
+                disabled={!changed}
+                title={t("기본값으로")}
+                onClick={() => onPick(row.keys, null)}
+              >
+                {t("기본")}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="settings-box-actions">
+        <span className="settings-hint">{hint}</span>
+        <button
+          type="button"
+          disabled={Object.keys(picked).length === 0}
+          onClick={() => onPick(rows.flatMap((row) => row.keys), null)}
+        >
+          {t("모두 기본값으로")}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -493,10 +566,10 @@ export function SettingsModal({
     onChange({ keymap: next });
   }
 
-  // A colour picked for parts of the current theme's syntax, or none to go
-  // back to the theme's own.
-  function pickSyntaxColor(keys: SyntaxColorKey[], color: string | null): void {
-    const picks = { ...settings.syntaxColors[settings.theme] };
+  // A colour picked for parts of the current theme's syntax or data table, or
+  // none to go back to the theme's own.
+  function pickThemeColor(field: "syntaxColors" | "gridColors", keys: string[], color: string | null): void {
+    const picks: Record<string, string | undefined> = { ...settings[field][settings.theme] };
     for (const key of keys) {
       if (color === null) {
         delete picks[key];
@@ -504,13 +577,13 @@ export function SettingsModal({
         picks[key] = color;
       }
     }
-    const next = { ...settings.syntaxColors };
+    const next: Record<string, Record<string, string | undefined>> = { ...settings[field] };
     if (Object.keys(picks).length === 0) {
       delete next[settings.theme];
     } else {
       next[settings.theme] = picks;
     }
-    onChange({ syntaxColors: next });
+    onChange({ [field]: next });
   }
 
   async function applyPasscode(): Promise<void> {
@@ -547,6 +620,8 @@ export function SettingsModal({
   }
 
   function renderPane(): ReactNode {
+    // The theme whose colours the SQL Editor and Data Table panes pick.
+    const themeLabel = THEMES.find((theme) => theme.id === settings.theme)?.label ?? settings.theme;
     switch (category) {
       case "general":
         return (
@@ -568,13 +643,11 @@ export function SettingsModal({
           </SettingsGroup>
         );
 
-      case "theme": {
-        const colors = currentSyntaxColors(settings);
-        const picked = settings.syntaxColors[settings.theme] ?? {};
+      case "theme":
         return (
           <>
             <SettingsGroup>
-              <SettingsField label={t("강조 색")}>
+              <SettingsField label={t("강조 색")} hint={t("SQL 에디터와 데이터 테이블의 색은 각 화면 설정에서 고릅니다.")}>
                 <input
                   type="color"
                   value={settings.accent}
@@ -583,51 +656,6 @@ export function SettingsModal({
                 <span className="mono dim">{settings.accent}</span>
               </SettingsField>
             </SettingsGroup>
-            {/* The colours picked here belong to the theme in use. */}
-            <SettingsGroup title={t("SQL 에디터 색")}>
-              <div className="syntax-colors">
-                {SYNTAX_COLOR_ROWS.map((row) => {
-                  const color = colors[row.keys[0]];
-                  const changed = row.keys.some((key) => picked[key] !== undefined);
-                  return (
-                    <div className="syntax-color" key={row.label}>
-                      <span className="settings-label">{t(row.label)}</span>
-                      <input
-                        type="color"
-                        aria-label={t(row.label)}
-                        value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#000000"}
-                        onChange={(event) => pickSyntaxColor(row.keys, event.target.value)}
-                      />
-                      <span className="mono dim">{color}</span>
-                      <button
-                        type="button"
-                        className={`settings-reset${changed ? "" : " unchanged"}`}
-                        disabled={!changed}
-                        title={t("기본값으로")}
-                        onClick={() => pickSyntaxColor(row.keys, null)}
-                      >
-                        {t("기본")}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="settings-box-actions">
-                <span className="settings-hint">
-                  {t("이 테마에만 저장되며, SQL 에디터 탭의 구문 강조 위에 덮입니다.")}
-                </span>
-                <button
-                  type="button"
-                  disabled={Object.keys(picked).length === 0}
-                  onClick={() => pickSyntaxColor(SYNTAX_COLOR_ROWS.flatMap((row) => row.keys), null)}
-                >
-                  {t("모두 기본값으로")}
-                </button>
-              </div>
-            </SettingsGroup>
-            <Preview>
-              <SqlPreview doc={THEME_SAMPLE} />
-            </Preview>
             {(["dark", "light"] as const).map((mode) => (
               <section key={mode} className="settings-group">
                 <h4>{mode === "dark" ? t("다크") : t("라이트")}</h4>
@@ -666,7 +694,6 @@ export function SettingsModal({
             ))}
           </>
         );
-      }
 
       case "editor":
         return (
@@ -682,6 +709,17 @@ export function SettingsModal({
               onSize={(fontSize) => onChange({ fontSize })}
             />
             <SettingsGroup title={t("편집")}>
+              <SettingsField>
+                <SettingsCheck
+                  checked={settings.uppercaseKeywords}
+                  onChange={(uppercaseKeywords) => onChange({ uppercaseKeywords })}
+                >
+                  {t("정리·축약할 때 키워드를 대문자로")}
+                </SettingsCheck>
+              </SettingsField>
+            </SettingsGroup>
+            {/* The colours picked here belong to the theme in use. */}
+            <SettingsGroup title={t("색")}>
               <SettingsField
                 label={t("구문 강조")}
                 hint={t(SYNTAX_PRESETS.find((preset) => preset.id === settings.syntaxPreset)?.description ?? "")}
@@ -697,14 +735,13 @@ export function SettingsModal({
                   ))}
                 </Select>
               </SettingsField>
-              <SettingsField>
-                <SettingsCheck
-                  checked={settings.uppercaseKeywords}
-                  onChange={(uppercaseKeywords) => onChange({ uppercaseKeywords })}
-                >
-                  {t("정리·축약할 때 키워드를 대문자로")}
-                </SettingsCheck>
-              </SettingsField>
+              <ColorPicks
+                rows={SYNTAX_COLOR_ROWS}
+                colors={currentSyntaxColors(settings)}
+                picked={settings.syntaxColors[settings.theme] ?? {}}
+                hint={t("지금 테마({theme})에만 저장되며, 구문 강조 위에 덮입니다.", { theme: t(themeLabel) })}
+                onPick={(keys, color) => pickThemeColor("syntaxColors", keys, color)}
+              />
             </SettingsGroup>
             <Preview>
               <SqlPreview doc={EDITOR_SAMPLE} />
@@ -748,11 +785,6 @@ export function SettingsModal({
                   {t("줄무늬 행 배경")}
                 </SettingsCheck>
               </SettingsField>
-              <SettingsField>
-                <SettingsCheck checked={settings.typeColors} onChange={(typeColors) => onChange({ typeColors })}>
-                  {t("타입별 색상")}
-                </SettingsCheck>
-              </SettingsField>
               <SettingsField label={t("스크롤바 항상 표시")} hint={t("SQL 에디터에도 적용됩니다.")}>
                 <SettingsCheck checked={settings.scrollbarX} onChange={(scrollbarX) => onChange({ scrollbarX })}>
                   {t("가로")}
@@ -761,6 +793,26 @@ export function SettingsModal({
                   {t("세로")}
                 </SettingsCheck>
               </SettingsField>
+            </SettingsGroup>
+            {/* The colours picked here belong to the theme in use. */}
+            <SettingsGroup title={t("색")}>
+              <SettingsField>
+                <SettingsCheck checked={settings.typeColors} onChange={(typeColors) => onChange({ typeColors })}>
+                  {t("타입별 색상")}
+                </SettingsCheck>
+              </SettingsField>
+              <ColorPicks
+                rows={GRID_COLOR_ROWS}
+                colors={currentGridColors(settings)}
+                picked={settings.gridColors[settings.theme] ?? {}}
+                className="grid-colors"
+                hint={
+                  settings.typeColors
+                    ? t("지금 테마({theme})에만 저장되며, 표와 MongoDB 문서의 값 색에 쓰입니다.", { theme: t(themeLabel) })
+                    : t("‘타입별 색상’이 꺼져 있어 NULL 말고는 지금 쓰이지 않습니다.")
+                }
+                onPick={(keys, color) => pickThemeColor("gridColors", keys, color)}
+              />
             </SettingsGroup>
             <GridPreview settings={settings} />
           </>

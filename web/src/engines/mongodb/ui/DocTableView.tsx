@@ -406,7 +406,7 @@ export function DocTableView({
           ) : null}
         </div>
       </div>
-      {panelOpen ? <DocDetailPanel ns={ns} table={table} rows={selection} readOnly={readOnly} save={keptSave} /> : null}
+      {panelOpen ? <DocDetailPanel ns={ns} table={table} rows={selection} readOnly={readOnly} save={keptSave} onClose={() => onPanelOpenChange(false)} /> : null}
       {cellError !== null ? (
         <div ref={cellErrorRef} className="mg-edit-error" style={{ left: cellError.left, top: cellError.top }}>
           <WriteErrorNotice error={cellError.error} onClose={() => setCellError(null)} />

@@ -1,18 +1,25 @@
 /* MongoDB document views: the collection tab, its query bar, the ☰ cards,
    the {} JSON blocks, the mongosh tab and their dialogs. Built on the
    app's own classes (filter-bar, data-toolbar, modal, …) and theme
-   variables; values are coloured with the editor's syntax palette. */
+   variables. Values in cards, type badges and the schema tab take the data
+   table's colours by kind (Settings → Data Table), mapped from BSON types
+   as the ⊞ table maps them; the JSON blocks are code and keep the editor's
+   syntax colours. */
 
 :root {
-  --mg-ink-string: var(--syntax-string);
-  --mg-ink-int: var(--syntax-number);
-  --mg-ink-long: var(--syntax-label, var(--syntax-number));
-  --mg-ink-float: var(--syntax-number);
-  --mg-ink-bool: var(--syntax-bool);
-  --mg-ink-date: var(--syntax-type);
-  --mg-ink-oid: var(--syntax-function);
-  --mg-ink-obj: var(--syntax-keyword);
-  --mg-ink-arr: var(--syntax-operator, var(--syntax-keyword));
+  --mg-ink-string: var(--type-string);
+  --mg-ink-int: var(--type-integer);
+  --mg-ink-long: var(--type-bigint);
+  --mg-ink-float: var(--type-float);
+  --mg-ink-bool: var(--type-boolean);
+  --mg-ink-date: var(--type-date);
+  --mg-ink-time: var(--type-time);
+  --mg-ink-oid: var(--type-uuid);
+  --mg-ink-bin: var(--type-binary);
+  --mg-ink-re: var(--type-enum);
+  --mg-ink-obj: var(--type-json);
+  --mg-ink-arr: var(--type-list);
+  --mg-ink-null: var(--type-null);
 }
 
 .mg-root {
@@ -442,8 +449,9 @@ input.mg-pop-search {
   text-align: right;
 }
 
-/* Value colours by BSON type (cards, type badges). */
-.t-String {
+/* Value colours by BSON type (cards, type badges, schema bars). */
+.t-String,
+.t-Code {
   --tc: var(--mg-ink-string);
 }
 .t-Int32 {
@@ -459,12 +467,20 @@ input.mg-pop-search {
 .t-Boolean {
   --tc: var(--mg-ink-bool);
 }
-.t-Date,
-.t-Timestamp {
+.t-Date {
   --tc: var(--mg-ink-date);
+}
+.t-Timestamp {
+  --tc: var(--mg-ink-time);
 }
 .t-ObjectId {
   --tc: var(--mg-ink-oid);
+}
+.t-Binary {
+  --tc: var(--mg-ink-bin);
+}
+.t-Regex {
+  --tc: var(--mg-ink-re);
 }
 .t-Object {
   --tc: var(--mg-ink-obj);
@@ -474,7 +490,7 @@ input.mg-pop-search {
 }
 .t-Null,
 .t-Undefined {
-  --tc: var(--faint);
+  --tc: var(--mg-ink-null);
 }
 
 /* ---- the view switch and toolbar ---- */

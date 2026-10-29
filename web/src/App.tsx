@@ -251,7 +251,9 @@ function storeWidth(key: string, width: number | null): void {
 }
 
 // Drags a side panel's edge. `grow` is 1 when moving right widens the panel
-// (left sidebar) and -1 when moving left does (right panel).
+// (left sidebar) and -1 when moving left does (right panel). With `onClose`,
+// dragging it past half its narrowest width closes it at once and ends the
+// drag, keeping the width it had for when it opens again.
 function dragPanelEdge(
   event: ReactPointerEvent<HTMLDivElement>,
   panel: Element | null,
@@ -259,6 +261,7 @@ function dragPanelEdge(
   clamp: (width: number) => number,
   onMove: (width: number) => void,
   onDone: (width: number) => void,
+  onClose?: () => void,
 ): void {
   if (event.button !== 0) {
     return;
@@ -267,18 +270,29 @@ function dragPanelEdge(
   const handle = event.currentTarget;
   const startX = event.clientX;
   const startWidth = panel instanceof HTMLElement ? panel.getBoundingClientRect().width : 0;
+  const closeBelow = clamp(0) / 2;
   let width = startWidth;
   handle.classList.add("dragging");
   document.body.classList.add("col-resizing");
-  const move = (next: PointerEvent): void => {
-    width = clamp(startWidth + grow * (next.clientX - startX));
-    onMove(width);
-  };
-  const up = (): void => {
+  const end = (): void => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     handle.classList.remove("dragging");
     document.body.classList.remove("col-resizing");
+  };
+  const move = (next: PointerEvent): void => {
+    const raw = startWidth + grow * (next.clientX - startX);
+    if (onClose !== undefined && raw < closeBelow) {
+      end();
+      onMove(startWidth);
+      onClose();
+      return;
+    }
+    width = clamp(raw);
+    onMove(width);
+  };
+  const up = (): void => {
+    end();
     onDone(width);
   };
   window.addEventListener("pointermove", move);
@@ -565,7 +579,12 @@ export default function App() {
   const [docRefreshSeq, setDocRefreshSeq] = useState(0);
   const [resultView, setResultView] = useState<"grid" | "message" | "plan">("grid");
   const [runningTabId, setRunningTabId] = useState<string | null>(null);
-  const [editorHeight, setEditorHeight] = useState<number | null>(null);
+  // With the editor beside the results, the editor's width.
+  const [editorWidth, setEditorWidth] = useState<number | null>(null);
+  // With the editor above the results, the results' height: the console
+  // growing takes its room from the editor, and the results move up with it.
+  const [resultHeight, setResultHeight] = useState<number | null>(null);
+  const resultPaneRef = useRef<HTMLDivElement | null>(null);
   const [filterOpen, setFilterOpen] = useState<Record<string, boolean>>({});
   // A filter bar asked to take the keyboard (its button, ⌘F), with the column
   // a new condition starts on; cleared once the bar has done it.
@@ -832,7 +851,6 @@ export default function App() {
   const fsOpenRef = useRef(fsOpen);
   const detailPanelOpenRef = useRef(false);
   const cellQuickLookRef = useRef(cellQuickLook);
-  const menuRef = useRef(menu);
   const exportTargetRef = useRef(exportTarget);
   const importTargetRef = useRef(importTarget);
   const paramPromptRef = useRef(paramPrompt);
@@ -914,7 +932,6 @@ export default function App() {
   // The side and bottom panels start open; closing one is what's remembered.
   detailPanelOpenRef.current = activeKey !== null && detailPanels[activeKey] !== false;
   cellQuickLookRef.current = cellQuickLook;
-  menuRef.current = menu;
   exportTargetRef.current = exportTarget;
   importTargetRef.current = importTarget;
   paramPromptRef.current = paramPrompt;
@@ -4754,8 +4771,22 @@ export default function App() {
     if (conn === null) {
       return;
     }
+    if (open) {
+      pinResultHeight();
+    }
     const key = stableKeyOf(conn);
     setConsolePanels((prev) => (prev[key] === open ? prev : { ...prev, [key]: open }));
+  }
+
+  // Before the console takes room in a query tab with the editor above the
+  // results, the results keep the height they have now, so the room comes
+  // out of the editor and the results move up with the console.
+  function pinResultHeight(): void {
+    const pane = resultPaneRef.current;
+    if (resultHeight !== null || splitSide !== "bottom" || pane === null || mainRef.current?.querySelector(".editor-pane") == null) {
+      return;
+    }
+    setResultHeight(Math.round(pane.getBoundingClientRect().height));
   }
 
   function saveConsoleHeight(height: number): void {
@@ -4770,6 +4801,7 @@ export default function App() {
       return;
     }
     event.preventDefault();
+    pinResultHeight();
     const stack = stackRef.current;
     const startY = event.clientY;
     const startHeight = consoleHeight;
@@ -4777,14 +4809,26 @@ export default function App() {
     const max = Math.max(CONSOLE_MIN, (stack?.clientHeight ?? 600) - 160);
     let height = startHeight;
     document.body.classList.add("row-resizing");
-    const onMove = (move: PointerEvent): void => {
-      height = Math.round(Math.min(Math.max(startHeight - (move.clientY - startY), CONSOLE_MIN), max));
-      setConsoleHeight(height);
-    };
-    const onUp = (): void => {
+    const end = (): void => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       document.body.classList.remove("row-resizing");
+    };
+    const onMove = (move: PointerEvent): void => {
+      const raw = startHeight - (move.clientY - startY);
+      // Dragged under half its lowest height, the console closes at once,
+      // keeping its height for when it opens again.
+      if (raw < CONSOLE_MIN / 2) {
+        end();
+        setConsoleHeight(startHeight);
+        setConsoleOpen(false);
+        return;
+      }
+      height = Math.round(Math.min(Math.max(raw, CONSOLE_MIN), max));
+      setConsoleHeight(height);
+    };
+    const onUp = (): void => {
+      end();
       saveConsoleHeight(height);
     };
     window.addEventListener("pointermove", onMove);
@@ -4800,15 +4844,18 @@ export default function App() {
     const rect = main.getBoundingClientRect();
     const horizontal = splitSide === "right";
     const start = horizontal ? event.clientX : event.clientY;
-    const startSize = editorHeight ?? (horizontal ? rect.width * 0.45 : rect.height * 0.35);
+    // Beside the results the editor's width is kept; above them, the results'
+    // height (see resultHeight).
+    const startSize = horizontal
+      ? editorWidth ?? rect.width * 0.45
+      : resultHeight ?? resultPaneRef.current?.getBoundingClientRect().height ?? rect.height * 0.65;
     const onMove = (move: PointerEvent): void => {
       const delta = (horizontal ? move.clientX : move.clientY) - start;
-      const next = startSize + delta;
-      setEditorHeight(
-        horizontal
-          ? Math.min(Math.max(next, 180), rect.width - 260)
-          : Math.min(Math.max(next, 90), rect.height - 140),
-      );
+      if (horizontal) {
+        setEditorWidth(Math.min(Math.max(startSize + delta, 180), rect.width - 260));
+      } else {
+        setResultHeight(Math.round(Math.min(Math.max(startSize - delta, 140), rect.height - 90)));
+      }
     };
     const onUp = (): void => {
       window.removeEventListener("pointermove", onMove);
@@ -5029,30 +5076,10 @@ export default function App() {
         document.querySelector(".modal-backdrop") !== null
       );
     }
-    // Escape closes the right panel unless something else takes it. An open
-    // menu or dialog is seen here, in the capture phase, before it closes
-    // itself; what a focused text field does with the key (the SQL editor
-    // closing its autocomplete or search, an input cancelling an edit) shows
-    // only once the event is through, as its default prevented.
-    let panelEscape: KeyboardEvent | null = null;
     function onKeyDown(event: KeyboardEvent): void {
+      // Escape belongs to whatever has focus (an editor's popup, a dialog, a
+      // cell edit); it never closes the panels.
       if (event.key === "Escape") {
-        // An open dialog owns Escape; don't also close panels behind it.
-        if (
-          exportTargetRef.current !== null ||
-          menuRef.current !== null ||
-          document.querySelector(
-            ".context-menu, .menu-panel, .cell-menu, .date-picker, .column-picker, .page-size-panel",
-          ) !== null ||
-          // The structure grid uses Escape to leave a cell, and the bar over
-          // it to clear its search or put the name back.
-          (document.activeElement instanceof Element &&
-            document.activeElement.closest(".structure-grid, .structure-bar") !== null) ||
-          modalOpen()
-        ) {
-          return;
-        }
-        panelEscape = event;
         return;
       }
       if (event.metaKey && event.ctrlKey && (event.key === "[" || event.key === "]")) {
@@ -5141,27 +5168,9 @@ export default function App() {
       event.stopPropagation();
       shortcutRef.current(action);
     }
-    function onEscape(event: KeyboardEvent): void {
-      if (event !== panelEscape) {
-        return;
-      }
-      panelEscape = null;
-      const target = event.target instanceof Element ? event.target : null;
-      const field = target?.closest("input, textarea, select, [contenteditable], .cm-editor") != null;
-      // A Hangul (or other IME) composition is cancelled by it, too.
-      if (event.isComposing || (field && event.defaultPrevented)) {
-        return;
-      }
-      // The cell popover counts as a dialog and closes itself.
-      if (detailPanelOpenRef.current) {
-        setDetailPanelOpen(false);
-      }
-    }
     window.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("keydown", onEscape);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("keydown", onEscape);
     };
   }, []);
 
@@ -5755,6 +5764,7 @@ export default function App() {
                       clampSidebar,
                       setSidebarWidth,
                       saveSidebarWidth,
+                      () => setSchemaOpen(false),
                     )
                   }
                   onDoubleClick={() => saveSidebarWidth(null)}
@@ -5773,7 +5783,15 @@ export default function App() {
                   <>
                     <div
                       className="editor-pane"
-                      style={editorHeight === null ? undefined : { flexBasis: `${editorHeight}px` }}
+                      style={
+                        splitSide === "right"
+                          ? editorWidth === null
+                            ? undefined
+                            : { flexBasis: `${editorWidth}px` }
+                          : resultHeight === null
+                            ? undefined
+                            : { flex: "1 1 0" }
+                      }
                     >
                       <SqlEditor
                         ref={editorRef}
@@ -5841,7 +5859,15 @@ export default function App() {
                     />
                   </>
                 ) : null}
-                <div className="result-pane">
+                <div
+                  className="result-pane"
+                  ref={resultPaneRef}
+                  style={
+                    activeTab?.kind === "query" && splitSide === "bottom" && resultHeight !== null
+                      ? { flex: `0 1 ${resultHeight}px` }
+                      : undefined
+                  }
+                >
                   {/* Staged edits wait here until applied or dropped. */}
                 {pendingSummary !== null && pendingSummary.total > 0 ? (
                   <div className="pending-bar floating" role="status">
@@ -6406,6 +6432,7 @@ export default function App() {
                       clampDetail,
                       setDetailWidth,
                       saveDetailWidth,
+                      () => setDetailPanelOpen(false),
                     )
                   }
                   onDoubleClick={() => saveDetailWidth(null)}
