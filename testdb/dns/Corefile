@@ -1,0 +1,4 @@
+tablepeek.test:53 {
+    file /dns/tablepeek.test.zone
+    log
+}

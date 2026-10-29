@@ -36,6 +36,7 @@ import { isAppServerDown, toAppError, type AppError } from "./errorHelp";
 import { ExportModal, type ExportTarget } from "./components/ExportModal";
 import { FilterBar } from "./components/FilterBar";
 import { ServerBanner } from "./components/ServerBanner";
+import { OidcLoginBanner } from "./components/OidcLoginBanner";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
 import type { SelectedRows } from "./grid/CanvasGrid";
@@ -81,6 +82,8 @@ import { DocumentWorkbench } from "./engines/mongodb/ui/DocumentWorkbench";
 import { DocAdminDialogs, type DocAdminEffect, type DocAdminRequest } from "./engines/mongodb/ui/ManageModals";
 import { ShellTab } from "./engines/mongodb/ui/ShellTab";
 import { PerfTab } from "./engines/mongodb/ui/PerfTab";
+import { ChangeStreamTab } from "./engines/mongodb/ui/ChangeStreamPanel";
+import { GridFsTab } from "./engines/mongodb/ui/GridFsTab";
 import {
   CheckIcon,
   DiagramIcon,
@@ -181,6 +184,8 @@ import {
   createCollectionTab,
   createMongoshTab,
   createPerfTab,
+  createWatchTab,
+  createGridFsTab,
   createServerTab,
   freeQueryNumber,
   migrateTabsState,
@@ -1250,6 +1255,22 @@ export default function App() {
       return;
     }
     const tab = createCollectionTab(db, coll, view);
+    setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
+  }
+
+  // A database's 변경 보기 tab, or a GridFS bucket's tab: the open one, else a new one.
+  function openDocDbTab(kind: "watch" | "gridfs", db: string, bucket = ""): void {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    if (conn === null || current === null) {
+      return;
+    }
+    const open = current.tabs.find((tab) => (kind === "watch" ? tab.kind === "watch" && tab.db === db : tab.kind === "gridfs" && tab.db === db && tab.bucket === bucket));
+    if (open !== undefined) {
+      activate(open.id);
+      return;
+    }
+    const tab = kind === "watch" ? createWatchTab(db) : createGridFsTab(db, bucket);
     setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
   }
 
@@ -5547,6 +5568,7 @@ export default function App() {
         </header>
       ) : null}
       <ServerBanner />
+      <OidcLoginBanner />
       {home ? (
         <HomeScreen
           conns={conns}
@@ -5706,6 +5728,9 @@ export default function App() {
                     onOpen={openCollectionTab}
                     onOpenShell={(db, text) => openMongoshTab(db, text)}
                     onAdmin={setDocAdmin}
+                    onOpenWatch={(db) => openDocDbTab("watch", db)}
+                    onOpenBucket={(db, bucket) => openDocDbTab("gridfs", db, bucket)}
+                    activeBucket={activeTab?.kind === "gridfs" ? { db: activeTab.db, bucket: activeTab.bucket } : null}
                   />
                 ) : (
                 <SchemaSidebar
@@ -5919,6 +5944,7 @@ export default function App() {
                         onPanelOpenChange={setDetailPanelOpen}
                         refreshSeq={docRefreshSeq}
                         safeMode={alertMode}
+                        maxTimeMS={settings.queryTimeout > 0 ? settings.queryTimeout * 1000 : undefined}
                         onCollectionsChanged={() => setDocRefreshSeq((value) => value + 1)}
                         onOpenCollection={openCollectionTab}
                         onOpenShell={openMongoshTab}
@@ -5938,6 +5964,7 @@ export default function App() {
                         onTextChange={(text) => updateActiveTabs((current) => patchTab(current, activeTab.id, { text }))}
                         onDbChange={(db) => updateActiveTabs((current) => patchTab(current, activeTab.id, { db }))}
                         safeMode={alertMode}
+                        maxTimeMS={settings.queryTimeout > 0 ? settings.queryTimeout * 1000 : undefined}
                         notify={notify}
                       />
                     ) : activeTab?.kind === "server" ? (
@@ -5951,6 +5978,10 @@ export default function App() {
                         safeMode={alertMode}
                         notify={notify}
                       />
+                    ) : activeTab?.kind === "watch" ? (
+                      <ChangeStreamTab key={`${activeConnId}:${activeTab.id}`} conn={activeConnId} db={activeTab.db} tabKey={`${activeConnId}:${activeTab.id}`} notify={notify} />
+                    ) : activeTab?.kind === "gridfs" ? (
+                      <GridFsTab key={`${activeConnId}:${activeTab.id}`} conn={activeConnId} db={activeTab.db} bucket={activeTab.bucket} tabKey={`${activeConnId}:${activeTab.id}`} notify={notify} onChanged={() => setDocRefreshSeq((value) => value + 1)} />
                     ) : (
                       <EmptyWorkspace onNewQuery={() => openMongoshTab()} onHome={goHome} />
                     )

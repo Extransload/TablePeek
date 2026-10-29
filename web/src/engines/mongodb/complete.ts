@@ -199,14 +199,14 @@ export function sampleFields(docs: BsonDocument[]): FieldStat[] {
     const type = typeName(v);
     acc.types.set(type, (acc.types.get(type) ?? 0) + 1);
     if (isDocument(v)) {
-      for (const key of Object.keys(v)) {
-        visit(v[key], `${path}.${key}`, depth + 1, docIndex);
+      for (const [key, value] of v) {
+        visit(value, `${path}.${key}`, depth + 1, docIndex);
       }
     } else if (Array.isArray(v)) {
       for (const element of v) {
         if (isDocument(element)) {
-          for (const key of Object.keys(element)) {
-            visit(element[key], `${path}.${key}`, depth + 1, docIndex);
+          for (const [key, value] of element) {
+            visit(value, `${path}.${key}`, depth + 1, docIndex);
           }
         }
       }
@@ -221,8 +221,8 @@ export function sampleFields(docs: BsonDocument[]): FieldStat[] {
     }
   };
   docs.forEach((doc, i) => {
-    for (const key of Object.keys(doc)) {
-      visit(doc[key], key, 0, i);
+    for (const [key, value] of doc) {
+      visit(value, key, 0, i);
     }
   });
   return [...fields.values()].map((acc): FieldStat => ({

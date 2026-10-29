@@ -51,7 +51,7 @@ export interface DocTable {
 function fieldOrder(docs: BsonDocument[]): { key: string; count: number }[] {
   const seen = new Map<string, { key: string; count: number; first: number }>();
   for (const doc of docs) {
-    for (const key of Object.keys(doc)) {
+    for (const key of doc.keys()) {
       const entry = seen.get(key);
       if (entry) {
         entry.count++;
@@ -72,7 +72,7 @@ function joinPath(base: string, key: string): string {
 export function cellValue(row: TableRow, column: TableColumn): BsonValue | undefined {
   switch (column.kind) {
     case "field":
-      return isDocument(row.value) && column.field !== null && Object.hasOwn(row.value, column.field) ? row.value[column.field] : undefined;
+      return isDocument(row.value) && column.field !== null ? row.value.get(column.field) : undefined;
     case "parentId":
       return row.parentId;
     case "index":
@@ -115,10 +115,10 @@ function makeColumn(kind: TableColumn["kind"], id: string, field: string | null,
 // The table for a page of documents, drilled through `path` (field names;
 // each step opens objects in place and arrays one row per element).
 export function buildTable(docs: BsonDocument[], path: string[] = []): DocTable {
-  let rows: TableRow[] = docs.map((doc, i) => ({ doc: i, base: "", index: null, value: doc, parentId: doc._id }));
+  let rows: TableRow[] = docs.map((doc, i) => ({ doc: i, base: "", index: null, value: doc, parentId: doc.get("_id") }));
   for (const key of path) {
     rows = rows.flatMap((row): TableRow[] => {
-      const v = isDocument(row.value) && Object.hasOwn(row.value, key) ? row.value[key] : undefined;
+      const v = isDocument(row.value) ? row.value.get(key) : undefined;
       const base = joinPath(row.base, key);
       if (isDocument(v)) {
         return [{ ...row, base, value: v }];

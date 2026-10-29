@@ -9,7 +9,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CopyIcon, PencilIcon, TrashIcon } from "../../../components/icons";
 import type { ErrorContext } from "../../../errorHelp";
 import { t } from "../../../i18n";
-import { fromEJSON, isDocument, toEJSON, type BsonDocument, type BsonValue, type EJSON } from "../bson";
+import { JsonSyntaxError, fromEJSON, isDocument, jsonKeys, parseJson, stringifyJson, toEJSON, type BsonDocument, type BsonValue, type EJSON } from "../bson";
 import { VIEW_LIMITS, shellKey, toShell, toShellPretty, truncation } from "../format";
 import { parseValue } from "../shell/parse";
 import { docKey } from "./CardView";
@@ -46,12 +46,11 @@ type Parsed = { ok: true; value: BsonDocument } | { ok: false; message: string; 
 export function parseDocText(text: string, canonical: boolean): Parsed {
   if (canonical) {
     try {
-      const value = fromEJSON(JSON.parse(text));
+      const value = fromEJSON(parseJson(text));
       return isDocument(value) ? { ok: true, value } : { ok: false, message: t("문서 { … }를 써야 합니다"), from: 0, to: text.length };
     } catch (error) {
-      const at = /position (\d+)/.exec((error as Error).message);
-      const pos = at ? Number(at[1]) : 0;
-      return { ok: false, message: (error as Error).message, from: pos, to: pos + 1 };
+      const pos = error instanceof JsonSyntaxError ? error.offset : 0;
+      return { ok: false, message: error instanceof Error ? error.message : String(error), from: pos, to: pos + 1 };
     }
   }
   const r = parseValue(text);
@@ -62,7 +61,7 @@ export function parseDocText(text: string, canonical: boolean): Parsed {
 }
 
 export function docText(doc: BsonValue, canonical: boolean): string {
-  return canonical ? JSON.stringify(toEJSON(doc), null, 2) : toShellPretty(doc);
+  return canonical ? stringifyJson(toEJSON(doc), 2) : toShellPretty(doc);
 }
 
 interface Line {
@@ -77,7 +76,7 @@ interface Line {
 // An EJSON wrapper ({ "$oid": … }, { "$date": { "$numberLong": … } })
 // stays on one line.
 function isWrapper(v: EJSON): boolean {
-  return v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 0 && Object.keys(v)[0].startsWith("$");
+  return v !== null && typeof v === "object" && !Array.isArray(v) && jsonKeys(v)[0]?.startsWith("$") === true;
 }
 
 interface JsonBlockProps {
@@ -105,14 +104,14 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
 
   useEffect(() => setToggled(new Set()), [allFolded]);
 
-  const ro = readOnly || doc._id === undefined || onSave === undefined;
+  const ro = readOnly || !doc.has("_id") || onSave === undefined;
 
   const lines = useMemo(() => {
     const out: Line[] = [];
     const cut = full ? null : truncation(doc);
     const cutArrays = new Set(cut?.arrays.map((a) => a.path));
     const isFolded = (path: string, depth: number) => toggled.has(path) !== (allFolded && depth >= 1);
-    const scalar = (v: BsonValue, e: EJSON) => (canonical ? (isWrapper(e) ? JSON.stringify(e).replace(/":/g, '": ') : JSON.stringify(e)) : toShell(v));
+    const scalar = (v: BsonValue, e: EJSON) => (canonical ? (isWrapper(e) ? stringifyJson(e).replace(/":/g, '": ') : JSON.stringify(e)) : toShell(v));
     const walk = (v: BsonValue, e: EJSON, path: string, depth: number, prefix: string, comma: boolean) => {
       const tail = comma ? "," : "";
       const container = (Array.isArray(v) || isDocument(v)) && !(canonical && isWrapper(e));
@@ -121,7 +120,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
         return;
       }
       const arr = Array.isArray(v);
-      let keys = arr ? v.map((_, i) => String(i)) : Object.keys(v);
+      let keys = Array.isArray(v) ? v.map((_, i) => String(i)) : isDocument(v) ? [...v.keys()] : [];
       const [open, close] = arr ? ["[", "]"] : ["{", "}"];
       if (keys.length === 0) {
         out.push({ depth, text: `${prefix}${open}${close}${tail}`, fold: null, folded: false, summary: null, more: null });
@@ -141,7 +140,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
         keys = keys.slice(0, VIEW_LIMITS.arrayItems);
       }
       keys.forEach((k, i) => {
-        const child = Array.isArray(v) ? v[Number(k)] : isDocument(v) ? v[k] : null;
+        const child = (Array.isArray(v) ? v[Number(k)] : isDocument(v) ? v.get(k) : null) ?? null;
         const childE = Array.isArray(e) ? e[Number(k)] : e !== null && typeof e === "object" ? e[k] : null;
         const childPath = path === "" ? k : `${path}.${k}`;
         walk(child, childE, childPath, depth + 1, arr ? "" : `${canonical ? JSON.stringify(k) : shellKey(k)}: `, i < keys.length - 1 || more !== null);
@@ -278,7 +277,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
         {ro ? null : (
           <button type="button" className="icon-text-button" title={t("이 자리에서 편집 (두 번 눌러도 됩니다)")} onClick={startEdit}>
             <PencilIcon size={10} />
-            {t("편집")}
+            {t("편집 [버튼]")}
           </button>
         )}
         {!ro && onClone ? (

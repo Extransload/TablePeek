@@ -167,7 +167,7 @@ function SingleRow({ ns, table, row, readOnly, save, query }: { ns: Namespace; t
   const parts = entry.base === "" ? [] : entry.base.split(".");
   // A drilled element that is not a document shows as one field named by
   // its position; its edits then go to the array holding it.
-  const shown: BsonDocument = isDocument(entry.value) ? entry.value : { [parts[parts.length - 1] ?? ""]: entry.value };
+  const shown: BsonDocument = isDocument(entry.value) ? entry.value : new Map([[parts[parts.length - 1] ?? "", entry.value]]);
   const prefix = isDocument(entry.value) ? entry.base : parts.slice(0, -1).join(".");
 
   async function onSave(edits: DocEdit[]): Promise<Error | null> {
@@ -190,7 +190,7 @@ function SingleRow({ ns, table, row, readOnly, save, query }: { ns: Namespace; t
           </span>
         ))}
       </span>
-      {root._id !== undefined ? <ShellText className="mg-doc-id" text={toShell(root._id)} /> : null}
+      {root.has("_id") ? <ShellText className="mg-doc-id" text={toShell(root.get("_id") ?? null)} /> : null}
     </div>
   );
 
@@ -273,7 +273,7 @@ function CollectionFacts({ ns, query }: { ns: Namespace; query: string }) {
     stats === null
       ? []
       : [
-          ["count", t("{count}개", { count: stats.count.toLocaleString() })],
+          ["count", t("문서 {count}개", { count: stats.count.toLocaleString() })],
           ["size", formatBytes(stats.size)],
           ["avgObjSize", formatBytes(stats.avgObjSize)],
           ["storageSize", formatBytes(stats.storageSize)],

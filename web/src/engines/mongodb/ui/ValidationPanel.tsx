@@ -13,7 +13,7 @@ import { Select } from "../../../components/Select";
 import { LoadingState, Spinner } from "../../../components/Spinner";
 import { t } from "../../../i18n";
 import { aggregate, command, isAbort, listCollections, toNumber, type Namespace } from "../api";
-import { Int32, isDocument, type BsonDocument } from "../bson";
+import { Int32, bsonDoc, isDocument, type BsonDocument } from "../bson";
 import { sampleFields, type CompletionContext } from "../complete";
 import { shellCollection, toShell, toShellPretty } from "../format";
 import { analyzeSchema, draftJsonSchema, jsonSchemaReasons } from "../schema";
@@ -140,12 +140,14 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
     const ctl = new AbortController();
     listCollections(ns.conn, ns.db, ctl.signal).then(
       (list) => {
-        const options = list.find((c) => c.name === ns.coll)?.options ?? {};
-        const validator = isDocument(options.validator) && Object.keys(options.validator).length > 0 ? options.validator : null;
+        const options: BsonDocument = list.find((c) => c.name === ns.coll)?.options ?? new Map();
+        const stored = options.get("validator");
+        const validator = isDocument(stored) && stored.size > 0 ? stored : null;
+        const validationLevel = options.get("validationLevel");
         const next: Applied = {
           validator,
-          level: options.validationLevel === "off" || options.validationLevel === "moderate" ? options.validationLevel : "strict",
-          action: options.validationAction === "warn" ? "warn" : "error",
+          level: validationLevel === "off" || validationLevel === "moderate" ? validationLevel : "strict",
+          action: options.get("validationAction") === "warn" ? "warn" : "error",
         };
         const cur = latest.current;
         const untouched = takeServer.current || (cur.applied !== null && cur.text === textOf(cur.applied.validator) && cur.level === cur.applied.level && cur.action === cur.applied.action);
@@ -171,7 +173,7 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
     if (draft !== null && !handledDrafts.has(draft)) {
       handledDrafts.add(draft);
       takeServer.current = false;
-      setText(toShellPretty({ $jsonSchema: draft.schema }));
+      setText(toShellPretty(bsonDoc({ $jsonSchema: draft.schema })));
       setLevel((l) => (l === "off" ? "strict" : l));
     }
   }, [draft]);
@@ -190,25 +192,25 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
     const ctl = new AbortController();
     const timer = window.setTimeout(() => {
       setChecking(true);
-      const failing = { $match: { $nor: [validator] } };
+      const failing = bsonDoc({ $match: bsonDoc({ $nor: [validator] }) });
       const pipeline: BsonDocument[] = [
-        { $sample: { size: new Int32(PREVIEW_SAMPLE) } },
-        {
-          $facet: {
-            total: [{ $count: "n" }],
-            failed: [failing, { $count: "n" }],
-            failDocs: [failing, { $limit: new Int32(FAIL_EXAMPLES) }],
-            passDocs: [{ $match: { $and: [validator] } }, { $limit: new Int32(PASS_EXAMPLES) }],
-          },
-        },
+        bsonDoc({ $sample: bsonDoc({ size: new Int32(PREVIEW_SAMPLE) }) }),
+        bsonDoc({
+          $facet: bsonDoc({
+            total: [bsonDoc({ $count: "n" })],
+            failed: [failing, bsonDoc({ $count: "n" })],
+            failDocs: [failing, bsonDoc({ $limit: new Int32(FAIL_EXAMPLES) })],
+            passDocs: [bsonDoc({ $match: bsonDoc({ $and: [validator] }) }), bsonDoc({ $limit: new Int32(PASS_EXAMPLES) })],
+          }),
+        }),
       ];
       const commandText = `${shellCollection(ns.coll)}.aggregate([{ $sample: { size: ${PREVIEW_SAMPLE} } }, { $match: { $nor: [${toShell(validator)}] } }])`;
       aggregate(ns, pipeline, undefined, ctl.signal).then(
         (batch) => {
-          const facet = batch.docs[0] ?? {};
-          const n = (list: unknown) => (Array.isArray(list) && isDocument(list[0]) ? toNumber(list[0].n) : 0);
+          const facet: BsonDocument = batch.docs[0] ?? new Map();
+          const n = (list: unknown) => (Array.isArray(list) && isDocument(list[0]) ? toNumber(list[0].get("n")) : 0);
           const docsOf = (list: unknown) => (Array.isArray(list) ? list.filter(isDocument) : []);
-          setPreview({ command: commandText, total: n(facet.total), failed: n(facet.failed), failDocs: docsOf(facet.failDocs), passDocs: docsOf(facet.passDocs), validator });
+          setPreview({ command: commandText, total: n(facet.get("total")), failed: n(facet.get("failed")), failDocs: docsOf(facet.get("failDocs")), passDocs: docsOf(facet.get("passDocs")), validator });
           setChecking(false);
         },
         (e: unknown) => {
@@ -233,12 +235,12 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
     setBusy("draft");
     setActionError(null);
     try {
-      const batch = await aggregate(ns, [{ $sample: { size: new Int32(PREVIEW_SAMPLE) } }]);
+      const batch = await aggregate(ns, [bsonDoc({ $sample: bsonDoc({ size: new Int32(PREVIEW_SAMPLE) }) })]);
       if (batch.docs.length === 0) {
         host.notify(t("문서가 없어 초안을 만들 수 없습니다"));
         return;
       }
-      setText(toShellPretty({ $jsonSchema: draftJsonSchema(analyzeSchema(batch.docs)) }));
+      setText(toShellPretty(bsonDoc({ $jsonSchema: draftJsonSchema(analyzeSchema(batch.docs)) })));
       setLevel((l) => (l === "off" ? "strict" : l));
       host.notify(t("문서 {count}개로 초안을 만들었습니다", { count: batch.docs.length.toLocaleString() }));
     } catch (e) {
@@ -253,7 +255,7 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
       return;
     }
     // An empty editor removes the rule (collMod with an empty validator).
-    const cmd: BsonDocument = { collMod: ns.coll, validator: rule.value ?? {}, validationLevel: level, validationAction: action };
+    const cmd = bsonDoc({ collMod: ns.coll, validator: rule.value ?? new Map(), validationLevel: level, validationAction: action });
     if (host.safeMode !== 0) {
       const ok = await host.confirm({
         title: t("검증 규칙 적용"),
@@ -336,9 +338,10 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
               <>
                 {preview.failDocs.map((doc, i) => {
                   const reasons = jsonSchemaReasons(validator, doc);
+                  const id = doc.get("_id");
                   return (
                     <div key={i} className="mg-valid-doc">
-                      {doc._id !== undefined ? <ShellText className="mg-doc-id" text={toShell(doc._id)} /> : null}
+                      {id !== undefined ? <ShellText className="mg-doc-id" text={toShell(id)} /> : null}
                       <ul className="mg-valid-reasons">
                         {(reasons.length > 0 ? reasons.slice(0, 6) : [t("이 규칙에 맞지 않습니다 (서버 판정)")]).map((reason, j) => (
                           <li key={j}>{reason}</li>

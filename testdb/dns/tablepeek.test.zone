@@ -1,0 +1,12 @@
+$ORIGIN tablepeek.test.
+$TTL 60
+@   IN SOA ns.tablepeek.test. admin.tablepeek.test. 1 3600 600 86400 60
+@   IN NS  ns.tablepeek.test.
+ns  IN A   127.0.0.1
+
+; mongodb+srv://rs.tablepeek.test: the replica set's members (names only
+; the SSH server's network resolves) and its options.
+_mongodb._tcp.rs IN SRV 0 0 27017 rs1.tablepeek.test.
+_mongodb._tcp.rs IN SRV 0 0 27017 rs2.tablepeek.test.
+_mongodb._tcp.rs IN SRV 0 0 27017 rs3.tablepeek.test.
+rs  IN TXT "replicaSet=rs1&authSource=admin"

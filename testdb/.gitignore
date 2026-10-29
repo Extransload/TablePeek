@@ -1,0 +1,5 @@
+# Throwaway keys and certificates `make test-db` writes.
+/x509/*.pem
+/x509/*.key
+/ssh/
+/x509/*.p12

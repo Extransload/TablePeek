@@ -4,7 +4,7 @@
 // the pipelines saved per collection in localStorage.
 
 import { t } from "../../i18n";
-import { isDocument, setField, type BsonDocument } from "./bson";
+import { isDocument, type BsonDocument, type BsonValue } from "./bson";
 import { STAGES, type FieldStat } from "./complete";
 import { shellCollection, shellKey, toShell, toShellPretty } from "./format";
 import { parseValue, type ShellError } from "./shell/parse";
@@ -29,7 +29,7 @@ export function newStage(op: string, text: string, on = true): Stage {
 export const WRITE_STAGES = ["$out", "$merge"];
 
 export function stageOp(stage: BsonDocument): string {
-  return Object.keys(stage)[0] ?? "";
+  return stage.keys().next().value ?? "";
 }
 
 // The argument of a stage's reference example: `{ $match: { status: "paid" } }`
@@ -40,7 +40,8 @@ function exampleArgument(op: string): string | null {
     return null;
   }
   const parsed = parseValue(example);
-  return parsed.ok && isDocument(parsed.value) && parsed.value[op] !== undefined ? toShellPretty(parsed.value[op]) : null;
+  const arg = parsed.ok && isDocument(parsed.value) ? parsed.value.get(op) : undefined;
+  return arg !== undefined ? toShellPretty(arg) : null;
 }
 
 const mainType = (field: FieldStat) => field.types.find((x) => x.type !== "Null")?.type ?? "Null";
@@ -103,9 +104,7 @@ export function parseStage(stage: Stage): StageCheck {
   if (!parsed.ok) {
     return parsed;
   }
-  const doc: BsonDocument = {};
-  setField(doc, stage.op, parsed.value);
-  return { ok: true, stage: doc };
+  return { ok: true, stage: new Map([[stage.op, parsed.value]]) };
 }
 
 // The stages that are on, as the pipeline to send, or the first that does
@@ -133,7 +132,7 @@ export function pipelineText(stages: Stage[]): string {
   }
   const checked = stages.map(parseStage);
   if (checked.every((c) => c.ok)) {
-    return toShellPretty(checked.map((c) => (c.ok ? c.stage : {})));
+    return toShellPretty(checked.map((c) => (c.ok ? c.stage : new Map())));
   }
   return `[\n${stages.map((s) => `  { ${s.op}: ${s.text.trim().replace(/\n/g, "\n  ")}\n  }`).join(",\n")}\n]`;
 }
@@ -158,11 +157,11 @@ export function stagesFromText(text: string, previous: Stage[]): { ok: true; sta
   }
   const stages: Stage[] = [];
   for (const [i, value] of parsed.value.entries()) {
-    const keys = isDocument(value) ? Object.keys(value) : [];
+    const keys = isDocument(value) ? [...value.keys()] : [];
     if (!isDocument(value) || keys.length !== 1 || !keys[0].startsWith("$")) {
       return { ok: false, error: { message: t("{n}번째 단계는 { $단계: … } 하나여야 합니다", { n: i + 1 }), ...whole } };
     }
-    stages.push(newStage(keys[0], toShellPretty(value[keys[0]]), !off.has(toShell(value))));
+    stages.push(newStage(keys[0], toShellPretty(value.get(keys[0]) ?? null), !off.has(toShell(value))));
   }
   return { ok: true, stages };
 }
@@ -174,13 +173,17 @@ export function writeTarget(stage: BsonDocument): string | null {
   if (!WRITE_STAGES.includes(op)) {
     return null;
   }
-  const arg = stage[op];
-  const into = op === "$merge" && isDocument(arg) ? arg.into : arg;
+  const arg = stage.get(op) ?? null;
+  const into = op === "$merge" && isDocument(arg) ? arg.get("into") : arg;
   if (typeof into === "string") {
     return into;
   }
-  if (isDocument(into) && typeof into.coll === "string") {
-    return typeof into.db === "string" ? `${into.db}.${into.coll}` : into.coll;
+  if (isDocument(into)) {
+    const coll = into.get("coll");
+    const db = into.get("db");
+    if (typeof coll === "string") {
+      return typeof db === "string" ? `${db}.${coll}` : coll;
+    }
   }
   return toShell(arg);
 }
@@ -192,9 +195,9 @@ export function aggregateCode(coll: string, pipeline: BsonDocument[]): string {
 // The leading $match and a $sort right after it: the part the server can
 // serve from an index, for the plan's index suggestion.
 export function leadingQuery(pipeline: BsonDocument[]): { filter: BsonDocument; sort: BsonDocument | null } {
-  const match = pipeline[0]?.$match;
-  const filter = isDocument(match) ? match : {};
-  const sort = pipeline[isDocument(match) ? 1 : 0]?.$sort;
+  const match = pipeline[0]?.get("$match");
+  const filter = isDocument(match) ? match : new Map<string, BsonValue>();
+  const sort = pipeline[isDocument(match) ? 1 : 0]?.get("$sort");
   return { filter, sort: isDocument(sort) ? sort : null };
 }
 

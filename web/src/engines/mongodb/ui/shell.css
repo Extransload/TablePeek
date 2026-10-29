@@ -1,0 +1,41 @@
+/* A mongosh script's output in the message list (ShellTab). */
+
+.mg-script-output {
+  max-width: 960px;
+  margin: 6px 0 0;
+  padding: 6px 0 0 2px;
+  border-top: 1px solid var(--line-soft);
+  list-style: none;
+  font: 12px/1.5 var(--mono);
+}
+.mg-script-output > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.mg-script-output > li + li {
+  margin-top: 2px;
+}
+.mg-script-print {
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mg-script-note {
+  color: var(--warn);
+}
+.mg-script-docs {
+  color: var(--muted);
+}
+.mg-script-value > .mg-reply {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mg-script-open {
+  flex: none;
+}
+.mg-script-choice {
+  max-width: 260px;
+  margin-right: 8px;
+}

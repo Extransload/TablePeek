@@ -14,7 +14,7 @@ import type { RowSource } from "../../../grid/rowSource";
 import { t } from "../../../i18n";
 import { palette, type ValueKind } from "../../../palette";
 import { getSettings } from "../../../settings";
-import { Int32, deepEqual, isDocument, isNumber, setField, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
+import { Int32, deepEqual, isDocument, isNumber, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { preview, toShell } from "../format";
 import type { DocEdit } from "../guard";
 import { buildTable, cellPath, cellValue, sortRows, type DocTable, type TableColumn } from "../table";
@@ -186,7 +186,7 @@ export function DocTableView({
       const index = activeSort === null ? -1 : table.columns.findIndex((c) => c.id === activeSort.column);
       return index < 0 || activeSort === null ? [] : [{ columnIndex: index, dir: activeSort.dir === 1 ? "asc" : "desc" }];
     }
-    return Object.entries(sort ?? {}).flatMap(([field, v]): SortIndicator[] => {
+    return [...(sort ?? [])].flatMap(([field, v]): SortIndicator[] => {
       const index = table.columns.findIndex((c) => c.kind === "field" && c.field === field);
       const dir = isNumber(v) ? Number(v.value) : 1;
       return index < 0 ? [] : [{ columnIndex: index, dir: dir < 0 ? "desc" : "asc" }];
@@ -245,22 +245,23 @@ export function DocTableView({
       return;
     }
     const field = column.field;
-    const current = sort ?? {};
-    const was = Object.hasOwn(current, field) && isNumber(current[field]) ? Number(current[field].value) : 0;
+    const current = sort ?? new Map<string, BsonValue>();
+    const old = current.get(field);
+    const was = isNumber(old) ? Number(old.value) : 0;
     const dir = was === 0 ? 1 : was > 0 ? -1 : 0;
     // Shift adds to the sort; a plain click sorts by this field alone.
-    const next: BsonDocument = {};
+    const next: BsonDocument = new Map();
     if (event.shiftKey) {
-      for (const [key, v] of Object.entries(current)) {
+      for (const [key, v] of current) {
         if (key !== field) {
-          setField(next, key, v);
+          next.set(key, v);
         }
       }
     }
     if (dir !== 0) {
-      setField(next, field, new Int32(dir));
+      next.set(field, new Int32(dir));
     }
-    onSort(Object.keys(next).length === 0 ? null : next);
+    onSort(next.size === 0 ? null : next);
   }
 
   function onCellClick(row: number, col: number): void {

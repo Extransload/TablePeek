@@ -1,19 +1,22 @@
-// The collection tab's query bar (MONGODB.md §3.2): a one-line filter with
-// completion, 옵션 for projection · sort · skip · limit, ⌘↩ 찾기, 초기화,
-// recent runs and favourites per collection (kept in localStorage), the
-// sampled field list, and 계획 for the explain tab.
+// The collection tab's query bar (MONGODB.md §3.2, §8.1): a one-line filter
+// with completion, 옵션 for projection · sort · skip · limit and collation ·
+// hint · maxTimeMS, ⌘↩ 찾기, 초기화, recent runs and favourites per
+// collection (kept in localStorage), the sampled field list, and 계획 for
+// the explain tab.
 
 import { useCallback, useId, useRef, useState } from "react";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, ColumnsIcon, HistoryIcon, SearchIcon, StarIcon } from "../../../components/icons";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
 import { t } from "../../../i18n";
-import { isDocument, type BsonDocument } from "../bson";
+import { Int32, bsonDoc, isDocument, type BsonDocument, type BsonValue } from "../bson";
 import type { CompletionContext, FieldStat } from "../complete";
 import { shellKey, toShell } from "../format";
 import { parseFilter, parseValue } from "../shell/parse";
+import type { Namespace, QueryOptions } from "../api";
 import { PlanIcon } from "./icons";
 import { MongoEditor } from "./MongoEditor";
+import { QueryOptionsRow } from "./QueryOptionsRow";
 import { ShellText } from "./ShellText";
 import type { DocQuery } from "./types";
 
@@ -24,11 +27,30 @@ export interface QueryText {
   sort: string;
   skip: string;
   limit: string;
+  // Collation locale and strength ("" or "1"–"5"), hint (an index name or
+  // a `{ … }` key document) and the query's own time limit.
+  locale: string;
+  strength: string;
+  hint: string;
+  maxTimeMS: string;
 }
 
 export type QueryKey = keyof QueryText;
 
-export const EMPTY_QUERY: QueryText = { filter: "", projection: "", sort: "", skip: "", limit: "" };
+export const EMPTY_QUERY: QueryText = { filter: "", projection: "", sort: "", skip: "", limit: "", locale: "", strength: "", hint: "", maxTimeMS: "" };
+
+// A query as stored (tab state, history) before the options existed, or
+// from an older version: the missing boxes blank.
+export function normalizeQuery(q: Partial<Record<QueryKey, unknown>> | null | undefined): QueryText {
+  const out = { ...EMPTY_QUERY };
+  for (const key of Object.keys(EMPTY_QUERY) as QueryKey[]) {
+    const v = q?.[key];
+    if (typeof v === "string") {
+      out[key] = v;
+    }
+  }
+  return out;
+}
 
 export interface QueryError {
   key: QueryKey;
@@ -37,7 +59,7 @@ export interface QueryError {
   range: { from: number; to: number } | null;
 }
 
-const LABELS: Record<QueryKey, string> = { filter: "필터", projection: "프로젝션", sort: "정렬", skip: "건너뛰기", limit: "개수" };
+const LABELS: Record<QueryKey, string> = { filter: "필터", projection: "프로젝션", sort: "정렬", skip: "건너뛰기", limit: "개수", locale: "로캘", strength: "강도", hint: "힌트", maxTimeMS: "maxTimeMS" };
 
 // The boxes read as a query; `limit` 0 means none. Blank boxes are null.
 export function parseQuery(q: QueryText): { ok: true; value: DocQuery } | { ok: false; error: QueryError } {
@@ -59,7 +81,7 @@ export function parseQuery(q: QueryText): { ok: true; value: DocQuery } | { ok: 
     if (!isDocument(r.value)) {
       return { ok: false, error: { key, message: t("{label}은(는) { … } 문서여야 합니다", { label: t(LABELS[key]) }), range: null } };
     }
-    docs[key] = Object.keys(r.value).length === 0 ? null : r.value;
+    docs[key] = r.value.size === 0 ? null : r.value;
   }
   const numbers: Record<"skip" | "limit", number> = { skip: 0, limit: 0 };
   for (const key of ["skip", "limit"] as const) {
@@ -73,7 +95,53 @@ export function parseQuery(q: QueryText): { ok: true; value: DocQuery } | { ok: 
     }
     numbers[key] = n;
   }
-  return { ok: true, value: { filter: filter.value, projection: docs.projection ?? null, sort: docs.sort ?? null, skip: numbers.skip, limit: numbers.limit } };
+  const options = parseOptions(q);
+  if (!options.ok) {
+    return options;
+  }
+  const value: DocQuery = { filter: filter.value, projection: docs.projection ?? null, sort: docs.sort ?? null, skip: numbers.skip, limit: numbers.limit };
+  if (options.value !== null) {
+    value.options = options.value;
+  }
+  return { ok: true, value };
+}
+
+// The 옵션 row: null when nothing is set.
+function parseOptions(q: QueryText): { ok: true; value: QueryOptions | null } | { ok: false; error: QueryError } {
+  const out: QueryOptions = {};
+  const locale = q.locale.trim();
+  const strength = q.strength.trim();
+  if (strength !== "" && !/^[1-5]$/.test(strength)) {
+    return { ok: false, error: { key: "strength", message: t("강도는 1–5입니다"), range: null } };
+  }
+  if (locale === "" && strength !== "") {
+    return { ok: false, error: { key: "locale", message: t("collation 강도를 쓰려면 로캘을 고르세요"), range: null } };
+  }
+  if (locale !== "") {
+    out.collation = strength === "" ? bsonDoc({ locale }) : bsonDoc({ locale, strength: new Int32(Number(strength)) });
+  }
+  const hint = q.hint.trim();
+  if (hint.startsWith("{")) {
+    const r = parseValue(q.hint);
+    if (!r.ok) {
+      return { ok: false, error: { key: "hint", message: `${t(LABELS.hint)}: ${r.error.message}`, range: { from: r.error.from, to: r.error.to } } };
+    }
+    if (!isDocument(r.value) || r.value.size === 0) {
+      return { ok: false, error: { key: "hint", message: t("힌트 키 문서에 인덱스 키를 쓰세요 (예: { status: 1 })"), range: null } };
+    }
+    out.hint = r.value;
+  } else if (hint !== "") {
+    out.hint = hint;
+  }
+  const time = q.maxTimeMS.trim();
+  if (time !== "") {
+    const n = Number(time);
+    if (!Number.isInteger(n) || n <= 0) {
+      return { ok: false, error: { key: "maxTimeMS", message: t("maxTimeMS: 1 이상의 정수(밀리초)를 쓰세요"), range: null } };
+    }
+    out.maxTimeMS = n;
+  }
+  return { ok: true, value: Object.keys(out).length > 0 ? out : null };
 }
 
 // One line of mongosh for a query (history, tooltips).
@@ -83,6 +151,9 @@ export function queryText(q: QueryText): string {
   if (q.sort.trim()) out += ` · sort ${q.sort.trim()}`;
   if (q.skip.trim()) out += ` · skip ${q.skip.trim()}`;
   if (q.limit.trim()) out += ` · limit ${q.limit.trim()}`;
+  if (q.locale.trim()) out += ` · collation ${q.locale.trim()}${q.strength.trim() ? `/${q.strength.trim()}` : ""}`;
+  if (q.hint.trim()) out += ` · hint ${q.hint.trim()}`;
+  if (q.maxTimeMS.trim()) out += ` · maxTimeMS ${q.maxTimeMS.trim()}`;
   return out;
 }
 
@@ -112,7 +183,9 @@ function readShelves(): Record<string, QueryShelf> {
 
 function shelfOf(ns: string): QueryShelf {
   const shelf = readShelves()[ns];
-  return { recent: Array.isArray(shelf?.recent) ? shelf.recent : [], fav: Array.isArray(shelf?.fav) ? shelf.fav : [] };
+  // Entries saved before the 옵션 boxes existed get them blank.
+  const list = (v: unknown): SavedQuery[] => (Array.isArray(v) ? v.map((x: SavedQuery) => ({ q: normalizeQuery(x?.q), at: Number(x?.at) || 0 })) : []);
+  return { recent: list(shelf?.recent), fav: list(shelf?.fav) };
 }
 
 function writeShelf(ns: string, shelf: QueryShelf): void {
@@ -142,6 +215,8 @@ function stamp(at: number): string {
 interface QueryBarProps {
   // `db.coll`, the key recent runs and favourites are kept under.
   ns: string;
+  // The collection, whose index names the hint box offers.
+  namespace: Namespace;
   query: QueryText;
   onChange(query: QueryText): void;
   optsOpen: boolean;
@@ -155,7 +230,7 @@ interface QueryBarProps {
   onExplain(): void;
 }
 
-export function QueryBar({ ns, query, onChange, optsOpen, onOptsOpenChange, error, completion, fields, onRun, onApply, onExplain }: QueryBarProps) {
+export function QueryBar({ ns, namespace, query, onChange, optsOpen, onOptsOpenChange, error, completion, fields, onRun, onApply, onExplain }: QueryBarProps) {
   const [popover, setPopover] = useState<"history" | "fields" | null>(null);
   const [shelf, setShelf] = useState<QueryShelf>(() => shelfOf(ns));
   const [fieldSearch, setFieldSearch] = useState("");
@@ -166,7 +241,7 @@ export function QueryBar({ ns, query, onChange, optsOpen, onOptsOpenChange, erro
   const queryRef = useRef(query);
   queryRef.current = query;
   const set = (key: QueryKey, value: string) => onChange({ ...queryRef.current, [key]: value });
-  const optCount = (["projection", "sort", "skip", "limit"] as const).filter((k) => query[k].trim() !== "").length;
+  const optCount = (["projection", "sort", "skip", "limit", "locale", "hint", "maxTimeMS"] as const).filter((k) => query[k].trim() !== "").length;
   const invalid = (key: QueryKey) => (error?.key === key ? " invalid" : "");
   const errorId = useId();
 
@@ -311,7 +386,7 @@ export function QueryBar({ ns, query, onChange, optsOpen, onOptsOpenChange, erro
             <ColumnsIcon size={10} />
             {t("필드")}
           </button>
-          <button type="button" className={`mg-qbtn${optsOpen ? " active" : ""}`} title={t("프로젝션·정렬·건너뛰기·개수")} onClick={() => onOptsOpenChange(!optsOpen)} aria-expanded={optsOpen}>
+          <button type="button" className={`mg-qbtn${optsOpen ? " active" : ""}`} title={t("프로젝션·정렬·건너뛰기·개수·collation·hint·maxTimeMS")} onClick={() => onOptsOpenChange(!optsOpen)} aria-expanded={optsOpen}>
             {t("옵션")}
             {optCount > 0 ? <span className="mg-opt-badge">{optCount}</span> : null}
             <span className="mg-chev">
@@ -334,9 +409,9 @@ export function QueryBar({ ns, query, onChange, optsOpen, onOptsOpenChange, erro
         {optsOpen ? (
           <div className="filter-row mg-opts">
             <label className="mg-qlabel">{t("프로젝션")}</label>
-            <MongoEditor className={`mg-q${invalid("projection")}`} singleLine value={query.projection} onChange={(text) => set("projection", text)} onRun={onRun} role="projection" completion={completion} placeholder="{ 필드: 1 }" error={error?.key === "projection" ? error.range : null} ariaLabel={t("프로젝션")} />
+            <MongoEditor className={`mg-q${invalid("projection")}`} singleLine value={query.projection} onChange={(text) => set("projection", text)} onRun={onRun} role="projection" completion={completion} placeholder={t("{ 필드: 1 }")} error={error?.key === "projection" ? error.range : null} ariaLabel={t("프로젝션")} />
             <label className="mg-qlabel">{t("정렬")}</label>
-            <MongoEditor className={`mg-q${invalid("sort")}`} singleLine value={query.sort} onChange={(text) => set("sort", text)} onRun={onRun} role="sort" completion={completion} placeholder="{ 필드: -1 }" error={error?.key === "sort" ? error.range : null} ariaLabel={t("정렬")} />
+            <MongoEditor className={`mg-q${invalid("sort")}`} singleLine value={query.sort} onChange={(text) => set("sort", text)} onRun={onRun} role="sort" completion={completion} placeholder={t("{ 필드: -1 }")} error={error?.key === "sort" ? error.range : null} ariaLabel={t("정렬")} />
             <label className="mg-qlabel">{t("건너뛰기")}</label>
             <input
               className={`filter-value mg-q-num${invalid("skip")}`}
@@ -363,6 +438,7 @@ export function QueryBar({ ns, query, onChange, optsOpen, onOptsOpenChange, erro
             />
           </div>
         ) : null}
+        {optsOpen ? <QueryOptionsRow namespace={namespace} query={query} set={set} onRun={onRun} error={error} errorId={errorId} /> : null}
       </div>
       {/* Over what is below the bar, so the cards do not move. */}
       <div className={`mg-qerror${error !== null ? " on" : ""}`}>
@@ -374,9 +450,9 @@ export function QueryBar({ ns, query, onChange, optsOpen, onOptsOpenChange, erro
 
 // A filter that adds `path: value` (replacing the same path), for "이 값으로
 // 필터" style actions.
-export function withFilterValue(filterText: string, path: string, value: BsonDocument[string]): string {
+export function withFilterValue(filterText: string, path: string, value: BsonValue): string {
   const r = parseFilter(filterText);
-  const filter: BsonDocument = r.ok ? { ...r.value } : {};
-  filter[path] = value;
+  const filter: BsonDocument = r.ok ? new Map(r.value) : new Map();
+  filter.set(path, value);
   return toShell(filter);
 }

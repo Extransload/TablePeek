@@ -3,12 +3,15 @@
 // Click opens a collection tab; the context menus offer 열기 · 새 mongosh 탭
 // · 새로 고침 and the management dialogs (만들기, 가져오기, 내보내기, 이름
 // 바꾸기, 삭제, 통계 — MONGODB.md §6.2), which App shows through `onAdmin`.
+// A GridFS bucket (`<b>.files` beside `<b>.chunks`) shows as one node that
+// opens the bucket's tab and folds out to its two collections; a database's
+// menu opens its 변경 보기 tab (MONGODB.md §8.1).
 // The connection's default database starts open.
 
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { ErrorNotice } from "../../../components/ErrorNotice";
-import { ChevronIcon, DatabaseIcon, MoreIcon, SearchIcon, TableIcon } from "../../../components/icons";
+import { ChevronIcon, DatabaseIcon, FolderIcon, MoreIcon, SearchIcon, TableIcon } from "../../../components/icons";
 import { LoadingState, Spinner } from "../../../components/Spinner";
 import { t } from "../../../i18n";
 import { store } from "../../../store";
@@ -27,6 +30,24 @@ interface DocSidebarProps {
   onOpenShell(db: string, text?: string): void;
   // A management dialog (create, import, export, rename, drop, stats).
   onAdmin(request: DocAdminRequest): void;
+  // A database's 변경 보기 tab.
+  onOpenWatch(db: string): void;
+  // A GridFS bucket's tab, and the bucket in front (highlighted).
+  onOpenBucket(db: string, bucket: string): void;
+  activeBucket: { db: string; bucket: string } | null;
+}
+
+// The GridFS buckets among a database's collections: `<b>.files` names whose
+// `<b>.chunks` is there too.
+function bucketsOf(list: CollectionInfo[]): Set<string> {
+  const names = new Set(list.map((c) => c.name));
+  const out = new Set<string>();
+  for (const name of names) {
+    if (name.endsWith(".files") && names.has(`${name.slice(0, -6)}.chunks`)) {
+      out.add(name.slice(0, -6));
+    }
+  }
+  return out;
 }
 
 type Loaded = { state: "loading" } | { state: "error"; error: unknown } | { state: "ok"; list: CollectionInfo[] };
@@ -36,7 +57,7 @@ const openByConn = new Map<string, Set<string>>();
 // Connections whose own database was opened once already.
 const seeded = new Set<string>();
 
-export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAdmin }: DocSidebarProps) {
+export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAdmin, onOpenWatch, onOpenBucket, activeBucket }: DocSidebarProps) {
   const [databases, setDatabases] = useState<DocDatabase[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [open, setOpen] = useState<Set<string>>(() => openByConn.get(conn) ?? new Set());
@@ -44,6 +65,8 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
   const [filter, setFilter] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
   const [nonce, setNonce] = useState(0);
+  // Bucket nodes folded out to their two collections (`db.bucket`).
+  const [openBuckets, setOpenBuckets] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     openByConn.set(conn, open);
@@ -133,6 +156,7 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
     { label: t("뷰 만들기…"), onSelect: () => onAdmin({ kind: "createCollection", db, view: true }) },
     { label: t("가져오기…"), onSelect: () => onAdmin({ kind: "import", db, coll: null }) },
     { label: t("새 mongosh 탭"), separatorBefore: true, onSelect: () => onOpenShell(db) },
+    { label: t("변경 보기"), onSelect: () => onOpenWatch(db) },
     { label: t("새로 고침"), onSelect: () => loadCollections(db) },
     { label: t("데이터베이스 삭제…"), separatorBefore: true, danger: true, disabled: SYSTEM_DATABASES[db] === true, onSelect: () => onAdmin({ kind: "drop", db, coll: null }) },
   ];
@@ -152,6 +176,111 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
     { label: view ? t("뷰 삭제…") : t("컬렉션 삭제…"), separatorBefore: true, danger: true, onSelect: () => onAdmin({ kind: "drop", db, coll, view }) },
   ];
 
+  const bucketMenu = (db: string, bucket: string): ContextMenuItem[] => [
+    { label: t("열기"), onSelect: () => onOpenBucket(db, bucket) },
+    { label: t("{name} 컬렉션 열기", { name: `${bucket}.files` }), separatorBefore: true, onSelect: () => onOpen(db, `${bucket}.files`, false) },
+    { label: t("{name} 컬렉션 열기", { name: `${bucket}.chunks` }), onSelect: () => onOpen(db, `${bucket}.chunks`, false) },
+    { label: t("새로 고침"), separatorBefore: true, onSelect: () => loadCollections(db) },
+  ];
+
+  const collRow = (db: string, c: CollectionInfo, nested: boolean): ReactElement => {
+    const isActive = active !== null && active.db === db && active.coll === c.name;
+    return (
+      <div className="schema-table mg-side-coll" key={c.name}>
+        <div
+          className={`schema-table-row${isActive ? " active" : ""}`}
+          aria-current={isActive ? "true" : undefined}
+          role="button"
+          tabIndex={0}
+          title={`${db}.${c.name}`}
+          onClick={() => onOpen(db, c.name, c.type === "view")}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onOpen(db, c.name, c.type === "view");
+            }
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setMenu({ x: event.clientX, y: event.clientY, items: collMenu(db, c.name, c.type === "view") });
+          }}
+        >
+          <span className="schema-toggle-space" />
+          {nested ? <span className="schema-toggle-space" /> : null}
+          <TableIcon size={11} className="schema-table-icon" />
+          <span className="schema-table-name">{c.name}</span>
+          {c.type === "view" ? <span className="mg-side-badge">{t("뷰 [종류]")}</span> : null}
+          {c.type === "timeseries" ? <span className="mg-side-badge">{t("시계열")}</span> : null}
+          {c.count !== null ? <span className="schema-section-count mg-side-count">{c.count.toLocaleString()}</span> : null}
+        </div>
+      </div>
+    );
+  };
+
+  // A bucket node: opens the bucket's tab; its chevron folds out the two
+  // collections. The count is the number of files.
+  const bucketRow = (db: string, bucket: string, files: CollectionInfo, chunks: CollectionInfo | undefined): ReactElement => {
+    const key = `${db}.${bucket}`;
+    const isOpen = openBuckets.has(key);
+    const isActive = activeBucket !== null && activeBucket.db === db && activeBucket.bucket === bucket;
+    const toggleBucket = () =>
+      setOpenBuckets((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(key)) {
+          next.add(key);
+        }
+        return next;
+      });
+    return (
+      <div className="schema-table mg-side-coll" key={`bucket:${bucket}`}>
+        <div
+          className={`schema-table-row${isActive ? " active" : ""}`}
+          aria-current={isActive ? "true" : undefined}
+          aria-expanded={isOpen}
+          role="button"
+          tabIndex={0}
+          title={t("GridFS 버킷 {name}", { name: key })}
+          onClick={() => onOpenBucket(db, bucket)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onOpenBucket(db, bucket);
+            } else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+              event.preventDefault();
+              if (isOpen !== (event.key === "ArrowRight")) {
+                toggleBucket();
+              }
+            }
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setMenu({ x: event.clientX, y: event.clientY, items: bucketMenu(db, bucket) });
+          }}
+        >
+          <span
+            className={`schema-toggle${isOpen ? " open" : ""}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleBucket();
+            }}
+          >
+            <ChevronIcon size={10} />
+          </span>
+          <FolderIcon size={11} className="schema-table-icon" />
+          <span className="schema-table-name">{bucket}</span>
+          <span className="mg-side-badge">GridFS</span>
+          {files.count !== null ? <span className="schema-section-count mg-side-count">{files.count.toLocaleString()}</span> : null}
+        </div>
+        {isOpen ? (
+          <>
+            {collRow(db, files, true)}
+            {chunks !== undefined ? collRow(db, chunks, true) : null}
+          </>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderCollections = (db: string): ReactElement | null => {
     const loaded = collections[db];
     if (loaded === undefined || loaded.state === "loading") {
@@ -164,43 +293,31 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
         </div>
       );
     }
-    const list = query === "" || db.toLowerCase().includes(query) ? loaded.list : loaded.list.filter((c) => c.name.toLowerCase().includes(query));
+    const buckets = bucketsOf(loaded.list);
+    const matches = (name: string) => name.toLowerCase().includes(query);
+    const showAll = query === "" || db.toLowerCase().includes(query);
+    // A bucket shows when its name or either collection matches.
+    const list = showAll
+      ? loaded.list
+      : loaded.list.filter((c) => {
+          const bucket = c.name.endsWith(".files") || c.name.endsWith(".chunks") ? c.name.slice(0, c.name.lastIndexOf(".")) : null;
+          return matches(c.name) || (bucket !== null && buckets.has(bucket) && (matches(bucket) || matches(`${bucket}.files`) || matches(`${bucket}.chunks`)));
+        });
     if (list.length === 0) {
       return <div className="schema-empty">{query === "" ? t("컬렉션이 없습니다") : t("검색 결과가 없습니다")}</div>;
     }
+    const byName = new Map(loaded.list.map((c) => [c.name, c]));
     return (
       <>
         {list.map((c) => {
-          const isActive = active !== null && active.db === db && active.coll === c.name;
-          return (
-            <div className="schema-table mg-side-coll" key={c.name}>
-              <div
-                className={`schema-table-row${isActive ? " active" : ""}`}
-                aria-current={isActive ? "true" : undefined}
-                role="button"
-                tabIndex={0}
-                title={`${db}.${c.name}`}
-                onClick={() => onOpen(db, c.name, c.type === "view")}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    onOpen(db, c.name, c.type === "view");
-                  }
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setMenu({ x: event.clientX, y: event.clientY, items: collMenu(db, c.name, c.type === "view") });
-                }}
-              >
-                <span className="schema-toggle-space" />
-                <TableIcon size={11} className="schema-table-icon" />
-                <span className="schema-table-name">{c.name}</span>
-                {c.type === "view" ? <span className="mg-side-badge">{t("뷰")}</span> : null}
-                {c.type === "timeseries" ? <span className="mg-side-badge">{t("시계열")}</span> : null}
-                {c.count !== null ? <span className="schema-section-count mg-side-count">{c.count.toLocaleString()}</span> : null}
-              </div>
-            </div>
-          );
+          if (c.name.endsWith(".chunks") && buckets.has(c.name.slice(0, -7))) {
+            return null;
+          }
+          if (c.name.endsWith(".files") && buckets.has(c.name.slice(0, -6))) {
+            const bucket = c.name.slice(0, -6);
+            return bucketRow(db, bucket, c, byName.get(`${bucket}.chunks`));
+          }
+          return collRow(db, c, false);
         })}
       </>
     );

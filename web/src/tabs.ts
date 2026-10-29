@@ -142,6 +142,24 @@ export interface PerfTab {
   title: string;
 }
 
+// A database's 변경 보기 tab (a change stream on every collection); its
+// events live with the open page, not in the saved tabs.
+export interface WatchTab {
+  id: string;
+  kind: "watch";
+  title: string;
+  db: string;
+}
+
+// A GridFS bucket (`<bucket>.files` + `<bucket>.chunks`) of a database.
+export interface GridFsTab {
+  id: string;
+  kind: "gridfs";
+  title: string;
+  db: string;
+  bucket: string;
+}
+
 export type WorkbenchTab =
   | QueryTab
   | DataTab
@@ -152,7 +170,9 @@ export type WorkbenchTab =
   | DefinitionTab
   | CollectionTab
   | MongoshTab
-  | PerfTab;
+  | PerfTab
+  | WatchTab
+  | GridFsTab;
 
 export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<DataTab, "id" | "kind">> &
@@ -198,6 +218,14 @@ export function createMongoshTab(seq: number, db: string, text: string): Mongosh
 
 export function createPerfTab(): PerfTab {
   return { id: nextId(), kind: "perf", title: t("성능") };
+}
+
+export function createWatchTab(db: string): WatchTab {
+  return { id: nextId(), kind: "watch", title: t("변경 보기: {db}", { db }), db };
+}
+
+export function createGridFsTab(db: string, bucket: string): GridFsTab {
+  return { id: nextId(), kind: "gridfs", title: bucket, db, bucket };
 }
 
 // The number in a query tab's default name ("쿼리 3", "Query 3"); null for a

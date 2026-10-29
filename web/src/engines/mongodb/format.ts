@@ -3,7 +3,7 @@
 // previews for folded values, and the view limits of MONGODB.md §5.
 
 import { t } from "../../i18n";
-import { Decimal128, Int64, ObjectId, doubleText, isDocument, toEJSON, type BsonDocument, type BsonValue, type EJSON } from "./bson";
+import { Decimal128, Int64, ObjectId, doubleText, isDocument, jsonKeys, toEJSON, type BsonDocument, type BsonValue, type EJSON } from "./bson";
 
 // ---- View limits ----
 
@@ -69,8 +69,8 @@ export function bsonSize(v: BsonValue, arrayItems = Infinity): number {
   }
   if (isDocument(v)) {
     let size = 5;
-    for (const key of Object.keys(v)) {
-      size += 1 + utf8Length(key) + 1 + bsonSize(v[key], arrayItems);
+    for (const [key, value] of v) {
+      size += 1 + utf8Length(key) + 1 + bsonSize(value, arrayItems);
     }
     return size;
   }
@@ -111,30 +111,29 @@ export function truncation(doc: BsonDocument, limits: ViewLimits = VIEW_LIMITS):
       }
       v.slice(0, limits.arrayItems).forEach((x, i) => findArrays(x, `${path}.${i}`));
     } else if (isDocument(v)) {
-      for (const key of Object.keys(v)) {
-        findArrays(v[key], path ? `${path}.${key}` : key);
+      for (const [key, value] of v) {
+        findArrays(value, path ? `${path}.${key}` : key);
       }
     }
   };
   findArrays(doc, "");
-  const keys = Object.keys(doc);
   const bytes = bsonSize(doc);
-  let shownFields = keys.length;
+  let shownFields = doc.size;
   if (bytes > limits.docBytes) {
     let used = 5;
     shownFields = 0;
-    for (const key of keys) {
-      used += 1 + utf8Length(key) + 1 + bsonSize(doc[key], limits.arrayItems);
+    for (const [key, value] of doc) {
+      used += 1 + utf8Length(key) + 1 + bsonSize(value, limits.arrayItems);
       if (used > limits.docBytes && key !== "_id" && shownFields > 0) {
         break;
       }
       shownFields++;
     }
   }
-  if (arrays.length === 0 && shownFields === keys.length) {
+  if (arrays.length === 0 && shownFields === doc.size) {
     return null;
   }
-  return { bytes, shownFields, totalFields: keys.length, arrays };
+  return { bytes, shownFields, totalFields: doc.size, arrays };
 }
 
 function moreItemsText(count: number): string {
@@ -162,16 +161,23 @@ export function shellCollection(coll: string): string {
 }
 
 function shellQuote(s: string): string {
-  return `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n")}'`;
+  return `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029")}'`;
 }
 
-// A regex as a /literal/, or RegExp('…') when a literal cannot hold it.
+// A regex as a /literal/ with each `/` written `\/`, or RegExp('…') when a
+// literal cannot carry the pattern unchanged: empty, opening like a comment,
+// holding a line break, or already holding a `\/` that would read back as `/`.
 function regexText(pattern: string, options: string): string {
-  if (pattern === "" || pattern.includes("\n")) {
+  if (pattern === "" || pattern.startsWith("*") || /[\n\r\u2028\u2029]/.test(pattern) || pattern.includes("\\/")) {
     return `RegExp(${shellQuote(pattern)}, ${shellQuote(options)})`;
   }
-  // Escape slashes that are not escaped already.
-  return `/${pattern.replace(/(^|[^\\])((?:\\\\)*)\//g, "$1$2\\/")}/${options}`;
+  return `/${pattern.replaceAll("/", "\\/")}/${options}`;
+}
+
+// A double the way mongosh reads it back as a double: a whole number (or
+// -0) in a literal would be stored as Int32, so it goes inside Double().
+function shellDouble(n: number): string {
+  return Number.isFinite(n) && Number.isInteger(n) ? `Double(${Object.is(n, -0) ? "-0" : String(n)})` : String(n);
 }
 
 // Scalars in mongosh notation; null for documents and arrays.
@@ -196,7 +202,7 @@ function shellScalar(v: BsonValue): string | null {
     case "Int64":
       return `Long('${v.value}')`;
     case "Double":
-      return doubleText(v.value);
+      return shellDouble(v.value);
     case "Decimal128":
       return `NumberDecimal('${v.value}')`;
     case "Date": {
@@ -246,8 +252,8 @@ function inlineText(v: BsonValue, max: number, notation: Notation): string | nul
   if (leaf !== null) {
     return leaf.length > max ? null : leaf;
   }
-  const keys = isDocument(v) ? Object.keys(v) : null;
-  const count = Array.isArray(v) ? v.length : (keys?.length ?? 0);
+  const entries = isDocument(v) ? [...v] : null;
+  const count = Array.isArray(v) ? v.length : (entries?.length ?? 0);
   const [open, close] = Array.isArray(v) ? ["[", "]"] : ["{", "}"];
   if (count === 0) {
     return open + close;
@@ -255,8 +261,8 @@ function inlineText(v: BsonValue, max: number, notation: Notation): string | nul
   const [inner, colon, comma] = notation.spaced ? [" ", ": ", ", "] : ["", ":", ","];
   let out = open + inner;
   for (let i = 0; i < count; i++) {
-    const prefix = keys === null ? "" : notation.key(keys[i]) + colon;
-    const value = Array.isArray(v) ? v[i] : isDocument(v) && keys !== null ? v[keys[i]] : null;
+    const prefix = entries === null ? "" : notation.key(entries[i][0]) + colon;
+    const value = Array.isArray(v) ? v[i] : entries !== null ? entries[i][1] : null;
     const item = inlineText(value, max - out.length - prefix.length, notation);
     if (item === null) {
       return null;
@@ -321,13 +327,13 @@ function prettyText(v: BsonValue, depth: number, notation: Notation, view: Prett
       lines.push(pad + moreItemsText(v.length - shown));
     }
   } else if (isDocument(v)) {
-    const keys = Object.keys(v);
-    const shown = folded && view.shownFields !== null ? view.shownFields : keys.length;
-    for (const key of keys.slice(0, shown)) {
-      lines.push(`${pad}${notation.key(key)}: ${prettyText(v[key], depth + 1, notation, view)}`);
+    const entries = [...v];
+    const shown = folded && view.shownFields !== null ? view.shownFields : entries.length;
+    for (const [key, value] of entries.slice(0, shown)) {
+      lines.push(`${pad}${notation.key(key)}: ${prettyText(value, depth + 1, notation, view)}`);
     }
-    if (shown < keys.length) {
-      lines.push(pad + moreFieldsText(keys.length - shown));
+    if (shown < entries.length) {
+      lines.push(pad + moreFieldsText(entries.length - shown));
     }
   }
   // Markers are not values, so the line before one takes no comma.
@@ -353,7 +359,7 @@ function jsonInline(x: EJSON, compact: boolean): string {
   if (Array.isArray(x)) {
     return `[${x.map((y) => jsonInline(y, compact)).join(comma)}]`;
   }
-  return `{${Object.keys(x)
+  return `{${jsonKeys(x)
     .map((k) => `${JSON.stringify(k)}${colon}${jsonInline(x[k], compact)}`)
     .join(comma)}}`;
 }
@@ -426,8 +432,8 @@ function previewItem(v: BsonValue): string {
 // `{ city: "東京", … }`.
 export function preview(v: BsonDocument | BsonValue[], budget = 30): { badge: string; text: string } {
   const isArray = Array.isArray(v);
-  const keys = isArray ? [] : Object.keys(v);
-  const count = isArray ? v.length : keys.length;
+  const entries = isArray ? [] : [...v];
+  const count = isArray ? v.length : entries.length;
   const badge = isArray ? `[${count}]` : `{${count}}`;
   if (count === 0) {
     return { badge, text: isArray ? "[]" : "{}" };
@@ -435,7 +441,7 @@ export function preview(v: BsonDocument | BsonValue[], budget = 30): { badge: st
   const parts: string[] = [];
   let used = 0;
   for (let i = 0; i < count; i++) {
-    const part = isArray ? previewItem(v[i]) : `${shellKey(keys[i])}: ${previewItem(v[keys[i]])}`;
+    const part = isArray ? previewItem(v[i]) : `${shellKey(entries[i][0])}: ${previewItem(entries[i][1])}`;
     if (parts.length > 0 && used + 2 + part.length > budget) {
       break;
     }

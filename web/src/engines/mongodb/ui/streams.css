@@ -1,0 +1,408 @@
+/* Atlas Search indexes (SearchIndexesSection), 변경 보기 (ChangeStreamPanel)
+   and GridFS buckets (GridFsTab). */
+
+/* ---- 검색 인덱스 ---- */
+
+.mg-search-section {
+  margin-top: 22px;
+}
+.mg-search-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+}
+.mg-search-unsupported {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  font-size: 12px;
+}
+.mg-search-loading,
+.mg-search-empty {
+  padding: 10px 2px;
+  font-size: 12px;
+}
+.mg-search-status {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 999px;
+  font: 700 10px/18px var(--mono);
+  white-space: nowrap;
+}
+.mg-search-status.ready {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+.mg-search-status.building {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+.mg-search-status.failed {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
+}
+.mg-search-status.dim {
+  background: var(--hover-fill);
+  color: var(--muted);
+}
+.mg-search-yes {
+  color: var(--ok);
+  font-weight: 600;
+}
+.mg-search-def {
+  max-width: 360px !important;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-search-acts {
+  white-space: nowrap;
+}
+.mg-search-modal {
+  width: min(720px, 94vw);
+}
+.mg-search-templates {
+  gap: 8px;
+}
+.mg-search-vector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mg-search-vector .mg-input {
+  width: 120px;
+}
+.mg-search-vector .mg-num {
+  width: 80px;
+}
+.mg-admin-editor.mg-search-editor {
+  height: 240px;
+}
+
+/* ---- 변경 보기 ---- */
+
+.mg-watch {
+  background: var(--bg);
+}
+.mg-watch-bar {
+  gap: 10px;
+}
+.mg-watch-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.mg-watch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.mg-watch-status.live .mg-watch-dot {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+}
+.mg-watch-status.live {
+  color: var(--ok);
+  font-weight: 600;
+}
+.mg-watch-status.retrying .mg-watch-dot {
+  background: var(--warn);
+}
+.mg-watch-status.retrying {
+  color: var(--warn);
+}
+.mg-watch-status.failed .mg-watch-dot,
+.mg-watch-status.ended .mg-watch-dot {
+  background: var(--error);
+}
+.mg-watch-ops {
+  display: inline-flex;
+  gap: 4px;
+}
+button.mg-watch-chip {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: 600 11px/1 var(--mono);
+}
+button.mg-watch-chip.on {
+  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.mg-watch-chip.on.insert,
+.mg-watch-op.insert {
+  color: var(--ok);
+}
+.mg-watch-chip.on.update,
+.mg-watch-op.update {
+  color: var(--accent);
+}
+.mg-watch-chip.on.replace,
+.mg-watch-op.replace {
+  color: var(--syntax-number, var(--warn));
+}
+.mg-watch-chip.on.delete,
+.mg-watch-op.delete {
+  color: var(--error);
+}
+.mg-watch-chip.on.other,
+.mg-watch-op.other {
+  color: var(--ink);
+}
+.mg-watch-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+}
+.mg-watch-body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 14px 20px;
+  overflow: auto;
+}
+.mg-watch-empty {
+  padding-top: 40px;
+}
+.mg-watch-count {
+  margin-bottom: 6px;
+  font-size: 11.5px;
+}
+.mg-watch-list {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.mg-watch-event + .mg-watch-event {
+  border-top: 1px solid var(--line-soft);
+}
+.mg-watch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mg-watch-row:hover {
+  background: var(--hover-fill);
+}
+.mg-watch-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.mg-watch-time {
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.mg-watch-op {
+  flex: none;
+  min-width: 62px;
+  font: 700 11px/1 var(--mono);
+}
+.mg-watch-ns {
+  flex: none;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-watch-id {
+  flex: none;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-watch-sum {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-watch-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 14px 14px 32px;
+}
+.mg-watch-diff td {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+.mg-watch-old {
+  background: color-mix(in srgb, var(--error) 7%, transparent);
+}
+.mg-watch-new {
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+}
+.mg-watch-hint {
+  font-size: 11.5px;
+}
+.mg-watch-docs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+.mg-watch-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+}
+.mg-watch-raw-bar {
+  display: flex;
+  gap: 8px;
+}
+.mg-watch-raw-bar svg {
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.mg-watch-raw-bar .mg-watch-open {
+  transform: rotate(90deg);
+}
+.mg-watch-rawtext {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+}
+
+/* ---- GridFS ---- */
+
+.mg-gridfs {
+  background: var(--bg);
+}
+.mg-gridfs-search {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  max-width: 420px;
+  color: var(--muted);
+}
+.mg-gridfs-search .mg-input {
+  flex: 1;
+}
+.mg-gridfs-uploads {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 30vh;
+  padding: 8px 14px;
+  overflow: auto;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+.mg-gridfs-upload {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 180px auto auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.mg-gridfs-upload > .error-notice {
+  grid-column: 1 / -1;
+}
+.mg-gridfs-upload progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.mg-gridfs-upload.done progress {
+  accent-color: var(--ok);
+}
+.mg-gridfs-upload.failed progress {
+  accent-color: var(--error);
+}
+.mg-gridfs-upname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-gridfs-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px 20px;
+  overflow: auto;
+}
+.mg-gridfs-body.dragging {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+}
+.mg-gridfs-drop {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--accent-soft) 85%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.mg-gridfs-empty {
+  padding-top: 40px;
+}
+.mg-gridfs-table.stale {
+  opacity: 0.55;
+}
+button.mg-gridfs-sort {
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.mg-gridfs-name {
+  max-width: 320px !important;
+  overflow-wrap: anywhere;
+}
+.mg-gridfs-meta {
+  max-width: 280px !important;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-gridfs-acts {
+  white-space: nowrap;
+}
+.mg-gridfs-acts a.icon-text-button,
+a.mg-gridfs-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+.mg-gridfs-pager {
+  flex: none;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+}
+.mg-gridfs-modal {
+  width: min(720px, 94vw);
+}

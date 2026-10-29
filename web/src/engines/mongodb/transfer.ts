@@ -16,7 +16,7 @@
 
 import { t } from "../../i18n";
 import { csvField } from "../../export";
-import { BsonDate, Decimal128, Double, Int32, Int64, ObjectId, fromEJSON, isDocument, setField, type BsonDocument, type BsonValue } from "./bson";
+import { BsonDate, Decimal128, Double, Int32, Int64, ObjectId, fromEJSON, isDocument, parseJson, type BsonDocument, type BsonValue } from "./bson";
 import { ejsonText } from "./format";
 
 // ---- Reading files ----
@@ -92,7 +92,7 @@ export interface ImportItem {
 
 function jsonItem(text: string, line: number, bytes: number): ImportItem {
   try {
-    const value = fromEJSON(JSON.parse(text));
+    const value = fromEJSON(parseJson(text));
     if (!isDocument(value)) {
       return { line, doc: null, error: t("문서({ … })가 아닙니다"), bytes };
     }
@@ -491,10 +491,10 @@ function setPath(doc: BsonDocument, path: string, value: BsonValue): void {
   let at = doc;
   for (let i = 0; i < keys.length - 1; i++) {
     const key = keys[i];
-    const next = Object.hasOwn(at, key) ? at[key] : undefined;
+    const next = at.get(key);
     if (next === undefined) {
-      const child: BsonDocument = {};
-      setField(at, key, child);
+      const child: BsonDocument = new Map();
+      at.set(key, child);
       at = child;
     } else if (isDocument(next)) {
       at = next;
@@ -503,15 +503,15 @@ function setPath(doc: BsonDocument, path: string, value: BsonValue): void {
     }
   }
   const last = keys[keys.length - 1];
-  if (Object.hasOwn(at, last) && isDocument(at[last])) {
+  if (isDocument(at.get(last))) {
     throw new Error(t("{path}: 이미 하위 필드가 있습니다", { path }));
   }
-  setField(at, last, value);
+  at.set(last, value);
 }
 
 // A record as a document under the columns; throws with the column named.
 export function csvDoc(columns: CsvColumn[], cells: string[], options: CsvOptions): BsonDocument {
-  const doc: BsonDocument = {};
+  const doc: BsonDocument = new Map();
   for (let i = 0; i < columns.length; i++) {
     const column = columns[i];
     if (column.type === "skip" || column.name === "") {
@@ -534,7 +534,7 @@ export function csvDoc(columns: CsvColumn[], cells: string[], options: CsvOption
     if (options.nested && column.name.includes(".")) {
       setPath(doc, column.name, value);
     } else {
-      setField(doc, column.name, value);
+      doc.set(column.name, value);
     }
   }
   return doc;
@@ -561,10 +561,9 @@ export interface ExportWriter {
 // Dotted paths of a document's leaves in order: nested documents open into
 // their fields, arrays and every other value are one leaf.
 export function leafPaths(doc: BsonDocument, prefix = "", out: string[] = []): string[] {
-  for (const key of Object.keys(doc)) {
+  for (const [key, value] of doc) {
     const path = prefix === "" ? key : `${prefix}.${key}`;
-    const value = doc[key];
-    if (isDocument(value) && Object.keys(value).length > 0) {
+    if (isDocument(value) && value.size > 0) {
       leafPaths(value, path, out);
     } else {
       out.push(path);
@@ -588,10 +587,10 @@ export function samplePaths(docs: BsonDocument[]): string[] {
 function valueAt(doc: BsonDocument, path: string): BsonValue | undefined {
   let at: BsonValue | undefined = doc;
   for (const key of path.split(".")) {
-    if (!isDocument(at) || !Object.hasOwn(at, key)) {
+    if (!isDocument(at)) {
       return undefined;
     }
-    at = at[key];
+    at = at.get(key);
   }
   return at;
 }
@@ -625,12 +624,12 @@ function csvText(v: BsonValue | undefined): string | null {
 }
 
 export function exportWriter(format: ExportFileFormat, relaxed: boolean, fields: string[]): ExportWriter {
-  const relax = (raw: string) => ejsonText(fromEJSON(JSON.parse(raw)), { relaxed: true, indent: 0 });
+  const relax = (raw: string) => ejsonText(fromEJSON(parseJson(raw)), { relaxed: true, indent: 0 });
   if (format === "csv") {
     return {
       start: `${fields.map((f) => csvField(f)).join(",")}\r\n`,
       line(raw) {
-        const doc = fromEJSON(JSON.parse(raw));
+        const doc = fromEJSON(parseJson(raw));
         const cells = fields.map((f) => csvField(isDocument(doc) ? csvText(valueAt(doc, f)) : null));
         return `${cells.join(",")}\r\n`;
       },

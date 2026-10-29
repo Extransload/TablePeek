@@ -6,17 +6,23 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use mongodb::bson::{doc, Bson, Document};
-use mongodb::options::IndexOptions;
-use mongodb::{Collection, IndexModel};
+use mongodb::change_stream::event::ResumeToken;
+use mongodb::options::{
+    Collation, FullDocumentBeforeChangeType, FullDocumentType, Hint, IndexOptions,
+    UpdateModifications,
+};
+use mongodb::{Collection, IndexModel, SearchIndexModel, SearchIndexType};
 use serde_json::{json, Value};
 
 use super::{mongo_err, shell, MongoDriver, Running};
 use crate::driver::{
-    command_writes, pipeline_writes, AggregateRequest, CollectionInfo, CommandRequest,
-    CountRequest, CountResult, CreateIndexRequest, DeleteRequest, DistinctRequest, DocBatch,
-    DocDatabase, DocStream, DocumentDriver, DropIndexRequest, ExplainRequest, ExportRequest,
-    FindRequest, InsertFailure, InsertOutcome, InsertRequest, ReplaceRequest, UpdateOutcome,
-    UpdateRequest,
+    command_writes, pipeline_writes, AggregateRequest, ByteReader, CollectionInfo, CommandRequest,
+    CountRequest, CountResult, CreateIndexRequest, CursorOpenRequest, DeleteRequest,
+    DistinctRequest, DocBatch, DocDatabase, DocStream, DocumentDriver, DropIndexRequest,
+    DropSearchIndexRequest, ExplainRequest, ExportRequest, FindRequest, GridFsDownload,
+    GridFsFileRef, GridFsFilesRequest, GridFsUploadRequest, InsertFailure, InsertOutcome,
+    InsertRequest, PreviewSample, QueryOptions, ReplaceRequest, SearchIndexRequest, UpdateOutcome,
+    UpdatePreview, UpdatePreviewRequest, UpdateRequest, WatchRequest, WriteOptions,
 };
 use crate::sql_log::Change;
 use crate::EngineError;
@@ -30,17 +36,17 @@ const AGGREGATE_CAP: usize = 10_000;
 /// The most documents an insert writes out in the console and History.
 const SHOWN_DOCS: usize = 3;
 
-fn bad(message: impl Into<String>) -> EngineError {
+pub(super) fn bad(message: impl Into<String>) -> EngineError {
     EngineError::BadRequest(message.into())
 }
 
 /// A value of the request, read as Extended JSON.
-fn bson(value: &Value) -> Result<Bson, EngineError> {
+pub(super) fn bson(value: &Value) -> Result<Bson, EngineError> {
     Bson::try_from(value.clone()).map_err(|err| bad(format!("EJSON 값이 올바르지 않습니다: {err}")))
 }
 
 /// A document of the request (a filter, an update, …); null reads as empty.
-fn document(value: &Value, what: &str) -> Result<Document, EngineError> {
+pub(super) fn document(value: &Value, what: &str) -> Result<Document, EngineError> {
     match value {
         Value::Null => Ok(Document::new()),
         _ => match bson(value)? {
@@ -50,7 +56,10 @@ fn document(value: &Value, what: &str) -> Result<Document, EngineError> {
     }
 }
 
-fn optional_document(value: &Option<Value>, what: &str) -> Result<Option<Document>, EngineError> {
+pub(super) fn optional_document(
+    value: &Option<Value>,
+    what: &str,
+) -> Result<Option<Document>, EngineError> {
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(value) => document(value, what).map(Some),
@@ -65,11 +74,11 @@ fn pipeline(stages: &[Value]) -> Result<Vec<Document>, EngineError> {
 }
 
 /// A reply value as canonical Extended JSON.
-fn json_of(value: Bson) -> Value {
+pub(super) fn json_of(value: Bson) -> Value {
     value.into_canonical_extjson()
 }
 
-fn json_doc(doc: Document) -> Value {
+pub(super) fn json_doc(doc: Document) -> Value {
     json_of(Bson::Document(doc))
 }
 
@@ -79,7 +88,7 @@ fn pipeline_text(stages: &[Document]) -> String {
 }
 
 /// A find as the shell writes it: `db.c.find({…}, {…}).sort({…}).skip(n).limit(n)`.
-fn find_text(
+pub(super) fn find_text(
     db: &str,
     coll: &str,
     filter: &Document,
@@ -113,12 +122,140 @@ fn max_time(ms: Option<u64>) -> Option<Duration> {
     ms.filter(|ms| *ms > 0).map(Duration::from_millis)
 }
 
+/// A read's collation, hint and time limit, checked; the documents kept
+/// for the console's text and for explain's command.
+struct ReadOptions {
+    collation: Option<(Document, Collation)>,
+    hint: Option<Bson>,
+    max_time: Option<Duration>,
+}
+
+impl ReadOptions {
+    fn of(options: &QueryOptions) -> Result<Self, EngineError> {
+        Self::parse(&options.collation, &options.hint, options.max_time_ms)
+    }
+
+    /// A write's: no time limit (the driver's writes take none).
+    fn of_write(options: &WriteOptions) -> Result<Self, EngineError> {
+        Self::parse(&options.collation, &options.hint, None)
+    }
+
+    fn parse(
+        collation: &Option<Value>,
+        hint: &Option<Value>,
+        max_time_ms: Option<u64>,
+    ) -> Result<Self, EngineError> {
+        let collation = match optional_document(collation, "collation")? {
+            Some(doc) => {
+                let typed: Collation = mongodb::bson::from_document(doc.clone())
+                    .map_err(|err| bad(format!("collation이 올바르지 않습니다: {err}")))?;
+                Some((doc, typed))
+            }
+            None => None,
+        };
+        let hint = match hint {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) if name.is_empty() => None,
+            Some(Value::String(name)) => Some(Bson::String(name.clone())),
+            Some(keys) => Some(Bson::Document(document(keys, "hint")?)),
+        };
+        Ok(Self {
+            collation,
+            hint,
+            max_time: max_time(max_time_ms),
+        })
+    }
+
+    fn collation(&self) -> Option<Collation> {
+        self.collation.as_ref().map(|(_, typed)| typed.clone())
+    }
+
+    fn hint(&self) -> Option<Hint> {
+        match self.hint.as_ref()? {
+            Bson::String(name) => Some(Hint::Name(name.clone())),
+            Bson::Document(keys) => Some(Hint::Keys(keys.clone())),
+            _ => None,
+        }
+    }
+
+    /// The fields a command document or the shell's options document takes:
+    /// `collation`, `hint`, `maxTimeMS`.
+    fn fields(&self) -> Document {
+        let mut fields = Document::new();
+        if let Some((doc, _)) = &self.collation {
+            fields.insert("collation", doc.clone());
+        }
+        if let Some(hint) = &self.hint {
+            fields.insert("hint", hint.clone());
+        }
+        if let Some(limit) = self.max_time {
+            fields.insert("maxTimeMS", whole(limit.as_millis()));
+        }
+        fields
+    }
+
+    /// As a find's cursor methods: `.collation({…}).hint("…").maxTimeMS(n)`.
+    fn cursor_text(&self) -> String {
+        let mut text = String::new();
+        if let Some((doc, _)) = &self.collation {
+            text.push_str(&format!(".collation({})", shell::document(doc)));
+        }
+        if let Some(hint) = &self.hint {
+            text.push_str(&format!(".hint({})", shell::value(hint)));
+        }
+        if let Some(limit) = self.max_time {
+            text.push_str(&format!(".maxTimeMS({})", limit.as_millis()));
+        }
+        text
+    }
+
+    /// As the options argument of `aggregate` and `countDocuments`:
+    /// `, { collation: {…}, … }`, or nothing.
+    fn argument_text(&self) -> String {
+        let fields = self.fields();
+        if fields.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", shell::document(&fields))
+        }
+    }
+}
+
+/// An update as the driver takes it, and as the shell writes it: a document
+/// of operators or a pipeline of stages.
+fn update_modifications(update: &Value) -> Result<(UpdateModifications, String), EngineError> {
+    Ok(match update {
+        Value::Array(stages) => {
+            let stages = pipeline(stages)?;
+            let text = pipeline_text(&stages);
+            (UpdateModifications::Pipeline(stages), text)
+        }
+        other => {
+            let doc = document(other, "update")?;
+            let text = shell::document(&doc);
+            (UpdateModifications::Document(doc), text)
+        }
+    })
+}
+
 fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
+/// A count (milliseconds, a batch size) as the shell writes it: a plain
+/// number when it fits an Int32, not `NumberLong("…")`.
+fn whole(n: u128) -> Bson {
+    i32::try_from(n)
+        .map(Bson::Int32)
+        .unwrap_or_else(|_| Bson::Int64(i64::try_from(n).unwrap_or(i64::MAX)))
+}
+
 impl MongoDriver {
-    fn collection(&self, db: &str, coll: &str) -> Result<Collection<Document>, EngineError> {
+    pub(super) fn collection(
+        &self,
+        db: &str,
+        coll: &str,
+    ) -> Result<Collection<Document>, EngineError> {
         if db.is_empty() || coll.is_empty() {
             return Err(bad("데이터베이스와 컬렉션을 지정하세요"));
         }
@@ -126,7 +263,7 @@ impl MongoDriver {
     }
 
     /// A write that went through, for History (cut like the console's).
-    fn changed(&self, text: String, started: Instant, rows: u64) {
+    pub(super) fn changed(&self, text: String, started: Instant, rows: u64) {
         if rows > 0 {
             let text = if text.len() > crate::sql_log::COMMAND_CAP {
                 crate::sql_log::clip_command(&text).into_owned()
@@ -285,6 +422,7 @@ impl DocumentDriver for MongoDriver {
         let filter = document(&req.filter, "filter")?;
         let projection = optional_document(&req.projection, "projection")?;
         let sort = optional_document(&req.sort, "sort")?;
+        let options = ReadOptions::of(&req.options)?;
         let text = find_text(
             &req.db,
             &req.coll,
@@ -293,7 +431,7 @@ impl DocumentDriver for MongoDriver {
             sort.as_ref(),
             req.skip,
             Some(req.limit),
-        );
+        ) + &options.cursor_text();
         if !req.quiet() {
             self.log.record_command(&text);
         }
@@ -310,7 +448,13 @@ impl DocumentDriver for MongoDriver {
         if let Some(skip) = req.skip {
             action = action.skip(skip);
         }
-        if let Some(limit) = max_time(req.max_time_ms) {
+        if let Some(collation) = options.collation() {
+            action = action.collation(collation);
+        }
+        if let Some(hint) = options.hint() {
+            action = action.hint(hint);
+        }
+        if let Some(limit) = options.max_time {
             action = action.max_time(limit);
         }
         let cursor = action.await.map_err(mongo_err)?;
@@ -324,48 +468,55 @@ impl DocumentDriver for MongoDriver {
     async fn count(&self, req: &CountRequest) -> Result<CountResult, EngineError> {
         let collection = self.collection(&req.db, &req.coll)?;
         let filter = document(&req.filter, "filter")?;
+        let options = ReadOptions::of(&req.options)?;
         let target = shell::collection(&req.db, &req.coll);
         let (_running, tag) = Running::start(&self.running);
+        // Without a filter the estimate from the metadata: no query for a
+        // collation or a hint to shape.
         if filter.is_empty() {
-            self.log
-                .record_command(&format!("{target}.estimatedDocumentCount()"));
-            let count = collection
-                .estimated_document_count()
-                .comment(tag)
-                .await
-                .map_err(mongo_err)?;
+            let mut action = collection.estimated_document_count().comment(tag);
+            let mut text = format!("{target}.estimatedDocumentCount(");
+            if let Some(limit) = options.max_time {
+                text.push_str(&format!("{{ maxTimeMS: {} }}", limit.as_millis()));
+                action = action.max_time(limit);
+            }
+            text.push(')');
+            self.log.record_command(&text);
+            let count = action.await.map_err(mongo_err)?;
             return Ok(CountResult {
                 count: Some(count),
                 exact: false,
             });
         }
+        let limit = options.max_time.unwrap_or(COUNT_LIMIT);
+        let mut fields = options.fields();
+        fields.insert("maxTimeMS", whole(limit.as_millis()));
         self.log.record_command(&format!(
-            "{target}.countDocuments({}, {{ maxTimeMS: {} }})",
+            "{target}.countDocuments({}, {})",
             shell::document(&filter),
-            COUNT_LIMIT.as_millis()
+            shell::document(&fields)
         ));
-        match collection
+        let mut action = collection
             .count_documents(filter)
-            .max_time(COUNT_LIMIT)
-            .comment(tag)
-            .await
-        {
+            .max_time(limit)
+            .comment(tag);
+        if let Some(collation) = options.collation() {
+            action = action.collation(collation);
+        }
+        if let Some(hint) = options.hint() {
+            action = action.hint(hint);
+        }
+        match action.await.map_err(mongo_err) {
             Ok(count) => Ok(CountResult {
                 count: Some(count),
                 exact: true,
             }),
             // Too many to count in time: the page shows "many".
-            Err(err) => match mongo_err(err) {
-                EngineError::Driver { code, .. }
-                    if code.as_deref() == Some(&MAX_TIME_EXPIRED.to_string()) =>
-                {
-                    Ok(CountResult {
-                        count: None,
-                        exact: false,
-                    })
-                }
-                other => Err(other),
-            },
+            Err(err) if timed_out(&err) => Ok(CountResult {
+                count: None,
+                exact: false,
+            }),
+            Err(err) => Err(err),
         }
     }
 
@@ -373,10 +524,12 @@ impl DocumentDriver for MongoDriver {
         let collection = self.collection(&req.db, &req.coll)?;
         let stages = pipeline(&req.pipeline)?;
         let writes = pipeline_writes(&req.pipeline);
+        let options = ReadOptions::of(&req.options)?;
         let text = format!(
-            "{}.aggregate({})",
+            "{}.aggregate({}{})",
             shell::collection(&req.db, &req.coll),
-            pipeline_text(&stages)
+            pipeline_text(&stages),
+            options.argument_text()
         );
         self.log.record_command(&text);
         let started = Instant::now();
@@ -390,7 +543,13 @@ impl DocumentDriver for MongoDriver {
             action = action.comment(tag);
             Some(running)
         };
-        if let Some(limit) = max_time(req.max_time_ms) {
+        if let Some(collation) = options.collation() {
+            action = action.collation(collation);
+        }
+        if let Some(hint) = options.hint() {
+            action = action.hint(hint);
+        }
+        if let Some(limit) = options.max_time {
             action = action.max_time(limit);
         }
         let mut cursor = action.await.map_err(mongo_err)?;
@@ -540,46 +699,38 @@ impl DocumentDriver for MongoDriver {
     async fn update(&self, req: &UpdateRequest) -> Result<UpdateOutcome, EngineError> {
         let collection = self.collection(&req.db, &req.coll)?;
         let filter = document(&req.filter, "filter")?;
-        // An update is a document of operators or a pipeline of stages.
-        let (update, update_text) = match &req.update {
-            Value::Array(stages) => {
-                let stages = pipeline(stages)?;
-                let text = pipeline_text(&stages);
-                (
-                    mongodb::options::UpdateModifications::Pipeline(stages),
-                    text,
-                )
-            }
-            other => {
-                let doc = document(other, "update")?;
-                let text = shell::document(&doc);
-                (mongodb::options::UpdateModifications::Document(doc), text)
-            }
-        };
+        let (update, update_text) = update_modifications(&req.update)?;
+        let options = ReadOptions::of_write(&req.options)?;
         let method = if req.many { "updateMany" } else { "updateOne" };
+        let mut shown = Document::new();
+        if req.upsert {
+            shown.insert("upsert", true);
+        }
+        shown.extend(options.fields());
         let mut text = format!(
             "{}.{method}({}, {update_text}",
             shell::collection(&req.db, &req.coll),
             shell::document(&filter)
         );
-        if req.upsert {
-            text.push_str(", { upsert: true }");
+        if !shown.is_empty() {
+            text.push_str(&format!(", {}", shell::document(&shown)));
         }
         text.push(')');
         self.log.record_command(&text);
         let started = Instant::now();
-        let result = if req.many {
-            collection
-                .update_many(filter, update)
-                .upsert(req.upsert)
-                .await
+        let mut action = if req.many {
+            collection.update_many(filter, update)
         } else {
-            collection
-                .update_one(filter, update)
-                .upsert(req.upsert)
-                .await
+            collection.update_one(filter, update)
         }
-        .map_err(mongo_err)?;
+        .upsert(req.upsert);
+        if let Some(collation) = options.collation() {
+            action = action.collation(collation);
+        }
+        if let Some(hint) = options.hint() {
+            action = action.hint(hint);
+        }
+        let result = action.await.map_err(mongo_err)?;
         self.changed(
             text,
             started,
@@ -595,18 +746,24 @@ impl DocumentDriver for MongoDriver {
         let collection = self.collection(&req.db, &req.coll)?;
         let filter = document(&req.filter, "filter")?;
         let replacement = document(&req.replacement, "replacement")?;
+        let options = ReadOptions::of_write(&req.options)?;
         let text = format!(
-            "{}.replaceOne({}, {})",
+            "{}.replaceOne({}, {}{})",
             shell::collection(&req.db, &req.coll),
             shell::document(&filter),
-            shell::document(&replacement)
+            shell::document(&replacement),
+            options.argument_text()
         );
         self.log.record_command(&text);
         let started = Instant::now();
-        let result = collection
-            .replace_one(filter, replacement)
-            .await
-            .map_err(mongo_err)?;
+        let mut action = collection.replace_one(filter, replacement);
+        if let Some(collation) = options.collation() {
+            action = action.collation(collation);
+        }
+        if let Some(hint) = options.hint() {
+            action = action.hint(hint);
+        }
+        let result = action.await.map_err(mongo_err)?;
         self.changed(text, started, result.modified_count);
         Ok(UpdateOutcome {
             matched: result.matched_count,
@@ -617,20 +774,28 @@ impl DocumentDriver for MongoDriver {
     async fn delete(&self, req: &DeleteRequest) -> Result<u64, EngineError> {
         let collection = self.collection(&req.db, &req.coll)?;
         let filter = document(&req.filter, "filter")?;
+        let options = ReadOptions::of_write(&req.options)?;
         let method = if req.many { "deleteMany" } else { "deleteOne" };
         let text = format!(
-            "{}.{method}({})",
+            "{}.{method}({}{})",
             shell::collection(&req.db, &req.coll),
-            shell::document(&filter)
+            shell::document(&filter),
+            options.argument_text()
         );
         self.log.record_command(&text);
         let started = Instant::now();
-        let result = if req.many {
-            collection.delete_many(filter).await
+        let mut action = if req.many {
+            collection.delete_many(filter)
         } else {
-            collection.delete_one(filter).await
+            collection.delete_one(filter)
+        };
+        if let Some(collation) = options.collation() {
+            action = action.collation(collation);
         }
-        .map_err(mongo_err)?;
+        if let Some(hint) = options.hint() {
+            action = action.hint(hint);
+        }
+        let result = action.await.map_err(mongo_err)?;
         self.changed(text, started, result.deleted_count);
         Ok(result.deleted_count)
     }
@@ -717,7 +882,8 @@ impl DocumentDriver for MongoDriver {
     async fn explain(&self, req: &ExplainRequest) -> Result<Value, EngineError> {
         self.collection(&req.db, &req.coll)?;
         let target = shell::collection(&req.db, &req.coll);
-        let (command, text) = match (&req.find, &req.aggregate) {
+        let options = ReadOptions::of(&req.options)?;
+        let (mut command, text) = match (&req.find, &req.aggregate) {
             (Some(find), None) => {
                 let filter = document(&find.filter, "filter")?;
                 let mut command = doc! { "find": &req.coll, "filter": filter.clone() };
@@ -737,11 +903,16 @@ impl DocumentDriver for MongoDriver {
                     text.push_str(&format!(".limit({limit})"));
                     command.insert("limit", limit);
                 }
+                text.push_str(&options.cursor_text());
                 (command, text)
             }
             (None, Some(aggregate)) => {
                 let stages = pipeline(&aggregate.pipeline)?;
-                let text = format!("{target}.aggregate({})", pipeline_text(&stages));
+                let text = format!(
+                    "{target}.aggregate({}{})",
+                    pipeline_text(&stages),
+                    options.argument_text()
+                );
                 (
                     doc! { "aggregate": &req.coll, "pipeline": stages, "cursor": {} },
                     text,
@@ -758,17 +929,29 @@ impl DocumentDriver for MongoDriver {
                 req.verbosity
             )));
         }
+        // The collation and the hint shape the query explained; the time
+        // limit is the explain command's own.
+        if let Some((collation, _)) = &options.collation {
+            command.insert("collation", collation.clone());
+        }
+        if let Some(hint) = &options.hint {
+            command.insert("hint", hint.clone());
+        }
         self.log
             .record_command(&format!("{text}.explain({})", shell::quote(&req.verbosity)));
         let (_running, tag) = Running::start(&self.running);
+        let mut explain = doc! {
+            "explain": command,
+            "verbosity": &req.verbosity,
+            "comment": tag,
+        };
+        if let Some(limit) = options.max_time {
+            explain.insert("maxTimeMS", whole(limit.as_millis()));
+        }
         let reply = self
             .client
             .database(&req.db)
-            .run_command(doc! {
-                "explain": command,
-                "verbosity": &req.verbosity,
-                "comment": tag,
-            })
+            .run_command(explain)
             .await
             .map_err(mongo_err)?;
         Ok(json_doc(reply))
@@ -800,6 +983,7 @@ impl DocumentDriver for MongoDriver {
     async fn export(&self, req: &ExportRequest) -> Result<DocStream, EngineError> {
         let collection = self.collection(&req.db, &req.coll)?;
         let limit = req.limit.filter(|limit| *limit > 0);
+        let options = ReadOptions::of(&req.options)?;
         // Not tagged: only the reader going away (the cursor dropped) stops it.
         let cursor = match &req.pipeline {
             Some(stages) => {
@@ -811,25 +995,38 @@ impl DocumentDriver for MongoDriver {
                     stages.push(doc! { "$limit": limit });
                 }
                 self.log.record_command(&format!(
-                    "{}.aggregate({})",
+                    "{}.aggregate({}{})",
                     shell::collection(&req.db, &req.coll),
-                    pipeline_text(&stages)
+                    pipeline_text(&stages),
+                    options.argument_text()
                 ));
-                collection.aggregate(stages).await
+                let mut action = collection.aggregate(stages);
+                if let Some(collation) = options.collation() {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = options.hint() {
+                    action = action.hint(hint);
+                }
+                if let Some(limit) = options.max_time {
+                    action = action.max_time(limit);
+                }
+                action.await
             }
             None => {
                 let filter = document(&req.filter, "filter")?;
                 let projection = optional_document(&req.projection, "projection")?;
                 let sort = optional_document(&req.sort, "sort")?;
-                self.log.record_command(&find_text(
-                    &req.db,
-                    &req.coll,
-                    &filter,
-                    projection.as_ref(),
-                    sort.as_ref(),
-                    None,
-                    limit,
-                ));
+                self.log.record_command(
+                    &(find_text(
+                        &req.db,
+                        &req.coll,
+                        &filter,
+                        projection.as_ref(),
+                        sort.as_ref(),
+                        None,
+                        limit,
+                    ) + &options.cursor_text()),
+                );
                 let mut action = collection.find(filter);
                 if let Some(projection) = projection {
                     action = action.projection(projection);
@@ -839,6 +1036,15 @@ impl DocumentDriver for MongoDriver {
                 }
                 if let Some(limit) = limit {
                     action = action.limit(limit);
+                }
+                if let Some(collation) = options.collation() {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = options.hint() {
+                    action = action.hint(hint);
+                }
+                if let Some(limit) = options.max_time {
+                    action = action.max_time(limit);
                 }
                 action.await
             }
@@ -867,6 +1073,8 @@ impl DocumentDriver for MongoDriver {
         let mut perf = doc! {
             "time": pick("localTime"),
             "uptime": pick("uptime"),
+            // "mongos" on a router, which has no `top` or `system.profile`.
+            "process": pick("process"),
             "opcounters": pick("opcounters"),
             "connections": pick("connections"),
             "network": {
@@ -911,5 +1119,419 @@ impl DocumentDriver for MongoDriver {
             );
         }
         Ok(json_doc(perf))
+    }
+
+    async fn update_preview(
+        &self,
+        req: &UpdatePreviewRequest,
+    ) -> Result<UpdatePreview, EngineError> {
+        let collection = self.collection(&req.db, &req.coll)?;
+        let filter = document(&req.filter, "filter")?;
+        let (update, update_text) = update_modifications(&req.update)?;
+        let options = ReadOptions::of_write(&req.options)?;
+        let target = shell::collection(&req.db, &req.coll);
+        let mut fields = options.fields();
+        fields.insert("maxTimeMS", whole(COUNT_LIMIT.as_millis()));
+        self.log.record_command(&format!(
+            "{target}.countDocuments({}, {})",
+            shell::document(&filter),
+            shell::document(&fields)
+        ));
+        let matched = {
+            let (_running, tag) = Running::start(&self.running);
+            let mut count = collection
+                .count_documents(filter.clone())
+                .max_time(COUNT_LIMIT)
+                .comment(tag);
+            if let Some(collation) = options.collation() {
+                count = count.collation(collation);
+            }
+            if let Some(hint) = options.hint() {
+                count = count.hint(hint);
+            }
+            match count.await.map_err(mongo_err) {
+                Ok(count) => Some(count),
+                Err(err) if timed_out(&err) => None,
+                Err(err) => return Err(err),
+            }
+        };
+        // Without transactions nothing could be undone: the count only.
+        if self.topology == "standalone" {
+            return Ok(UpdatePreview {
+                matched,
+                samples: Vec::new(),
+                previewed: false,
+            });
+        }
+        self.log.record_command(&format!(
+            "// 미리보기: 트랜잭션 안에서 앞 {}건에 {target}.updateMany({}, {update_text}{})를 실행해 읽은 뒤 abortTransaction()",
+            req.limit,
+            shell::document(&filter),
+            options.argument_text()
+        ));
+        let mut session = self.client.start_session().await.map_err(mongo_err)?;
+        session.start_transaction().await.map_err(mongo_err)?;
+        let samples = async {
+            let mut find = collection.find(filter.clone()).limit(i64::from(req.limit));
+            if let Some(collation) = options.collation() {
+                find = find.collation(collation);
+            }
+            if let Some(hint) = options.hint() {
+                find = find.hint(hint);
+            }
+            let mut cursor = find.session(&mut session).await?;
+            let before: Vec<Document> = cursor.stream(&mut session).try_collect().await?;
+            let mut samples = Vec::with_capacity(before.len());
+            for doc in before {
+                let id = doc.get("_id").cloned().unwrap_or(Bson::Null);
+                // The filter stays in, so a positional `$` still finds its
+                // array element; the collation too, so it matches the same way.
+                let mut one = collection.update_one(
+                    doc! { "$and": [filter.clone(), { "_id": id.clone() }] },
+                    update.clone(),
+                );
+                if let Some(collation) = options.collation() {
+                    one = one.collation(collation);
+                }
+                one.session(&mut session).await?;
+                let after = collection
+                    .find_one(doc! { "_id": id })
+                    .session(&mut session)
+                    .await?;
+                samples.push(PreviewSample {
+                    before: json_doc(doc),
+                    after: after.map(json_doc).unwrap_or(Value::Null),
+                });
+            }
+            Ok::<_, mongodb::error::Error>(samples)
+        }
+        .await;
+        // Never committed: should the abort itself fail, the server drops
+        // the transaction when the session ends.
+        let _ = session.abort_transaction().await;
+        Ok(UpdatePreview {
+            matched,
+            samples: samples.map_err(mongo_err)?,
+            previewed: true,
+        })
+    }
+
+    async fn search_indexes(&self, db: &str, coll: &str) -> Result<Vec<Value>, EngineError> {
+        let collection = self.collection(db, coll)?;
+        self.log.record_command(&format!(
+            "{}.getSearchIndexes()",
+            shell::collection(db, coll)
+        ));
+        let cursor = collection.list_search_indexes().await.map_err(search_err)?;
+        let indexes: Vec<Document> = cursor.try_collect().await.map_err(search_err)?;
+        Ok(indexes
+            .into_iter()
+            .map(|mut index| {
+                // Servers before 7.0.x leave out the type of a plain index.
+                if !index.contains_key("type") {
+                    index.insert("type", "search");
+                }
+                json_doc(index)
+            })
+            .collect())
+    }
+
+    async fn create_search_index(&self, req: &SearchIndexRequest) -> Result<String, EngineError> {
+        let collection = self.collection(&req.db, &req.coll)?;
+        if req.name.is_empty() {
+            return Err(bad("검색 인덱스 이름을 지정하세요"));
+        }
+        let definition = document(&req.definition, "definition")?;
+        let kind = match req.kind.as_deref() {
+            None | Some("") => None,
+            Some("search") => Some(SearchIndexType::Search),
+            Some("vectorSearch") => Some(SearchIndexType::VectorSearch),
+            Some(other) => {
+                return Err(bad(format!(
+                    "검색 인덱스 종류는 search 또는 vectorSearch입니다: {other}"
+                )))
+            }
+        };
+        let mut spec = doc! { "name": &req.name };
+        if let Some(kind) = req.kind.as_deref().filter(|kind| !kind.is_empty()) {
+            spec.insert("type", kind);
+        }
+        spec.insert("definition", definition.clone());
+        let text = format!(
+            "{}.createSearchIndex({})",
+            shell::collection(&req.db, &req.coll),
+            shell::document(&spec)
+        );
+        self.log.record_command(&text);
+        let started = Instant::now();
+        let model = SearchIndexModel::builder()
+            .name(req.name.clone())
+            .index_type(kind)
+            .definition(definition)
+            .build();
+        let name = collection
+            .create_search_index(model)
+            .await
+            .map_err(search_err)?;
+        self.changed(text, started, 1);
+        Ok(name)
+    }
+
+    async fn update_search_index(&self, req: &SearchIndexRequest) -> Result<(), EngineError> {
+        let collection = self.collection(&req.db, &req.coll)?;
+        let definition = document(&req.definition, "definition")?;
+        let text = format!(
+            "{}.updateSearchIndex({}, {})",
+            shell::collection(&req.db, &req.coll),
+            shell::quote(&req.name),
+            shell::document(&definition)
+        );
+        self.log.record_command(&text);
+        let started = Instant::now();
+        collection
+            .update_search_index(&req.name, definition)
+            .await
+            .map_err(search_err)?;
+        self.changed(text, started, 1);
+        Ok(())
+    }
+
+    async fn drop_search_index(&self, req: &DropSearchIndexRequest) -> Result<(), EngineError> {
+        let collection = self.collection(&req.db, &req.coll)?;
+        let text = format!(
+            "{}.dropSearchIndex({})",
+            shell::collection(&req.db, &req.coll),
+            shell::quote(&req.name)
+        );
+        self.log.record_command(&text);
+        let started = Instant::now();
+        collection
+            .drop_search_index(&req.name)
+            .await
+            .map_err(search_err)?;
+        self.changed(text, started, 1);
+        Ok(())
+    }
+
+    async fn watch(&self, req: &WatchRequest) -> Result<DocStream, EngineError> {
+        if req.db.is_empty() {
+            return Err(bad("데이터베이스를 지정하세요"));
+        }
+        if self.topology == "standalone" {
+            return Err(EngineError::Unsupported(
+                "변경 스트림은 레플리카셋이나 샤드 클러스터에서만 열 수 있습니다 (이 서버는 단일 서버입니다)"
+                    .into(),
+            ));
+        }
+        let stages = pipeline(req.pipeline.as_deref().unwrap_or_default())?;
+        let mut options = Document::new();
+        let full_document = match req.full_document.as_deref() {
+            None | Some("") | Some("default") => None,
+            Some("updateLookup") => Some(FullDocumentType::UpdateLookup),
+            Some("whenAvailable") => Some(FullDocumentType::WhenAvailable),
+            Some("required") => Some(FullDocumentType::Required),
+            Some(other) => {
+                return Err(bad(format!("fullDocument 값이 올바르지 않습니다: {other}")))
+            }
+        };
+        if full_document.is_some() {
+            options.insert("fullDocument", req.full_document.as_deref());
+        }
+        let before_change = match req.full_document_before_change.as_deref() {
+            None | Some("") => None,
+            Some("off") => Some(FullDocumentBeforeChangeType::Off),
+            Some("whenAvailable") => Some(FullDocumentBeforeChangeType::WhenAvailable),
+            Some("required") => Some(FullDocumentBeforeChangeType::Required),
+            Some(other) => {
+                return Err(bad(format!(
+                    "fullDocumentBeforeChange 값이 올바르지 않습니다: {other}"
+                )))
+            }
+        };
+        if before_change.is_some() {
+            options.insert(
+                "fullDocumentBeforeChange",
+                req.full_document_before_change.as_deref(),
+            );
+        }
+        let resume_after = match &req.resume_after {
+            None | Some(Value::Null) => None,
+            Some(token) => {
+                let token = document(token, "resumeAfter")?;
+                options.insert("resumeAfter", token.clone());
+                Some(
+                    mongodb::bson::from_document::<ResumeToken>(token)
+                        .map_err(|err| bad(format!("resumeAfter가 올바르지 않습니다: {err}")))?,
+                )
+            }
+        };
+        let database = self.client.database(&req.db);
+        let coll = req.coll.as_deref().filter(|coll| !coll.is_empty());
+        let collection = coll.map(|coll| database.collection::<Document>(coll));
+        let (target, mut action) = match (coll, &collection) {
+            (Some(coll), Some(collection)) => {
+                (shell::collection(&req.db, coll), collection.watch())
+            }
+            _ => (shell::database(&req.db), database.watch()),
+        };
+        let mut text = format!("{target}.watch({}", pipeline_text(&stages));
+        if !options.is_empty() {
+            text.push_str(&format!(", {}", shell::document(&options)));
+        }
+        text.push(')');
+        self.log.record_command(&text);
+        action = action.pipeline(stages);
+        if let Some(full_document) = full_document {
+            action = action.full_document(full_document);
+        }
+        if let Some(before_change) = before_change {
+            action = action.full_document_before_change(before_change);
+        }
+        if let Some(token) = resume_after {
+            action = action.resume_after(token);
+        }
+        // Not tagged: it waits for changes for as long as the page reads it,
+        // and closes when the page goes away.
+        let stream = action.await.map_err(mongo_err)?;
+        Ok(Box::pin(
+            stream
+                .with_type::<Document>()
+                .map_ok(json_doc)
+                .map_err(mongo_err),
+        ))
+    }
+
+    async fn gridfs_buckets(&self, db: &str) -> Result<Vec<String>, EngineError> {
+        self.buckets(db).await
+    }
+
+    async fn gridfs_files(&self, req: &GridFsFilesRequest) -> Result<Vec<Value>, EngineError> {
+        self.files(req).await
+    }
+
+    async fn gridfs_download(&self, req: &GridFsFileRef) -> Result<GridFsDownload, EngineError> {
+        self.download(req).await
+    }
+
+    async fn gridfs_upload(
+        &self,
+        req: &GridFsUploadRequest,
+        body: ByteReader,
+    ) -> Result<Value, EngineError> {
+        self.upload(req, body).await
+    }
+
+    async fn gridfs_delete(&self, req: &GridFsFileRef) -> Result<(), EngineError> {
+        self.delete_file(req).await
+    }
+
+    async fn cursor(&self, req: &CursorOpenRequest) -> Result<DocStream, EngineError> {
+        let collection = self.collection(&req.db, &req.coll)?;
+        let target = shell::collection(&req.db, &req.coll);
+        // Not tagged: it stays open between the page's reads, which only
+        // closing it (or going idle) ends.
+        let cursor = match (&req.find, &req.aggregate) {
+            (Some(find), None) => {
+                let filter = document(&find.filter, "filter")?;
+                let projection = optional_document(&find.projection, "projection")?;
+                let sort = optional_document(&find.sort, "sort")?;
+                let options = ReadOptions::of(&find.options)?;
+                let limit = find.limit.filter(|limit| *limit > 0);
+                self.log.record_command(&format!(
+                    "{}{}.batchSize({})",
+                    find_text(
+                        &req.db,
+                        &req.coll,
+                        &filter,
+                        projection.as_ref(),
+                        sort.as_ref(),
+                        find.skip,
+                        limit,
+                    ),
+                    options.cursor_text(),
+                    req.batch_size
+                ));
+                let mut action = collection.find(filter).batch_size(req.batch_size);
+                if let Some(projection) = projection {
+                    action = action.projection(projection);
+                }
+                if let Some(sort) = sort {
+                    action = action.sort(sort);
+                }
+                if let Some(skip) = find.skip {
+                    action = action.skip(skip);
+                }
+                if let Some(limit) = limit {
+                    action = action.limit(limit);
+                }
+                if let Some(collation) = options.collation() {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = options.hint() {
+                    action = action.hint(hint);
+                }
+                if let Some(limit) = options.max_time {
+                    action = action.max_time(limit);
+                }
+                action.await.map_err(mongo_err)?
+            }
+            (None, Some(aggregate)) => {
+                let stages = pipeline(&aggregate.pipeline)?;
+                let writes = pipeline_writes(&aggregate.pipeline);
+                let options = ReadOptions::of(&aggregate.options)?;
+                let mut shown = options.fields();
+                shown.insert("batchSize", whole(u128::from(req.batch_size)));
+                let text = format!(
+                    "{target}.aggregate({}, {})",
+                    pipeline_text(&stages),
+                    shell::document(&shown)
+                );
+                self.log.record_command(&text);
+                let started = Instant::now();
+                let mut action = collection.aggregate(stages).batch_size(req.batch_size);
+                if let Some(collation) = options.collation() {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = options.hint() {
+                    action = action.hint(hint);
+                }
+                if let Some(limit) = options.max_time {
+                    action = action.max_time(limit);
+                }
+                let cursor = action.await.map_err(mongo_err)?;
+                // `$out` and `$merge` have written once the aggregation opened.
+                if writes {
+                    self.changed(text, started, 1);
+                }
+                cursor
+            }
+            _ => return Err(bad("find 또는 aggregate 중 하나를 지정하세요")),
+        };
+        Ok(Box::pin(cursor.map_ok(json_doc).map_err(mongo_err)))
+    }
+}
+
+/// Whether a read stopped at its maxTimeMS.
+fn timed_out(err: &EngineError) -> bool {
+    matches!(err, EngineError::Driver { code, .. }
+        if code.as_deref() == Some(&MAX_TIME_EXPIRED.to_string()))
+}
+
+/// The codes a server without Atlas Search answers its commands with:
+/// SearchNotEnabled, the stage only Atlas runs, an unknown stage or command.
+const SEARCH_MISSING: [&str; 5] = ["31082", "6047401", "40324", "59", "115"];
+
+/// A search index command's error; on a server without search, one that
+/// says so.
+fn search_err(err: mongodb::error::Error) -> EngineError {
+    match mongo_err(err) {
+        EngineError::Driver {
+            code: Some(code),
+            message,
+            ..
+        } if SEARCH_MISSING.contains(&code.as_str()) => EngineError::Unsupported(format!(
+            "이 서버는 Atlas Search 인덱스를 지원하지 않습니다. Atlas 클러스터나 검색(mongot)이 있는 서버에서 쓸 수 있습니다 (MongoDB: {message})"
+        )),
+        other => other,
     }
 }

@@ -8,7 +8,7 @@ import { useCallback, useRef, useState } from "react";
 import { t } from "../../../i18n";
 import { find, replace as replaceDoc, update, type Namespace } from "../api";
 import type { BsonDocument } from "../bson";
-import { applyEdits, guardReplace, guardUpdate, type DocEdit } from "../guard";
+import { applyEdits, guardReplace, guardUpdate, idFilter, type DocEdit } from "../guard";
 import type { SaveEdits } from "./types";
 import { asError } from "./writeErrors";
 
@@ -58,7 +58,7 @@ export function useDocEdits(ns: Namespace, onSaved: () => void, notify: (message
       }
       let current: BsonDocument | null;
       try {
-        current = (await find(latest.current.ns, { filter: { _id: original._id }, limit: 1 })).docs[0] ?? null;
+        current = (await find(latest.current.ns, { filter: idFilter(original), limit: 1 })).docs[0] ?? null;
       } catch (error) {
         return asError(error);
       }
@@ -113,7 +113,7 @@ export function useDocEdits(ns: Namespace, onSaved: () => void, notify: (message
       }
       const { filter, update: change } = guard;
       return guarded(original, applyEdits(original, edits), (force) =>
-        update(latest.current.ns, { filter: force ? { _id: original._id } : filter, update: change, many: false }),
+        update(latest.current.ns, { filter: force ? idFilter(original) : filter, update: change, many: false }),
       );
     },
     [guarded],
@@ -127,7 +127,7 @@ export function useDocEdits(ns: Namespace, onSaved: () => void, notify: (message
       } catch (error) {
         return asError(error);
       }
-      return guarded(original, replacement, (force) => replaceDoc(latest.current.ns, force ? { _id: original._id } : guard.filter, guard.replacement));
+      return guarded(original, replacement, (force) => replaceDoc(latest.current.ns, force ? idFilter(original) : guard.filter, guard.replacement));
     },
     [guarded],
   );

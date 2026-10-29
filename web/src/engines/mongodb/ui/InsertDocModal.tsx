@@ -125,18 +125,18 @@ export function templateDoc(fields: FieldStat[]): BsonDocument {
     if (type !== "Object") {
       return defaultOfType(type);
     }
-    const out: BsonDocument = {};
+    const out: BsonDocument = new Map();
     for (const child of fields) {
       if (child.depth === (field?.depth ?? 0) + 1 && child.path.startsWith(`${path}.`) && child.presence >= 0.5) {
-        out[child.path.slice(path.length + 1)] = fill(child.path);
+        out.set(child.path.slice(path.length + 1), fill(child.path));
       }
     }
     return out;
   };
-  const doc: BsonDocument = {};
+  const doc: BsonDocument = new Map();
   for (const field of fields) {
     if (field.depth === 0 && field.path !== "_id" && field.presence >= 0.5) {
-      doc[field.path] = fill(field.path);
+      doc.set(field.path, fill(field.path));
     }
   }
   return doc;

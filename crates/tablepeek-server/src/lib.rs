@@ -16,7 +16,8 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tablepeek_engine::driver;
-use tablepeek_engine::registry::{self, NetRoute};
+use tablepeek_engine::engines::mongodb::oidc;
+use tablepeek_engine::registry::{self, NetRoute, TunnelTarget};
 use tablepeek_engine::sql_log::{Change, LogEntry};
 use tablepeek_engine::{Engine, EngineError, QueryData};
 use tablepeek_types::{
@@ -27,6 +28,7 @@ use tablepeek_types::{
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 
+pub mod cursors;
 pub mod picker;
 pub mod store;
 pub mod transfer;
@@ -162,7 +164,7 @@ pub struct ConnSlot {
     pub origin: Option<ConnectRequest>,
     pub engine: Arc<Engine>,
     pub sessions: Arc<tokio::sync::Mutex<SessionStore>>,
-    pub tunnel: Arc<tokio::sync::Mutex<Option<tunnel::Tunnel>>>,
+    pub tunnel: Arc<tokio::sync::Mutex<Option<tunnel::Route>>>,
     pub inflight: Arc<AtomicUsize>,
     // Last known meta summary, so listing connections needs no database round
     // trip (and never waits behind a long query holding the engine lock).
@@ -176,6 +178,8 @@ pub struct ConnSlot {
     // BEGIN): when a job's statement last ran in it. Who opened it decides,
     // not which command did.
     job_tx: std::sync::Mutex<Option<std::time::Instant>>,
+    /// A document store's cursors the page keeps open between requests.
+    pub cursors: cursors::CursorTable,
 }
 
 /// Whose statement runs on a connection's session now.
@@ -276,6 +280,7 @@ impl ConnSlot {
             gate: tokio::sync::Mutex::new(()),
             holder: std::sync::Mutex::new(Holder::Idle),
             job_tx: std::sync::Mutex::new(None),
+            cursors: cursors::CursorTable::default(),
         }
     }
 
@@ -675,6 +680,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/switch-db", post(switch_db_route))
         .route("/api/query", post(query))
         .route("/api/table", get(table_info))
+        .route("/api/connection-info", get(connection_info_route))
         .route("/api/server", get(server_info_route))
         .route("/api/objects", get(objects_route))
         .route("/api/definition", get(definition_route))
@@ -700,6 +706,25 @@ pub fn app(state: AppState) -> Router {
         .route("/api/doc/command", post(doc_command))
         .route("/api/doc/export", post(doc_export))
         .route("/api/doc/perf", get(doc_perf))
+        .route("/api/doc/update/preview", post(doc_update_preview))
+        .route(
+            "/api/doc/search-indexes",
+            get(doc_search_indexes)
+                .post(doc_create_search_index)
+                .put(doc_update_search_index)
+                .delete(doc_drop_search_index),
+        )
+        .route("/api/doc/watch", post(doc_watch))
+        .route("/api/doc/gridfs/buckets", get(doc_gridfs_buckets))
+        .route(
+            "/api/doc/gridfs/files",
+            post(doc_gridfs_files).delete(doc_gridfs_delete),
+        )
+        .route("/api/doc/gridfs/download", get(doc_gridfs_download))
+        .route("/api/doc/gridfs/upload", post(doc_gridfs_upload))
+        .route("/api/doc/cursor/open", post(doc_cursor_open))
+        .route("/api/doc/cursor/next", post(doc_cursor_next))
+        .route("/api/doc/cursor/close", post(doc_cursor_close))
         .route(
             "/api/connections",
             get(connections_list).post(connections_create),
@@ -726,6 +751,8 @@ pub fn app(state: AppState) -> Router {
             "/api/favorite-folders/{id}",
             put(folders_update).delete(folders_delete),
         )
+        .route("/api/oidc/logins", get(oidc_logins).delete(oidc_cancel))
+        .route("/api/oidc/callback", get(oidc_callback))
         .layer(middleware::from_fn_with_state(state.clone(), token_guard))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .with_state(state)
@@ -736,6 +763,10 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::i
     // registered through register_slot.
     for slot in state.registry.lock().await.list() {
         record_gui_changes(&state, &slot);
+    }
+    // An OIDC browser login sends the provider back to this address.
+    if let Ok(address) = listener.local_addr() {
+        oidc::set_redirect_base(&format!("http://{address}"));
     }
     axum::serve(listener, app(state)).await
 }
@@ -754,18 +785,25 @@ async fn host_guard(State(state): State<AppState>, request: Request<Body>, next:
     }
 }
 
+/// The routes that may carry the token in the query instead of the header.
+const QUERY_TOKEN_ROUTES: [&str; 2] = ["/api/ws", "/api/doc/gridfs/download"];
+
 /// Every API route wants the token, and checks it before the body or the
 /// WebSocket upgrade is read: a stale one (the server restarted) is always
 /// told as `invalid_token`, never as a malformed request. The WebSocket
-/// handshake can only carry it in the query.
+/// handshake can only carry it in the query, as can a GridFS download the
+/// browser saves itself (a plain link, not a buffered fetch).
 async fn token_guard(
     State(state): State<AppState>,
     request: Request<Body>,
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    if path.starts_with("/api/") {
-        let query_token = (path == "/api/ws")
+    // The identity provider sends the browser back here with no token; the
+    // login's `state`, known only to the login waiting for it, stands in.
+    if path.starts_with("/api/") && path != "/api/oidc/callback" {
+        let query_token = QUERY_TOKEN_ROUTES
+            .contains(&path)
             .then(|| request.uri().query())
             .flatten()
             .and_then(|query| {
@@ -1126,6 +1164,50 @@ async fn databases_route(
     Ok(Json(json!({ "databases": databases })))
 }
 
+/// `config` without any secret: the engine's secret fields left out and the
+/// passwords inside its connection strings removed.
+fn public_config(driver: &str, config: &ConnConfig) -> ConnConfig {
+    let Some(factory) = registry::factory(driver) else {
+        return config.clone();
+    };
+    let descriptor = factory.descriptor();
+    let mut shown = descriptor.without_uri_passwords(config);
+    for key in descriptor.secret_keys() {
+        shown.remove(key);
+    }
+    shown
+}
+
+/// The settings a connection was opened with, without secrets: the saved
+/// profile for a saved one, the request that opened it otherwise. Null
+/// settings for a connection opened from a file or the demo.
+async fn connection_info_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let saved = match slot.saved_id.as_deref() {
+        Some(id) => state.store.lock().await.find_connection(id).cloned(),
+        None => None,
+    };
+    let settings = match (saved, slot.origin.as_ref()) {
+        (Some(saved), _) => Some((saved.driver.clone(), saved.config.clone())),
+        (None, Some(origin)) => Some((origin.driver.clone(), origin.config.clone())),
+        (None, None) => None,
+    };
+    Ok(Json(match settings {
+        Some((driver, config)) => json!({
+            "driver": driver,
+            "config": public_config(&driver, &config),
+        }),
+        None => json!({ "driver": null, "config": null }),
+    }))
+}
+
 #[derive(Deserialize)]
 struct SwitchDbRequest {
     database: String,
@@ -1169,10 +1251,7 @@ async fn switch_db_route(
     config.insert("database".into(), Value::String(database));
     // Through the tunnel the connection opened, when it went through one.
     let net = match slot.tunnel.lock().await.as_ref() {
-        Some(tunnel) => NetRoute::Via {
-            host: "127.0.0.1".into(),
-            port: tunnel.local_port,
-        },
+        Some(route) => route.net(),
         None if origin.ssh.is_some() || origin.http_tunnel.is_some() => {
             return Err(internal_error("SSH 터널이 닫혀 있습니다"));
         }
@@ -1363,21 +1442,39 @@ struct SlotOrigin {
     saved_id: Option<String>,
 }
 
+/// Opens the tunnel the request asks for: a local end leading to one
+/// server, or, for a replica set or cluster, the tunnel itself, which the
+/// engine leads a stream through to each member.
 async fn open_external_tunnel(
     req: &ConnectRequest,
-    target_host: &str,
-    target_port: u16,
-) -> Result<Option<tunnel::Tunnel>, String> {
+    target: TunnelTarget,
+) -> Result<Option<tunnel::Route>, String> {
     if req.ssh.is_some() && req.http_tunnel.is_some() {
         return Err("SSH와 HTTP 터널은 동시에 사용할 수 없습니다".into());
     }
-    if let Some(ssh) = req.ssh.as_ref() {
-        return tunnel::open(ssh, target_host, target_port).await.map(Some);
-    }
-    if let Some(tunnel_config) = req.http_tunnel.as_ref() {
-        return tunnel::open_http(tunnel_config, target_host, target_port)
-            .await
-            .map(Some);
+    match target {
+        TunnelTarget::Address(host, port) => {
+            if let Some(ssh) = req.ssh.as_ref() {
+                return tunnel::open(ssh, &host, port)
+                    .await
+                    .map(|opened| Some(tunnel::Route::One(opened)));
+            }
+            if let Some(tunnel_config) = req.http_tunnel.as_ref() {
+                return tunnel::open_http(tunnel_config, &host, port)
+                    .await
+                    .map(|opened| Some(tunnel::Route::One(opened)));
+            }
+        }
+        TunnelTarget::Members => {
+            if let Some(ssh) = req.ssh.as_ref() {
+                let forwarder = tunnel::SshForwarder::open(ssh).await?;
+                return Ok(Some(tunnel::Route::Members(Arc::new(forwarder))));
+            }
+            if let Some(tunnel_config) = req.http_tunnel.as_ref() {
+                let forwarder = tunnel::HttpForwarder::new(tunnel_config);
+                return Ok(Some(tunnel::Route::Members(Arc::new(forwarder))));
+            }
+        }
     }
     Ok(None)
 }
@@ -1400,22 +1497,16 @@ async fn connect_with(
     // Through the tunnel the request asks for, to the address the engine
     // names; the address the user gave stays the one shown.
     let tunnel = if req.ssh.is_some() || req.http_tunnel.is_some() {
-        let (host, port) = factory.tunnel_target(&req.config).map_err(|problem| {
+        let target = factory.tunnel_target(&req.config).map_err(|problem| {
             ConnectError::new(StatusCode::BAD_REQUEST, problem.code, problem.message)
         })?;
-        open_external_tunnel(&req, &host, port)
+        open_external_tunnel(&req, target)
             .await
             .map_err(connect_failed)?
     } else {
         None
     };
-    let net = match tunnel.as_ref() {
-        Some(opened) => NetRoute::Via {
-            host: "127.0.0.1".into(),
-            port: opened.local_port,
-        },
-        None => NetRoute::Direct,
-    };
+    let net = tunnel.as_ref().map_or(NetRoute::Direct, tunnel::Route::net);
     let address = factory.address(&req.config);
     let label = origin.label.unwrap_or_else(|| address.clone());
     let engine = Engine::open_demo(0).map_err(|err| connect_failed(err.to_string()))?;
@@ -1569,7 +1660,7 @@ fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, String)> {
         ));
     }
     if connect.ssh.is_some() || connect.http_tunnel.is_some() {
-        // One address to lead to: not a replica set or an SRV name.
+        // Somewhere to lead to (not a file).
         if let Err(problem) = factory.tunnel_target(&connect.config) {
             return Some((problem.code, problem.message));
         }
@@ -2266,6 +2357,8 @@ async fn conns_delete(
     let Some(removed) = state.registry.lock().await.remove(&id) else {
         return Err(not_found("연결을 찾을 수 없습니다"));
     };
+    // Their server cursors close now, not when the last request lets go.
+    removed.cursors.close_all();
     // An unsaved connection's history has nowhere to come back to.
     let scope = removed.history_scope();
     if scope.starts_with(store::SESSION_PREFIX) {
@@ -2516,6 +2609,95 @@ async fn console_clear(
     let slot = slot_for(&state, params.conn.as_deref()).await?;
     slot.engine.sql_log().clear();
     Ok(Json(json!({ "ok": true })))
+}
+
+/// The MongoDB OIDC browser logins a connect waits on: the page opens each
+/// one's provider page in the browser.
+async fn oidc_logins(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    Ok(Json(json!(oidc::pending())))
+}
+
+#[derive(Deserialize)]
+struct OidcLoginQuery {
+    id: String,
+}
+
+/// Gives up a waiting browser login; the connect that started it fails.
+async fn oidc_cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<OidcLoginQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    if !oidc::cancel(&params.id) {
+        return Err(not_found("기다리는 OIDC 로그인이 없습니다"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct OidcCallback {
+    state: Option<String>,
+    code: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// Where the identity provider sends the browser back. No token comes
+/// with it: the `state` names a login waiting here, and nothing else is
+/// accepted. The page it shows only says what happened.
+async fn oidc_callback(Query(params): Query<OidcCallback>) -> Response {
+    let outcome = match (params.code, params.error) {
+        (Some(code), None) => Ok(code),
+        (_, error) => Err(match (error, params.error_description) {
+            (Some(error), Some(description)) => format!("{error} ({description})"),
+            (Some(error), None) => error,
+            (None, _) => "IdP가 코드를 보내지 않았습니다".to_string(),
+        }),
+    };
+    let failed = outcome.as_ref().err().cloned();
+    let known = params
+        .state
+        .as_deref()
+        .is_some_and(|login| oidc::finish(login, outcome));
+    let (status, title, detail) = match (known, failed) {
+        (false, _) => (
+            StatusCode::BAD_REQUEST,
+            "로그인을 기다리는 연결이 없습니다",
+            "TablePeek에서 다시 연결하세요. This login is not waited for; connect again in TablePeek.".to_string(),
+        ),
+        (true, Some(error)) => (
+            StatusCode::OK,
+            "로그인하지 못했습니다",
+            format!("Sign-in failed: {error}"),
+        ),
+        (true, None) => (
+            StatusCode::OK,
+            "로그인했습니다",
+            "이 탭을 닫고 TablePeek으로 돌아가세요. Signed in; close this tab and return to TablePeek.".to_string(),
+        ),
+    };
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let page = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>TablePeek</title>\
+         <body style=\"font: 14px system-ui; margin: 3em\"><h3>{}</h3><p>{}</p></body>",
+        escape(title),
+        escape(&detail)
+    );
+    (status, axum::response::Html(page)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -3525,6 +3707,365 @@ async fn doc_perf(
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
     doc_beside!(slot, |ops| ops.perf()).map(Json)
+}
+
+/// What an update would change, left undone: run as a read of the page.
+async fn doc_update_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::UpdatePreviewRequest>,
+) -> Result<Json<driver::UpdatePreview>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    driver::check_preview(&req).map_err(engine_error)?;
+    doc_call!(slot, Holder::Foreground, |ops| ops.update_preview(&req)).map(Json)
+}
+
+async fn doc_search_indexes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<DocParams>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let indexes = doc_call!(slot, Holder::Foreground, |ops| ops
+        .search_indexes(&params.db, &params.coll))?;
+    Ok(Json(json!(indexes)))
+}
+
+async fn doc_create_search_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::SearchIndexRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let name = doc_call!(slot, Holder::Protected, |ops| ops.create_search_index(&req))?;
+    Ok(Json(json!({ "name": name })))
+}
+
+async fn doc_update_search_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::SearchIndexRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    doc_call!(slot, Holder::Protected, |ops| ops.update_search_index(&req))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn doc_drop_search_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::DropSearchIndexRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    driver::check_drop(req.confirmed, "검색 인덱스를").map_err(engine_error)?;
+    doc_call!(slot, Holder::Protected, |ops| ops.drop_search_index(&req))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// How often a change stream with nothing to say tells the page it is
+/// still open (and finds out whether the page still listens).
+const WATCH_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Streams a change stream as NDJSON: one change event (canonical EJSON) a
+/// line, and `{"$heartbeat": <ms since the epoch>}` once it opens and every
+/// 15 seconds. A failure ends it with `{"$error": {…}}`. The client stops
+/// it by going away: the next line fails to go out, the stream is dropped,
+/// and the server's cursor with it. Read beside the page's statements; it
+/// may stay open for hours.
+async fn doc_watch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::WatchRequest>,
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let events = doc_beside!(slot, |ops| ops.watch(&req))?;
+    let line = |value: Value| Bytes::from(format!("{value}\n"));
+    let heartbeat = tokio::time::interval(WATCH_HEARTBEAT);
+    let lines = futures_util::stream::unfold(Some((events, heartbeat)), move |state| async move {
+        let (mut events, mut heartbeat) = state?;
+        // A change stream keeps its pending read across polls, so a
+        // heartbeat cutting in loses no event.
+        tokio::select! {
+            event = events.next() => match event {
+                Some(Ok(event)) => Some((line(event), Some((events, heartbeat)))),
+                Some(Err(err)) => {
+                    let (_, Json(error)) = engine_error(err);
+                    Some((line(json!({ "$error": error })), None))
+                }
+                None => None,
+            },
+            _ = heartbeat.tick() => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_millis() as u64);
+                Some((line(json!({ "$heartbeat": now })), Some((events, heartbeat))))
+            }
+        }
+    })
+    .map(Ok::<_, std::convert::Infallible>);
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        Body::from_stream(lines),
+    )
+        .into_response())
+}
+
+async fn doc_gridfs_buckets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<DocParams>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let buckets = doc_call!(slot, Holder::Foreground, |ops| ops
+        .gridfs_buckets(&params.db))?;
+    Ok(Json(json!(buckets)))
+}
+
+async fn doc_gridfs_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::GridFsFilesRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let files = doc_call!(slot, Holder::Foreground, |ops| ops.gridfs_files(&req))?;
+    Ok(Json(json!({ "files": files })))
+}
+
+async fn doc_gridfs_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::GridFsFileRef>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    driver::check_drop(req.confirmed, "파일을").map_err(engine_error)?;
+    doc_call!(slot, Holder::Protected, |ops| ops.gridfs_delete(&req))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct GridFsDownloadParams {
+    conn: Option<String>,
+    #[serde(default)]
+    db: String,
+    #[serde(default)]
+    bucket: String,
+    /// The file's `_id` as canonical Extended JSON text.
+    #[serde(default)]
+    id: String,
+    /// The token, for a plain link the browser saves (see `token_guard`).
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// Extended JSON text from a query parameter.
+fn ejson_param(name: &str, text: &str) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    serde_json::from_str(text).map_err(|err| {
+        bad_request(
+            "bad_request",
+            format!("{name}은(는) Extended JSON이어야 합니다: {err}"),
+        )
+    })
+}
+
+/// `attachment` with the name in RFC 5987 form, which keeps any script.
+fn attachment(filename: &str) -> String {
+    let mut encoded = String::with_capacity(filename.len());
+    for byte in filename.bytes() {
+        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    format!("attachment; filename*=UTF-8''{encoded}")
+}
+
+/// A GridFS file's bytes, read from the server as they go out. Its name
+/// rides in Content-Disposition and its length in Content-Length; a failure
+/// midway cuts the reply short of that length.
+async fn doc_gridfs_download(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<GridFsDownloadParams>,
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, params.token.as_deref()) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let req = driver::GridFsFileRef {
+        db: params.db,
+        bucket: params.bucket,
+        id: ejson_param("id", &params.id)?,
+        confirmed: false,
+    };
+    let file = doc_beside!(slot, |ops| ops.gridfs_download(&req))?;
+    let bytes = file.bytes.map(|chunk| {
+        chunk
+            .map(Bytes::from)
+            .map_err(|err| std::io::Error::other(err.to_string()))
+    });
+    let mut response = Body::from_stream(bytes).into_response();
+    let reply = response.headers_mut();
+    let content_type = file
+        .content_type
+        .as_deref()
+        .and_then(|kind| header::HeaderValue::from_str(kind).ok())
+        .unwrap_or(header::HeaderValue::from_static("application/octet-stream"));
+    reply.insert(header::CONTENT_TYPE, content_type);
+    reply.insert(
+        header::CONTENT_LENGTH,
+        header::HeaderValue::from(file.length),
+    );
+    if let Ok(disposition) =
+        header::HeaderValue::from_str(&attachment(file.filename.as_deref().unwrap_or("file")))
+    {
+        reply.insert(header::CONTENT_DISPOSITION, disposition);
+    }
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct GridFsUploadParams {
+    conn: Option<String>,
+    #[serde(default)]
+    db: String,
+    #[serde(default)]
+    bucket: String,
+    #[serde(default)]
+    filename: String,
+    /// The file document's `metadata` as canonical Extended JSON text.
+    #[serde(default)]
+    metadata: Option<String>,
+}
+
+/// Stores the request body as a GridFS file, chunk by chunk as it arrives
+/// (nothing holds the whole file). Beside the page's statements, like an
+/// export: a big upload doesn't hold up the tabs. A body that breaks off
+/// leaves no file behind.
+async fn doc_gridfs_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<GridFsUploadParams>,
+    body: Body,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let req = driver::GridFsUploadRequest {
+        db: params.db,
+        bucket: params.bucket,
+        filename: params.filename,
+        metadata: params
+            .metadata
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .map(|text| ejson_param("metadata", text))
+            .transpose()?,
+    };
+    let reader: driver::ByteReader = Box::pin(futures_util::TryStreamExt::into_async_read(
+        body.into_data_stream()
+            .map(|chunk| chunk.map_err(std::io::Error::other)),
+    ));
+    let id = doc_beside!(slot, |ops| ops.gridfs_upload(&req, reader))?;
+    Ok(Json(json!({ "id": id })))
+}
+
+/// Opens a find or an aggregation as a cursor the page reads batch by batch
+/// (`/api/doc/cursor/next`), answering the first batch. One read to the end
+/// at once is closed already (`id` null). Beside the page's statements like
+/// an export, except an aggregation that writes, which runs as a write.
+async fn doc_cursor_open(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::CursorOpenRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let writes = driver::check_cursor(&req).map_err(engine_error)?;
+    let mut stream = if writes {
+        doc_call!(slot, Holder::Protected, |ops| ops.cursor(&req))?
+    } else {
+        doc_beside!(slot, |ops| ops.cursor(&req))?
+    };
+    let (batch, done) = cursors::read_batch(&mut stream, req.batch_size as usize)
+        .await
+        .map_err(engine_error)?;
+    let id = if done {
+        Value::Null
+    } else {
+        Value::String(slot.cursors.insert(stream, req.batch_size))
+    };
+    Ok(Json(json!({ "id": id, "batch": batch, "done": done })))
+}
+
+#[derive(Deserialize)]
+struct CursorNextRequest {
+    id: String,
+    /// 1–1000; the size the cursor was opened with if left out.
+    #[serde(default, rename = "batchSize")]
+    batch_size: Option<u32>,
+}
+
+/// The next batch of an open cursor. It closes once read to the end, or
+/// when reading it fails.
+async fn doc_cursor_next(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<CursorNextRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    if let Some(size) = req.batch_size {
+        driver::check_batch_size(size).map_err(engine_error)?;
+    }
+    let (mut stream, opened) = slot.cursors.take(&req.id).map_err(|miss| match miss {
+        cursors::CursorMiss::Gone => {
+            not_found("커서가 없습니다: 끝까지 읽었거나 닫혔거나 10분 동안 읽지 않아 닫혔습니다")
+        }
+        cursors::CursorMiss::Busy => {
+            bad_request("cursor_busy", "이 커서는 다른 요청이 읽고 있습니다")
+        }
+    })?;
+    let size = req.batch_size.unwrap_or(opened);
+    match cursors::read_batch(&mut stream, size as usize).await {
+        Ok((batch, done)) => {
+            if done {
+                slot.cursors.close(&req.id);
+            } else {
+                slot.cursors.put_back(&req.id, stream);
+            }
+            Ok(Json(json!({ "batch": batch, "done": done })))
+        }
+        Err(err) => {
+            slot.cursors.close(&req.id);
+            Err(engine_error(err))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CursorCloseRequest {
+    id: String,
+}
+
+/// Closes a cursor on the server; closing one already gone is fine.
+async fn doc_cursor_close(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<CursorCloseRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let closed = slot.cursors.close(&req.id);
+    Ok(Json(json!({ "ok": true, "closed": closed })))
 }
 
 #[derive(Deserialize)]
@@ -5069,6 +5610,36 @@ mod tests {
     }
 
     #[test]
+    fn connection_info_leaves_every_secret_out() {
+        let config: ConnConfig = serde_json::from_value(json!({
+            "uri": "mongodb://app:uri-pw@db:27018/shop?authSource=admin",
+            "user": "app",
+            "password": "field-pw",
+            "aws_session_token": "token-pw",
+            "database": "shop"
+        }))
+        .unwrap();
+        let shown = public_config("mongodb", &config);
+        let text = serde_json::to_string(&shown).unwrap();
+        for secret in ["uri-pw", "field-pw", "token-pw"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert_eq!(
+            shown["uri"],
+            json!("mongodb://app@db:27018/shop?authSource=admin")
+        );
+        assert_eq!(shown["user"], json!("app"));
+        assert_eq!(shown["database"], json!("shop"));
+
+        let config: ConnConfig =
+            serde_json::from_value(json!({ "host": "db", "user": "u", "password": "pg-pw" }))
+                .unwrap();
+        let shown = public_config("postgres", &config);
+        assert!(!shown.contains_key("password"));
+        assert_eq!(shown["host"], json!("db"));
+    }
+
+    #[test]
     fn error_messages_hide_url_passwords() {
         let err = engine_error(EngineError::Driver {
             engine: "mongodb",
@@ -5345,7 +5916,200 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.1.code, "unsupported_capability");
+        // Phase 4 routes: their own rules first, then the missing document
+        // operations of the SQLite slot.
+        let preview = |limit: u32| {
+            doc_update_preview(
+                State(state.clone()),
+                test_headers(),
+                conn_query(None),
+                body(
+                    json!({ "db": "d", "coll": "c", "update": { "$set": { "a": 1 } }, "limit": limit }),
+                ),
+            )
+        };
+        assert_eq!(preview(21).await.unwrap_err().1.code, "bad_request");
+        assert_eq!(preview(0).await.unwrap_err().1.code, "bad_request");
+        // An empty filter needs no confirmation: a preview changes nothing.
+        assert_eq!(
+            preview(20).await.unwrap_err().1.code,
+            "unsupported_capability"
+        );
+        let drop_search = |confirmed: bool| {
+            doc_drop_search_index(
+                State(state.clone()),
+                test_headers(),
+                conn_query(None),
+                body(json!({ "db": "d", "coll": "c", "name": "default", "confirmed": confirmed })),
+            )
+        };
+        assert_eq!(drop_search(false).await.unwrap_err().1.code, "bad_request");
+        assert_eq!(
+            drop_search(true).await.unwrap_err().1.code,
+            "unsupported_capability"
+        );
+        let delete_file = |confirmed: bool| {
+            doc_gridfs_delete(
+                State(state.clone()),
+                test_headers(),
+                conn_query(None),
+                body(
+                    json!({ "db": "d", "bucket": "fs", "id": { "$oid": "65f1a0c2b7e4d3a1f0e9c8b7" }, "confirmed": confirmed }),
+                ),
+            )
+        };
+        assert_eq!(delete_file(false).await.unwrap_err().1.code, "bad_request");
+        assert_eq!(
+            delete_file(true).await.unwrap_err().1.code,
+            "unsupported_capability"
+        );
+        let err = doc_search_indexes(
+            State(state.clone()),
+            test_headers(),
+            doc_params(None, "d", "c"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        let err = doc_watch(
+            State(state.clone()),
+            test_headers(),
+            conn_query(None),
+            body(json!({ "db": "d" })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        let download = |headers: HeaderMap, token: Option<&str>, id: &str| {
+            doc_gridfs_download(
+                State(state.clone()),
+                headers,
+                Query(GridFsDownloadParams {
+                    conn: None,
+                    db: "d".into(),
+                    bucket: "fs".into(),
+                    id: id.into(),
+                    token: token.map(str::to_string),
+                }),
+            )
+        };
+        let oid = r#"{"$oid":"65f1a0c2b7e4d3a1f0e9c8b7"}"#;
+        assert_eq!(
+            download(test_headers(), None, "not json")
+                .await
+                .unwrap_err()
+                .1
+                .code,
+            "bad_request"
+        );
+        assert_eq!(
+            download(test_headers(), None, oid)
+                .await
+                .unwrap_err()
+                .1
+                .code,
+            "unsupported_capability"
+        );
+        // A plain link carries the token in the query instead.
+        assert_eq!(
+            download(HeaderMap::new(), Some("test-token"), oid)
+                .await
+                .unwrap_err()
+                .1
+                .code,
+            "unsupported_capability"
+        );
+        assert_eq!(
+            download(HeaderMap::new(), Some("old-token"), oid)
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let err = doc_gridfs_upload(
+            State(state.clone()),
+            test_headers(),
+            Query(GridFsUploadParams {
+                conn: None,
+                db: "d".into(),
+                bucket: "fs".into(),
+                filename: "a.bin".into(),
+                metadata: None,
+            }),
+            Body::from("abc"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        // Cursors: their rules, then the SQLite slot; unknown ids.
+        let open = |request: Value| {
+            doc_cursor_open(
+                State(state.clone()),
+                test_headers(),
+                conn_query(None),
+                body(request),
+            )
+        };
+        for refused in [
+            json!({ "db": "d", "coll": "c", "find": {}, "batchSize": 0 }),
+            json!({ "db": "d", "coll": "c", "find": {}, "batchSize": 1001 }),
+            json!({ "db": "d", "coll": "c" }),
+            json!({ "db": "d", "coll": "c", "aggregate": { "pipeline": [{ "$out": "x" }] } }),
+        ] {
+            assert_eq!(
+                open(refused.clone()).await.unwrap_err().1.code,
+                "bad_request",
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            open(json!({ "db": "d", "coll": "c", "find": {} }))
+                .await
+                .unwrap_err()
+                .1
+                .code,
+            "unsupported_capability"
+        );
+        let next = |request: Value| {
+            doc_cursor_next(
+                State(state.clone()),
+                test_headers(),
+                conn_query(None),
+                body(request),
+            )
+        };
+        let err = next(json!({ "id": "nope" })).await.unwrap_err();
+        assert_eq!(
+            (err.0, err.1.code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
+        let err = next(json!({ "id": "nope", "batchSize": 0 }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.1.code, "bad_request");
+        let closed = doc_cursor_close(
+            State(state.clone()),
+            test_headers(),
+            conn_query(None),
+            body(json!({ "id": "nope" })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(closed, json!({ "ok": true, "closed": false }));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn downloads_name_the_file_in_any_script() {
+        assert_eq!(
+            attachment("report.pdf"),
+            "attachment; filename*=UTF-8''report.pdf"
+        );
+        assert_eq!(
+            attachment("월 보고서 \"1\".pdf"),
+            "attachment; filename*=UTF-8''%EC%9B%94%20%EB%B3%B4%EA%B3%A0%EC%84%9C%20%221%22.pdf"
+        );
     }
 
     #[test]
@@ -5427,6 +6191,8 @@ mod tests {
             ("POST", "/api/doc/aggregate", ""),
             ("POST", "/api/doc/command", ""),
             ("GET", "/api/ws?token=old-token", ws),
+            ("GET", "/api/doc/gridfs/download?token=old-token&id=1", ""),
+            ("POST", "/api/doc/gridfs/upload?token=test-token", ""),
         ] {
             let mut stream = tokio::net::TcpStream::connect(&host).await.unwrap();
             let request = format!(
@@ -5711,22 +6477,24 @@ mod tests {
             "{last}"
         );
 
-        // Going away closes the server's cursor.
+        // Going away closes the server's cursor. Counted on this namespace
+        // alone: other tests open cursors of their own meanwhile.
         let open_cursors = || async {
-            let status = doc_command(
-                State(state.clone()),
-                test_headers(),
-                conn_query(conn),
-                body(json!({ "db": "admin", "command": { "serverStatus": 1 } })),
-            )
-            .await
-            .unwrap()
-            .0;
-            let open = &status["metrics"]["cursor"]["open"]["total"];
-            open.as_u64()
-                .or_else(|| open["$numberLong"].as_str()?.parse().ok())
-                .or_else(|| open["$numberInt"].as_str()?.parse().ok())
-                .unwrap()
+            let session = slot.engine.document().unwrap();
+            let reply = session
+                .ops()
+                .command(&driver::CommandRequest {
+                    db: "admin".into(),
+                    command: json!({ "aggregate": 1, "cursor": {}, "pipeline": [
+                        { "$currentOp": { "allUsers": true, "idleCursors": true } },
+                        { "$match": { "ns": "shop.orders", "type": "idleCursor" } }
+                    ] }),
+                    confirmed: false,
+                    poll: false,
+                })
+                .await
+                .unwrap();
+            reply["cursor"]["firstBatch"].as_array().unwrap().len()
         };
         let before = open_cursors().await;
         let response = export(json!({ "db": "shop", "coll": "orders" }))
@@ -5859,6 +6627,896 @@ mod tests {
         .unwrap()
         .0;
         assert_eq!(dropped["ok"], json!({ "$numberDouble": "1.0" }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A MongoDB slot of `state` with `config`, as the connect route opens it.
+    async fn mongo_slot(state: &AppState, config: Value) -> Arc<ConnSlot> {
+        let request = connect_request(json!({ "driver": "mongodb", "config": config }));
+        connect_with(
+            state,
+            request,
+            SlotOrigin {
+                label: None,
+                saved_id: None,
+            },
+        )
+        .await
+        .map_err(|err| err.message)
+        .unwrap()
+        .0
+    }
+
+    fn ndjson(bytes: &[u8]) -> Value {
+        serde_json::from_slice(bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn doc_phase4_routes_against_mongodb() {
+        if std::env::var("TABLEPEEK_TEST_MONGODB").is_err() {
+            return;
+        }
+        let dir = temp_dir("doc-mongo-4");
+        let state = test_state(&dir);
+        let slot = mongo_slot(
+            &state,
+            json!({ "host": "127.0.0.1", "port": 27018, "user": "tablepeek",
+                    "password": "tablepeek_test_pw", "direct_connection": true }),
+        )
+        .await;
+        let conn = Some(slot.id.as_str());
+        let coll = format!("tp_route4_{}", uuid::Uuid::new_v4().simple());
+        let _ = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "docs": [
+                { "_id": 1, "name": "kim" }, { "_id": 2, "name": "KIM" }, { "_id": 3, "name": "lee" }
+            ] })),
+        )
+        .await
+        .unwrap();
+        let console = || {
+            slot.engine
+                .sql_log()
+                .since(None)
+                .0
+                .into_iter()
+                .map(|entry| entry.sql)
+                .collect::<Vec<_>>()
+        };
+
+        // Query options: a case-insensitive collation finds both spellings.
+        let find = |extra: Value| {
+            let mut request = json!({ "db": "tablepeek_test", "coll": coll,
+                                      "filter": { "name": "kim" }, "sort": { "_id": 1 } });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            doc_find(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(request),
+            )
+        };
+        let collation = json!({ "locale": "en", "strength": 2 });
+        assert_eq!(find(json!({})).await.unwrap().0.docs.len(), 1);
+        let folded = find(json!({ "collation": collation, "hint": "_id_", "maxTimeMS": 5000 }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(folded.docs.len(), 2);
+        assert!(console().iter().any(|line| line.ends_with(
+            r#".collation({ locale: "en", strength: 2 }).hint("_id_").maxTimeMS(5000)"#
+        )));
+        let err = find(json!({ "hint": "no_such_index" })).await.unwrap_err();
+        assert!(err.1.code.starts_with("mongo_"), "{}", err.1.code);
+        let err = find(json!({ "collation": { "strength": 2 } }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.1.code, "bad_request");
+        let counted = doc_count(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "filter": { "name": "kim" },
+                         "collation": collation, "hint": { "_id": 1 }, "maxTimeMS": 5000 }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!((counted.count, counted.exact), (Some(2), true));
+        let grouped = doc_aggregate(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "collation": collation,
+                         "pipeline": [{ "$match": { "name": "kim" } }, { "$count": "n" }] }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(grouped.docs, vec![json!({ "n": { "$numberInt": "2" } })]);
+        let plan = doc_explain(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "find": { "filter": { "name": "kim" } },
+                         "hint": { "_id": 1 }, "maxTimeMS": 5000 })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(plan.to_string().contains("IXSCAN"), "{plan}");
+        let exported = doc_export(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "filter": { "name": "kim" },
+                         "collation": collation }),
+            ),
+        )
+        .await
+        .unwrap();
+        let exported = axum::body::to_bytes(exported.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            exported
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            3
+        );
+
+        // Update preview: the first documents before and after, nothing kept.
+        let preview = doc_update_preview(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "filter": {},
+                         "update": { "$set": { "seen": true } }, "limit": 2 })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!((preview.matched, preview.previewed), (Some(3), true));
+        assert_eq!(preview.samples.len(), 2);
+        assert!(preview.samples[0].before.get("seen").is_none());
+        assert_eq!(preview.samples[0].after["seen"], json!(true));
+        assert_eq!(
+            preview.samples[0].after["_id"],
+            preview.samples[0].before["_id"]
+        );
+        let pipeline = doc_update_preview(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "filter": { "_id": 3 },
+                         "update": [{ "$set": { "upper": { "$toUpper": "$name" } } }] }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(pipeline.samples[0].after["upper"], json!("LEE"));
+        let untouched = doc_count(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll,
+                         "filter": { "$or": [{ "seen": { "$exists": true } }, { "upper": { "$exists": true } }] } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(untouched.count, Some(0));
+        assert!(console().iter().any(|line| line.starts_with("// 미리보기")));
+
+        // Writes take the query bar's collation and hint too.
+        let folded_preview = doc_update_preview(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "filter": { "name": "kim" },
+                         "update": { "$set": { "seen": true } }, "collation": collation, "hint": "_id_" })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(folded_preview.matched, Some(2));
+        assert_eq!(folded_preview.samples.len(), 2);
+        let tagged = doc_update(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "filter": { "name": "kim" },
+                         "update": { "$set": { "tagged": true } }, "many": true,
+                         "collation": collation, "hint": "_id_" }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!((tagged.matched, tagged.modified), (2, 2));
+        assert!(console().iter().any(|line| line.ends_with(
+            r#".updateMany({ name: "kim" }, { $set: { tagged: true } }, { collation: { locale: "en", strength: 2 }, hint: "_id_" })"#
+        )));
+        let replaced = doc_replace(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "filter": { "name": "LEE" },
+                         "replacement": { "name": "lee", "r": 1 }, "collation": collation }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(replaced.matched, 1);
+        let err = doc_delete(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "filter": { "name": "kim" },
+                         "many": true, "hint": "no_such_index" }),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.1.code.starts_with("mongo_"), "{}", err.1.code);
+        let deleted = doc_delete(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "filter": { "name": "kim" },
+                         "many": true, "collation": collation }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(deleted, json!({ "deleted": 2 }));
+        assert!(console().iter().any(|line| line.ends_with(
+            r#".deleteMany({ name: "kim" }, { collation: { locale: "en", strength: 2 } })"#
+        )));
+
+        // This replica set has no Atlas Search.
+        let err = doc_search_indexes(
+            State(state.clone()),
+            test_headers(),
+            doc_params(conn, "tablepeek_test", &coll),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        assert!(err.1.message.contains("Atlas Search"), "{}", err.1.message);
+        let err = doc_create_search_index(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "name": "default",
+                         "definition": { "mappings": { "dynamic": true } } }),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+
+        // A change stream: a heartbeat as it opens, then the insert.
+        let response = doc_watch(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "fullDocument": "updateLookup",
+                         "pipeline": [{ "$match": { "operationType": { "$in": ["insert", "update"] } } }] })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/x-ndjson"
+        );
+        let mut frames = response.into_body().into_data_stream();
+        let first = ndjson(&frames.next().await.unwrap().unwrap());
+        assert!(first["$heartbeat"].is_u64(), "{first}");
+        let _ = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "docs": [{ "_id": 10, "name": "park" }] })),
+        )
+        .await
+        .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), frames.next())
+            .await
+            .expect("no change event")
+            .unwrap()
+            .unwrap();
+        let event = ndjson(&event);
+        assert_eq!(event["operationType"], "insert", "{event}");
+        assert_eq!(event["fullDocument"]["name"], "park", "{event}");
+        assert!(console()
+            .iter()
+            .any(|line| line.contains(".watch([{ $match:")
+                && line.contains("fullDocument: \"updateLookup\"")));
+        // Going away closes the change stream's cursor on the server.
+        let watching = || async {
+            let session = slot.engine.document().unwrap();
+            let reply = session
+                .ops()
+                .command(&driver::CommandRequest {
+                    db: "admin".into(),
+                    command: json!({ "aggregate": 1, "cursor": {}, "pipeline": [
+                        { "$currentOp": { "allUsers": true, "idleCursors": true } },
+                        { "$match": { "ns": format!("tablepeek_test.{coll}") } }
+                    ] }),
+                    confirmed: false,
+                    poll: false,
+                })
+                .await
+                .unwrap();
+            reply["cursor"]["firstBatch"].as_array().unwrap().len()
+        };
+        assert!(watching().await > 0);
+        drop(frames);
+        let mut closed = false;
+        for _ in 0..50 {
+            if watching().await == 0 {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(closed, "the change stream stayed open");
+        // Reconnecting after the last event seen picks up what happened
+        // meanwhile.
+        let _ = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "docs": [{ "_id": 11, "name": "choi" }] })),
+        )
+        .await
+        .unwrap();
+        let resumed = doc_watch(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "resumeAfter": event["_id"] })),
+        )
+        .await
+        .unwrap();
+        let mut frames = resumed.into_body().into_data_stream();
+        let mut missed = Value::Null;
+        for _ in 0..3 {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), frames.next())
+                .await
+                .expect("no resumed event")
+                .unwrap()
+                .unwrap();
+            let line = ndjson(&frame);
+            if line.get("$heartbeat").is_none() {
+                missed = line;
+                break;
+            }
+        }
+        assert_eq!(
+            missed["documentKey"]["_id"],
+            json!({ "$numberInt": "11" }),
+            "{missed}"
+        );
+        drop(frames);
+        let err = doc_watch(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "fullDocument": "sometimes" })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "bad_request");
+
+        // GridFS: 5 MB in, listed, the same bytes out, deleted.
+        let bucket = format!("tp_fs_{}", uuid::Uuid::new_v4().simple());
+        let data: Vec<u8> = (0..5 * 1024 * 1024u32)
+            .map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        let pieces: Vec<Result<Bytes, std::io::Error>> = data
+            .chunks(64 * 1024)
+            .map(|piece| Ok(Bytes::copy_from_slice(piece)))
+            .collect();
+        let upload = |filename: &str, body: Body| {
+            doc_gridfs_upload(
+                State(state.clone()),
+                test_headers(),
+                Query(GridFsUploadParams {
+                    conn: conn.map(str::to_string),
+                    db: "tablepeek_test".into(),
+                    bucket: bucket.clone(),
+                    filename: filename.into(),
+                    metadata: Some(r#"{"owner":"kim","n":{"$numberLong":"7"}}"#.into()),
+                }),
+                body,
+            )
+        };
+        let id = upload(
+            "보고서 1.bin",
+            Body::from_stream(futures_util::stream::iter(pieces)),
+        )
+        .await
+        .unwrap()
+        .0["id"]
+            .clone();
+        assert!(id["$oid"].is_string(), "{id}");
+        // A body that breaks off leaves nothing behind.
+        let broken: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from(vec![1u8; 600 * 1024])),
+            Err(std::io::Error::other("client went away")),
+        ];
+        assert!(upload(
+            "broken.bin",
+            Body::from_stream(futures_util::stream::iter(broken))
+        )
+        .await
+        .is_err());
+        let buckets = doc_gridfs_buckets(
+            State(state.clone()),
+            test_headers(),
+            doc_params(conn, "tablepeek_test", ""),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(
+            buckets.as_array().unwrap().contains(&json!(bucket)),
+            "{buckets}"
+        );
+        let files = doc_gridfs_files(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "bucket": bucket, "limit": 10 })),
+        )
+        .await
+        .unwrap()
+        .0;
+        let files = files["files"].as_array().unwrap().clone();
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0]["filename"], "보고서 1.bin");
+        assert_eq!(files[0]["metadata"]["n"], json!({ "$numberLong": "7" }));
+        let chunks = doc_count(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": format!("{bucket}.chunks"), "filter": { "files_id": { "$exists": true } } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(chunks.count, Some(21), "only the whole file's chunks");
+        let download = |id: &Value| {
+            doc_gridfs_download(
+                State(state.clone()),
+                test_headers(),
+                Query(GridFsDownloadParams {
+                    conn: conn.map(str::to_string),
+                    db: "tablepeek_test".into(),
+                    bucket: bucket.clone(),
+                    id: id.to_string(),
+                    token: None,
+                }),
+            )
+        };
+        let response = download(&id).await.unwrap();
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            data.len().to_string().as_str()
+        );
+        assert_eq!(
+            response.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename*=UTF-8''%EB%B3%B4%EA%B3%A0%EC%84%9C%201.bin"
+        );
+        let downloaded = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(downloaded == data, "the bytes came back different");
+        let delete = |confirmed: bool| {
+            doc_gridfs_delete(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(
+                    json!({ "db": "tablepeek_test", "bucket": bucket, "id": id, "confirmed": confirmed }),
+                ),
+            )
+        };
+        assert_eq!(delete(false).await.unwrap_err().1.code, "bad_request");
+        let _ = delete(true).await.unwrap();
+        let err = download(&id).await.unwrap_err();
+        assert_eq!(
+            (err.0, err.1.code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
+        assert_eq!(delete(true).await.unwrap_err().1.code, "not_found");
+        assert!(console().iter().any(|line| line
+            .starts_with("mongofiles --db=tablepeek_test --prefix=tp_fs_")
+            && line.contains(
+                " put '보고서 1.bin' # metadata: { owner: \"kim\", n: NumberLong(\"7\") }"
+            )));
+
+        for name in [coll, format!("{bucket}.files"), format!("{bucket}.chunks")] {
+            let _ = doc_command(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(json!({ "db": "tablepeek_test", "command": { "drop": name }, "confirmed": true })),
+            )
+            .await
+            .unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn doc_cursor_routes_against_mongodb() {
+        if std::env::var("TABLEPEEK_TEST_MONGODB").is_err() {
+            return;
+        }
+        let dir = temp_dir("doc-cursors");
+        let state = test_state(&dir);
+        let slot = mongo_slot(
+            &state,
+            json!({ "host": "127.0.0.1", "port": 27018, "user": "tablepeek",
+                    "password": "tablepeek_test_pw", "direct_connection": true }),
+        )
+        .await;
+        // Short enough to watch an idle cursor close; set before the first
+        // cursor starts the sweeper.
+        slot.cursors.set_idle(std::time::Duration::from_millis(400));
+        let conn = Some(slot.id.as_str());
+        let coll = format!("tp_cursor_{}", uuid::Uuid::new_v4().simple());
+        for chunk in 0..5 {
+            let docs: Vec<Value> = (chunk * 5_000..(chunk + 1) * 5_000)
+                .map(|n| json!({ "n": n }))
+                .collect();
+            let _ = doc_insert(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(json!({ "db": "tablepeek_test", "coll": coll, "docs": docs })),
+            )
+            .await
+            .unwrap();
+        }
+        let open = |request: Value| {
+            doc_cursor_open(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(request),
+            )
+        };
+        let next = |request: Value| {
+            doc_cursor_next(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(request),
+            )
+        };
+        let number = |doc: &Value| -> i64 {
+            let n = &doc["n"];
+            n["$numberInt"].as_str().unwrap().parse().unwrap()
+        };
+        // Server cursors still open on the scratch collection.
+        let open_cursors = || async {
+            let session = slot.engine.document().unwrap();
+            let reply = session
+                .ops()
+                .command(&driver::CommandRequest {
+                    db: "admin".into(),
+                    command: json!({ "aggregate": 1, "cursor": {}, "pipeline": [
+                        { "$currentOp": { "allUsers": true, "idleCursors": true } },
+                        { "$match": { "ns": format!("tablepeek_test.{coll}"), "type": "idleCursor" } }
+                    ] }),
+                    confirmed: false,
+                    poll: false,
+                })
+                .await
+                .unwrap();
+            reply["cursor"]["firstBatch"].as_array().unwrap().len()
+        };
+        let closes = || async {
+            for _ in 0..50 {
+                if open_cursors().await == 0 {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            false
+        };
+
+        // An aggregation of 25,000 documents, past the 10,000 cap of
+        // /api/doc/aggregate, in order and whole.
+        let first = open(json!({ "db": "tablepeek_test", "coll": coll, "batchSize": 1000,
+                                 "aggregate": { "pipeline": [{ "$sort": { "n": 1 } }, { "$project": { "_id": 0 } }] } }))
+            .await
+            .unwrap()
+            .0;
+        let id = first["id"].clone();
+        assert!(id.is_string(), "{first}");
+        assert_eq!(first["done"], json!(false));
+        let mut seen: Vec<i64> = first["batch"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(number)
+            .collect();
+        assert_eq!(seen.len(), 1000);
+        loop {
+            let page = next(json!({ "id": id })).await.unwrap().0;
+            let batch = page["batch"].as_array().unwrap();
+            assert!(batch.len() <= 1000);
+            seen.extend(batch.iter().map(number));
+            if page["done"] == json!(true) {
+                break;
+            }
+        }
+        assert_eq!(seen, (0..25_000).collect::<Vec<i64>>());
+        // Read to the end, it is closed.
+        assert_eq!(
+            next(json!({ "id": id })).await.unwrap_err().1.code,
+            "not_found"
+        );
+        let opened = slot
+            .engine
+            .sql_log()
+            .since(None)
+            .0
+            .iter()
+            .filter(|entry| {
+                entry
+                    .sql
+                    .ends_with(".aggregate([{ $sort: { n: 1 } }, { $project: { _id: 0 } }], { batchSize: 1000 })")
+            })
+            .count();
+        assert_eq!(opened, 1, "the open is logged once, not each batch");
+
+        // A find keeps its batch size; closing it closes the server's cursor.
+        let find = open(
+            json!({ "db": "tablepeek_test", "coll": coll, "batchSize": 2,
+                                "find": { "filter": { "n": { "$lt": 10 } }, "sort": { "n": 1 },
+                                          "hint": "_id_", "maxTimeMS": 5000 } }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(find["batch"].as_array().unwrap().len(), 2);
+        let page = next(json!({ "id": find["id"] })).await.unwrap().0;
+        assert_eq!(
+            page["batch"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(number)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        let page = next(json!({ "id": find["id"], "batchSize": 3 }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(page["batch"].as_array().unwrap().len(), 3);
+        assert!(open_cursors().await > 0);
+        let closed = doc_cursor_close(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "id": find["id"] })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(closed, json!({ "ok": true, "closed": true }));
+        assert!(
+            closes().await,
+            "the closed cursor stayed open on the server"
+        );
+        // All in the first batch: nothing left open.
+        let whole =
+            open(json!({ "db": "tablepeek_test", "coll": coll, "find": { "filter": { "n": 7 } } }))
+                .await
+                .unwrap()
+                .0;
+        assert_eq!(
+            (whole["id"].clone(), whole["done"].clone()),
+            (Value::Null, json!(true))
+        );
+        assert_eq!(whole["batch"].as_array().unwrap().len(), 1);
+
+        // Left unread past the idle limit, it closes here and on the server.
+        let idle = open(
+            json!({ "db": "tablepeek_test", "coll": coll, "batchSize": 1,
+                                "find": { "filter": {} } }),
+        )
+        .await
+        .unwrap()
+        .0;
+        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+        assert_eq!(
+            next(json!({ "id": idle["id"] })).await.unwrap_err().1.code,
+            "not_found"
+        );
+        assert!(closes().await, "the idle cursor stayed open on the server");
+
+        // $out through a cursor only once confirmed.
+        let out = |confirmed: bool| {
+            open(
+                json!({ "db": "tablepeek_test", "coll": coll, "confirmed": confirmed,
+                         "aggregate": { "pipeline": [{ "$match": { "n": { "$lt": 3 } } }, { "$out": format!("{coll}_out") }] } }),
+            )
+        };
+        assert_eq!(out(false).await.unwrap_err().1.code, "bad_request");
+        let written = out(true).await.unwrap().0;
+        assert_eq!(written["done"], json!(true));
+        let copied = doc_count(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": format!("{coll}_out"), "filter": { "n": { "$exists": true } } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(copied.count, Some(3));
+
+        // Disconnecting closes the slot's cursors.
+        let _left = open(
+            json!({ "db": "tablepeek_test", "coll": coll, "batchSize": 1,
+                                 "find": { "filter": {} } }),
+        )
+        .await
+        .unwrap();
+        assert!(open_cursors().await > 0);
+        let _ = conns_delete(
+            State(state.clone()),
+            AxumPath(slot.id.clone()),
+            test_headers(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(slot.cursors.open_count(), 0);
+        assert!(closes().await, "the cursor outlived its connection");
+        // The slot is gone from the registry; its engine still answers here.
+        let session = slot.engine.document().unwrap();
+        for name in [coll.clone(), format!("{coll}_out")] {
+            let _ = session
+                .ops()
+                .command(&driver::CommandRequest {
+                    db: "tablepeek_test".into(),
+                    command: json!({ "drop": name }),
+                    confirmed: true,
+                    poll: false,
+                })
+                .await;
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Atlas Search indexes against the Atlas Local container of
+    /// `make test-db-atlas` (127.0.0.1:27019, no auth).
+    #[tokio::test]
+    async fn search_index_routes_against_atlas_local() {
+        if std::env::var("TABLEPEEK_TEST_MONGODB_ATLAS").is_err() {
+            return;
+        }
+        let dir = temp_dir("doc-atlas");
+        let state = test_state(&dir);
+        let slot = mongo_slot(
+            &state,
+            json!({ "host": "127.0.0.1", "port": 27019, "direct_connection": true }),
+        )
+        .await;
+        let conn = Some(slot.id.as_str());
+        let coll = format!("tp_search_{}", uuid::Uuid::new_v4().simple());
+        let _ = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "docs": [{ "title": "hello" }] })),
+        )
+        .await
+        .unwrap();
+        let created = doc_create_search_index(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "name": "titles",
+                         "definition": { "mappings": { "dynamic": true } } }),
+            ),
+        )
+        .await
+        .map_err(|err| err.1.message.clone())
+        .unwrap()
+        .0;
+        assert_eq!(created, json!({ "name": "titles" }));
+        let vector = doc_create_search_index(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "name": "vectors", "type": "vectorSearch",
+                         "definition": { "fields": [{ "type": "vector", "path": "v",
+                                                      "numDimensions": 3, "similarity": "cosine" }] } })),
+        )
+        .await
+        .map_err(|err| err.1.message.clone())
+        .unwrap()
+        .0;
+        assert_eq!(vector, json!({ "name": "vectors" }));
+        let listed = doc_search_indexes(
+            State(state.clone()),
+            test_headers(),
+            doc_params(conn, "tablepeek_test", &coll),
+        )
+        .await
+        .unwrap()
+        .0;
+        let listed = listed.as_array().unwrap();
+        let titles = listed
+            .iter()
+            .find(|index| index["name"] == "titles")
+            .unwrap();
+        assert_eq!(titles["type"], "search");
+        assert!(
+            titles.get("status").is_some() && titles.get("queryable").is_some(),
+            "{titles}"
+        );
+        assert!(listed
+            .iter()
+            .any(|index| index["name"] == "vectors" && index["type"] == "vectorSearch"));
+        let _ = doc_update_search_index(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "name": "titles",
+                         "definition": { "mappings": { "dynamic": false, "fields": { "title": { "type": "string" } } } } })),
+        )
+        .await
+        .map_err(|err| err.1.message.clone())
+        .unwrap();
+        for name in ["titles", "vectors"] {
+            let _ = doc_drop_search_index(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(json!({ "db": "tablepeek_test", "coll": coll, "name": name, "confirmed": true })),
+            )
+            .await
+            .map_err(|err| err.1.message.clone())
+            .unwrap();
+        }
+        let _ = doc_command(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "command": { "drop": coll }, "confirmed": true })),
+        )
+        .await;
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

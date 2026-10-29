@@ -161,10 +161,89 @@ pub trait DocumentDriver: Send + Sync {
     /// The part of the server's status the performance tab charts (see
     /// `/api/doc/perf`).
     async fn perf(&self) -> Result<Value, EngineError>;
+    /// What an update would do, without leaving any change: the documents
+    /// it matches and, where the server runs transactions, the first few as
+    /// they are and as they would be (changed inside a transaction that is
+    /// then aborted).
+    async fn update_preview(
+        &self,
+        req: &UpdatePreviewRequest,
+    ) -> Result<UpdatePreview, EngineError>;
+    /// The collection's Atlas Search (and Vector Search) indexes; a server
+    /// without search answers `Unsupported`, as do the three below.
+    async fn search_indexes(&self, db: &str, coll: &str) -> Result<Vec<Value>, EngineError>;
+    /// The new index's name.
+    async fn create_search_index(&self, req: &SearchIndexRequest) -> Result<String, EngineError>;
+    async fn update_search_index(&self, req: &SearchIndexRequest) -> Result<(), EngineError>;
+    async fn drop_search_index(&self, req: &DropSearchIndexRequest) -> Result<(), EngineError>;
+    /// A change stream on a collection or a whole database, event by event
+    /// as canonical Extended JSON. It waits for changes as it is consumed;
+    /// dropping it closes it on the server.
+    async fn watch(&self, req: &WatchRequest) -> Result<DocStream, EngineError>;
+    /// The GridFS buckets of a database: the prefixes with both a `.files`
+    /// and a `.chunks` collection.
+    async fn gridfs_buckets(&self, db: &str) -> Result<Vec<String>, EngineError>;
+    /// The bucket's file documents, as stored.
+    async fn gridfs_files(&self, req: &GridFsFilesRequest) -> Result<Vec<Value>, EngineError>;
+    /// A file's document and its bytes, read chunk by chunk as consumed.
+    async fn gridfs_download(&self, req: &GridFsFileRef) -> Result<GridFsDownload, EngineError>;
+    /// Stores `body` as a new file, reading it as it arrives; answers the
+    /// file's id. A failure midway removes the chunks already written.
+    async fn gridfs_upload(
+        &self,
+        req: &GridFsUploadRequest,
+        body: ByteReader,
+    ) -> Result<Value, EngineError>;
+    /// Removes a file's document and its chunks.
+    async fn gridfs_delete(&self, req: &GridFsFileRef) -> Result<(), EngineError>;
+    /// A find or an aggregation left open on the server, read batch by
+    /// batch as the stream is consumed (the shell's cursors); dropping the
+    /// stream closes it there. Checked by `check_cursor` first.
+    async fn cursor(&self, req: &CursorOpenRequest) -> Result<DocStream, EngineError>;
 }
 
 /// Documents read one by one, as canonical Extended JSON.
 pub type DocStream = futures_util::stream::BoxStream<'static, Result<Value, EngineError>>;
+
+/// Bytes as they arrive (an upload's request body).
+pub type ByteReader = std::pin::Pin<Box<dyn futures_util::io::AsyncBufRead + Send>>;
+
+/// A GridFS file on its way out: its document (canonical Extended JSON),
+/// the name and length the reply's headers carry, and the bytes.
+pub struct GridFsDownload {
+    pub file: Value,
+    pub filename: Option<String>,
+    pub length: u64,
+    /// The legacy `contentType` field, where the file has one.
+    pub content_type: Option<String>,
+    pub bytes: futures_util::stream::BoxStream<'static, Result<Vec<u8>, EngineError>>,
+}
+
+/// Options every read that runs a query takes (find, count, aggregate,
+/// explain, export): how strings compare, the index to use, and how long
+/// the server may take.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueryOptions {
+    /// A collation document (`{ locale, strength, … }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collation: Option<Value>,
+    /// An index name or a key document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<Value>,
+    #[serde(default, rename = "maxTimeMS", skip_serializing_if = "Option::is_none")]
+    pub max_time_ms: Option<u64>,
+}
+
+/// What a write takes of the query options (update, replace, delete and
+/// the update preview): how its filter compares strings, and the index to
+/// find the documents by.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WriteOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collation: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<Value>,
+}
 
 /// Commands `/api/doc/command` passes on. Reads go as sent; the ones
 /// `check_command` names need `confirmed`.
@@ -231,8 +310,8 @@ pub struct FindRequest {
     pub skip: Option<u64>,
     #[serde(default = "default_limit")]
     pub limit: i64,
-    #[serde(default, rename = "maxTimeMS")]
-    pub max_time_ms: Option<u64>,
+    #[serde(flatten)]
+    pub options: QueryOptions,
     /// A screen's repeated read (the performance tab's slow-operation list):
     /// kept out of the console when it reads `system.profile`.
     #[serde(default)]
@@ -252,8 +331,8 @@ pub struct AggregateRequest {
     pub db: String,
     pub coll: String,
     pub pipeline: Vec<Value>,
-    #[serde(default, rename = "maxTimeMS")]
-    pub max_time_ms: Option<u64>,
+    #[serde(flatten)]
+    pub options: QueryOptions,
     /// The user confirmed a pipeline that writes (`$out`, `$merge`).
     #[serde(default)]
     pub confirmed: bool,
@@ -272,6 +351,9 @@ pub struct CountRequest {
     pub coll: String,
     #[serde(default = "empty_filter")]
     pub filter: Value,
+    /// `maxTimeMS` replaces the three-second limit of a count with a filter.
+    #[serde(flatten)]
+    pub options: QueryOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,6 +426,8 @@ pub struct ExportRequest {
     pub limit: Option<i64>,
     #[serde(default)]
     pub pipeline: Option<Vec<Value>>,
+    #[serde(flatten)]
+    pub options: QueryOptions,
 }
 
 /// `filter` picks the documents; the page's own edits put the document's
@@ -362,6 +446,8 @@ pub struct UpdateRequest {
     /// The user confirmed a write with an empty filter.
     #[serde(default)]
     pub confirmed: bool,
+    #[serde(flatten)]
+    pub options: WriteOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -379,6 +465,8 @@ pub struct ReplaceRequest {
     /// The user confirmed a write with an empty filter.
     #[serde(default)]
     pub confirmed: bool,
+    #[serde(flatten)]
+    pub options: WriteOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -390,6 +478,8 @@ pub struct DeleteRequest {
     pub many: bool,
     #[serde(default)]
     pub confirmed: bool,
+    #[serde(flatten)]
+    pub options: WriteOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -420,6 +510,9 @@ pub struct ExplainRequest {
     pub aggregate: Option<ExplainAggregate>,
     #[serde(default = "default_verbosity")]
     pub verbosity: String,
+    /// Applied to the find or the aggregation explained.
+    #[serde(flatten)]
+    pub options: QueryOptions,
 }
 
 fn default_verbosity() -> String {
@@ -443,6 +536,170 @@ pub struct ExplainFind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplainAggregate {
     pub pipeline: Vec<Value>,
+}
+
+fn default_cursor_batch() -> u32 {
+    101
+}
+
+/// The most documents one cursor batch carries.
+pub const CURSOR_BATCH_LIMIT: u32 = 1000;
+
+/// `/api/doc/cursor/open`: a find or an aggregation whose documents are
+/// read `batchSize` at a time with `/api/doc/cursor/next`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorOpenRequest {
+    pub db: String,
+    pub coll: String,
+    #[serde(default)]
+    pub find: Option<CursorFind>,
+    #[serde(default)]
+    pub aggregate: Option<CursorAggregate>,
+    /// 1–1000; the first batch and the default for the next ones.
+    #[serde(default = "default_cursor_batch", rename = "batchSize")]
+    pub batch_size: u32,
+    /// The user confirmed an aggregation that writes (`$out`, `$merge`).
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorFind {
+    #[serde(default = "empty_filter")]
+    pub filter: Value,
+    #[serde(default)]
+    pub projection: Option<Value>,
+    #[serde(default)]
+    pub sort: Option<Value>,
+    #[serde(default)]
+    pub skip: Option<u64>,
+    /// None or 0: every document.
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(flatten)]
+    pub options: QueryOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorAggregate {
+    pub pipeline: Vec<Value>,
+    #[serde(flatten)]
+    pub options: QueryOptions,
+}
+
+fn default_preview_limit() -> u32 {
+    5
+}
+
+/// The most documents an update preview shows before and after.
+pub const PREVIEW_LIMIT: u32 = 20;
+
+/// `/api/doc/update/preview`: the update as it would go with `many`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatePreviewRequest {
+    pub db: String,
+    pub coll: String,
+    #[serde(default = "empty_filter")]
+    pub filter: Value,
+    /// A document of operators or a pipeline, as `update` takes it.
+    pub update: Value,
+    /// How many documents to show before and after (1–20).
+    #[serde(default = "default_preview_limit")]
+    pub limit: u32,
+    #[serde(flatten)]
+    pub options: WriteOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatePreview {
+    /// Null when counting took too long (three seconds), as `count` does.
+    pub matched: Option<u64>,
+    pub samples: Vec<PreviewSample>,
+    /// False where the server runs no transactions: `samples` is empty.
+    pub previewed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewSample {
+    pub before: Value,
+    pub after: Value,
+}
+
+/// Creating (`POST`) or changing (`PUT`) an Atlas Search index. `type`
+/// ("search" or "vectorSearch") only counts when creating.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexRequest {
+    pub db: String,
+    pub coll: String,
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+    pub definition: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropSearchIndexRequest {
+    pub db: String,
+    pub coll: String,
+    pub name: String,
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+/// A change stream: on `coll`, or on every collection of `db` without one.
+/// `fullDocument` ("updateLookup", "whenAvailable", "required") and
+/// `fullDocumentBeforeChange` ("whenAvailable", "required", "off") as the
+/// server takes them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchRequest {
+    pub db: String,
+    #[serde(default)]
+    pub coll: Option<String>,
+    #[serde(default)]
+    pub pipeline: Option<Vec<Value>>,
+    #[serde(default, rename = "fullDocument")]
+    pub full_document: Option<String>,
+    #[serde(default, rename = "fullDocumentBeforeChange")]
+    pub full_document_before_change: Option<String>,
+    /// An event's `_id` (its resume token): the stream goes on after it, so
+    /// a page that lost its stream reconnects without missing changes.
+    #[serde(default, rename = "resumeAfter")]
+    pub resume_after: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GridFsFilesRequest {
+    pub db: String,
+    pub bucket: String,
+    #[serde(default = "empty_filter")]
+    pub filter: Value,
+    #[serde(default)]
+    pub sort: Option<Value>,
+    #[serde(default)]
+    pub skip: Option<u64>,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+
+/// One file of a bucket: its `_id` as canonical Extended JSON. `confirmed`
+/// is what a delete needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GridFsFileRef {
+    pub db: String,
+    pub bucket: String,
+    pub id: Value,
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GridFsUploadRequest {
+    pub db: String,
+    pub bucket: String,
+    pub filename: String,
+    /// The file document's `metadata`, as canonical Extended JSON.
+    #[serde(default)]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -591,6 +848,61 @@ pub fn check_aggregate(req: &AggregateRequest) -> Result<bool, EngineError> {
     Ok(writes)
 }
 
+/// The rule of `/api/doc/update/preview`: between 1 and `PREVIEW_LIMIT`
+/// documents. Its filter may be empty: nothing it does is left behind.
+pub fn check_preview(req: &UpdatePreviewRequest) -> Result<(), EngineError> {
+    if req.limit == 0 || req.limit > PREVIEW_LIMIT {
+        return Err(EngineError::BadRequest(format!(
+            "미리 볼 문서 수는 1~{PREVIEW_LIMIT}개입니다"
+        )));
+    }
+    Ok(())
+}
+
+/// The rule of the deletes outside `command` (a search index, a GridFS
+/// file): only once confirmed. `what` carries its object particle
+/// ("파일을").
+pub fn check_drop(confirmed: bool, what: &str) -> Result<(), EngineError> {
+    if !confirmed {
+        return Err(EngineError::BadRequest(format!(
+            "{what} 삭제하려면 확인이 필요합니다 (confirmed: true)"
+        )));
+    }
+    Ok(())
+}
+
+/// The batch size a cursor request may ask for: 1 to `CURSOR_BATCH_LIMIT`.
+pub fn check_batch_size(size: u32) -> Result<(), EngineError> {
+    if size == 0 || size > CURSOR_BATCH_LIMIT {
+        return Err(EngineError::BadRequest(format!(
+            "batchSize는 1~{CURSOR_BATCH_LIMIT}입니다"
+        )));
+    }
+    Ok(())
+}
+
+/// The rules of `/api/doc/cursor/open`: one of `find` and `aggregate`, a
+/// batch size in range, and an aggregation that writes only once
+/// confirmed. Answers whether it writes.
+pub fn check_cursor(req: &CursorOpenRequest) -> Result<bool, EngineError> {
+    check_batch_size(req.batch_size)?;
+    match (&req.find, &req.aggregate) {
+        (Some(_), None) => Ok(false),
+        (None, Some(aggregate)) => {
+            let writes = pipeline_writes(&aggregate.pipeline);
+            if writes && !req.confirmed {
+                return Err(EngineError::BadRequest(
+                    "$out·$merge가 있는 파이프라인은 확인이 필요합니다 (confirmed: true)".into(),
+                ));
+            }
+            Ok(writes)
+        }
+        _ => Err(EngineError::BadRequest(
+            "find 또는 aggregate 중 하나를 지정하세요".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,7 +988,7 @@ mod tests {
             db: "shop".into(),
             coll: "orders".into(),
             pipeline: serde_json::from_value(pipeline).unwrap(),
-            max_time_ms: None,
+            options: QueryOptions::default(),
             confirmed,
         };
         let read = json!([{ "$match": { "status": "paid" } }, { "$limit": 5 }]);
@@ -727,11 +1039,97 @@ mod tests {
             sort: None,
             skip: None,
             limit: 50,
-            max_time_ms: None,
+            options: QueryOptions::default(),
             poll,
         };
         assert!(find("system.profile", true).quiet());
         assert!(!find("system.profile", false).quiet());
         assert!(!find("orders", true).quiet());
+    }
+
+    #[test]
+    fn query_options_read_beside_the_request() {
+        let find: FindRequest = serde_json::from_value(json!({
+            "db": "shop", "coll": "orders", "filter": { "name": "kim" },
+            "collation": { "locale": "ko", "strength": 2 },
+            "hint": "name_1", "maxTimeMS": 500
+        }))
+        .unwrap();
+        assert_eq!(find.limit, 20);
+        assert_eq!(find.options.hint, Some(json!("name_1")));
+        assert_eq!(find.options.max_time_ms, Some(500));
+        assert_eq!(find.options.collation.unwrap()["locale"], "ko");
+        let count: CountRequest =
+            serde_json::from_value(json!({ "db": "shop", "coll": "orders", "hint": { "a": 1 } }))
+                .unwrap();
+        assert_eq!(count.options.hint, Some(json!({ "a": 1 })));
+        assert!(count.options.max_time_ms.is_none());
+        let explain: ExplainRequest = serde_json::from_value(json!({
+            "db": "shop", "coll": "orders", "find": { "filter": {} }, "maxTimeMS": 10
+        }))
+        .unwrap();
+        assert_eq!(explain.options.max_time_ms, Some(10));
+        assert_eq!(explain.verbosity, "executionStats");
+        let delete: DeleteRequest = serde_json::from_value(json!({
+            "db": "shop", "coll": "orders", "filter": { "name": "kim" }, "many": true,
+            "collation": { "locale": "ko" }, "hint": "name_1"
+        }))
+        .unwrap();
+        assert_eq!(delete.options.hint, Some(json!("name_1")));
+        assert_eq!(delete.options.collation.unwrap()["locale"], "ko");
+        let update: UpdateRequest = serde_json::from_value(json!({
+            "db": "shop", "coll": "orders", "filter": {}, "update": { "$set": { "a": 1 } }
+        }))
+        .unwrap();
+        assert!(update.options.collation.is_none() && update.options.hint.is_none());
+    }
+
+    #[test]
+    fn previews_take_one_to_twenty_and_drops_need_confirming() {
+        let preview = |limit: Option<u32>| {
+            let mut body =
+                json!({ "db": "shop", "coll": "orders", "update": { "$set": { "a": 1 } } });
+            if let Some(limit) = limit {
+                body["limit"] = json!(limit);
+            }
+            serde_json::from_value::<UpdatePreviewRequest>(body).unwrap()
+        };
+        assert_eq!(preview(None).limit, 5);
+        // An empty filter is fine: a preview leaves nothing behind.
+        assert!(is_empty_filter(&preview(None).filter));
+        check_preview(&preview(None)).unwrap();
+        check_preview(&preview(Some(20))).unwrap();
+        assert!(check_preview(&preview(Some(0))).is_err());
+        assert!(check_preview(&preview(Some(21))).is_err());
+        assert!(check_drop(false, "검색 인덱스를").is_err());
+        check_drop(true, "검색 인덱스를").unwrap();
+    }
+
+    #[test]
+    fn cursors_take_one_query_a_bounded_batch_and_confirmed_writes() {
+        let open = |body: Value| serde_json::from_value::<CursorOpenRequest>(body).unwrap();
+        let find = open(json!({ "db": "shop", "coll": "orders",
+                                "find": { "filter": { "a": 1 }, "collation": { "locale": "en" }, "maxTimeMS": 5 } }));
+        assert_eq!(find.batch_size, 101);
+        assert_eq!(find.find.as_ref().unwrap().options.max_time_ms, Some(5));
+        assert!(!check_cursor(&find).unwrap());
+        for size in [0, 1001] {
+            let body = json!({ "db": "d", "coll": "c", "find": {}, "batchSize": size });
+            assert!(check_cursor(&open(body)).is_err(), "{size}");
+        }
+        check_cursor(&open(
+            json!({ "db": "d", "coll": "c", "find": {}, "batchSize": 1000 }),
+        ))
+        .unwrap();
+        assert!(check_cursor(&open(json!({ "db": "d", "coll": "c" }))).is_err());
+        assert!(check_cursor(&open(
+            json!({ "db": "d", "coll": "c", "find": {}, "aggregate": { "pipeline": [] } })
+        ))
+        .is_err());
+        let out = json!({ "db": "d", "coll": "c", "aggregate": { "pipeline": [{ "$out": "x" }], "hint": "_id_" } });
+        assert!(check_cursor(&open(out.clone())).is_err());
+        let mut confirmed = out;
+        confirmed["confirmed"] = json!(true);
+        assert!(check_cursor(&open(confirmed)).unwrap());
     }
 }

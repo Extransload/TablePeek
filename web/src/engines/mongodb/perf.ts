@@ -117,29 +117,43 @@ const POLL_COMMANDS = ["serverStatus", "currentOp", "top"];
 
 // The operations of a `currentOp` reply, longest-running first. Left out:
 // the tab's own polls (serverStatus, currentOp, top and its reads of
-// system.profile; the app's other queries stay), the server's idle
-// background threads (op "none") and drivers' awaitable `hello`s, which sit
-// waiting for a topology change rather than doing work.
+// system.profile; the app's other queries stay; a mongos runs currentOp as
+// a `$currentOp` aggregate, whose command it may truncate), the server's
+// idle background threads (op "none") and drivers' awaitable `hello`s,
+// which sit waiting for a topology change rather than doing work.
 export function runningOps(reply: BsonDocument): RunningOp[] {
-  const list = Array.isArray(reply.inprog) ? reply.inprog.filter(isDocument) : [];
+  const inprog = reply.get("inprog");
+  const list = Array.isArray(inprog) ? inprog.filter(isDocument) : [];
   return list
     .filter((op) => {
-      const cmd = isDocument(op.command) ? op.command : {};
-      const waitingHello = ("hello" in cmd || "isMaster" in cmd || "ismaster" in cmd) && "topologyVersion" in cmd;
-      const ownPoll = op.appName === "TablePeek" && (POLL_COMMANDS.some((name) => name in cmd) || cmd.find === "system.profile");
-      return op.op !== "none" && !ownPoll && !waitingHello;
+      const command = op.get("command");
+      const cmd: BsonDocument = isDocument(command) ? command : new Map();
+      const waitingHello = (cmd.has("hello") || cmd.has("isMaster") || cmd.has("ismaster")) && cmd.has("topologyVersion");
+      const pipeline = cmd.get("pipeline");
+      const currentOpAggregate =
+        (Array.isArray(pipeline) && isDocument(pipeline[0]) && pipeline[0].has("$currentOp")) ||
+        text(cmd.get("$truncated")).startsWith("{ aggregate: 1, pipeline: [ { $currentOp");
+      const ownPoll =
+        op.get("appName") === "TablePeek" &&
+        (POLL_COMMANDS.some((name) => cmd.has(name)) || cmd.get("find") === "system.profile" || currentOpAggregate);
+      return op.get("op") !== "none" && !ownPoll && !waitingHello;
     })
-    .map((op) => ({
-      opid: op.opid ?? null,
-      op: text(op.op),
-      ns: text(op.ns),
-      micros: op.microsecs_running !== undefined ? numberOf(op.microsecs_running) : numberOf(op.secs_running) * 1e6,
-      client: text(op.client) || text(op.client_s),
-      appName: text(op.appName),
-      plan: text(op.planSummary),
-      desc: text(op.desc),
-      command: isDocument(op.command) ? op.command : isDocument(op.query) ? op.query : null,
-    }))
+    .map((op) => {
+      const command = op.get("command");
+      const query = op.get("query");
+      const micros = op.get("microsecs_running");
+      return {
+        opid: op.get("opid") ?? null,
+        op: text(op.get("op")),
+        ns: text(op.get("ns")),
+        micros: micros !== undefined ? numberOf(micros) : numberOf(op.get("secs_running")) * 1e6,
+        client: text(op.get("client")) || text(op.get("client_s")),
+        appName: text(op.get("appName")),
+        plan: text(op.get("planSummary")),
+        desc: text(op.get("desc")),
+        command: isDocument(command) ? command : isDocument(query) ? query : null,
+      };
+    })
     .sort((a, b) => b.micros - a.micros);
 }
 
@@ -158,23 +172,27 @@ export interface TopRow {
 // The namespaces of a `top` reply that have seen any operation, busiest
 // first. Times arrive in microseconds.
 export function topRows(reply: BsonDocument, prev: TopRow[] | null): TopRow[] {
-  const totals = isDocument(reply.totals) ? reply.totals : {};
+  const totals = reply.get("totals");
   const before = new Map((prev ?? []).map((row) => [row.ns, row.totalMs]));
   const rows: TopRow[] = [];
-  for (const [ns, v] of Object.entries(totals)) {
+  if (!isDocument(totals)) return rows;
+  for (const [ns, v] of totals) {
     if (!isDocument(v) || ns === "note") continue;
-    const part = (key: string) => (isDocument(v[key]) ? (v[key] as BsonDocument) : {});
+    const part = (key: string): BsonDocument => {
+      const sub = v.get(key);
+      return isDocument(sub) ? sub : new Map();
+    };
     const total = part("total");
-    if (numberOf(total.count) === 0) continue;
-    const totalMs = numberOf(total.time) / 1000;
+    if (numberOf(total.get("count")) === 0) continue;
+    const totalMs = numberOf(total.get("time")) / 1000;
     const was = before.get(ns);
     rows.push({
       ns,
       totalMs,
-      readMs: numberOf(part("readLock").time) / 1000,
-      readCount: numberOf(part("readLock").count),
-      writeMs: numberOf(part("writeLock").time) / 1000,
-      writeCount: numberOf(part("writeLock").count),
+      readMs: numberOf(part("readLock").get("time")) / 1000,
+      readCount: numberOf(part("readLock").get("count")),
+      writeMs: numberOf(part("writeLock").get("time")) / 1000,
+      writeCount: numberOf(part("writeLock").get("count")),
       recentMs: prev === null ? null : Math.max(0, totalMs - (was ?? 0)),
     });
   }

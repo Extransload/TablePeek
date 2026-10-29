@@ -5,7 +5,7 @@
 
 import { t } from "../../i18n";
 import { store } from "../../store";
-import { BsonDate, Decimal128, Double, Int32, Int64, fromEJSON, isDocument, toEJSON, type BsonDocument, type BsonValue } from "./bson";
+import { BsonDate, Decimal128, Double, Int32, Int64, bsonDoc, fromEJSON, isDocument, parseJson, stringifyJson, toEJSON, type BsonDocument, type BsonValue } from "./bson";
 
 // The optional fields a server error reply adds to `{ code, message }`
 // (ERRORS.md §2), kept on the error under the same names so the app's error
@@ -71,7 +71,7 @@ export interface CollStats {
   storageSize: number;
   nindexes: number;
   totalIndexSize: number;
-  indexSizes: Record<string, number>;
+  indexSizes: Map<string, number>;
 }
 
 export interface IndexInfo {
@@ -85,13 +85,12 @@ export interface IndexInfo {
   ops?: number;
 }
 
-export interface FindArgs {
+export interface FindArgs extends QueryOptions {
   filter: BsonDocument;
   projection?: BsonDocument | null;
   sort?: BsonDocument | null;
   skip?: number;
   limit: number;
-  maxTimeMS?: number;
   // An automatic refresh (the 성능 tab's system.profile reads): the server
   // leaves it out of the console.
   poll?: boolean;
@@ -136,7 +135,7 @@ export function toNumber(v: BsonValue | undefined): number {
   return 0;
 }
 
-async function call(conn: string, method: "GET" | "POST" | "DELETE", route: string, query: Record<string, string>, body: unknown, signal?: AbortSignal): Promise<unknown> {
+async function call(conn: string, method: "GET" | "POST" | "PUT" | "DELETE", route: string, query: Record<string, string>, body: unknown, signal?: AbortSignal): Promise<unknown> {
   const params = new URLSearchParams({ conn, ...query });
   let response: Response;
   try {
@@ -144,7 +143,7 @@ async function call(conn: string, method: "GET" | "POST" | "DELETE", route: stri
       method,
       signal,
       headers: { "content-type": "application/json", "x-tablepeek-token": store.token() },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : stringifyJson(body),
     });
   } catch (error) {
     if (isAbort(error)) {
@@ -153,9 +152,10 @@ async function call(conn: string, method: "GET" | "POST" | "DELETE", route: stri
     store.serverUnreachable();
     throw new MongoError("network", t("서버에 연결할 수 없습니다"));
   }
+  // Read as text: JSON.parse would move keys such as "2024" to the front.
   let json: unknown = null;
   try {
-    json = await response.json();
+    json = parseJson(await response.text());
   } catch {
     json = null;
   }
@@ -186,14 +186,19 @@ function ejsonDoc(doc: BsonDocument | null | undefined): unknown {
 
 function plain(v: unknown): BsonDocument {
   const value = fromEJSON(v);
-  return isDocument(value) ? value : {};
+  return isDocument(value) ? value : new Map();
+}
+
+// A count or size field that may be missing or null.
+function optionalNumber(v: BsonValue | undefined): number | null {
+  return v === undefined || v === null ? null : toNumber(v);
 }
 
 export async function listDatabases(conn: string, signal?: AbortSignal): Promise<DocDatabase[]> {
   const list = (await call(conn, "GET", "databases", {}, undefined, signal)) as unknown[];
   return list.map((x) => {
     const d = plain(x);
-    return { name: String(d.name), sizeOnDisk: d.sizeOnDisk === undefined || d.sizeOnDisk === null ? null : toNumber(d.sizeOnDisk), empty: d.empty === true };
+    return { name: String(d.get("name")), sizeOnDisk: optionalNumber(d.get("sizeOnDisk")), empty: d.get("empty") === true };
   });
 }
 
@@ -201,26 +206,29 @@ export async function listCollections(conn: string, db: string, signal?: AbortSi
   const list = (await call(conn, "GET", "collections", { db }, undefined, signal)) as unknown[];
   return list.map((x) => {
     const d = plain(x);
-    const type = d.type === "view" || d.type === "timeseries" ? d.type : "collection";
-    return { name: String(d.name), type, options: isDocument(d.options) ? d.options : {}, count: d.count === undefined || d.count === null ? null : toNumber(d.count) };
+    const kind = d.get("type");
+    const type = kind === "view" || kind === "timeseries" ? kind : "collection";
+    const options = d.get("options");
+    return { name: String(d.get("name")), type, options: isDocument(options) ? options : new Map(), count: optionalNumber(d.get("count")) };
   });
 }
 
 export async function collStats(ns: Namespace, signal?: AbortSignal): Promise<CollStats> {
   const d = plain(await call(ns.conn, "GET", "stats", { db: ns.db, coll: ns.coll }, undefined, signal));
-  const sizes: Record<string, number> = {};
-  if (isDocument(d.indexSizes)) {
-    for (const [k, v] of Object.entries(d.indexSizes)) {
-      sizes[k] = toNumber(v);
+  const sizes = new Map<string, number>();
+  const indexSizes = d.get("indexSizes");
+  if (isDocument(indexSizes)) {
+    for (const [k, v] of indexSizes) {
+      sizes.set(k, toNumber(v));
     }
   }
   return {
-    count: toNumber(d.count),
-    size: toNumber(d.size),
-    avgObjSize: toNumber(d.avgObjSize),
-    storageSize: toNumber(d.storageSize),
-    nindexes: toNumber(d.nindexes),
-    totalIndexSize: toNumber(d.totalIndexSize),
+    count: toNumber(d.get("count")),
+    size: toNumber(d.get("size")),
+    avgObjSize: toNumber(d.get("avgObjSize")),
+    storageSize: toNumber(d.get("storageSize")),
+    nindexes: toNumber(d.get("nindexes")),
+    totalIndexSize: toNumber(d.get("totalIndexSize")),
     indexSizes: sizes,
   };
 }
@@ -234,15 +242,15 @@ export async function find(ns: Namespace, args: FindArgs, signal?: AbortSignal):
     sort: ejsonDoc(args.sort),
     skip: args.skip || undefined,
     limit: args.limit,
-    maxTimeMS: args.maxTimeMS,
+    ...optionsBody(args),
     poll: args.poll || undefined,
   };
   const r = (await call(ns.conn, "POST", "find", {}, body, signal)) as { docs: unknown[]; elapsedMs: number };
   return { docs: docs(r.docs), elapsedMs: Number(r.elapsedMs) || 0 };
 }
 
-export async function count(ns: Namespace, filter: BsonDocument, signal?: AbortSignal): Promise<CountResult> {
-  const r = (await call(ns.conn, "POST", "count", {}, { db: ns.db, coll: ns.coll, filter: toEJSON(filter) }, signal)) as { count: unknown; exact: boolean };
+export async function count(ns: Namespace, filter: BsonDocument, signal?: AbortSignal, options?: QueryOptions): Promise<CountResult> {
+  const r = (await call(ns.conn, "POST", "count", {}, { db: ns.db, coll: ns.coll, filter: toEJSON(filter), ...optionsBody(options) }, signal)) as { count: unknown; exact: boolean };
   return { count: r.count === null || r.count === undefined ? null : toNumber(fromEJSON(r.count)), exact: r.exact === true };
 }
 
@@ -295,10 +303,11 @@ export async function insert(ns: Namespace, list: BsonDocument[], signal?: Abort
 }
 
 // `confirmed` is required by the server for any write with an empty filter;
-// the caller asks the user first (safe mode).
+// the caller asks the user first (safe mode). `options` gives the filter a
+// collation and the write a hint (a time limit is not used by writes).
 export async function update(
   ns: Namespace,
-  args: { filter: BsonDocument; update: BsonDocument | BsonDocument[]; many: boolean; upsert?: boolean; confirmed?: boolean },
+  args: { filter: BsonDocument; update: BsonDocument | BsonDocument[]; many: boolean; upsert?: boolean; confirmed?: boolean; options?: QueryOptions },
   signal?: AbortSignal,
 ): Promise<UpdateResult> {
   const body = {
@@ -309,6 +318,7 @@ export async function update(
     many: args.many,
     upsert: args.upsert ?? false,
     confirmed: args.confirmed || undefined,
+    ...optionsBody(args.options),
   };
   const r = (await call(ns.conn, "POST", "update", {}, body, signal)) as UpdateResult;
   return { matched: Number(r.matched) || 0, modified: Number(r.modified) || 0 };
@@ -320,8 +330,9 @@ export async function replace(ns: Namespace, filter: BsonDocument, replacement: 
   return { matched: Number(r.matched) || 0, modified: Number(r.modified) || 0 };
 }
 
-export async function remove(ns: Namespace, filter: BsonDocument, many: boolean, confirmed = false, signal?: AbortSignal): Promise<number> {
-  const r = (await call(ns.conn, "POST", "delete", {}, { db: ns.db, coll: ns.coll, filter: toEJSON(filter), many, confirmed: confirmed || undefined }, signal)) as { deleted: number };
+export async function remove(ns: Namespace, filter: BsonDocument, many: boolean, confirmed = false, signal?: AbortSignal, options?: QueryOptions): Promise<number> {
+  const body = { db: ns.db, coll: ns.coll, filter: toEJSON(filter), many, confirmed: confirmed || undefined, ...optionsBody(options) };
+  const r = (await call(ns.conn, "POST", "delete", {}, body, signal)) as { deleted: number };
   return Number(r.deleted) || 0;
 }
 
@@ -329,13 +340,18 @@ export async function listIndexes(ns: Namespace, signal?: AbortSignal): Promise<
   const list = (await call(ns.conn, "GET", "indexes", { db: ns.db, coll: ns.coll }, undefined, signal)) as unknown[];
   return list.map((x) => {
     const d = plain(x);
-    const info: IndexInfo = { name: String(d.name), key: isDocument(d.key) ? d.key : {} };
-    if (d.unique === true) info.unique = true;
-    if (d.sparse === true) info.sparse = true;
-    if (d.expireAfterSeconds !== undefined && d.expireAfterSeconds !== null) info.expireAfterSeconds = toNumber(d.expireAfterSeconds);
-    if (isDocument(d.partialFilterExpression)) info.partialFilterExpression = d.partialFilterExpression;
-    if (d.size !== undefined && d.size !== null) info.size = toNumber(d.size);
-    if (d.ops !== undefined && d.ops !== null) info.ops = toNumber(d.ops);
+    const key = d.get("key");
+    const info: IndexInfo = { name: String(d.get("name")), key: isDocument(key) ? key : new Map() };
+    const ttl = optionalNumber(d.get("expireAfterSeconds"));
+    const partial = d.get("partialFilterExpression");
+    const size = optionalNumber(d.get("size"));
+    const ops = optionalNumber(d.get("ops"));
+    if (d.get("unique") === true) info.unique = true;
+    if (d.get("sparse") === true) info.sparse = true;
+    if (ttl !== null) info.expireAfterSeconds = ttl;
+    if (isDocument(partial)) info.partialFilterExpression = partial;
+    if (size !== null) info.size = size;
+    if (ops !== null) info.ops = ops;
     return info;
   });
 }
@@ -354,8 +370,8 @@ export type ExplainTarget =
   | { aggregate: { pipeline: BsonDocument[] } };
 
 // The server's explain output as it came (converted from EJSON).
-export async function explain(ns: Namespace, target: ExplainTarget, verbosity = "executionStats", signal?: AbortSignal): Promise<BsonDocument> {
-  const body: Record<string, unknown> = { db: ns.db, coll: ns.coll, verbosity };
+export async function explain(ns: Namespace, target: ExplainTarget, verbosity = "executionStats", signal?: AbortSignal, options?: QueryOptions): Promise<BsonDocument> {
+  const body: Record<string, unknown> = { db: ns.db, coll: ns.coll, verbosity, ...optionsBody(options) };
   if ("find" in target) {
     const f = target.find;
     body.find = { filter: toEJSON(f.filter), projection: ejsonDoc(f.projection), sort: ejsonDoc(f.sort), skip: f.skip ?? undefined, limit: f.limit ?? undefined };
@@ -374,9 +390,10 @@ export async function command(conn: string, db: string, cmd: BsonDocument, confi
 
 // ---- Import, export, databases and collections (DocAdmin) ----
 
-export type ExportRequest =
+export type ExportRequest = (
   | { filter: BsonDocument; projection: BsonDocument | null; sort: BsonDocument | null; limit: number | null }
-  | { pipeline: BsonDocument[] };
+  | { pipeline: BsonDocument[] }
+) & { options?: QueryOptions };
 
 // Streams `POST /api/doc/export`: `onLine` gets each document's canonical
 // EJSON line as the server wrote it (writers that keep canonical form pass
@@ -385,7 +402,7 @@ export type ExportRequest =
 // before `$end` rejects. Aborting `signal` closes the connection, which
 // ends the server's cursor.
 export async function exportDocs(ns: Namespace, request: ExportRequest, onLine: (line: string) => void, signal?: AbortSignal): Promise<number> {
-  const body: Record<string, unknown> = { db: ns.db, coll: ns.coll };
+  const body: Record<string, unknown> = { db: ns.db, coll: ns.coll, ...optionsBody(request.options) };
   if ("pipeline" in request) {
     body.pipeline = request.pipeline.map(toEJSON);
   } else {
@@ -400,7 +417,7 @@ export async function exportDocs(ns: Namespace, request: ExportRequest, onLine: 
       method: "POST",
       signal,
       headers: { "content-type": "application/json", "x-tablepeek-token": store.token() },
-      body: JSON.stringify(body),
+      body: stringifyJson(body),
     });
   } catch (error) {
     if (isAbort(error)) {
@@ -410,7 +427,7 @@ export async function exportDocs(ns: Namespace, request: ExportRequest, onLine: 
     throw new MongoError("network", t("서버에 연결할 수 없습니다"));
   }
   if (!response.ok || response.body === null) {
-    throw responseError(response.status, await response.json().catch(() => null));
+    throw responseError(response.status, await response.text().then(parseJson).catch(() => null));
   }
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let rest = "";
@@ -419,12 +436,14 @@ export async function exportDocs(ns: Namespace, request: ExportRequest, onLine: 
     if (!line.startsWith('{"$end"') && !line.startsWith('{"$error"')) {
       return null;
     }
-    const d = plain(JSON.parse(line));
-    if (isDocument(d.$end)) {
-      return toNumber(d.$end.count);
+    const d = plain(parseJson(line));
+    const end = d.get("$end");
+    const error = d.get("$error");
+    if (isDocument(end)) {
+      return toNumber(end.get("count"));
     }
-    if (isDocument(d.$error)) {
-      throw new MongoError(String(d.$error.code ?? "mongodb_error"), String(d.$error.message ?? ""), toEJSON(d.$error) as MongoErrorFields);
+    if (isDocument(error)) {
+      throw new MongoError(String(error.get("code") ?? "mongodb_error"), String(error.get("message") ?? ""), toEJSON(error) as MongoErrorFields);
     }
     return null;
   };
@@ -461,20 +480,20 @@ export async function exportDocs(ns: Namespace, request: ExportRequest, onLine: 
 // `create` options: capped, timeseries, viewOn + pipeline, collation,
 // clusteredIndex, validator…
 export async function createCollection(conn: string, db: string, name: string, options: BsonDocument, signal?: AbortSignal): Promise<void> {
-  await command(conn, db, { create: name, ...options }, false, signal);
+  await command(conn, db, new Map([["create", name], ...options]), false, signal);
 }
 
 // renameCollection runs against admin with full names.
 export async function renameCollection(conn: string, db: string, from: string, to: string, dropTarget: boolean, signal?: AbortSignal): Promise<void> {
-  await command(conn, "admin", { renameCollection: `${db}.${from}`, to: `${db}.${to}`, dropTarget }, true, signal);
+  await command(conn, "admin", bsonDoc({ renameCollection: `${db}.${from}`, to: `${db}.${to}`, dropTarget }), true, signal);
 }
 
 export async function dropCollection(conn: string, db: string, coll: string, signal?: AbortSignal): Promise<void> {
-  await command(conn, db, { drop: coll }, true, signal);
+  await command(conn, db, bsonDoc({ drop: coll }), true, signal);
 }
 
 export async function dropDatabase(conn: string, db: string, signal?: AbortSignal): Promise<void> {
-  await command(conn, db, { dropDatabase: new Int32(1) }, true, signal);
+  await command(conn, db, bsonDoc({ dropDatabase: new Int32(1) }), true, signal);
 }
 
 // ---- 성능 tab (DocPerf) ----
@@ -486,6 +505,8 @@ export interface PerfSample {
   time: number;
   // Seconds since the server started.
   uptime: number;
+  // The server is a mongos router (no `top`, no `system.profile`).
+  mongos: boolean;
   opcounters: Record<"insert" | "query" | "update" | "delete" | "getmore" | "command", number>;
   connections: { current: number; available: number };
   network: { bytesIn: number; bytesOut: number };
@@ -497,18 +518,293 @@ export interface PerfSample {
 
 export async function perf(conn: string, signal?: AbortSignal): Promise<PerfSample> {
   const d = plain(await call(conn, "GET", "perf", {}, undefined, signal));
-  const sub = (v: BsonValue | undefined): BsonDocument => (isDocument(v) ? v : {});
-  const ops = sub(d.opcounters);
-  const wt = isDocument(d.wiredTiger) ? d.wiredTiger : null;
-  const lock = isDocument(d.globalLock) ? d.globalLock : null;
+  const sub = (key: string): BsonDocument => {
+    const v = d.get(key);
+    return isDocument(v) ? v : new Map();
+  };
+  const ops = sub("opcounters");
+  const wt = isDocument(d.get("wiredTiger")) ? sub("wiredTiger") : null;
+  const lock = isDocument(d.get("globalLock")) ? sub("globalLock") : null;
+  const time = d.get("time");
+  const num = (doc: BsonDocument, key: string) => toNumber(doc.get(key));
   return {
-    time: d.time instanceof BsonDate ? Number(d.time.ms) : toNumber(d.time) || Date.now(),
-    uptime: toNumber(d.uptime),
-    opcounters: { insert: toNumber(ops.insert), query: toNumber(ops.query), update: toNumber(ops.update), delete: toNumber(ops.delete), getmore: toNumber(ops.getmore), command: toNumber(ops.command) },
-    connections: { current: toNumber(sub(d.connections).current), available: toNumber(sub(d.connections).available) },
-    network: { bytesIn: toNumber(sub(d.network).bytesIn), bytesOut: toNumber(sub(d.network).bytesOut) },
-    mem: { resident: toNumber(sub(d.mem).resident), virtual: toNumber(sub(d.mem).virtual) },
-    wiredTiger: wt && { cacheBytes: toNumber(wt.cacheBytes), cacheMax: toNumber(wt.cacheMax), dirtyBytes: toNumber(wt.dirtyBytes) },
-    globalLock: lock && { activeReaders: toNumber(lock.activeReaders), activeWriters: toNumber(lock.activeWriters), queueReaders: toNumber(lock.queueReaders), queueWriters: toNumber(lock.queueWriters) },
+    time: time instanceof BsonDate ? Number(time.ms) : toNumber(time) || Date.now(),
+    uptime: num(d, "uptime"),
+    mongos: d.get("process") === "mongos",
+    opcounters: { insert: num(ops, "insert"), query: num(ops, "query"), update: num(ops, "update"), delete: num(ops, "delete"), getmore: num(ops, "getmore"), command: num(ops, "command") },
+    connections: { current: num(sub("connections"), "current"), available: num(sub("connections"), "available") },
+    network: { bytesIn: num(sub("network"), "bytesIn"), bytesOut: num(sub("network"), "bytesOut") },
+    mem: { resident: num(sub("mem"), "resident"), virtual: num(sub("mem"), "virtual") },
+    wiredTiger: wt && { cacheBytes: num(wt, "cacheBytes"), cacheMax: num(wt, "cacheMax"), dirtyBytes: num(wt, "dirtyBytes") },
+    globalLock: lock && { activeReaders: num(lock, "activeReaders"), activeWriters: num(lock, "activeWriters"), queueReaders: num(lock, "queueReaders"), queueWriters: num(lock, "queueWriters") },
   };
 }
+
+// ---- 일괄 수정·삭제 (BulkUI) ----
+
+// One previewed document: as stored, and as the update leaves it (null
+// when the server could not read it back).
+export interface PreviewSample {
+  before: BsonDocument;
+  after: BsonDocument | null;
+}
+
+export interface UpdatePreview {
+  // null: counting took longer than the server's three seconds.
+  matched: number | null;
+  samples: PreviewSample[];
+  // false: the server runs no transactions (a standalone server), so only
+  // `matched` came back.
+  previewed: boolean;
+}
+
+// `POST /api/doc/update/preview`: the first `limit` (1–20) matching
+// documents before and after `update`, made inside a transaction the server
+// aborts, so nothing stays changed. `options` as for `update`.
+export async function updatePreview(ns: Namespace, filter: BsonDocument, update: BsonDocument | BsonDocument[], limit: number, signal?: AbortSignal, options?: QueryOptions): Promise<UpdatePreview> {
+  const body = { db: ns.db, coll: ns.coll, filter: toEJSON(filter), update: Array.isArray(update) ? update.map(toEJSON) : toEJSON(update), limit, ...optionsBody(options) };
+  const r = (await call(ns.conn, "POST", "update/preview", {}, body, signal)) as { matched: unknown; samples: unknown; previewed: unknown };
+  const samples: PreviewSample[] = [];
+  for (const s of Array.isArray(r.samples) ? (r.samples as { before?: unknown; after?: unknown }[]) : []) {
+    const before = fromEJSON(s.before ?? null);
+    const after = fromEJSON(s.after ?? null);
+    if (isDocument(before)) {
+      samples.push({ before, after: isDocument(after) ? after : null });
+    }
+  }
+  return { matched: r.matched === null || r.matched === undefined ? null : toNumber(fromEJSON(r.matched)), samples, previewed: r.previewed === true };
+}
+
+// ---- end 일괄 수정·삭제 ----
+
+// ---- Atlas Search indexes, change streams, GridFS (MONGODB.md §8.3) ----
+
+// One Atlas Search index as `$listSearchIndexes` reports it. `status` is
+// the server's word (PENDING, BUILDING, READY, FAILED, DELETING, …).
+export interface SearchIndexInfo {
+  name: string;
+  type: string;
+  status: string;
+  queryable: boolean;
+  // The definition the index is (being) built from; null if not reported.
+  definition: BsonDocument | null;
+  // The whole entry as the server gave it.
+  raw: BsonDocument;
+}
+
+// A server without search answers `unsupported_capability`.
+export async function listSearchIndexes(ns: Namespace, signal?: AbortSignal): Promise<SearchIndexInfo[]> {
+  const list = docs(await call(ns.conn, "GET", "search-indexes", { db: ns.db, coll: ns.coll }, undefined, signal));
+  return list.map((d) => {
+    const latest = d.get("latestDefinition");
+    return {
+      name: String(d.get("name") ?? ""),
+      type: String(d.get("type") ?? "search"),
+      status: String(d.get("status") ?? ""),
+      queryable: d.get("queryable") === true,
+      definition: isDocument(latest) ? latest : null,
+      raw: d,
+    };
+  });
+}
+
+export async function createSearchIndex(ns: Namespace, name: string, type: string, definition: BsonDocument, signal?: AbortSignal): Promise<string> {
+  const d = plain(await call(ns.conn, "POST", "search-indexes", {}, { db: ns.db, coll: ns.coll, name, type, definition: toEJSON(definition) }, signal));
+  return String(d.get("name") ?? name);
+}
+
+export async function updateSearchIndex(ns: Namespace, name: string, definition: BsonDocument, signal?: AbortSignal): Promise<void> {
+  await call(ns.conn, "PUT", "search-indexes", {}, { db: ns.db, coll: ns.coll, name, definition: toEJSON(definition) }, signal);
+}
+
+// The caller has asked the user first.
+export async function dropSearchIndex(ns: Namespace, name: string, signal?: AbortSignal): Promise<void> {
+  await call(ns.conn, "DELETE", "search-indexes", {}, { db: ns.db, coll: ns.coll, name, confirmed: true }, signal);
+}
+
+export interface WatchRequest {
+  db: string;
+  // Without one, every collection of `db`.
+  coll?: string;
+  pipeline?: BsonDocument[];
+  fullDocument?: "updateLookup" | "whenAvailable" | "required";
+  fullDocumentBeforeChange?: "whenAvailable" | "required" | "off";
+  // An event's `_id`: the stream starts after that event.
+  resumeAfter?: BsonValue;
+}
+
+// Streams `POST /api/doc/watch`: `onEvent` gets each change event,
+// `onHeartbeat` the server's clock on the line it sends when the stream
+// opens and every 15 seconds after. Resolves when the server ends the
+// stream (after an invalidate event, say); a `{"$error": …}` line or a
+// broken connection rejects. Aborting `signal` closes it on the server.
+export async function watchChanges(conn: string, request: WatchRequest, onEvent: (event: BsonDocument) => void, onHeartbeat: (ms: number) => void, signal?: AbortSignal): Promise<void> {
+  const body: Record<string, unknown> = { db: request.db, coll: request.coll, fullDocument: request.fullDocument, fullDocumentBeforeChange: request.fullDocumentBeforeChange };
+  if (request.pipeline !== undefined && request.pipeline.length > 0) {
+    body.pipeline = request.pipeline.map(toEJSON);
+  }
+  if (request.resumeAfter !== undefined) {
+    body.resumeAfter = toEJSON(request.resumeAfter);
+  }
+  let response: Response;
+  try {
+    response = await fetch(`/api/doc/watch?${new URLSearchParams({ conn })}`, {
+      method: "POST",
+      signal,
+      headers: { "content-type": "application/json", "x-tablepeek-token": store.token() },
+      body: stringifyJson(body),
+    });
+  } catch (error) {
+    if (isAbort(error)) {
+      throw error;
+    }
+    store.serverUnreachable();
+    throw new MongoError("network", t("서버에 연결할 수 없습니다"));
+  }
+  if (!response.ok || response.body === null) {
+    throw responseError(response.status, await response.text().then(parseJson).catch(() => null));
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  const handle = (line: string) => {
+    const d = plain(parseJson(line));
+    const beat = d.get("$heartbeat");
+    if (beat !== undefined && d.size === 1) {
+      onHeartbeat(toNumber(beat));
+      return;
+    }
+    const error = d.get("$error");
+    if (isDocument(error) && d.size === 1) {
+      throw new MongoError(String(error.get("code") ?? "mongodb_error"), String(error.get("message") ?? ""), toEJSON(error) as MongoErrorFields);
+    }
+    onEvent(d);
+  };
+  let rest = "";
+  for (;;) {
+    let chunk: ReadableStreamReadResult<string>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if (isAbort(error) || signal?.aborted === true) {
+        throw error;
+      }
+      throw new MongoError("network", t("변경 스트림 연결이 끊겼습니다"));
+    }
+    if (chunk.done) {
+      break;
+    }
+    rest += chunk.value;
+    let from = 0;
+    for (let nl = rest.indexOf("\n"); nl !== -1; nl = rest.indexOf("\n", from)) {
+      const line = rest.slice(from, nl).trim();
+      from = nl + 1;
+      if (line !== "") {
+        handle(line);
+      }
+    }
+    rest = rest.slice(from);
+  }
+  if (rest.trim() !== "") {
+    handle(rest.trim());
+  }
+}
+
+export interface GridFsFilesArgs {
+  filter: BsonDocument;
+  sort: BsonDocument | null;
+  skip: number;
+  limit: number;
+}
+
+// The bucket's `.files` documents as stored.
+export async function gridFsFiles(conn: string, db: string, bucket: string, args: GridFsFilesArgs, signal?: AbortSignal): Promise<BsonDocument[]> {
+  const d = plain(await call(conn, "POST", "gridfs/files", {}, { db, bucket, filter: toEJSON(args.filter), sort: ejsonDoc(args.sort), skip: args.skip || undefined, limit: args.limit }, signal));
+  const files = d.get("files");
+  return Array.isArray(files) ? files.filter(isDocument) : [];
+}
+
+// A link the browser downloads the file from by itself (this route takes
+// the token in the query), so the page never holds the file.
+export function gridFsDownloadUrl(conn: string, db: string, bucket: string, id: BsonValue): string {
+  return `/api/doc/gridfs/download?${new URLSearchParams({ conn, db, bucket, id: stringifyJson(toEJSON(id)), token: store.token() })}`;
+}
+
+// Sends `file` as the request body; the server stores it chunk by chunk as
+// it arrives. XMLHttpRequest because fetch reports no upload progress:
+// `onProgress` gets the bytes sent so far. Resolves with the new file's id.
+export function gridFsUpload(
+  conn: string,
+  db: string,
+  bucket: string,
+  file: Blob,
+  filename: string,
+  metadata: BsonDocument | null,
+  onProgress: (sent: number) => void,
+  signal?: AbortSignal,
+): Promise<BsonValue> {
+  const query: Record<string, string> = { conn, db, bucket, filename };
+  if (metadata !== null) {
+    query.metadata = stringifyJson(toEJSON(metadata));
+  }
+  // Executor form: the lib target has no Promise.withResolvers.
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/doc/gridfs/upload?${new URLSearchParams(query)}`);
+    xhr.setRequestHeader("x-tablepeek-token", store.token());
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    xhr.upload.onprogress = (event) => onProgress(event.loaded);
+    xhr.onload = () => {
+      let json: unknown = null;
+      try {
+        json = parseJson(xhr.responseText);
+      } catch {
+        json = null;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(responseError(xhr.status, json));
+        return;
+      }
+      onProgress(file.size);
+      resolve(plain(json).get("id") ?? null);
+    };
+    xhr.onerror = () => {
+      store.serverUnreachable();
+      reject(new MongoError("network", t("서버에 연결할 수 없습니다")));
+    };
+    xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(file);
+  });
+}
+
+// The caller has asked the user first.
+export async function gridFsDelete(conn: string, db: string, bucket: string, id: BsonValue, signal?: AbortSignal): Promise<void> {
+  await call(conn, "DELETE", "gridfs/files", {}, { db, bucket, id: toEJSON(id), confirmed: true }, signal);
+}
+
+// ---- end Atlas Search, change streams, GridFS ----
+
+// ---- Query options (QueryOptsCode) ----
+
+// The query bar's 옵션 that change how the server runs a read (find,
+// count, aggregate, explain, export): how strings compare, the index to
+// use (its name or its keys), and the time limit.
+export interface QueryOptions {
+  collation?: BsonDocument | null;
+  hint?: string | BsonDocument | null;
+  maxTimeMS?: number;
+}
+
+// The options as body fields; missing ones are left out.
+function optionsBody(options: QueryOptions | undefined): { collation?: unknown; hint?: unknown; maxTimeMS?: number } {
+  if (options === undefined) {
+    return {};
+  }
+  const { collation, hint, maxTimeMS } = options;
+  return {
+    collation: collation ? toEJSON(collation) : undefined,
+    hint: typeof hint === "string" ? hint || undefined : hint ? toEJSON(hint) : undefined,
+    maxTimeMS,
+  };
+}
+
+// ---- end Query options ----

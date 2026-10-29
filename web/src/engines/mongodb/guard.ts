@@ -4,7 +4,7 @@
 // nothing (matchedCount 0) instead of being overwritten.
 
 import { t } from "../../i18n";
-import { BsonRegex, deepEqual, isDocument, setField, type BsonDocument, type BsonValue } from "./bson";
+import { BsonRegex, bsonDoc, deepEqual, isDocument, type BsonDocument, type BsonValue } from "./bson";
 
 // One change made in a card, the JSON editor or a table cell. Paths are
 // dotted; numeric parts index arrays ("items.0.quantity").
@@ -37,11 +37,7 @@ function clone(v: BsonValue): BsonValue {
 }
 
 function cloneDoc(doc: BsonDocument): BsonDocument {
-  const out: BsonDocument = {};
-  for (const key of Object.keys(doc)) {
-    setField(out, key, clone(doc[key]));
-  }
-  return out;
+  return new Map(Array.from(doc, ([key, value]) => [key, clone(value)]));
 }
 
 // The value at a dotted path, or undefined when the path is missing.
@@ -50,8 +46,8 @@ export function valueAt(root: BsonValue, path: string): BsonValue | undefined {
   for (const part of path.split(".")) {
     if (Array.isArray(v) && /^\d+$/.test(part)) {
       v = v[Number(part)];
-    } else if (isDocument(v) && Object.hasOwn(v, part)) {
-      v = v[part];
+    } else if (isDocument(v) && v.has(part)) {
+      v = v.get(part);
     } else {
       return undefined;
     }
@@ -64,10 +60,10 @@ export function valueAt(root: BsonValue, path: string): BsonValue | undefined {
 function parentOf(root: BsonDocument, parts: string[], create: boolean): BsonDocument | BsonValue[] {
   let v: BsonDocument | BsonValue[] = root;
   for (const part of parts.slice(0, -1)) {
-    let child: BsonValue | undefined = Array.isArray(v) ? (/^\d+$/.test(part) ? v[Number(part)] : undefined) : Object.hasOwn(v, part) ? v[part] : undefined;
+    let child: BsonValue | undefined = Array.isArray(v) ? (/^\d+$/.test(part) ? v[Number(part)] : undefined) : v.get(part);
     if (child === undefined && create && isDocument(v)) {
-      child = {};
-      setField(v, part, child);
+      child = new Map();
+      v.set(part, child);
     }
     if (!Array.isArray(child) && !isDocument(child)) {
       throw new Error(t("경로를 찾을 수 없습니다: {path}", { path: parts.join(".") }));
@@ -109,7 +105,7 @@ function applyAll(original: BsonDocument, edits: DocEdit[]): { draft: BsonDocume
           }
           parent[index] = clone(edit.value);
         } else {
-          setField(parent, key, clone(edit.value));
+          parent.set(key, clone(edit.value));
         }
         written.push(edit.path);
         break;
@@ -118,23 +114,23 @@ function applyAll(original: BsonDocument, edits: DocEdit[]): { draft: BsonDocume
           parent.splice(Number(key), 1);
           written.push(parts.slice(0, -1).join("."));
         } else {
-          delete parent[key];
+          parent.delete(key);
           written.push(edit.path);
         }
         break;
       case "rename": {
-        if (Array.isArray(parent) || !Object.hasOwn(parent, key)) {
+        if (Array.isArray(parent) || !parent.has(key)) {
           throw new Error(t("이름을 바꿀 수 없는 경로입니다: {path}", { path: edit.path }));
         }
         const target = [...parts.slice(0, -1), edit.name].join(".");
         checkPath(target);
-        if (edit.name.includes(".") || edit.name.startsWith("$") || Object.hasOwn(parent, edit.name)) {
+        if (edit.name.includes(".") || edit.name.startsWith("$") || parent.has(edit.name)) {
           throw new Error(t("쓸 수 없는 필드 이름입니다: {name}", { name: edit.name }));
         }
         // The renamed field moves to the end, as $unset + $set leave it.
-        const value = parent[key];
-        delete parent[key];
-        setField(parent, edit.name, value);
+        const value = parent.get(key) as BsonValue;
+        parent.delete(key);
+        parent.set(edit.name, value);
         written.push(edit.path, target);
         break;
       }
@@ -164,7 +160,7 @@ function guardPath(original: BsonDocument, path: string): string {
     if (Array.isArray(v)) {
       return parts.slice(0, i + 1).join(".");
     }
-    v = isDocument(v) && Object.hasOwn(v, parts[i]) ? v[parts[i]] : undefined;
+    v = isDocument(v) ? v.get(parts[i]) : undefined;
   }
   return path;
 }
@@ -174,15 +170,25 @@ function guardPath(original: BsonDocument, path: string): string {
 // regexes or $-keyed documents by $eq so they are not read as operators.
 function originalCondition(v: BsonValue | undefined): BsonValue {
   if (v === undefined) {
-    return { $exists: false };
+    return bsonDoc({ $exists: false });
   }
   if (v === null) {
-    return { $type: "null" };
+    return bsonDoc({ $type: "null" });
   }
-  if (v instanceof BsonRegex || (isDocument(v) && Object.keys(v).some((k) => k.startsWith("$")))) {
-    return { $eq: v };
+  if (v instanceof BsonRegex || (isDocument(v) && [...v.keys()].some((k) => k.startsWith("$")))) {
+    return bsonDoc({ $eq: v });
   }
   return v;
+}
+
+// `{ _id: … }` of a document the screen writes to; one without `_id` cannot
+// be edited or deleted.
+export function idFilter(doc: BsonDocument): BsonDocument {
+  const id = doc.get("_id");
+  if (id === undefined) {
+    throw new Error(t("_id가 없는 문서는 편집할 수 없습니다"));
+  }
+  return new Map([["_id", id]]);
 }
 
 // updateOne filter and update for `edits` made to `original`: $set for
@@ -190,12 +196,10 @@ function originalCondition(v: BsonValue | undefined): BsonValue {
 // filter holding `_id` plus the original value of every changed path.
 // Null when the edits change nothing.
 export function guardUpdate(original: BsonDocument, edits: DocEdit[]): GuardedUpdate | null {
-  if (original._id === undefined) {
-    throw new Error(t("_id가 없는 문서는 편집할 수 없습니다"));
-  }
+  const filter = idFilter(original);
   const { draft, written } = applyAll(original, edits);
-  const $set: BsonDocument = {};
-  const $unset: BsonDocument = {};
+  const $set: BsonDocument = new Map();
+  const $unset: BsonDocument = new Map();
   const guards: string[] = [];
   for (const path of outermost(written)) {
     const before = valueAt(original, path);
@@ -204,25 +208,24 @@ export function guardUpdate(original: BsonDocument, edits: DocEdit[]): GuardedUp
       continue;
     }
     if (after === undefined) {
-      setField($unset, path, "");
+      $unset.set(path, "");
     } else {
-      setField($set, path, after);
+      $set.set(path, after);
     }
     guards.push(guardPath(original, path));
   }
   if (guards.length === 0) {
     return null;
   }
-  const filter: BsonDocument = { _id: original._id };
   for (const path of outermost(guards)) {
-    setField(filter, path, originalCondition(valueAt(original, path)));
+    filter.set(path, originalCondition(valueAt(original, path)));
   }
-  const update: BsonDocument = {};
-  if (Object.keys($set).length > 0) {
-    update.$set = $set;
+  const update: BsonDocument = new Map();
+  if ($set.size > 0) {
+    update.set("$set", $set);
   }
-  if (Object.keys($unset).length > 0) {
-    update.$unset = $unset;
+  if ($unset.size > 0) {
+    update.set("$unset", $unset);
   }
   return { filter, update };
 }
@@ -230,16 +233,14 @@ export function guardUpdate(original: BsonDocument, edits: DocEdit[]): GuardedUp
 // replaceOne for the JSON editor: the filter holds `_id` and the original
 // value of each top-level field (not the whole document as one value).
 export function guardReplace(original: BsonDocument, replacement: BsonDocument): GuardedReplace {
-  if (original._id === undefined) {
-    throw new Error(t("_id가 없는 문서는 편집할 수 없습니다"));
-  }
-  if (replacement._id !== undefined && !deepEqual(replacement._id, original._id)) {
+  const filter = idFilter(original);
+  const newId = replacement.get("_id");
+  if (newId !== undefined && !deepEqual(newId, filter.get("_id"))) {
     throw new Error(t("_id는 바꿀 수 없습니다"));
   }
-  const filter: BsonDocument = { _id: original._id };
-  for (const key of Object.keys(original)) {
+  for (const [key, value] of original) {
     if (key !== "_id") {
-      setField(filter, key, originalCondition(original[key]));
+      filter.set(key, originalCondition(value));
     }
   }
   return { filter, replacement };

@@ -6,7 +6,7 @@
 // server decides pass or fail; these only explain).
 
 import { t } from "../../i18n";
-import { BsonDate, Double, Int32, Int64, compareForSort, isDocument, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "./bson";
+import { BsonDate, Double, Int32, Int64, bsonDoc, compareForSort, isDocument, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "./bson";
 import { toShell } from "./format";
 
 export const SAMPLE_SIZES = [100, 500, 1000];
@@ -134,7 +134,7 @@ function bump<K extends string>(map: Partial<Record<K, number>>, key: K): void {
 
 // A number of any BSON width as a JS number (Decimal128 through its text),
 // or null for text that is not finite.
-function numeric(v: BsonValue): number | null {
+export function numeric(v: BsonValue): number | null {
   if (v === null || typeof v !== "object" || Array.isArray(v) || isDocument(v)) {
     return null;
   }
@@ -302,7 +302,7 @@ export function analyzeSchema(docs: BsonDocument[]): SchemaAnalysis {
     }
   };
   const visit = (obj: BsonDocument, prefix: string | null, depth: number, docIndex: number): void => {
-    for (const key of Object.keys(obj)) {
+    for (const [key, v] of obj) {
       const path = prefix === null ? key : `${prefix}.${key}`;
       const acc = touch(path, key, depth, prefix);
       const f = acc.field;
@@ -310,7 +310,6 @@ export function analyzeSchema(docs: BsonDocument[]): SchemaAnalysis {
         acc.lastDoc = docIndex;
         f.count++;
       }
-      const v = obj[key];
       bump(f.types, typeName(v));
       if (isDocument(v)) {
         f.objects++;
@@ -419,7 +418,7 @@ function bsonTypeOf(types: Partial<Record<BsonTypeName, number>>): BsonValue {
 // handful of values in a sample large enough to trust.
 export function draftJsonSchema(a: SchemaAnalysis): BsonDocument {
   const level = (paths: string[], containers: number): BsonDocument => {
-    const properties: BsonDocument = {};
+    const properties: BsonDocument = new Map();
     const required: string[] = [];
     for (const path of paths) {
       const f = a.fields.get(path);
@@ -430,30 +429,34 @@ export function draftJsonSchema(a: SchemaAnalysis): BsonDocument {
       if (containers > 0 && seen >= containers) {
         required.push(f.name);
       }
-      const schema: BsonDocument = { bsonType: bsonTypeOf(f.types) };
+      const schema = bsonDoc({ bsonType: bsonTypeOf(f.types) });
       const main = typesByCount(f.types)[0]?.[0];
       if (main === "Object" && f.children.length > 0) {
-        Object.assign(schema, level(f.children, f.objects));
-      } else if (main === "Array" && Object.keys(f.elemTypes).length > 0) {
-        const items: BsonDocument = { bsonType: bsonTypeOf(f.elemTypes) };
-        if (f.elemTypes.Object !== undefined && f.children.length > 0) {
-          Object.assign(items, level(f.children, f.objects));
+        for (const [key, value] of level(f.children, f.objects)) {
+          schema.set(key, value);
         }
-        schema.items = items;
+      } else if (main === "Array" && Object.keys(f.elemTypes).length > 0) {
+        const items = bsonDoc({ bsonType: bsonTypeOf(f.elemTypes) });
+        if (f.elemTypes.Object !== undefined && f.children.length > 0) {
+          for (const [key, value] of level(f.children, f.objects)) {
+            items.set(key, value);
+          }
+        }
+        schema.set("items", items);
       }
       if (f.depth === 0 && main === "String" && Object.keys(f.types).length === 1 && f.string && f.string.distinct <= 6 && a.sampleSize >= 50) {
-        schema.enum = f.string.top.map((x) => x.value).sort();
+        schema.set("enum", f.string.top.map((x) => x.value).sort());
       }
-      properties[f.name] = schema;
+      properties.set(f.name, schema);
     }
-    const out: BsonDocument = {};
+    const out: BsonDocument = new Map();
     if (required.length > 0) {
-      out.required = required;
+      out.set("required", required);
     }
-    out.properties = properties;
+    out.set("properties", properties);
     return out;
   };
-  return { bsonType: "object", ...level(a.roots, a.sampleSize) };
+  return new Map<string, BsonValue>([["bsonType", "object"], ...level(a.roots, a.sampleSize)]);
 }
 
 const JSON_TYPES: Record<string, (v: BsonValue) => boolean> = {
@@ -495,99 +498,112 @@ function matchesJsonType(want: BsonValue, v: BsonValue): boolean {
 // the rule is not a `$jsonSchema` or nothing it checks is broken.
 export function jsonSchemaReasons(validator: BsonDocument, doc: BsonDocument): string[] {
   const out: string[] = [];
-  if (isDocument(validator.$jsonSchema)) {
-    check(validator.$jsonSchema, doc, "", out);
+  const schema = validator.get("$jsonSchema");
+  if (isDocument(schema)) {
+    check(schema, doc, "", out);
   }
   return out;
 }
 
 function check(schema: BsonDocument, v: BsonValue, path: string, out: string[]): void {
   const at = path === "" ? t("(문서)") : path;
-  if (schema.bsonType !== undefined && !matchesBsonType(schema.bsonType, v)) {
-    out.push(t("{path}: 타입이 {want}여야 합니다 (지금 {got})", { path: at, want: toShell(schema.bsonType), got: aliasOf(v) }));
+  const bsonType = schema.get("bsonType");
+  if (bsonType !== undefined && !matchesBsonType(bsonType, v)) {
+    out.push(t("{path}: 타입이 {want}여야 합니다 (지금 {got})", { path: at, want: toShell(bsonType), got: aliasOf(v) }));
     return;
   }
-  if (schema.type !== undefined && !matchesJsonType(schema.type, v)) {
-    out.push(t("{path}: 타입이 {want}여야 합니다 (지금 {got})", { path: at, want: toShell(schema.type), got: aliasOf(v) }));
+  const jsonType = schema.get("type");
+  if (jsonType !== undefined && !matchesJsonType(jsonType, v)) {
+    out.push(t("{path}: 타입이 {want}여야 합니다 (지금 {got})", { path: at, want: toShell(jsonType), got: aliasOf(v) }));
     return;
   }
-  if (Array.isArray(schema.enum) && !schema.enum.some((x) => compareForSort(x, v) === 0)) {
-    out.push(t("{path}: 허용된 값({values})이 아닙니다", { path: at, values: schema.enum.map(toShell).join(", ") }));
+  const allowed = schema.get("enum");
+  if (Array.isArray(allowed) && !allowed.some((x) => compareForSort(x, v) === 0)) {
+    out.push(t("{path}: 허용된 값({values})이 아닙니다", { path: at, values: allowed.map(toShell).join(", ") }));
   }
   const n = numeric(v);
   if (n !== null) {
-    const min = numeric(schema.minimum ?? null);
-    const max = numeric(schema.maximum ?? null);
-    if (min !== null && (schema.exclusiveMinimum === true ? n <= min : n < min)) {
-      const limit = toShell(schema.minimum ?? null);
-      out.push(schema.exclusiveMinimum === true ? t("{path}: {limit}보다 커야 합니다", { path: at, limit }) : t("{path}: {limit} 이상이어야 합니다", { path: at, limit }));
+    const minimum = schema.get("minimum") ?? null;
+    const maximum = schema.get("maximum") ?? null;
+    const exclusiveMinimum = schema.get("exclusiveMinimum") === true;
+    const exclusiveMaximum = schema.get("exclusiveMaximum") === true;
+    const min = numeric(minimum);
+    const max = numeric(maximum);
+    if (min !== null && (exclusiveMinimum ? n <= min : n < min)) {
+      const limit = toShell(minimum);
+      out.push(exclusiveMinimum ? t("{path}: {limit}보다 커야 합니다", { path: at, limit }) : t("{path}: {limit} 이상이어야 합니다", { path: at, limit }));
     }
-    if (max !== null && (schema.exclusiveMaximum === true ? n >= max : n > max)) {
-      const limit = toShell(schema.maximum ?? null);
-      out.push(schema.exclusiveMaximum === true ? t("{path}: {limit}보다 작아야 합니다", { path: at, limit }) : t("{path}: {limit} 이하여야 합니다", { path: at, limit }));
+    if (max !== null && (exclusiveMaximum ? n >= max : n > max)) {
+      const limit = toShell(maximum);
+      out.push(exclusiveMaximum ? t("{path}: {limit}보다 작아야 합니다", { path: at, limit }) : t("{path}: {limit} 이하여야 합니다", { path: at, limit }));
     }
   }
   if (typeof v === "string") {
     const length = [...v].length;
-    const min = numeric(schema.minLength ?? null);
-    const max = numeric(schema.maxLength ?? null);
+    const min = numeric(schema.get("minLength") ?? null);
+    const max = numeric(schema.get("maxLength") ?? null);
     if (min !== null && length < min) {
       out.push(t("{path}: 길이가 {limit}자 이상이어야 합니다", { path: at, limit: min }));
     }
     if (max !== null && length > max) {
       out.push(t("{path}: 길이가 {limit}자 이하여야 합니다", { path: at, limit: max }));
     }
-    if (typeof schema.pattern === "string") {
+    const pattern = schema.get("pattern");
+    if (typeof pattern === "string") {
       let re: RegExp | null = null;
       try {
-        re = new RegExp(schema.pattern, "u");
+        re = new RegExp(pattern, "u");
       } catch {
         re = null;
       }
       if (re !== null && !re.test(v)) {
-        out.push(t("{path}: 패턴 {pattern}에 맞지 않습니다", { path: at, pattern: schema.pattern }));
+        out.push(t("{path}: 패턴 {pattern}에 맞지 않습니다", { path: at, pattern }));
       }
     }
   }
   if (Array.isArray(v)) {
-    const min = numeric(schema.minItems ?? null);
-    const max = numeric(schema.maxItems ?? null);
+    const min = numeric(schema.get("minItems") ?? null);
+    const max = numeric(schema.get("maxItems") ?? null);
     if (min !== null && v.length < min) {
       out.push(t("{path}: 원소가 {limit}개 이상이어야 합니다", { path: at, limit: min }));
     }
     if (max !== null && v.length > max) {
       out.push(t("{path}: 원소가 {limit}개 이하여야 합니다", { path: at, limit: max }));
     }
-    if (isDocument(schema.items)) {
-      const items = schema.items;
+    const items = schema.get("items");
+    if (isDocument(items)) {
       v.forEach((el, i) => check(items, el, path === "" ? String(i) : `${path}.${i}`, out));
     }
   }
   if (isDocument(v)) {
     const child = (key: string) => (path === "" ? key : `${path}.${key}`);
-    if (Array.isArray(schema.required)) {
-      for (const key of schema.required) {
-        if (typeof key === "string" && v[key] === undefined) {
+    const required = schema.get("required");
+    if (Array.isArray(required)) {
+      for (const key of required) {
+        if (typeof key === "string" && v.get(key) === undefined) {
           out.push(t("{path}: 필수 필드가 없습니다", { path: child(key) }));
         }
       }
     }
-    const props = isDocument(schema.properties) ? schema.properties : {};
-    for (const [key, sub] of Object.entries(props)) {
-      if (isDocument(sub) && v[key] !== undefined) {
-        check(sub, v[key], child(key), out);
+    const properties = schema.get("properties");
+    const props: BsonDocument = isDocument(properties) ? properties : new Map();
+    for (const [key, sub] of props) {
+      const value = v.get(key);
+      if (isDocument(sub) && value !== undefined) {
+        check(sub, value, child(key), out);
       }
     }
-    const patterns = isDocument(schema.patternProperties) ? Object.keys(schema.patternProperties) : [];
-    const extra = Object.keys(v).filter((key) => props[key] === undefined && !patterns.some((p) => safeTest(p, key)));
-    if (schema.additionalProperties === false) {
-      for (const key of extra) {
+    const patternProperties = schema.get("patternProperties");
+    const patterns = isDocument(patternProperties) ? [...patternProperties.keys()] : [];
+    const extra = [...v].filter(([key]) => props.get(key) === undefined && !patterns.some((p) => safeTest(p, key)));
+    const additional = schema.get("additionalProperties");
+    if (additional === false) {
+      for (const [key] of extra) {
         out.push(t("{path}: 허용되지 않은 필드입니다", { path: child(key) }));
       }
-    } else if (isDocument(schema.additionalProperties)) {
-      const sub = schema.additionalProperties;
-      for (const key of extra) {
-        check(sub, v[key], child(key), out);
+    } else if (isDocument(additional)) {
+      for (const [key, value] of extra) {
+        check(additional, value, child(key), out);
       }
     }
   }
@@ -599,20 +615,24 @@ function check(schema: BsonDocument, v: BsonValue, path: string, out: string[]):
     check(sub, v, path, inner);
     return inner.length === 0;
   };
-  if (Array.isArray(schema.allOf)) {
-    for (const sub of schema.allOf) {
+  const allOf = schema.get("allOf");
+  if (Array.isArray(allOf)) {
+    for (const sub of allOf) {
       if (isDocument(sub)) {
         check(sub, v, path, out);
       }
     }
   }
-  if (Array.isArray(schema.anyOf) && !schema.anyOf.some(passes)) {
+  const anyOf = schema.get("anyOf");
+  if (Array.isArray(anyOf) && !anyOf.some(passes)) {
     out.push(t("{path}: anyOf 조건 중 맞는 것이 없습니다", { path: at }));
   }
-  if (Array.isArray(schema.oneOf) && schema.oneOf.filter(passes).length !== 1) {
+  const oneOf = schema.get("oneOf");
+  if (Array.isArray(oneOf) && oneOf.filter(passes).length !== 1) {
     out.push(t("{path}: oneOf 조건 중 정확히 하나에 맞아야 합니다", { path: at }));
   }
-  if (isDocument(schema.not) && passes(schema.not)) {
+  const not = schema.get("not");
+  if (isDocument(not) && passes(not)) {
     out.push(t("{path}: not 조건에 맞으면 안 됩니다", { path: at }));
   }
 }

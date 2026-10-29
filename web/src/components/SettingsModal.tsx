@@ -4,6 +4,7 @@ import { THEMES, palette, type ValueKind } from "../palette";
 import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import {
+  MAX_QUERY_TIMEOUT,
   MAX_ROWS_LIMIT,
   currentGridColors,
   currentSyntaxColors,
@@ -776,6 +777,20 @@ export function SettingsModal({
                         MAX_ROWS_LIMIT,
                         Math.max(1, Math.trunc(Number(event.target.value)) || 1),
                       ),
+                    })
+                  }
+                />
+              </SettingsField>
+              <SettingsField label={t("쿼리 시간 제한(초)")} hint={t("MongoDB 쿼리와 mongosh 스크립트에 쓰입니다. 0이면 제한이 없습니다.")}>
+                <input
+                  type="number"
+                  min={0}
+                  max={MAX_QUERY_TIMEOUT}
+                  value={settings.queryTimeout}
+                  aria-label={t("쿼리 시간 제한(초)")}
+                  onChange={(event) =>
+                    onChange({
+                      queryTimeout: Math.min(MAX_QUERY_TIMEOUT, Math.max(0, Math.trunc(Number(event.target.value)) || 0)),
                     })
                   }
                 />

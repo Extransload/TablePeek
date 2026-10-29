@@ -112,9 +112,9 @@ fn write_value(out: &mut String, value: &Bson) {
     }
 }
 
-/// A double the shell reads back as a double: a whole number keeps a `.0`
-/// (`1` would come back an Int32), `-0` stays negative, and infinities and
-/// NaN are the shell's own names.
+/// A double the shell reads back as a double. mongosh stores a whole-number
+/// literal (`3`, `3.0`, `-0`) as an Int32, so those go inside `Double(...)`;
+/// fractions, infinities and NaN are doubles as written.
 fn double(n: f64) -> String {
     if n.is_nan() {
         return "NaN".into();
@@ -123,10 +123,10 @@ fn double(n: f64) -> String {
         return if n > 0.0 { "Infinity" } else { "-Infinity" }.into();
     }
     let text = n.to_string();
-    if text.contains(['.', 'e', 'E']) {
-        text
+    if n.fract() == 0.0 {
+        format!("Double({text})")
     } else {
-        format!("{text}.0")
+        text
     }
 }
 
@@ -179,12 +179,12 @@ mod tests {
     #[test]
     fn doubles_stay_doubles() {
         for (n, shown) in [
-            (1.0, "1.0"),
-            (-3.0, "-3.0"),
-            (0.0, "0.0"),
-            (-0.0, "-0.0"),
+            (1.0, "Double(1)"),
+            (-3.0, "Double(-3)"),
+            (0.0, "Double(0)"),
+            (-0.0, "Double(-0)"),
             (2.5, "2.5"),
-            (1e21, "1000000000000000000000.0"),
+            (1e21, "Double(1000000000000000000000)"),
             (1.5e-7, "0.00000015"),
             (f64::INFINITY, "Infinity"),
             (f64::NEG_INFINITY, "-Infinity"),

@@ -155,7 +155,7 @@ export function defaultOfType(type: BsonTypeName): BsonValue {
     case "ObjectId":
       return ObjectId.generate();
     case "Object":
-      return {};
+      return new Map();
     case "Array":
       return [];
     default:
@@ -171,7 +171,7 @@ export function convertType(v: BsonValue, type: BsonTypeName): BsonValue {
   }
   switch (type) {
     case "Object":
-      return {};
+      return new Map();
     case "Array":
       return v === null || v === "" ? [] : [v];
     case "Null":
@@ -179,7 +179,7 @@ export function convertType(v: BsonValue, type: BsonTypeName): BsonValue {
     case "String":
       return editText(v);
     case "Boolean":
-      return v !== null && v !== "" && v !== false && !(isDocument(v) && Object.keys(v).length === 0) && editText(v) !== "0";
+      return v !== null && v !== "" && v !== false && !(isDocument(v) && v.size === 0) && editText(v) !== "0";
   }
   const r = coerceInput(editText(v), type);
   return "error" in r ? defaultOfType(type) : r.value;

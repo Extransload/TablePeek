@@ -12,7 +12,7 @@ import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMe
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon } from "../../../components/icons";
 import { t } from "../../../i18n";
-import { deepEqual, isDocument, setField, toEJSON, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
+import { deepEqual, isDocument, stringifyJson, toEJSON, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { VIEW_LIMITS, preview, toShell, truncation } from "../format";
 import { valueAt, type DocEdit } from "../guard";
 import { BracesIcon, CloneIcon } from "./icons";
@@ -27,11 +27,8 @@ function cloneBson<T extends BsonValue>(v: T): T {
     return v.map((x) => cloneBson(x)) as T;
   }
   if (isDocument(v)) {
-    const out: BsonDocument = {};
-    for (const key of Object.keys(v)) {
-      setField(out, key, cloneBson(v[key]));
-    }
-    return out as T;
+    const doc: BsonDocument = v;
+    return new Map(Array.from(doc, ([key, value]) => [key, cloneBson(value)])) as T;
   }
   return v;
 }
@@ -47,15 +44,16 @@ export function diffEdits(o: BsonDocument, d: BsonDocument, base = ""): DocEdit[
   const out: DocEdit[] = [];
   const walk = (ov: BsonValue, dv: BsonValue, path: string) => {
     if (isDocument(ov) && isDocument(dv)) {
-      for (const key of Object.keys(dv)) {
-        if (Object.hasOwn(ov, key)) {
-          walk(ov[key], dv[key], join(path, key));
+      for (const [key, value] of dv) {
+        const old = ov.get(key);
+        if (old !== undefined) {
+          walk(old, value, join(path, key));
         } else {
-          out.push({ op: "add", path: join(path, key), value: dv[key] });
+          out.push({ op: "add", path: join(path, key), value });
         }
       }
-      for (const key of Object.keys(ov)) {
-        if (!Object.hasOwn(dv, key)) {
+      for (const key of ov.keys()) {
+        if (!dv.has(key)) {
           out.push({ op: "unset", path: join(path, key) });
         }
       }
@@ -78,15 +76,15 @@ function visualDiff(o: BsonDocument, d: BsonDocument): { marks: Map<string, Mark
   let removed = 0;
   const walk = (ov: BsonValue | undefined, dv: BsonValue, path: string) => {
     if (isDocument(ov) && isDocument(dv)) {
-      for (const key of Object.keys(dv)) {
+      for (const [key, value] of dv) {
         const p = join(path, key);
-        if (Object.hasOwn(ov, key)) {
-          walk(ov[key], dv[key], p);
+        if (ov.has(key)) {
+          walk(ov.get(key), value, p);
         } else {
           marks.set(p, "added");
         }
       }
-      removed += Object.keys(ov).filter((key) => !Object.hasOwn(dv, key)).length;
+      removed += [...ov.keys()].filter((key) => !dv.has(key)).length;
     } else if (Array.isArray(ov) && Array.isArray(dv)) {
       dv.forEach((x, i) => {
         if (i < ov.length) {
@@ -120,23 +118,21 @@ function setAt(doc: BsonDocument, path: string, value: BsonValue): void {
   if (Array.isArray(parent)) {
     parent[Number(key)] = value;
   } else {
-    setField(parent, key, value);
+    parent.set(key, value);
   }
 }
 
 // Rewrites `obj` in place with its keys in a new order or names.
 function rebuild(obj: BsonDocument, entries: [string, BsonValue][]): void {
-  for (const key of Object.keys(obj)) {
-    delete obj[key];
-  }
+  obj.clear();
   for (const [key, value] of entries) {
-    setField(obj, key, value);
+    obj.set(key, value);
   }
 }
 
 function uniqueKey(obj: BsonDocument): string {
   let n = 1;
-  while (Object.hasOwn(obj, `field${n}`)) {
+  while (obj.has(`field${n}`)) {
     n++;
   }
   return `field${n}`;
@@ -274,7 +270,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       return true;
     }
     if (isDocument(v)) {
-      return Object.keys(v).some((k) => matches(join(path, k), v[k]));
+      return [...v].some(([k, x]) => matches(join(path, k), x));
     }
     return Array.isArray(v) && v.some((x, i) => matches(join(path, String(i)), x));
   };
@@ -301,7 +297,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       return;
     }
     if (name !== "" && name !== key) {
-      if (Object.hasOwn(parent, name)) {
+      if (parent.has(name)) {
         setEditing((e) => (e === null ? e : { ...e, error: t("이미 있는 필드 이름입니다: {name}", { name }) }));
         return;
       }
@@ -312,7 +308,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       mutate((d) => {
         const { parent: p } = parentAt(d, path);
         if (!Array.isArray(p)) {
-          rebuild(p, Object.keys(p).map((k): [string, BsonValue] => [k === key ? name : k, p[k]]));
+          rebuild(p, Array.from(p, ([k, x]): [string, BsonValue] => [k === key ? name : k, x]));
         }
       });
     }
@@ -326,7 +322,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       if (Array.isArray(parent)) {
         parent.splice(Number(key), 1);
       } else {
-        delete parent[key];
+        parent.delete(key);
       }
     });
 
@@ -339,7 +335,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
     mutate((d) => {
       if (how === "top") {
         target = uniqueKey(d);
-        setField(d, target, "");
+        d.set(target, "");
         return;
       }
       if (how === "child") {
@@ -350,7 +346,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
           mode = "value";
         } else if (isDocument(c)) {
           target = join(path, uniqueKey(c));
-          setField(c, target.slice(target.lastIndexOf(".") + 1), "");
+          c.set(target.slice(target.lastIndexOf(".") + 1), "");
         }
         return;
       }
@@ -361,7 +357,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
         mode = "value";
       } else {
         const name = uniqueKey(parent);
-        const entries = Object.keys(parent).flatMap((k): [string, BsonValue][] => (k === key ? [[k, parent[k]], [name, ""]] : [[k, parent[k]]]));
+        const entries = [...parent].flatMap((entry): [string, BsonValue][] => (entry[0] === key ? [entry, [name, ""]] : [entry]));
         rebuild(parent, entries);
         target = join(parentPath, name);
       }
@@ -405,7 +401,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
 
   const rows = (obj: BsonDocument | BsonValue[], parentPath: string, depth: number): ReactNode[] => {
     const inArray = Array.isArray(obj);
-    let keys = inArray ? obj.map((_, i) => String(i)) : Object.keys(obj);
+    let keys = inArray ? obj.map((_, i) => String(i)) : [...obj.keys()];
     let more: ReactNode = null;
     if (cut !== null && depth === 0 && !inArray && cut.shownFields < keys.length) {
       more = (
@@ -430,7 +426,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
     }
     const out: ReactNode[] = [];
     for (const key of keys) {
-      const v = inArray ? obj[Number(key)] : (obj as BsonDocument)[key];
+      const v = (inArray ? obj[Number(key)] : obj.get(key)) as BsonValue;
       const path = join(parentPath, key);
       if (depth === 0 && !matches(path, v)) {
         continue;
@@ -533,7 +529,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
               {open ? (
                 <div className="mg-kids">
                   {rows(v, path, 1)}
-                  {(Array.isArray(v) ? v.length : Object.keys(v).length) === 0 ? <div className="mg-n empty">{Array.isArray(v) ? t("빈 배열") : t("빈 문서")}</div> : null}
+                  {(Array.isArray(v) ? v.length : v.size) === 0 ? <div className="mg-n empty">{Array.isArray(v) ? t("빈 배열") : t("빈 문서")}</div> : null}
                 </div>
               ) : null}
             </div>
@@ -561,7 +557,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
         }
         if (open) {
           out.push(...rows(v, path, depth + 1));
-          if ((Array.isArray(v) ? v.length : Object.keys(v).length) === 0) {
+          if ((Array.isArray(v) ? v.length : v.size) === 0) {
             out.push(
               <div key={`${path}#empty`} className="mg-n empty" style={{ paddingLeft: depth * 16 + 4 }}>
                 {Array.isArray(v) ? t("빈 배열") : t("빈 문서")}
@@ -577,7 +573,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
     return out;
   };
 
-  const keyWidth = Math.min(18, Math.max(4, ...Object.keys(cur).map((k) => [...k].length)));
+  const keyWidth = Math.min(18, Math.max(4, ...Array.from(cur.keys(), (k) => [...k].length)));
   const menuValue = typeMenu === null ? undefined : valueAt(cur, typeMenu.path);
   const menuItems: ContextMenuItem[] =
     typeMenu === null || menuValue === undefined
@@ -636,7 +632,8 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
 
 // A stable key for a document across reloads: its _id, else its position.
 export function docKey(doc: BsonValue, position: number): string {
-  return isDocument(doc) && doc._id !== undefined ? toShell(doc._id) : `#${position}`;
+  const id = isDocument(doc) ? doc.get("_id") : undefined;
+  return id !== undefined ? toShell(id) : `#${position}`;
 }
 
 export interface CardViewProps {
@@ -672,11 +669,12 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
     <div className="mg-cards" tabIndex={-1}>
       {docs.map((doc, i) => {
         const key = docKey(doc, offset + i);
-        const editable = !readOnly && doc._id !== undefined && onSave !== undefined;
+        const id = doc.get("_id");
+        const editable = !readOnly && id !== undefined && onSave !== undefined;
         const head = (
           <div className="mg-card-head">
             <span className="mg-doc-no">#{(offset + i + 1).toLocaleString()}</span>
-            {doc._id !== undefined ? <ShellText className="mg-doc-id" text={toShell(doc._id)} /> : null}
+            {id !== undefined ? <ShellText className="mg-doc-id" text={toShell(id)} /> : null}
             <span className="spacer" />
             <span className="mg-card-actions">
               {editable && onEditJson ? (
@@ -696,7 +694,7 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
                 className="icon-text-button"
                 title={t("Extended JSON으로 복사")}
                 onClick={() => {
-                  void writeClipboard(JSON.stringify(toEJSON(doc), null, 2), notify);
+                  void writeClipboard(stringifyJson(toEJSON(doc), 2), notify);
                   notify(t("Extended JSON으로 복사했습니다"));
                 }}
               >

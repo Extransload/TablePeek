@@ -5,6 +5,7 @@ use base64::Engine as _;
 use russh::client::{Config, Handle, Msg};
 use russh::keys::PrivateKeyWithHashAlg;
 use russh::{Channel, ChannelMsg};
+use tablepeek_engine::registry::{Forwarder, NetRoute, TunnelStream};
 use tablepeek_types::{HttpTunnelConfig, SshConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -26,6 +27,27 @@ impl Drop for Tunnel {
             let _ = sender.send(());
         }
         self.task.abort();
+    }
+}
+
+/// The tunnel a connection went through: a local end leading to its one
+/// server, or the tunnel itself for an engine that reaches several (a
+/// replica set's members).
+pub enum Route {
+    One(Tunnel),
+    Members(Arc<dyn Forwarder>),
+}
+
+impl Route {
+    /// Where the engine connects through this tunnel.
+    pub fn net(&self) -> NetRoute {
+        match self {
+            Route::One(tunnel) => NetRoute::Via {
+                host: "127.0.0.1".into(),
+                port: tunnel.local_port,
+            },
+            Route::Members(forwarder) => NetRoute::Tunnel(forwarder.clone()),
+        }
     }
 }
 
@@ -172,7 +194,56 @@ async fn connect_http(
     Ok(stream)
 }
 
-pub async fn open(ssh: &SshConfig, target_host: &str, target_port: u16) -> Result<Tunnel, String> {
+/// An SSH session that leads any number of streams to addresses behind
+/// the server: one per member of a replica set the driver reaches. The
+/// session ends when this is dropped.
+pub struct SshForwarder {
+    handle: Handle<TunnelClient>,
+}
+
+impl SshForwarder {
+    pub async fn open(ssh: &SshConfig) -> Result<Self, String> {
+        Ok(Self {
+            handle: login(ssh).await?,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Forwarder for SshForwarder {
+    async fn connect(&self, host: &str, port: u16) -> Result<Box<dyn TunnelStream>, String> {
+        let channel = self
+            .handle
+            .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0)
+            .await
+            .map_err(|err| format!("SSH 서버가 {host}:{port}로 연결하지 못했습니다: {err}"))?;
+        Ok(Box::new(channel.into_stream()))
+    }
+}
+
+/// An HTTP proxy that leads streams anywhere behind it (a CONNECT each).
+pub struct HttpForwarder {
+    config: HttpTunnelConfig,
+}
+
+impl HttpForwarder {
+    pub fn new(config: &HttpTunnelConfig) -> Self {
+        Self {
+            config: config.clone(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Forwarder for HttpForwarder {
+    async fn connect(&self, host: &str, port: u16) -> Result<Box<dyn TunnelStream>, String> {
+        let stream = connect_http(&self.config, host, port).await?;
+        Ok(Box::new(stream))
+    }
+}
+
+/// Checks the SSH settings and logs in.
+async fn login(ssh: &SshConfig) -> Result<Handle<TunnelClient>, String> {
     let has_key = ssh
         .private_key_path
         .as_deref()
@@ -186,10 +257,13 @@ pub async fn open(ssh: &SshConfig, target_host: &str, target_port: u16) -> Resul
     if !has_key && !has_password {
         return Err("SSH 인증 정보가 없습니다".into());
     }
-
-    let handle = tokio::time::timeout(CONNECT_TIMEOUT, connect_and_auth(ssh))
+    tokio::time::timeout(CONNECT_TIMEOUT, connect_and_auth(ssh))
         .await
-        .map_err(|_| "SSH 연결 또는 인증 시간이 초과되었습니다".to_string())??;
+        .map_err(|_| "SSH 연결 또는 인증 시간이 초과되었습니다".to_string())?
+}
+
+pub async fn open(ssh: &SshConfig, target_host: &str, target_port: u16) -> Result<Tunnel, String> {
+    let handle = login(ssh).await?;
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -325,6 +399,98 @@ mod tests {
 
     fn docker_enabled() -> bool {
         std::env::var("TABLEPEEK_TEST_DOCKER").is_ok()
+    }
+
+    /// The `make test-db ENGINE=mongodb-rs` set: three members only its SSH
+    /// server (127.0.0.1:2223) can reach.
+    fn rs_ssh() -> Option<SshConfig> {
+        std::env::var("TABLEPEEK_TEST_MONGODB_RS").ok()?;
+        Some(SshConfig {
+            host: "127.0.0.1".into(),
+            port: 2223,
+            user: "tablepeek".into(),
+            password: None,
+            private_key_path: Some(format!(
+                "{}/../../testdb/ssh/id_ed25519",
+                env!("CARGO_MANIFEST_DIR")
+            )),
+        })
+    }
+
+    /// Inserts one document; the write goes to whichever member is primary.
+    async fn insert(
+        ops: &dyn tablepeek_engine::driver::DocumentDriver,
+        coll: &str,
+    ) -> Result<(), String> {
+        ops.insert(&tablepeek_engine::driver::InsertRequest {
+            db: "tablepeek_test".into(),
+            coll: coll.into(),
+            docs: vec![serde_json::json!({ "at": "now" })],
+            ordered: None,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+    }
+
+    #[tokio::test]
+    async fn replica_set_over_ssh_survives_a_primary_stepping_down() {
+        let Some(ssh) = rs_ssh() else {
+            return;
+        };
+        let forwarder = SshForwarder::open(&ssh).await.expect("SSH 로그인 실패");
+        let route = Route::Members(Arc::new(forwarder));
+        let serde_json::Value::Object(config) = serde_json::json!({
+            "uri": "mongodb://rs1.tablepeek.test,rs2.tablepeek.test,rs3.tablepeek.test/?replicaSet=rs1",
+            "database": "tablepeek_test"
+        }) else {
+            unreachable!()
+        };
+        let driver = registry::factory("mongodb")
+            .unwrap()
+            .connect(&config, &route.net(), Default::default())
+            .await
+            .expect("SSH 터널을 통한 레플리카셋 연결 실패");
+        let ops = driver.document().unwrap();
+        let coll = format!("tp_{}", uuid::Uuid::new_v4().simple());
+        insert(ops, &coll).await.expect("첫 쓰기 실패");
+
+        // The primary steps down while the connection is open.
+        let stepped = std::process::Command::new("docker")
+            .args([
+                "exec",
+                "tablepeek-testdb-mongo-rs1-1",
+                "mongosh",
+                "--quiet",
+                "mongodb://rs1.tablepeek.test,rs2.tablepeek.test,rs3.tablepeek.test/?replicaSet=rs1",
+                "--eval",
+                "db.adminCommand({ replSetStepDown: 20, force: true }).ok",
+            ])
+            .output()
+            .expect("docker exec를 실행할 수 없습니다");
+        assert!(stepped.status.success(), "{stepped:?}");
+
+        // Writes reach the new primary through the same connection.
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        let mut last = String::new();
+        loop {
+            match insert(ops, &coll).await {
+                Ok(()) => break,
+                Err(err) if std::time::Instant::now() < deadline => {
+                    last = err;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(err) => panic!("새 프라이머리에 쓰지 못했습니다: {err} (직전: {last})"),
+            }
+        }
+        let _ = ops
+            .command(&tablepeek_engine::driver::CommandRequest {
+                db: "tablepeek_test".into(),
+                command: serde_json::json!({ "drop": coll }),
+                confirmed: true,
+                poll: false,
+            })
+            .await;
     }
 
     fn pg_container_ip() -> String {

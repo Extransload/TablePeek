@@ -1,5 +1,6 @@
 import type { ErrorRule, ErrorSituation } from "../../errorHelp";
 import { t } from "../../i18n";
+import { stringifyJson } from "./bson";
 
 // Explanations of MongoDB's own errors (docs/ERRORS.md §3). The server sends
 // MongoDB's code as `server_code` and errInfo as `details`; the rules also
@@ -23,7 +24,7 @@ function ejsonText(value: unknown): string {
       }
     }
   }
-  const text = JSON.stringify(value) ?? String(value);
+  const text = value === undefined ? String(value) : stringifyJson(value);
   return text.length > 60 ? `${text.slice(0, 59)}…` : text;
 }
 
@@ -145,18 +146,46 @@ export const mongoErrorRules: ErrorRule[] = [
   {
     match: /Authentication failed|SCRAM failure|AuthenticationFailed/,
     code: /\bmongo_18\b/,
-    help: (_found, situation) => ({
-      title: t("로그인에 실패했습니다"),
-      cause: t("사용자 이름, 비밀번호 또는 인증 DB가 맞지 않습니다."),
-      fixes: [
-        t("사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다."),
-        inConnection(
-          situation,
-          "‘인증 DB’가 사용자를 만든 데이터베이스인지 확인하세요. 보통 admin입니다.",
-          "연결을 편집해 비밀번호와 ‘인증 DB’(보통 admin)를 확인하세요.",
-        ),
-      ],
-    }),
+    help: (_found, situation) => {
+      // The driver names the mechanism ("MONGODB-AWS failure: …"); the
+      // authentication database means nothing to the $external ones.
+      if (/MONGODB-AWS/.test(situation.raw)) {
+        return {
+          title: t("로그인에 실패했습니다"),
+          cause: t("AWS 액세스 키 ID, 비밀 액세스 키 또는 세션 토큰이 맞지 않거나, 그 자격 증명의 ARN으로 된 사용자가 서버에 없습니다."),
+          fixes: [
+            t("액세스 키 ID와 비밀 액세스 키를 다시 확인하세요. 임시 자격 증명이면 세션 토큰도 넣어야 합니다."),
+            t("서버의 $external에 그 IAM 사용자나 역할의 ARN으로 사용자가 있는지 확인하세요."),
+          ],
+        };
+      }
+      if (/\bPLAIN\b/.test(situation.raw)) {
+        return {
+          title: t("로그인에 실패했습니다"),
+          cause: t("LDAP 사용자 이름이나 비밀번호가 맞지 않습니다."),
+          fixes: [t("LDAP 사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다.")],
+        };
+      }
+      if (/MONGODB-X509/.test(situation.raw)) {
+        return {
+          title: t("로그인에 실패했습니다"),
+          cause: t("클라이언트 인증서의 주체(subject)와 같은 이름의 사용자가 서버의 $external에 없습니다."),
+          fixes: [t("인증서를 확인하거나, 서버에 그 주체 이름으로 $external 사용자를 만드세요.")],
+        };
+      }
+      return {
+        title: t("로그인에 실패했습니다"),
+        cause: t("사용자 이름, 비밀번호 또는 인증 DB가 맞지 않습니다."),
+        fixes: [
+          t("사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다."),
+          inConnection(
+            situation,
+            "‘인증 DB’가 사용자를 만든 데이터베이스인지 확인하세요. 보통 admin입니다.",
+            "연결을 편집해 비밀번호와 ‘인증 DB’(보통 admin)를 확인하세요.",
+          ),
+        ],
+      };
+    },
   },
   {
     match: /ReplicaSetNoPrimary|no reachable primary|No primary available|None of the available servers suitable for criteria|닿을 수 있는 프라이머리가 없습니다/i,

@@ -1,0 +1,10 @@
+dn: ou=people,dc=tablepeek,dc=test
+objectClass: organizationalUnit
+ou: people
+
+dn: uid=ann,ou=people,dc=tablepeek,dc=test
+objectClass: inetOrgPerson
+uid: ann
+cn: Ann
+sn: Test
+userPassword: ann_ldap_pw

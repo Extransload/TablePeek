@@ -10,6 +10,7 @@ import { LoadingState } from "../../../components/Spinner";
 import { t } from "../../../i18n";
 import { explain, isAbort } from "../api";
 import type { BsonDocument } from "../bson";
+import { shellCursorOptions } from "../codegen";
 import { summarizeExplain, suggestIndex, type PlanStage, type PlanSummary } from "../explain";
 import { shellCollection, toShell, toShellPretty } from "../format";
 import { PlanIcon } from "./icons";
@@ -53,7 +54,7 @@ function findCommand(coll: string, q: DocQuery): string {
   if (q.limit > 0) {
     cmd += `.limit(${q.limit})`;
   }
-  return `${cmd}.explain("executionStats")`;
+  return `${cmd}${shellCursorOptions(q.options).join("")}.explain("executionStats")`;
 }
 
 function count(n: number | null): string {
@@ -73,13 +74,13 @@ function StageBox({ stage }: { stage: PlanStage }) {
     facts.push({ key: t("검사한 문서"), value: count(stage.docsExamined), warn: stage.stage === "COLLSCAN" });
   }
   if (stage.timeMs !== null) {
-    facts.push({ key: t("시간"), value: `${stage.timeMs.toLocaleString()} ms` });
+    facts.push({ key: t("시간 [걸린]"), value: `${stage.timeMs.toLocaleString()} ms` });
   }
   if (stage.indexName !== null) {
-    facts.push({ key: t("인덱스"), value: stage.keyPattern ? `${stage.indexName}  ${toShell(stage.keyPattern)}` : stage.indexName });
+    facts.push({ key: t("인덱스 [하나]"), value: stage.keyPattern ? `${stage.indexName}  ${toShell(stage.keyPattern)}` : stage.indexName });
   }
   if (stage.bounds.length > 0) {
-    facts.push({ key: t("범위"), value: stage.bounds.map((b) => `${b.field}: ${b.intervals.join(", ")}`).join("  ") });
+    facts.push({ key: t("범위 [인덱스]"), value: stage.bounds.map((b) => `${b.field}: ${b.intervals.join(", ")}`).join("  ") });
   }
   if (stage.direction !== null && stage.indexName !== null) {
     facts.push({ key: t("방향"), value: stage.direction === "forward" ? t("앞으로") : t("뒤로") });
@@ -175,7 +176,7 @@ export function Summary({ summary, query, coll, onCreateIndex }: { summary: Plan
     [t("검사한 인덱스 키"), count(summary.keysExamined)],
     [t("실행 시간"), summary.timeMs === null ? "—" : `${summary.timeMs.toLocaleString()} ms`],
     [t("사용 인덱스"), summary.indexes.length > 0 ? summary.indexes.join(", ") : t("없음")],
-    [t("정렬"), summary.inMemorySort ? t("메모리") : query.sort ? t("인덱스") : "—"],
+    [t("정렬"), summary.inMemorySort ? t("메모리") : query.sort ? t("인덱스 [하나]") : "—"],
   ];
   if (summary.rejectedPlans > 0) {
     cards.push([t("버린 계획"), summary.rejectedPlans.toLocaleString()]);
@@ -265,6 +266,7 @@ export function ExplainPanel({ ns, query, active, runSeq, onCreateIndex }: Expla
       },
       "executionStats",
       ctl.signal,
+      cur.options,
     ).then(
       (raw) => settle({ query: cur, raw, summary: summarizeExplain(raw) }),
       (e: unknown) => {

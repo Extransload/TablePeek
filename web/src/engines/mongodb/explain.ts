@@ -3,7 +3,7 @@
 // warnings (collection scan, in-memory sort, many more read than returned)
 // and an index suggestion in equality → sort → range order.
 
-import { BsonRegex, Int32, isDocument, isNumber, setField, type BsonDocument, type BsonValue } from "./bson";
+import { BsonRegex, Int32, isDocument, isNumber, type BsonDocument, type BsonValue } from "./bson";
 
 export interface PlanStage {
   stage: string;
@@ -76,25 +76,27 @@ function text(v: BsonValue | undefined): string | null {
 // per shard on a sharded cluster.
 function childPlans(node: BsonDocument): { plan: BsonDocument; shard: string | null }[] {
   const out: { plan: BsonDocument; shard: string | null }[] = [];
-  const input = doc(node.inputStage);
+  const input = doc(node.get("inputStage"));
   if (input) {
     out.push({ plan: input, shard: null });
   }
-  if (Array.isArray(node.inputStages)) {
-    for (const s of node.inputStages) {
+  const inputStages = node.get("inputStages");
+  if (Array.isArray(inputStages)) {
+    for (const s of inputStages) {
       if (isDocument(s)) {
         out.push({ plan: s, shard: null });
       }
     }
   }
-  if (Array.isArray(node.shards)) {
-    for (const s of node.shards) {
+  const shards = node.get("shards");
+  if (Array.isArray(shards)) {
+    for (const s of shards) {
       if (!isDocument(s)) {
         continue;
       }
-      const plan = doc(s.executionStages) ?? classicPlan(doc(s.winningPlan));
+      const plan = doc(s.get("executionStages")) ?? classicPlan(doc(s.get("winningPlan")));
       if (plan) {
-        out.push({ plan, shard: text(s.shardName) });
+        out.push({ plan, shard: text(s.get("shardName")) });
       }
     }
   }
@@ -107,34 +109,34 @@ function classicPlan(plan: BsonDocument | null): BsonDocument | null {
   if (!plan) {
     return null;
   }
-  return doc(plan.queryPlan) ?? plan;
+  return doc(plan.get("queryPlan")) ?? plan;
 }
 
 function readStage(node: BsonDocument, shard: string | null): PlanStage {
-  const boundsDoc = doc(node.indexBounds);
+  const boundsDoc = doc(node.get("indexBounds"));
   const bounds = boundsDoc
-    ? Object.entries(boundsDoc).map(([field, v]) => ({
+    ? [...boundsDoc].map(([field, v]) => ({
         field,
         intervals: Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : String(x))) : [String(v)],
       }))
     : [];
   return {
-    stage: text(node.stage) ?? "?",
-    nReturned: num(node.nReturned),
-    docsExamined: num(node.docsExamined),
-    keysExamined: num(node.keysExamined),
-    timeMs: num(node.executionTimeMillisEstimate),
-    indexName: text(node.indexName),
-    keyPattern: doc(node.keyPattern),
+    stage: text(node.get("stage")) ?? "?",
+    nReturned: num(node.get("nReturned")),
+    docsExamined: num(node.get("docsExamined")),
+    keysExamined: num(node.get("keysExamined")),
+    timeMs: num(node.get("executionTimeMillisEstimate")),
+    indexName: text(node.get("indexName")),
+    keyPattern: doc(node.get("keyPattern")),
     bounds,
-    direction: text(node.direction),
-    multiKey: node.isMultiKey === true,
-    filter: doc(node.filter),
-    sortPattern: doc(node.sortPattern),
-    limitAmount: num(node.limitAmount),
-    skipAmount: num(node.skipAmount),
-    transformBy: doc(node.transformBy),
-    usedDisk: node.usedDisk === true,
+    direction: text(node.get("direction")),
+    multiKey: node.get("isMultiKey") === true,
+    filter: doc(node.get("filter")),
+    sortPattern: doc(node.get("sortPattern")),
+    limitAmount: num(node.get("limitAmount")),
+    skipAmount: num(node.get("skipAmount")),
+    transformBy: doc(node.get("transformBy")),
+    usedDisk: node.get("usedDisk") === true,
     shard,
     children: childPlans(node).map((c) => readStage(c.plan, c.shard)),
   };
@@ -154,21 +156,24 @@ function walk(stage: PlanStage | null, visit: (s: PlanStage) => void): void {
 // execution tree does not, and its stages say little, so the winning plan's
 // shape is shown instead.
 function isClassic(node: BsonDocument | null): node is BsonDocument {
-  const name = node ? text(node.stage) : null;
+  const name = node ? text(node.get("stage")) : null;
   return name !== null && name === name.toUpperCase();
 }
 
 export function summarizeExplain(raw: BsonDocument): PlanSummary {
   // An aggregate's explain holds the find part in its first stage's $cursor.
   let source = raw;
-  const stages = Array.isArray(raw.stages) ? raw.stages : null;
-  if (!doc(raw.queryPlanner) && stages && isDocument(stages[0]) && isDocument(stages[0].$cursor)) {
-    source = stages[0].$cursor;
+  const pipeline = raw.get("stages");
+  const stages = Array.isArray(pipeline) ? pipeline : null;
+  const first = stages?.[0];
+  const cursor = isDocument(first) ? doc(first.get("$cursor")) : null;
+  if (!doc(raw.get("queryPlanner")) && cursor) {
+    source = cursor;
   }
-  const planner = doc(source.queryPlanner);
-  const stats = doc(source.executionStats);
-  const execution = stats ? doc(stats.executionStages) : null;
-  const winning = classicPlan(planner ? doc(planner.winningPlan) : null);
+  const planner = doc(source.get("queryPlanner"));
+  const stats = doc(source.get("executionStats"));
+  const execution = stats ? doc(stats.get("executionStages")) : null;
+  const winning = classicPlan(planner ? doc(planner.get("winningPlan")) : null);
   const tree = isClassic(execution) ? execution : winning;
   let root = tree ? readStage(tree, null) : null;
   // The pipeline stages after $cursor sit above the find part.
@@ -177,15 +182,15 @@ export function summarizeExplain(raw: BsonDocument): PlanSummary {
       if (!isDocument(s)) {
         continue;
       }
-      const name = Object.keys(s).find((k) => k.startsWith("$"));
+      const name = [...s.keys()].find((k) => k.startsWith("$"));
       if (!name) {
         continue;
       }
       root = {
-        ...readStage({}, null),
+        ...readStage(new Map(), null),
         stage: name,
-        nReturned: num(s.nReturned),
-        timeMs: num(s.executionTimeMillisEstimate),
+        nReturned: num(s.get("nReturned")),
+        timeMs: num(s.get("executionTimeMillisEstimate")),
         children: [root],
       };
     }
@@ -208,9 +213,9 @@ export function summarizeExplain(raw: BsonDocument): PlanSummary {
       }
     }
   });
-  const nReturned = stats ? num(stats.nReturned) : null;
-  const docsExamined = stats ? num(stats.totalDocsExamined) : null;
-  const keysExamined = stats ? num(stats.totalKeysExamined) : null;
+  const nReturned = stats ? num(stats.get("nReturned")) : null;
+  const docsExamined = stats ? num(stats.get("totalDocsExamined")) : null;
+  const keysExamined = stats ? num(stats.get("totalKeysExamined")) : null;
   const warnings: PlanWarning[] = [];
   if (collscan) {
     warnings.push({ kind: "collscan" });
@@ -224,18 +229,19 @@ export function summarizeExplain(raw: BsonDocument): PlanSummary {
   if (examined > RATIO_MIN_EXAMINED && ratio > RATIO_WARN) {
     warnings.push({ kind: "ratio", ratio, examined, returned });
   }
+  const rejected = planner?.get("rejectedPlans");
   return {
     root,
     nReturned,
     docsExamined,
     keysExamined,
-    timeMs: stats ? num(stats.executionTimeMillis) : null,
+    timeMs: stats ? num(stats.get("executionTimeMillis")) : null,
     indexes,
     indexKeys,
     collscan,
     inMemorySort,
     warnings,
-    rejectedPlans: planner && Array.isArray(planner.rejectedPlans) ? planner.rejectedPlans.length : 0,
+    rejectedPlans: Array.isArray(rejected) ? rejected.length : 0,
   };
 }
 
@@ -262,7 +268,7 @@ const RANGE_OPS: Record<string, true> = {
 // $nor, $expr and $text conditions are left out: one compound index does
 // not serve them.
 function filterFields(filter: BsonDocument, equality: string[], range: string[]): void {
-  for (const [key, v] of Object.entries(filter)) {
+  for (const [key, v] of filter) {
     if (key === "$and" && Array.isArray(v)) {
       for (const part of v) {
         if (isDocument(part)) {
@@ -274,7 +280,7 @@ function filterFields(filter: BsonDocument, equality: string[], range: string[])
     if (key.startsWith("$")) {
       continue;
     }
-    const ops = isDocument(v) ? Object.keys(v) : [];
+    const ops = isDocument(v) ? [...v.keys()] : [];
     const operators = ops.length > 0 && ops.every((k) => k.startsWith("$"));
     if (!operators) {
       // A plain value is equality; a regex literal reads a range.
@@ -291,9 +297,9 @@ function filterFields(filter: BsonDocument, equality: string[], range: string[])
 }
 
 function sameKeys(a: BsonDocument, b: BsonDocument): boolean {
-  const ka = Object.keys(a);
-  const kb = Object.keys(b);
-  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && num(a[k]) === num(b[k]));
+  const ka = [...a.keys()];
+  const kb = [...b.keys()];
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && num(a.get(k)) === num(b.get(k)));
 }
 
 // The compound index the query would want, equality fields first, then the
@@ -309,16 +315,16 @@ export function suggestIndex(
   const equality: string[] = [];
   const range: string[] = [];
   filterFields(query.filter, equality, range);
-  const keys: BsonDocument = {};
+  const keys: BsonDocument = new Map();
   const add = (field: string, dir: number): void => {
-    if (!Object.hasOwn(keys, field)) {
-      setField(keys, field, new Int32(dir));
+    if (!keys.has(field)) {
+      keys.set(field, new Int32(dir));
     }
   };
   for (const field of equality) {
     add(field, 1);
   }
-  for (const [field, v] of Object.entries(query.sort ?? {})) {
+  for (const [field, v] of query.sort ?? []) {
     const n = num(v);
     if (n !== null) {
       add(field, n < 0 ? -1 : 1);
@@ -327,7 +333,7 @@ export function suggestIndex(
   for (const field of range) {
     add(field, 1);
   }
-  const fields = Object.keys(keys);
+  const fields = [...keys.keys()];
   if (fields.length === 0 || (fields.length === 1 && fields[0] === "_id")) {
     return null;
   }

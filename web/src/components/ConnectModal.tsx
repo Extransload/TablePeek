@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { getConnMeta, setConnMeta } from "../connMeta";
 import { engineById, engines, unsupportedEngine, type ConnectionField, type Engine } from "../engines";
 import {
@@ -6,9 +13,11 @@ import {
   choiceValues,
   configFromValues,
   defaultValues,
+  fieldFor,
   fieldVisible,
   optionsOf,
   parseConnectionUrl,
+  staleUrlValues,
   valuesFromConfig,
   type FormValues,
 } from "../engines/connection";
@@ -162,6 +171,15 @@ function formFromSaved(saved: SavedConnection): ConnectForm {
 
 const URL_LIKE = /^(jdbc:)?[a-z][a-z0-9+.-]*:\/\//i;
 
+type Action = "save" | "test" | "connect";
+
+// A footer button pressed with the mouse leaves the focus where it is: a
+// field left by the press would fill from a typed URL and move the buttons
+// before the release (see act).
+function keepFocus(event: ReactMouseEvent): void {
+  event.preventDefault();
+}
+
 // The engine's password: the first secret field, the one the keychain keeps
 // as the profile's own secret.
 function passwordField(engine: Engine): ConnectionField | undefined {
@@ -244,10 +262,11 @@ function problemsOf(
   const problems: Problem[] = [];
   // Stored secrets only count while the profile keeps storing them.
   const hasStored = storedSecrets && form.persistPassword;
-  for (const field of engine.connection.fields) {
-    if (!fieldVisible(field, form.values)) {
+  for (const spec of engine.connection.fields) {
+    if (!fieldVisible(spec, form.values)) {
       continue;
     }
+    const field = fieldFor(spec, form.values);
     const value = text(form.values, field.key).trim();
     const label = t(field.label ?? field.key);
     if (field.type === "port") {
@@ -430,9 +449,10 @@ export function ConnectModal({
       ? { kind: "error", text: t("연결 URL을 인식하지 못했습니다") }
       : { kind: "ok", text: t("URL에서 접속 정보를 채웠습니다") };
   });
-  const [busy, setBusy] = useState<"save" | "test" | "connect" | null>(null);
-  // Set by an error's fix button: test again once the changed form renders.
-  const [retest, setRetest] = useState(false);
+  const [busy, setBusy] = useState<Action | null>(null);
+  // An action to run once the changed form renders: an error's fix tests
+  // again, a button pressed straight after typing a URL runs after the fill.
+  const [queued, setQueued] = useState<Action | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [picker, setPicker] = useState<{ field: string; title: string } | null>(null);
   const passwordRef = useRef<HTMLInputElement | null>(null);
@@ -445,6 +465,11 @@ export function ConnectModal({
   const pickingRef = useRef(false);
   const initialRef = useRef(form);
   const backdropDownRef = useRef(false);
+  // The keys the last connection URL filled that no hand has changed since
+  // (see staleUrlValues), and a URL typed into a host or connection-string
+  // field that hasn't filled the form yet.
+  const urlFilledRef = useRef<Set<string>>(new Set(parsedUrl !== null ? Object.keys(parsedUrl.values) : []));
+  const pendingFillRef = useRef<{ field: ConnectionField; typed: string } | null>(null);
   pickerOpenRef.current = picker !== null;
 
   function focusSecret(secret: MissingSecret): void {
@@ -491,6 +516,9 @@ export function ConnectModal({
   }
 
   function updateValues(patch: FormValues): void {
+    for (const key of Object.keys(patch)) {
+      urlFilledRef.current.delete(key);
+    }
     setForm((prev) => ({ ...prev, values: { ...prev.values, ...patch } }));
     setProblems((prev) => (prev.length === 0 ? prev : []));
     setStatus((prev) => (prev?.kind === "info" ? prev : null));
@@ -532,14 +560,18 @@ export function ConnectModal({
   }
 
   // A pasted connection URL fills the form (switching to the engine it names)
-  // instead of landing in the field.
+  // instead of landing in the field, and takes back what the previous URL
+  // filled but this one doesn't say (see staleUrlValues).
   function pasteUrl(pasted: string): void {
+    pendingFillRef.current = null;
     const parsed = parseConnectionUrl(pasted);
     if (parsed === null) {
       setStatus({ kind: "error", text: t("연결 URL을 인식하지 못했습니다") });
       return;
     }
-    changeDriver(parsed.engine, parsed.values);
+    const stale = staleUrlValues(parsed.engine, form.values, urlFilledRef.current, parsed.values);
+    changeDriver(parsed.engine, { ...stale, ...parsed.values });
+    urlFilledRef.current = new Set(Object.keys(parsed.values));
     setStatus({
       kind: "ok",
       text: /sslmode=verify/i.test(pasted)
@@ -554,6 +586,7 @@ export function ConnectModal({
   // connection string already in its kept form (a seed list or SRV name
   // without its password) is left alone.
   function fillFromTyped(field: ConnectionField, typed: string): boolean {
+    pendingFillRef.current = null;
     const trimmed = typed.trim();
     if (!URL_LIKE.test(trimmed)) {
       return false;
@@ -570,7 +603,11 @@ export function ConnectModal({
       if (auth === undefined || typeof implied !== "string" || implied === form.values.auth) {
         return false;
       }
-      updateValues(choiceValues(auth, implied));
+      const chosen = choiceValues(auth, implied);
+      updateValues(chosen);
+      for (const key of Object.keys(chosen)) {
+        urlFilledRef.current.add(key);
+      }
       return true;
     }
     pasteUrl(trimmed);
@@ -695,7 +732,7 @@ export function ConnectModal({
       setBusy(null);
     }
   }
-  saveRef.current = () => void save();
+  saveRef.current = () => act("save");
 
   async function test(): Promise<void> {
     if (busy !== null || !check("connect") || engine === undefined) {
@@ -762,13 +799,33 @@ export function ConnectModal({
     }
   }
 
-  useEffect(() => {
-    if (retest) {
-      setRetest(false);
-      void test();
+  function run(action: Action): void {
+    void (action === "save" ? save() : action === "test" ? test() : connect());
+  }
+
+  // A URL typed into a host or connection-string field fills the form when
+  // the field is left. The footer's buttons keep the focus when pressed (so
+  // the fill can't move them between press and release and lose the click),
+  // which leaves the fill to run here, and the action after it renders.
+  function act(action: Action): void {
+    const pending = pendingFillRef.current;
+    if (pending !== null && fillFromTyped(pending.field, pending.typed)) {
+      // An unrecognized URL stays in the field with its error.
+      if (parseConnectionUrl(pending.typed) !== null) {
+        setQueued(action);
+      }
+      return;
     }
-    // Runs after the fix's form change has rendered, so test() sees it.
-  }, [retest]);
+    run(action);
+  }
+
+  useEffect(() => {
+    if (queued !== null) {
+      setQueued(null);
+      run(queued);
+    }
+    // Runs after the changed form has rendered, so the action sees it.
+  }, [queued]);
 
   // One-click versions of the fixes an explained error suggests, where the
   // engine has the setting: the SSL mode, MongoDB's direct connection. Each
@@ -780,7 +837,7 @@ export function ConnectModal({
     }
     return () => {
       updateValues({ [key]: value });
-      setRetest(true);
+      setQueued("test");
     };
   }
 
@@ -836,9 +893,9 @@ export function ConnectModal({
   // select as a segmented control, consecutive files of a group as one row
   // of file slots.
   function renderFields(current: Engine, advanced: boolean): ReactNode[] {
-    const shown = current.connection.fields.filter(
-      (field) => (field.advanced === true) === advanced && fieldVisible(field, form.values),
-    );
+    const shown = current.connection.fields
+      .filter((field) => (field.advanced === true) === advanced && fieldVisible(field, form.values))
+      .map((field) => fieldFor(field, form.values));
     const firstSecret = passwordField(current);
     const rows: ReactNode[] = [];
     for (let index = 0; index < shown.length; index += 1) {
@@ -864,7 +921,10 @@ export function ConnectModal({
                   value={value}
                   spellCheck={false}
                   placeholder={field.placeholder !== undefined ? t(field.placeholder) : undefined}
-                  onChange={(event) => updateValues({ [field.key]: event.target.value })}
+                  onChange={(event) => {
+                    pendingFillRef.current = { field, typed: event.target.value };
+                    updateValues({ [field.key]: event.target.value });
+                  }}
                   onBlur={(event) => void fillFromTyped(field, event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.nativeEvent.isComposing && fillFromTyped(field, event.currentTarget.value)) {
@@ -921,7 +981,7 @@ export function ConnectModal({
           </Row>,
         );
       } else if (field.type === "secret") {
-        const own = field === firstSecret;
+        const own = field.key === firstSecret?.key;
         rows.push(
           <Row key={field.key} label={label} htmlFor={id}>
             <div className="cm-pair">
@@ -933,7 +993,9 @@ export function ConnectModal({
                   {...invalidProps(field.key)}
                   type={showPassword ? "text" : "password"}
                   value={value}
-                  placeholder={storedPlaceholder}
+                  placeholder={
+                    storedPlaceholder !== "" ? storedPlaceholder : field.placeholder !== undefined ? t(field.placeholder) : undefined
+                  }
                   autoComplete="new-password"
                   onChange={(event) => updateValues({ [field.key]: event.target.value })}
                 />
@@ -959,6 +1021,24 @@ export function ConnectModal({
                 </Select>
               ) : null}
             </div>
+          </Row>,
+        );
+      } else if (field.type === "select" && optionsOf(field).length > 3) {
+        // Too many choices for one row of buttons (authentication methods,
+        // OIDC flows).
+        rows.push(
+          <Row key={field.key} label={label}>
+            <Select
+              aria-label={label}
+              value={value}
+              onChange={(event) => updateValues(choiceValues(field, event.target.value))}
+            >
+              {optionsOf(field).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {t(option.label)}
+                </option>
+              ))}
+            </Select>
           </Row>,
         );
       } else if (field.type === "select") {
@@ -1109,7 +1189,7 @@ export function ConnectModal({
         style={{ "--cm-color": color } as CSSProperties}
         onSubmit={(event) => {
           event.preventDefault();
-          void connect();
+          act("connect");
         }}
         noValidate
       >
@@ -1441,14 +1521,14 @@ export function ConnectModal({
               <span className="cm-hint">{t("Enter 연결 · ⌘S 저장 · Esc 닫기")}</span>
             )}
           </span>
-          <button type="button" onClick={() => void save()} disabled={busy !== null || engine === undefined}>
+          <button type="button" onMouseDown={keepFocus} onClick={() => act("save")} disabled={busy !== null || engine === undefined}>
             {busy === "save" ? <Spinner size={11} /> : null}
             {t("저장")}
           </button>
-          <button type="button" onClick={() => void test()} disabled={busy !== null || engine === undefined}>
+          <button type="button" onMouseDown={keepFocus} onClick={() => act("test")} disabled={busy !== null || engine === undefined}>
             {t("테스트")}
           </button>
-          <button type="submit" className="primary" disabled={busy !== null || engine === undefined}>
+          <button type="submit" className="primary" onMouseDown={keepFocus} disabled={busy !== null || engine === undefined}>
             {openConnId !== null ? t("저장 후 열기") : t("연결 [버튼]")}
           </button>
         </footer>

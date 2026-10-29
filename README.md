@@ -124,7 +124,7 @@ Create connections from the in-app connection screen. Profiles are saved in `~/.
 | **MySQL** | MySQL and MariaDB | TLS `prefer`/`require`, CA certificates, mTLS client certificates |
 | **CockroachDB** | CockroachDB clusters | PostgreSQL wire protocol; internal tables are excluded from schema browsing |
 | **SQL Server** | Microsoft SQL Server | TDS driver with an `encrypt` option |
-| **MongoDB** | MongoDB servers, replica sets and Atlas | `mongodb://` or `mongodb+srv://` connection string or host fields; SCRAM or X.509; TLS with CA and client certificates; tunnels for single-host connections only |
+| **MongoDB** | MongoDB servers, replica sets and Atlas | `mongodb://` or `mongodb+srv://` connection string or host fields; SCRAM, X.509, AWS IAM, LDAP, Kerberos, or OIDC (browser login or cloud identity); TLS with CA and client certificates; SSH/HTTP tunnels for single hosts, several hosts, and `mongodb+srv://` |
 
 Connection features:
 
@@ -188,7 +188,7 @@ The ER diagram tab (the diagram button in the top bar, between the connections a
 
 ### MongoDB workbench
 
-A MongoDB connection opens a document workspace: databases and collections in the sidebar, a collection tab per collection, and mongosh tabs. A collection tab has six sub-tabs:
+A MongoDB connection opens a document workspace: databases and collections in the sidebar, a collection tab per collection, and mongosh tabs. A collection tab has seven sub-tabs:
 
 - **Documents.** A filter bar with completion (you can leave out the outer braces), options for projection, sort, skip and limit, and recent and favourite queries. Results show as cards, as JSON blocks, or as a table; switch between them with the ☰ {} ⊞ icons or `Ctrl+1–3`. Click any value to edit it, keeping its BSON type. In the table, nested objects and arrays open as their own tables (`orders › items`), and the detail panel (`Mod+I`) is available there only. Saving puts each changed path's original value in the update filter. If the document changed elsewhere in the meantime, the current value and your change are shown side by side.
 - **Aggregation.** A stack of stage cards, each with a preview of its output, an on/off toggle, and drag to reorder. There is also a text mode, saved pipelines, save as view, explain, and `$out`/`$merge` behind a confirmation.
@@ -196,8 +196,11 @@ A MongoDB connection opens a document workspace: databases and collections in th
 - **Validation.** Edit a `$jsonSchema` or query rule, or draft one from the data. See how many sampled documents would pass or fail before applying it with `collMod`.
 - **Indexes.** Lists each index with its size and usage (`$indexStats`), and creates or drops indexes.
 - **Explain.** Runs `explain("executionStats")` and shows a stage tree, warnings, and a suggested index.
+- **Changes.** Watches the collection through a change stream (a database-wide one from the sidebar), with operation filters and the document before and after.
 
-The mongosh tab parses a subset of mongosh and never runs JavaScript. Import reads JSON, NDJSON, Extended JSON, and CSV/TSV with a type for each column. Export writes JSON, NDJSON, or CSV, streamed from the server. Databases, collections (capped, time series, clustered), and views can be created, renamed, and dropped. The performance tab charts operations, connections, network, and cache use, lists the operations running now (and can kill them), and shows time per collection and the slow-operation profiler.
+The mongosh tab runs mongosh statements, and scripts with variables, loops, and functions run as JavaScript in a Web Worker, reading `find`/`aggregate` through server cursors. Import reads JSON, NDJSON, Extended JSON, and CSV/TSV with a type for each column. Export writes JSON, NDJSON, or CSV, streamed from the server. Databases, collections (capped, time series, clustered), and views can be created, renamed, and dropped. The performance tab charts operations, connections, network, and cache use, lists the operations running now (and can kill them), and shows time per collection and the slow-operation profiler.
+
+The documents view also has query options (collation, hint, maxTimeMS), bulk update and delete with a before/after preview, and export of the query or pipeline as driver code (mongosh, Python, Node.js, Java, C#, Go, Rust, PHP, Ruby). The schema tab plots GeoJSON and `[lng, lat]` fields on an offline world map and turns a drawn region into a `$geoWithin` filter. The indexes tab manages Atlas Search and vector search indexes where the server has them, and GridFS buckets show in the sidebar with file listing, upload, download, and delete. Documents over 1 MB and arrays over 1,000 elements are cut short in the cards and JSON views, with "Show all".
 
 ### Connections
 
@@ -311,6 +314,21 @@ make test-db-down ENGINE=postgres     # stop them and throw the data away
 ```
 
 `make test-db` prints the host, port, and account for each one, so you can also add them as connections in TablePeek and try the app on a real server. Ports are bound to `127.0.0.1` only, and the accounts are test-only: never reuse them on a real server. MySQL listens on 3307; set `TABLEPEEK_TEST_MYSQL_PORT=3329` (for `make test-db` and `make test-live` alike) when that port is taken. SQL Server has no arm64 image, so on Apple Silicon it runs under emulation and takes a minute to start.
+
+A few MongoDB servers for particular tests sit in compose profiles, so `make test-db` leaves them out; name them in `ENGINE` to start them (and `make test-live ENGINE=…` to run their tests):
+
+| `ENGINE` | What | Address |
+|---|---|---|
+| `mongodb-x509` | TLS required, X.509 logins; `make test-db` writes a throwaway CA, server and client certificate to `testdb/x509` | `127.0.0.1:27020`, CA `testdb/x509/ca.pem`, client `testdb/x509/client.pem` |
+| `mongodb-ldap` | MongoDB Enterprise checking PLAIN logins against OpenLDAP | `127.0.0.1:27021`, LDAP user `ann` / `ann_ldap_pw` |
+| `mongodb-kerberos` | MongoDB Enterprise taking GSSAPI logins, with an MIT KDC for the realm `TABLEPEEK.TEST` | `127.0.0.1:27022`, principal `ann@TABLEPEEK.TEST` / `ann_krb_pw`, service host `kerberos.tablepeek.test`; KDC `127.0.0.1:1088`, client config `testdb/kerberos/krb5.conf` |
+| `mongodb-oidc` | MongoDB Enterprise taking MONGODB-OIDC logins from a local identity provider (any user name on its login page) | `127.0.0.1:27023`; provider `https://127.0.0.1:8180/tablepeek`, whose certificate comes from the `testdb/x509` CA |
+| `mongodb-aws` | MongoDB Enterprise taking MONGODB-AWS logins, checked by a local STS stand-in | `127.0.0.1:27024`, key `AKIATABLEPEEKTEST` / `tablepeek_aws_secret`, session token `tablepeek_session_token` |
+| `mongodb-rs` | a three-member replica set whose members (`rs1.tablepeek.test`…) only an SSH server reaches, and a DNS server with `mongodb+srv://rs.tablepeek.test` | SSH `127.0.0.1:2223`, user `tablepeek`, key `testdb/ssh/id_ed25519`; DNS `127.0.0.1:1053` |
+| `mongodb-atlas` | Atlas Local, for search indexes | `127.0.0.1:27019`, no authentication |
+| `mongodb-sharded` | a config server, one shard and mongos | `127.0.0.1:27040`, no authentication |
+
+Enterprise Server is used here for evaluation only. To try Kerberos in the app, start TablePeek with `KRB5_CONFIG=$PWD/testdb/kerberos/krb5.conf` and `KRB5CCNAME=FILE:/tmp/tablepeek-krb5cc` after `kinit ann@TABLEPEEK.TEST` with the same two (macOS: `kinit --password-file=STDIN`), so your own Kerberos settings and tickets stay untouched; the live test does this itself. For OIDC, start it with `SSL_CERT_FILE=$PWD/testdb/x509/ca.pem` so it trusts the provider (your browser will warn about the same certificate once). AWS's real STS, instance roles and the Azure and GCP metadata endpoints exist only in the cloud; those paths are covered by unit tests of what would be sent.
 
 Beside the test rows, each server holds a sample shop to explore: the `shop` schema (on MySQL, the `shop` database). It has customers, products, orders, order items, reviews and more, about 28,000 rows in all. They are tied together by foreign keys: a self-reference, composite and text keys, CASCADE and SET NULL. There are also enums and JSON (on SQL Server, CHECK lists and JSON text), arrays where the engine has them, binary columns, a table without a primary key, and a table of awkward names and values (Korean, emoji, quotes, multi-line text, extreme numbers and dates). Two views, a function, a procedure and an audit trigger complete it. The `testdb/*-shop.sql` scripts build it. They never rebuild what is already there, and PostgreSQL and MySQL run theirs only when the container is first created. So after changing a script, or the sample's tables, run `make test-db-down` to start fresh.
 

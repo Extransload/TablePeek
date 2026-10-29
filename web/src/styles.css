@@ -6490,6 +6490,27 @@ textarea[aria-invalid="true"] {
   max-width: 520px;
 }
 
+/* A MongoDB OIDC browser login waiting for the user: above any modal, as
+   the connect form that started it may still be open. */
+.oidc-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 10001;
+  align-items: center;
+  width: min(620px, calc(100vw - 32px));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  transform: translateX(-50%);
+}
+
+.oidc-banner .server-banner-icon {
+  margin-top: 0;
+  color: var(--accent);
+}
+
 .panel-error-slot {
   margin: 8px 0;
 }

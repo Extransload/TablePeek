@@ -226,6 +226,11 @@ const EN: Record<string, string> = {
   "왼쪽에서 테이블을 선택하거나 새 쿼리를 시작하세요": "Select a table on the left or start a new query",
   "테이블": "Tables",
   "뷰": "Views",
+  "뷰 [종류]": "View",
+  "시간 [걸린]": "Time",
+  "작업 [연산]": "Operation",
+  "인덱스 [하나]": "Index",
+  "범위 [인덱스]": "Bounds",
   "함수": "Functions",
   "프로시저": "Procedures",
   "트리거": "Triggers",
@@ -342,6 +347,7 @@ const EN: Record<string, string> = {
   "가져오기·내보내기": "Import & Export",
   "글꼴": "Font",
   "편집": "Editing",
+  "편집 [버튼]": "Edit",
   "표시": "Display",
   "에디터와 콘솔에 쓰입니다.": "Used in the editor and the console.",
   "모든 표와 셀 편집에 쓰입니다.": "Used in every table and its cell editor.",
@@ -1639,8 +1645,9 @@ const EN: Record<string, string> = {
   "이 페이지 문서에서": "From the documents on this page",
   "{path} — 필터에 넣기": "{path} — add to the filter",
   "{ 필드: 값 }   ⌘↩ 찾기 · Ctrl+Space 자동 완성": "{ field: value }   ⌘↩ Find · Ctrl+Space completes",
+  "{ 필드: 1 }": "{ field: 1 }",
+  "{ 필드: -1 }": "{ field: -1 }",
   "필드 목록 — 누르면 필터에 넣습니다": "Field list — click one to add it to the filter",
-  "프로젝션·정렬·건너뛰기·개수": "Projection, sort, skip, limit",
   "옵션": "Options",
   "쿼리 초기화": "Reset query",
   "이 쿼리의 실행 계획": "Explain this query",
@@ -1709,7 +1716,7 @@ const EN: Record<string, string> = {
   "mongosh 편집기": "mongosh editor",
   "db가 가리키는 데이터베이스 (use로 바꿉니다)": "The database db refers to (change it with use)",
   "모든 문장 실행 (⇧⌘↩)": "Run all statements (⇧⌘↩)",
-  "모두 실행": "Run all",
+  "모두 실행": "Run All",
   "현재 문장 실행 (⌘↩)": "Run the current statement (⌘↩)",
   "보기": "View",
   "목록": "List",
@@ -1917,6 +1924,77 @@ const EN: Record<string, string> = {
   "조건 없이 처음 찾은 문서를 바꿉니다": "Changes the first document found (no filter)",
   "조건 없이 처음 찾은 문서를 통째로 바꿉니다": "Replaces the first document found (no filter)",
   "조건 없이 처음 찾은 문서를 지웁니다": "Deletes the first document found (no filter)",
+  // ---- MongoDB authentication choices, tunnels and OIDC login (ServerConn) ----
+  "OIDC 방식": "OIDC method",
+  "브라우저 로그인": "Browser login",
+  "Azure 관리 ID": "Azure managed identity",
+  "GCP 서비스 계정": "GCP service account",
+  "Kubernetes 서비스 계정": "Kubernetes service account",
+  "액세스 키 ID": "Access key ID",
+  "(선택) 비우면 환경 변수·프로필·역할의 자격 증명": "(Optional) Leave empty for the environment, profile or role credentials",
+  "LDAP 사용자": "LDAP user",
+  "사용자 주체": "User principal",
+  "user@EXAMPLE.COM (kinit으로 받은 티켓을 씀)": "user@EXAMPLE.COM (uses the ticket from kinit)",
+  "사용자 이름": "User name",
+  "(선택) 로그인 힌트, Azure는 관리 ID의 클라이언트 ID": "(Optional) Login hint; for Azure, the managed identity's client ID",
+  "비밀 액세스 키": "Secret access key",
+  "액세스 키 ID를 넣었을 때만": "Only with an access key ID",
+  "LDAP 비밀번호": "LDAP password",
+  "세션 토큰": "Session token",
+  "(선택) 임시 자격 증명일 때": "(Optional) For temporary credentials",
+  "서비스 이름": "Service name",
+  "서비스 영역": "Service realm",
+  "(선택) 사용자 주체의 영역과 다를 때": "(Optional) When it differs from the user principal's realm",
+  "서비스 호스트": "Service host",
+  "(선택) 서비스 주체의 호스트, 접속 주소와 다를 때": "(Optional) The service principal's host, when it differs from the address you dial",
+  "호스트 이름 정규화": "Canonicalize host name",
+  "안 함": "None",
+  "정방향 (CNAME)": "Forward (CNAME)",
+  "정방향·역방향": "Forward and reverse",
+  "토큰 리소스": "Token resource",
+  "토큰의 audience (예: api://…)": "The token's audience (e.g. api://…)",
+  "액세스 키 ID를 입력하세요": "Enter the access key ID",
+  "LDAP 사용자를 입력하세요": "Enter the LDAP user",
+  "사용자 주체를 입력하세요": "Enter the user principal",
+  "토큰 리소스를 입력하세요": "Enter the token resource",
+  "LDAP 비밀번호를 입력하세요": "Enter the LDAP password",
+  "AWS 비밀 액세스 키를 입력하세요": "Enter the AWS secret access key",
+  "Kerberos 사용자 주체(principal)를 입력하세요": "Enter the Kerberos user principal",
+  "Azure·GCP OIDC에는 토큰 리소스(audience)가 필요합니다": "Azure and GCP OIDC need a token resource (audience)",
+  "OIDC 로그인": "OIDC login",
+  "MongoDB에 로그인하려면 브라우저에서 계속하세요": "Continue in your browser to sign in to MongoDB",
+  "{issuer}에 로그인하면 연결이 이어집니다.": "The connection goes on once you sign in at {issuer}.",
+  "로그인 페이지 열기": "Open the sign-in page",
+  "기다리는 OIDC 로그인이 없습니다": "No OIDC login is waiting",
+  "서버가 IdP 정보를 알려주지 않았습니다": "The server didn't say which identity provider to use",
+  "서버의 IdP 설정에 clientId가 없어 브라우저 로그인을 할 수 없습니다":
+    "The server's identity provider settings have no clientId, so a browser login isn't possible",
+  "TablePeek 서버 주소를 몰라 브라우저 로그인을 시작할 수 없습니다":
+    "Can't start a browser login without the TablePeek server's address",
+  "브라우저 로그인 시간이 지났습니다": "The browser login timed out",
+  "브라우저 로그인을 취소했습니다": "The browser login was cancelled",
+  "access_token 없음": "no access_token",
+  "SRV 연결 문자열이 아닙니다": "Not an SRV connection string",
+  "mongodb+srv:// 주소에는 호스트 이름 하나만 쓰고 포트를 붙이지 않습니다":
+    "A mongodb+srv:// address takes one host name and no port",
+  "SSH 연결 또는 인증 시간이 초과되었습니다": "The SSH connection or login timed out",
+  "이 TablePeek 빌드에는 Kerberos(GSSAPI) 인증이 없습니다 (--features kerberos로 빌드하세요)":
+    "This TablePeek build has no Kerberos (GSSAPI) authentication (build it with --features kerberos)",
+  "변경 스트림은 레플리카셋이나 샤드 클러스터에서만 열 수 있습니다 (이 서버는 단일 서버입니다)":
+    "Change streams only open on a replica set or sharded cluster (this is a standalone server)",
+  "커서가 없습니다: 끝까지 읽었거나 닫혔거나 10분 동안 읽지 않아 닫혔습니다":
+    "No such cursor: it was read to the end, closed, or closed after 10 minutes unread",
+  "이 커서는 다른 요청이 읽고 있습니다": "Another request is reading this cursor",
+  "파일 전송이 중간에 끊겼습니다": "The file transfer was cut off",
+  "$out·$merge가 있는 파이프라인은 확인이 필요합니다 (confirmed: true)":
+    "A pipeline with $out or $merge needs confirmation (confirmed: true)",
+  "find 또는 aggregate 중 하나를 지정하세요": "Give either find or aggregate",
+  "검색 인덱스 이름을 지정하세요": "Give the search index a name",
+  "데이터베이스를 지정하세요": "Name a database",
+  "버킷을 지정하세요": "Name a bucket",
+  "데이터베이스와 버킷을 지정하세요": "Name a database and a bucket",
+  "파일 이름을 지정하세요": "Give a file name",
+  // ---- end ServerConn ----
   // ---- MongoDB connection, sidebar and server info ----
   "기본 포트 27017": "Default port 27017",
   "새 mongosh 탭": "New mongosh tab",
@@ -2011,6 +2089,8 @@ const EN: Record<string, string> = {
   "{db}의 모든 작업을 system.profile에 남깁니다. 서버가 느려질 수 있습니다": "Records every operation on {db} in system.profile. This can slow the server down",
   "프로파일링 수준을 바꿨습니다: {command}": "Profiling level changed: {command}",
   "system.profile에 기록이 없습니다. 프로파일링을 켜면 여기에 쌓입니다": "Nothing in system.profile. Entries appear here once profiling is on",
+  "mongos는 system.profile에 남기지 않습니다. 느린 작업은 mongos 로그에 남고, 기록은 샤드의 mongod에 바로 연결하면 보입니다": "mongos keeps no system.profile. It logs slow operations; to see entries, connect straight to a shard's mongod",
+  "mongos에는 top이 없습니다. 샤드의 mongod에 바로 연결하면 보입니다": "mongos has no top command. Connect straight to a shard's mongod to see it",
   "시각": "Time",
   "검사 / 반환": "Examined / returned",
   "서버 응답이 늦습니다": "Server is slow to respond",
@@ -2224,12 +2304,12 @@ const EN: Record<string, string> = {
   "문서 {count}개를 내보냅니다": "Exports {count} documents",
   "{done} / {total}개": "{done} / {total}",
   "{done}개": "{done}",
-  "컬렉션 만들기…": "Create Collection…",
-  "뷰 만들기…": "Create View…",
+  "컬렉션 만들기…": "Create collection…",
+  "뷰 만들기…": "Create view…",
   "가져오기…": "Import…",
   "통계": "Statistics",
-  "뷰 삭제…": "Drop View…",
-  "컬렉션 삭제…": "Drop Collection…",
+  "뷰 삭제…": "Drop view…",
+  "컬렉션 삭제…": "Drop collection…",
   "이 쿼리의 결과를 파일로 내보내기 (JSON·NDJSON·CSV)": "Export this query's result to a file (JSON·NDJSON·CSV)",
   "가져오기 (JSON·CSV)…": "Import (JSON·CSV)…",
   "내보내기 (JSON·CSV)…": "Export (JSON·CSV)…",
@@ -2274,8 +2354,6 @@ const EN: Record<string, string> = {
   "이름 (같은 이름은 덮어씁니다)": "Name (the same name is overwritten)",
   "지금 파이프라인 저장": "Save current pipeline",
   "미리보기 다시 읽기": "Reload previews",
-  "mongosh 코드로 보기·복사": "Show and copy as mongosh code",
-  "mongosh 코드": "mongosh code",
   "이 파이프라인으로 뷰 만들기 (create viewOn)": "Create a view from this pipeline (create viewOn)",
   "뷰로 저장…": "Save as view…",
   "집계 결과를 파일로 내보내기": "Export the aggregation result to a file",
@@ -2284,7 +2362,6 @@ const EN: Record<string, string> = {
   "파이프라인": "Pipeline",
   "여기에 단계 추가": "Add a stage here",
   "단계 추가": "Add stage",
-  "mongosh 코드를 복사했습니다": "Copied the mongosh code",
   "뷰 {name}의 파이프라인을 바꿨습니다": "Changed the pipeline of view {name}",
   "뷰 {name}을(를) 만들었습니다": "Created view {name}",
   "꺼짐 — 그대로 통과": "Off — passes through",
@@ -2370,6 +2447,18 @@ const EN: Record<string, string> = {
   "허용되지 않은 필드: {fields}": "Fields not allowed: {fields}",
   " (값 {value})": " (value {value})",
   "사용자 이름, 비밀번호 또는 인증 DB가 맞지 않습니다.": "The user name, password or auth database is wrong.",
+  "AWS 액세스 키 ID, 비밀 액세스 키 또는 세션 토큰이 맞지 않거나, 그 자격 증명의 ARN으로 된 사용자가 서버에 없습니다.":
+    "The AWS access key ID, secret access key or session token is wrong, or the server has no user for the credentials' ARN.",
+  "액세스 키 ID와 비밀 액세스 키를 다시 확인하세요. 임시 자격 증명이면 세션 토큰도 넣어야 합니다.":
+    "Check the access key ID and secret access key again. Temporary credentials need the session token too.",
+  "서버의 $external에 그 IAM 사용자나 역할의 ARN으로 사용자가 있는지 확인하세요.":
+    "Check that the server has a user in $external named by the IAM user's or role's ARN.",
+  "LDAP 사용자 이름이나 비밀번호가 맞지 않습니다.": "The LDAP user name or password is wrong.",
+  "LDAP 사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다.": "Check the LDAP user name and password again; they're case-sensitive.",
+  "클라이언트 인증서의 주체(subject)와 같은 이름의 사용자가 서버의 $external에 없습니다.":
+    "The server has no user in $external named by the client certificate's subject.",
+  "인증서를 확인하거나, 서버에 그 주체 이름으로 $external 사용자를 만드세요.":
+    "Check the certificate, or create a user in $external with its subject name on the server.",
   "레플리카셋의 기본(primary) 서버에 닿을 수 없습니다": "Can't reach the replica set's primary",
   "서버는 응답했지만 레플리카셋 구성에 적힌 구성원 주소(컨테이너·내부 호스트 이름 등)로는 이 컴퓨터에서 접속할 수 없습니다.":
     "The server answered, but this computer can't reach the member addresses in the replica set config (container or internal host names, say).",
@@ -2467,6 +2556,239 @@ const EN: Record<string, string> = {
   "{place} (레코드 {index})": "{place} (record {index})",
   "미리보기에 없는 행입니다": "not in the preview",
   // ---- end AppErrorStates ----
+  // ---- MongoDB ordered documents (OrderedDocs) ----
+  "JSON을 읽을 수 없습니다 ({offset}번째 글자)": "Can't read the JSON (character {offset})",
+  // ---- end OrderedDocs ----
+  // ---- MongoDB 일괄 수정·삭제 (BulkUI) ----
+  "일괄 수정": "Bulk update",
+  "일괄 삭제": "Bulk delete",
+  "지금 필터에 맞는 문서를 한꺼번에 고치기 (updateMany)": "Update every document the current filter matches (updateMany)",
+  "지금 필터에 맞는 문서를 한꺼번에 지우기 (deleteMany)": "Delete every document the current filter matches (deleteMany)",
+  "[ { $set: { … } } ]처럼 단계의 배열을 쓰세요": "Write an array of stages, like [ { $set: { … } } ]",
+  "단계마다 { $set: { … } }처럼 연산자 하나를 쓰세요": "Write one operator per stage, like { $set: { … } }",
+  "{op}에 필드를 하나 이상 쓰세요": "Give {op} at least one field",
+  "{ $set: { … } }처럼 연산자 문서를 쓰세요": "Write a document of operators, like { $set: { … } }",
+  "{key}: 수정은 $set·$inc 같은 연산자로 씁니다 (문서를 통째로 바꾸지 않습니다)": "{key}: updates are written with operators such as $set or $inc (they don't replace whole documents)",
+  "(_id 없음)": "(no _id)",
+  "바뀐 뒤를 읽지 못했습니다": "Couldn't read it back after the change",
+  "바뀌지 않음": "Unchanged",
+  "필드 {count}개 바뀜": "{count} fields changed",
+  "바뀌기 전과 뒤": "Before and after",
+  "바뀌기 전": "Before",
+  "바뀐 뒤": "After",
+  "추가된 필드": "Added field",
+  "지워진 필드": "Removed field",
+  "바뀐 필드": "Changed field",
+  "많음 (세는 데 오래 걸림)": "many (counting takes too long)",
+  "필터: {message}": "Filter: {message}",
+  "수정 내용: {message}": "Update: {message}",
+  "문서 {count}개를 삭제했습니다": "Deleted {count} documents",
+  "문서 {modified}개를 고쳤습니다 (일치 {matched}개)": "Updated {modified} documents ({matched} matched)",
+  "지울 문서를 읽는 중…": "Reading the documents to delete…",
+  "미리보기를 만드는 중…": "Making the preview…",
+  "이 서버는 단일 서버라 트랜잭션이 없어 바뀐 뒤의 모습을 미리 볼 수 없습니다. 미리보기는 앞 몇 건을 트랜잭션 안에서 실제로 고쳐 읽은 뒤 되돌리는 방식이라 레플리카셋이나 샤드 클러스터에서만 됩니다. 아래는 바뀔 문서의 지금 모습입니다.":
+    "This is a standalone server with no transactions, so the result can't be previewed. The preview changes the first few documents inside a transaction, reads them and rolls back, which only works on a replica set or sharded cluster. Below are the documents that will change, as they are now.",
+  "삭제 {count}개": "{count} deleted",
+  "일치 {matched}개 · 수정 {modified}개": "{matched} matched · {modified} updated",
+  "⌘↩ 다시 세고 미리보기": "⌘↩ count and preview again",
+  "{count}개 삭제 (deleteMany)": "Delete {count} (deleteMany)",
+  "삭제 (deleteMany)": "Delete (deleteMany)",
+  "{count}개 수정 (updateMany)": "Update {count} (updateMany)",
+  "수정 (updateMany)": "Update (updateMany)",
+  "필터 (쿼리 막대에서 가져옴)": "Filter (from the query bar)",
+  "지울 문서": "To delete",
+  "영향받는 문서": "Affected documents",
+  "필터가 비어 있어 컬렉션의 모든 문서가 대상입니다": "The filter is empty: every document in the collection is affected",
+  "수정 내용": "Update",
+  "수정 방식": "Update form",
+  "연산자 ($set …)": "Operators ($set …)",
+  "파이프라인 [ … ]": "Pipeline [ … ]",
+  "지워질 문서 (앞부분)": "Documents that will go (first few)",
+  "바뀌기 전 · 뒤 (앞부분)": "Before · after (first few)",
+  "바뀐 필드만": "Changed fields only",
+  "앞": "First",
+  "{count}건": "{count}",
+  "비워 두면 모든 문서": "Empty means every document",
+  "쿼리 막대 옵션을 함께 씁니다: {options}": "Uses the query bar's options too: {options}",
+  // ---- end BulkUI ----
+  // ---- MongoDB 스키마 location map (GeoMap) ----
+  "[경도, 위도]": "[lng, lat]",
+  "위치 {count}개": "{count} locations",
+  "지도 도구": "Map tools",
+  "이동": "Pan",
+  "사각형": "Rectangle",
+  "원": "Circle",
+  "끌어서 지도를 옮깁니다 (Shift+끌기는 사각형)": "Drag to move the map (Shift-drag draws a rectangle)",
+  "끌어서 사각형 영역을 고릅니다 ($box 또는 $geometry)": "Drag to pick a rectangle ($box or $geometry)",
+  "중심에서 끌어서 원 영역을 고릅니다 ($centerSphere)": "Drag from the centre to pick a circle ($centerSphere)",
+  "모든 위치가 보이게 맞추기": "Fit every location",
+  "{path} 위치 지도": "Map of {path}",
+  "외 {count}개 · ": "{count} more · ",
+  "눌러서 확대": "click to zoom in",
+  "사각형이나 원으로 끌어 영역을 고르면 그 안의 문서로 거릅니다 · 휠·두 번 눌러 확대 · Shift+끌기는 사각형":
+    "Drag a rectangle or circle to filter the documents inside it · wheel or double-click to zoom · Shift-drag draws a rectangle",
+  "표본 문서 {count}개 중 {inside}개가 영역 안": "{inside} of {count} sampled documents inside",
+  "경도 {west} ~ {east} · 위도 {south} ~ {north}": "lng {west} to {east} · lat {south} to {north}",
+  "중심 {lng}, {lat} · 반경 {km} km": "centre {lng}, {lat} · radius {km} km",
+  "영역 지우기": "Clear region",
+  "이 영역으로 거르기": "Filter by this region",
+  // ---- end GeoMap ----
+  // ---- mongosh scripts (ShellJS) ----
+  "안전 모드: 스크립트 안의 {what}은(는) 확인 없이 실행하지 않습니다. 이 문장만 따로 실행하면(⌘↩) 확인 창에서 실행할 수 있고, 안전 모드를 끄면 스크립트에서도 바로 실행됩니다.":
+    "Safe mode: {what} inside a script doesn't run without confirmation. Run that statement on its own (⌘↩) to confirm it in the dialog, or turn safe mode off to let scripts run it directly.",
+  "잘못된 날짜(Invalid Date)는 저장할 수 없습니다": "An Invalid Date can't be stored",
+  "{kind}은(는) 값으로 쓸 수 없습니다": "A {kind} can't be used as a value",
+  "순환 참조가 있는 값은 BSON으로 바꿀 수 없습니다": "A value that refers to itself can't become BSON",
+  "{what}은(는) 문서({ … })여야 합니다": "{what} must be a document ({ … })",
+  "{what}에는 0 이상의 정수를 주세요": "{what} takes a whole number of 0 or more",
+  "읽기 시작한 커서는 바꿀 수 없습니다": "A cursor can't be changed once reading has started",
+  "커서에 더 읽을 문서가 없습니다": "The cursor has no more documents",
+  "map에는 함수를 주세요": "map takes a function",
+  "explain의 상세도는 {list} 중 하나입니다": "explain's verbosity is one of {list}",
+  "세는 데 시간이 너무 걸려 멈췄습니다": "Counting took too long and was stopped",
+  "distinct에는 필드 이름을 주세요": "distinct takes a field name",
+  "insertMany에는 문서 배열을 주세요": "insertMany takes an array of documents",
+  "replaceOne의 upsert는 지원하지 않습니다 — updateOne(…, { upsert: true })를 쓰세요": "replaceOne with upsert isn't supported — use updateOne(…, { upsert: true })",
+  "데이터베이스 이름이 올바르지 않습니다: {name}": "Not a valid database name: {name}",
+  "컬렉션 이름을 문자열로 주세요": "Give the collection name as a string",
+  "show {what}은(는) 지원하지 않습니다 — show dbs, show collections를 쓰세요": "show {what} isn't supported — use show dbs or show collections",
+  "{what}에는 숫자나 숫자 문자열을 주세요": "{what} takes a number or a numeric string",
+  "ISODate로 읽을 수 없는 날짜입니다: {text}": "Not a date ISODate can read: {text}",
+  "스크립트가 오류 아닌 값을 던졌습니다: {value}": "The script threw a value that isn't an error: {value}",
+  "출력이 {count}개를 넘어 이후 출력은 버렸습니다": "Output passed {count} entries; the rest was dropped",
+  "스크립트를 실행했습니다": "Script finished",
+  "멈췄습니다": "Stopped",
+  "실행 시간 제한({seconds}초)을 넘어 멈췄습니다": "Stopped at the time limit ({seconds} s)",
+  "결과 보기": "Show results",
+  "보여 줄 출력": "Output to show",
+  "출력 {n}": "Output {n}",
+  "쿼리 시간 제한(초)": "Query time limit (s)",
+  "MongoDB 쿼리와 mongosh 스크립트에 쓰입니다. 0이면 제한이 없습니다.": "Used by MongoDB queries and mongosh scripts. 0 means no limit.",
+  // ---- end ShellJS ----
+  // ---- MongoDB search indexes, change streams, GridFS (SearchStreamFs) ----
+  "(없음)": "(none)",
+  "(제거됨)": "(removed)",
+  "Atlas 클러스터나 검색 프로세스(mongot)가 함께 도는 서버(예: Atlas 로컬 배포)에서 만들고 볼 수 있습니다.":
+    "They can be made and listed on an Atlas cluster or a server running the search process (mongot), such as an Atlas local deployment.",
+  "GridFS 버킷 {name}": "GridFS bucket {name}",
+  "drop·rename·dropDatabase·invalidate 등": "drop, rename, dropDatabase, invalidate, …",
+  "search (전문 검색)": "search (full text)",
+  "vectorSearch (벡터 검색)": "vectorSearch (vector)",
+  "{name} 올리는 중": "Uploading {name}",
+  "{name} 컬렉션 열기": "Open the {name} collection",
+  "{name} 파일과 그 조각(chunks)을 지울까요?\n되돌릴 수 없습니다.": "Delete the file {name} and its chunks?\nThis can't be undone.",
+  "{name} 파일을 지웠습니다": "Deleted the file {name}",
+  "{target}의 변경을 기다리는 중…": "Waiting for changes in {target}…",
+  "검색 인덱스": "Search indexes",
+  "검색 인덱스 {count}개": "{count} search indexes",
+  "검색 인덱스 {name}을 고쳤습니다. 다시 만들어지는 동안 이전 정의로 조회합니다":
+    "Updated the search index {name}. Queries use the previous definition while it rebuilds",
+  "검색 인덱스 {name}을 만들었습니다. 다 만들어지면 상태가 READY로 바뀝니다": "Created the search index {name}. Its status turns READY once it is built",
+  "검색 인덱스 {name}을 지울까요?\n이 인덱스를 쓰는 $search·$vectorSearch 쿼리는 실패합니다.":
+    "Drop the search index {name}?\n$search and $vectorSearch queries that use it will fail.",
+  "검색 인덱스 {name}을 지웠습니다": "Dropped the search index {name}",
+  "검색 인덱스 고치기": "Edit search index",
+  "검색 인덱스 만들기": "Create search index",
+  "검색 인덱스 삭제": "Drop search index",
+  "검색 인덱스 새로고침": "Refresh search indexes",
+  "검색 인덱스 정의": "Search index definition",
+  "검색 인덱스가 없습니다": "No search indexes",
+  "고치기": "Edit",
+  "고치면 새 정의로 다시 만드는 동안에도 이전 정의로 조회할 수 있습니다.": "While the index rebuilds with the new definition, queries keep using the previous one.",
+  "기다리는 중": "Waiting",
+  "넣은 문서": "Inserted document",
+  "놓으면 {bucket} 버킷에 올립니다": "Drop to upload to the {bucket} bucket",
+  "데이터베이스 {db}": "database {db}",
+  "동적 매핑": "Dynamic mapping",
+  "멈춤": "Pause",
+  "멈춤 · 시작하면 마지막 이벤트 뒤부터 이어서 받습니다": "Paused · Start picks up after the last event",
+  "메타데이터": "Metadata",
+  "바뀌기 전 문서": "Document before",
+  "바뀌기 전 문서가 없습니다. 컬렉션에 changeStreamPreAndPostImages가 켜져 있어야 서버가 보내 줍니다.":
+    "No document before the change. The server sends it only when the collection has changeStreamPreAndPostImages enabled.",
+  "바뀐 뒤 문서": "Document after",
+  "바뀐 뒤 문서는 '바뀐 뒤 문서'를 켜면 받습니다 (그 사이 지워진 문서는 없음).":
+    "Turn on 'Document after' to receive the document after the update (none if it was deleted meanwhile).",
+  "배열을 {size}개로 줄임": "Array truncated to {size}",
+  "벡터 검색": "Vector search",
+  "벡터 필드 경로 (path)": "Vector field path (path)",
+  "변경 보기": "Changes",
+  "변경 보기: {db}": "Changes: {db}",
+  "변경 스트림 연결이 끊겼습니다": "The change stream connection was lost",
+  "서버가 스트림을 닫았습니다 (컬렉션·데이터베이스가 지워졌거나 이름이 바뀌었습니다)": "The server closed the stream (the collection or database was dropped or renamed)",
+  "설정 {fields}": "set {fields}",
+  "시작": "Start",
+  "시작을 누르면 {target}에서 일어나는 변경을 실시간으로 보여줍니다": "Press Start to see changes in {target} as they happen",
+  "실시간": "Live",
+  "아니요": "No",
+  "업데이트 뒤의 문서 전체를 함께 받습니다 (fullDocument: updateLookup)": "Also receive the whole document after an update (fullDocument: updateLookup)",
+  "여는 중…": "Opening…",
+  "연결이 끊겨 다시 연결하는 중… ({attempt}번째)": "Connection lost, reconnecting… (attempt {attempt})",
+  "열 수 없습니다": "Can't open",
+  "오래된 {count}개는 버렸습니다": "{count} older ones dropped",
+  "올리기": "Upload",
+  "올린 때": "Uploaded",
+  "원본 이벤트": "Raw event",
+  "유사도 (similarity)": "Similarity (similarity)",
+  "이 서버에서는 검색 인덱스를 쓸 수 없습니다.": "This server has no search indexes.",
+  "이름을 쓰세요": "Enter a name",
+  "이벤트 {count}개 (최근 {max}개까지 보관)": "{count} events (the latest {max} are kept)",
+  "작업 종류": "Operation types",
+  "정의 (mongosh 표기 또는 JSON)": "Definition (mongosh notation or JSON)",
+  "정의: {message}": "Definition: {message}",
+  "제거 {fields}": "removed {fields}",
+  "조회 가능": "Queryable",
+  "차원 수 (numDimensions)": "Dimensions (numDimensions)",
+  "컬렉션에 changeStreamPreAndPostImages가 켜져 있으면 바뀌기 전 문서를 함께 받습니다 (fullDocumentBeforeChange: whenAvailable)":
+    "Also receive the document before the change when the collection has changeStreamPreAndPostImages enabled (fullDocumentBeforeChange: whenAvailable)",
+  "콘텐츠 유형": "Content type",
+  "틀": "Templates",
+  "파일 {count}개": "{count} files",
+  "파일 {count}개 이상": "{count}+ files",
+  "파일 {count}개를 올렸습니다": "Uploaded {count} files",
+  "파일 검색": "Search files",
+  "파일 삭제": "Delete file",
+  "파일 이름 검색, 또는 { metadata.kind: \"x\" } 같은 필터": "Search file names, or a filter such as { metadata.kind: \"x\" }",
+  "파일이 없습니다. 올리기를 누르거나 파일을 여기에 끌어다 놓으세요": "No files. Press Upload or drop files here",
+  "필드 매핑": "Field mappings",
+  // ---- end SearchStreamFs ----
+  // ---- MongoDB query options and 코드로 (QueryOptsCode) ----
+  "강도는 1–5입니다": "Strength is 1–5",
+  "collation 강도를 쓰려면 로캘을 고르세요": "Choose a locale to use a collation strength",
+  "로캘": "Locale",
+  "강도": "Strength",
+  "힌트": "Hint",
+  "힌트 키 문서에 인덱스 키를 쓰세요 (예: { status: 1 })": "Write the index keys in the hint document (e.g. { status: 1 })",
+  "maxTimeMS: 1 이상의 정수(밀리초)를 쓰세요": "maxTimeMS: enter a whole number of milliseconds, 1 or more",
+  "프로젝션·정렬·건너뛰기·개수·collation·hint·maxTimeMS": "Projection, sort, skip, limit, collation, hint, maxTimeMS",
+  "강도 기본 (3)": "Default strength (3)",
+  "1 · 기본 글자만 (대소문자·악센트 무시)": "1 · Base letters only (ignore case and accents)",
+  "2 · 악센트 구분 (대소문자 무시)": "2 · Accents matter (ignore case)",
+  "3 · 대소문자 구분": "3 · Case matters",
+  "4 · 문장 부호까지 구분": "4 · Punctuation matters too",
+  "5 · 모두 구분 (identical)": "5 · Everything matters (identical)",
+  "로캘 (예: ko)": "Locale (e.g. ko)",
+  "collation 로캘": "Collation locale",
+  "collation 강도": "Collation strength",
+  "문자열을 비교하는 엄격함": "How strictly strings compare",
+  "사용할 인덱스 (hint)": "Index to use (hint)",
+  "인덱스 자동 선택": "Let the server choose",
+  "키 문서로 쓰기…": "Write a key document…",
+  "hint 키 문서": "Hint key document",
+  "설정값": "Default",
+  "이 쿼리의 서버 실행 시간 제한(밀리초). 비우면 설정의 쿼리 시간 제한을 씁니다": "Server time limit for this query (milliseconds). Blank uses the query timeout from Settings",
+  "코드를 복사했습니다": "Copied the code",
+  "접속 설정을 읽는 중…": "Reading the connection settings…",
+  "연결 설정을 읽을 수 없어 접속 주소를 {uri}로 두었습니다": "Could not read the connection settings, so the address is left as {uri}",
+  "접속 문자열의 <password>를 실제 비밀번호로 바꾸세요": "Replace <password> in the connection string with the real password",
+  "코드로 내보내기": "Export to language",
+  "접속 코드 포함": "Include connection code",
+  "생성한 코드": "Generated code",
+  "연결된 client 변수가 있다고 보고 쿼리 부분만 만듭니다": "Only the query is generated; it expects a connected client variable",
+  "이 쿼리를 드라이버 코드로 (Python·Node.js·Java·C#·Go·Rust·PHP·Ruby·mongosh)": "This query as driver code (Python, Node.js, Java, C#, Go, Rust, PHP, Ruby, mongosh)",
+  "코드로": "To code",
+  "이 파이프라인을 드라이버 코드로 (mongosh·Python·Node.js·Java·C#·Go·Rust·PHP·Ruby)": "This pipeline as driver code (mongosh, Python, Node.js, Java, C#, Go, Rust, PHP, Ruby)",
+  // ---- end QueryOptsCode ----
 };
 
 // Keys for words Korean uses in more than one sense where English needs
@@ -2474,6 +2796,12 @@ const EN: Record<string, string> = {
 // the word given here.
 const KO: Record<string, string> = {
   "연결 [버튼]": "연결",
+  "뷰 [종류]": "뷰",
+  "시간 [걸린]": "시간",
+  "작업 [연산]": "작업",
+  "인덱스 [하나]": "인덱스",
+  "범위 [인덱스]": "범위",
+  "편집 [버튼]": "편집",
 };
 
 let current: Language = readLanguage();
@@ -2492,7 +2820,10 @@ export function getLanguage(): Language {
 
 export function setLanguage(language: Language): void {
   current = language;
-  document.documentElement.lang = language === "en" ? "en" : "ko";
+  // A Web Worker (the mongosh script runner) has no document.
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = language === "en" ? "en" : "ko";
+  }
   try {
     window.localStorage.setItem(STORAGE_KEY, language);
   } catch {}
@@ -2509,8 +2840,9 @@ export function t(key: string, values?: Record<string, string | number>): string
   const filled = text.replace(/\{(\w+)\}/g, (whole, name: string) =>
     Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : whole,
   );
-  // English counts: "1 rows" reads "1 row".
-  return current === "en" && String(values.count) === "1" ? singular(filled) : filled;
+  // English counts: "1 rows" reads "1 row", whichever value holds the 1
+  // ("{count} documents and {indexes} indexes").
+  return current === "en" && Object.values(values).some((value) => String(value) === "1") ? singular(filled) : filled;
 }
 
 // The plural word after a count of 1 and its singular; an adjective may sit
@@ -2538,12 +2870,16 @@ const PLURALS: Record<string, string> = {
   stages: "stage",
   queries: "query",
   databases: "database",
+  files: "file",
+  events: "event",
+  locations: "location",
+  ones: "one",
   violate: "violates",
   pass: "passes",
 };
 
 const SINGULAR = new RegExp(
-  `(^|[^\\d.,])1 ((?:unsaved|new|more|distinct|column) )?(${Object.keys(PLURALS).join("|")})\\b`,
+  `(^|[^\\d.,])1 ((?:unsaved|new|more|distinct|column|search|older) )?(${Object.keys(PLURALS).join("|")})\\b`,
   "g",
 );
 
@@ -2583,6 +2919,36 @@ const SERVER_PREFIXES: [RegExp, string][] = [
   [/^TLS 설정 오류: /, "TLS configuration error: "],
   [/^KILL 요청으로 쿼리가 취소되었습니다: /, "The query was cancelled by KILL: "],
   // End ServerErrors.
+  // MongoDB phase 4: logins, SRV routes, tunnels, cursors, search indexes,
+  // and the console's note for an update preview.
+  [/^\/\/ 미리보기: 트랜잭션 안에서 앞 (\d+)건에 ([\s\S]*)를 실행해 읽은 뒤 abortTransaction\(\)$/, "// Preview: ran $2 on the first $1 in a transaction, read them back, then abortTransaction()"],
+  [/^OIDC 로그인 실패: /, "OIDC login failed: "],
+  [/^IdP 정보를 읽을 수 없습니다 /, "Can't read the identity provider's details "],
+  [/^IdP 정보가 올바르지 않습니다 /, "The identity provider's details are invalid "],
+  [/^IdP 로그인 주소가 올바르지 않습니다: /, "The identity provider's login address is invalid: "],
+  [/^토큰을 받을 수 없습니다: /, "Couldn't get a token: "],
+  [/^토큰 응답이 올바르지 않습니다: /, "The token response is invalid: "],
+  [/^(.+)의 SRV 레코드가 다른 도메인의 호스트를 가리킵니다: /, "The SRV record of $1 points to a host in another domain: "],
+  [/^(.+)의 SRV 레코드가 없습니다$/, "$1 has no SRV record"],
+  [/^(.+)의 SRV 레코드: /, "SRV record of $1: "],
+  [/^(.+)의 TXT 레코드가 여러 개입니다$/, "$1 has more than one TXT record"],
+  [/^(.+)의 TXT 레코드: /, "TXT record of $1: "],
+  [/^TXT 레코드 값이 key=value가 아닙니다: /, "A TXT record value isn't key=value: "],
+  [/^TXT 레코드에 쓸 수 없는 옵션입니다: (.*) \(authSource, replicaSet, loadBalanced만\)$/, "A TXT record can't set $1 (only authSource, replicaSet, loadBalanced)"],
+  [/^DNS 설정을 읽을 수 없습니다: /, "Can't read the DNS settings: "],
+  [/^터널 로컬 포트를 열 수 없습니다: /, "Can't open the tunnel's local port: "],
+  [/^터널 로컬 주소를 확인할 수 없습니다: /, "Can't read the tunnel's local address: "],
+  [/^(.+)는 사용자·비밀번호가 아니라 인증 방식에서 고르세요$/, "Choose $1 as the authentication, not as a username/password mechanism"],
+  [/^OIDC 방식이 올바르지 않습니다: /, "Unknown OIDC method: "],
+  [/^호스트 이름 정규화 값이 올바르지 않습니다: /, "Unknown host name canonicalization: "],
+  [/^이 서버는 Atlas Search 인덱스를 지원하지 않습니다\. Atlas 클러스터나 검색\(mongot\)이 있는 서버에서 쓸 수 있습니다 \(MongoDB: /, "This server doesn't support Atlas Search indexes; Atlas clusters and servers with search (mongot) do (MongoDB: "],
+  [/^검색 인덱스 종류는 search 또는 vectorSearch입니다: /, "A search index's type is search or vectorSearch: "],
+  [/^batchSize는 1~(\d+)입니다$/, "batchSize is 1 to $1"],
+  [/^미리 볼 문서 수는 1~(\d+)개입니다$/, "The preview takes 1 to $1 documents"],
+  [/^collation이 올바르지 않습니다: /, "Invalid collation: "],
+  [/^(.+)은\(는\) Extended JSON이어야 합니다: /, "$1 must be Extended JSON: "],
+  [/^(fullDocument|fullDocumentBeforeChange) 값이 올바르지 않습니다: /, "Invalid $1 value: "],
+  [/^resumeAfter가 올바르지 않습니다: /, "Invalid resumeAfter: "],
 ];
 
 export function tServer(message: string): string {
@@ -2593,8 +2959,12 @@ export function tServer(message: string): string {
     return EN[message];
   }
   for (const [pattern, english] of SERVER_PREFIXES) {
-    if (pattern.test(message)) {
-      return message.replace(pattern, english);
+    const found = pattern.exec(message);
+    if (found !== null) {
+      // What follows a prefix can be a known message too ("OIDC 로그인 실패:
+      // 브라우저 로그인을 취소했습니다", "DNS 조회 실패: …의 SRV 레코드가 없습니다").
+      const rest = message.slice(found[0].length);
+      return found[0].replace(pattern, english) + (rest === "" ? "" : tServer(rest));
     }
   }
   return message;

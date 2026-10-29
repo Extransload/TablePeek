@@ -12,16 +12,18 @@ import { Select } from "../../../components/Select";
 import { Spinner } from "../../../components/Spinner";
 import { TextBlobBuilder, downloadBlob, exportBaseName } from "../../../export";
 import { t } from "../../../i18n";
-import { aggregate, count, exportDocs, find, isAbort, type ExportRequest, type Namespace } from "../api";
-import { Int32, Int64, type BsonDocument } from "../bson";
+import { aggregate, count, exportDocs, find, isAbort, type ExportRequest, type Namespace, type QueryOptions } from "../api";
+import { Int32, Int64, bsonDoc, type BsonDocument } from "../bson";
+import { shellCursorOptions } from "../codegen";
 import { toShell, toShellPretty } from "../format";
 import { EXPORT_FILE_MIME, exportWriter, samplePaths, type ExportFileFormat } from "../transfer";
 import { AdminModal, CommandPreview, Failure, errorText, shellNamespace } from "./AdminModal";
 
 // `limit` null or positive; `skip` (the query bar's) makes the export run as
-// a pipeline, since the export route has no skip.
+// a pipeline, since the export route has no skip. `options` (collation,
+// hint, maxTimeMS) go with either.
 export type ExportSource =
-  | { kind: "find"; filter: BsonDocument; projection: BsonDocument | null; sort: BsonDocument | null; skip?: number; limit: number | null }
+  | { kind: "find"; filter: BsonDocument; projection: BsonDocument | null; sort: BsonDocument | null; skip?: number; limit: number | null; options?: QueryOptions }
   | { kind: "aggregate"; pipeline: BsonDocument[] };
 
 interface ExportModalProps {
@@ -48,7 +50,7 @@ interface Progress {
 
 // Whether a find source narrows the collection at all.
 function narrowed(source: ExportSource): boolean {
-  return source.kind === "aggregate" || Object.keys(source.filter).length > 0 || source.projection !== null || source.sort !== null || (source.skip ?? 0) > 0 || source.limit !== null;
+  return source.kind === "aggregate" || source.filter.size > 0 || source.projection !== null || source.sort !== null || (source.skip ?? 0) > 0 || source.limit !== null;
 }
 
 export function ExportModal(props: ExportModalProps) {
@@ -67,7 +69,7 @@ export function ExportModal(props: ExportModalProps) {
   const [progress, setProgress] = useState<Progress | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const running = progress?.state === "running";
-  const active = useMemo((): ExportSource => (whole ? { kind: "find", filter: {}, projection: null, sort: null, limit: null } : source), [whole, source]);
+  const active = useMemo((): ExportSource => (whole ? { kind: "find", filter: new Map(), projection: null, sort: null, limit: null } : source), [whole, source]);
 
   useEffect(() => () => controllerRef.current?.abort(), []);
 
@@ -79,7 +81,8 @@ export function ExportModal(props: ExportModalProps) {
     }
     const controller = new AbortController();
     const skip = active.skip ?? 0;
-    count(ns, active.filter, controller.signal).then(
+    // The count keeps its own time limit; collation and hint change what it counts.
+    count(ns, active.filter, controller.signal, { collation: active.options?.collation, hint: active.options?.hint }).then(
       (r) => setExpected(r.count === null ? null : Math.min(Math.max(0, r.count - skip), active.limit ?? Infinity)),
       () => setExpected(null),
     );
@@ -95,8 +98,8 @@ export function ExportModal(props: ExportModalProps) {
     setFields(null);
     const sample =
       active.kind === "find"
-        ? find(ns, { filter: active.filter, projection: active.projection, sort: active.sort, skip: active.skip, limit: Math.min(active.limit ?? SAMPLE, SAMPLE) }, controller.signal)
-        : aggregate(ns, [...active.pipeline, { $limit: new Int32(SAMPLE) }], undefined, controller.signal);
+        ? find(ns, { filter: active.filter, projection: active.projection, sort: active.sort, skip: active.skip, limit: Math.min(active.limit ?? SAMPLE, SAMPLE), ...active.options }, controller.signal)
+        : aggregate(ns, [...active.pipeline, bsonDoc({ $limit: new Int32(SAMPLE) })], undefined, controller.signal);
     sample.then(
       (batch) => {
         const paths = samplePaths(batch.docs);
@@ -140,6 +143,7 @@ export function ExportModal(props: ExportModalProps) {
     if (active.limit !== null) {
       command += `.limit(${active.limit})`;
     }
+    command += shellCursorOptions(active.options).join("");
   }
   const problem = format === "csv" && fields !== null && columns.length === 0 ? t("CSV에 쓸 필드를 하나 이상 고르세요") : null;
 
@@ -159,20 +163,20 @@ export function ExportModal(props: ExportModalProps) {
       if (active.kind === "aggregate") {
         request = { pipeline: active.pipeline };
       } else if (active.skip !== undefined && active.skip > 0) {
-        const pipeline: BsonDocument[] = [{ $match: active.filter }];
+        const pipeline: BsonDocument[] = [bsonDoc({ $match: active.filter })];
         if (active.sort !== null) {
-          pipeline.push({ $sort: active.sort });
+          pipeline.push(bsonDoc({ $sort: active.sort }));
         }
-        pipeline.push({ $skip: new Int64(active.skip) });
+        pipeline.push(bsonDoc({ $skip: new Int64(active.skip) }));
         if (active.limit !== null) {
-          pipeline.push({ $limit: new Int64(active.limit) });
+          pipeline.push(bsonDoc({ $limit: new Int64(active.limit) }));
         }
         if (active.projection !== null) {
-          pipeline.push({ $project: active.projection });
+          pipeline.push(bsonDoc({ $project: active.projection }));
         }
-        request = { pipeline };
+        request = { pipeline, options: active.options };
       } else {
-        request = { filter: active.filter, projection: active.projection, sort: active.sort, limit: active.limit };
+        request = { filter: active.filter, projection: active.projection, sort: active.sort, limit: active.limit, options: active.options };
       }
       const sent = await exportDocs(
         ns,

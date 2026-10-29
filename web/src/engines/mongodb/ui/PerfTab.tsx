@@ -17,7 +17,7 @@ import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
 import * as api from "../api";
-import { BsonDate, Int32, isDocument, type BsonDocument } from "../bson";
+import { BsonDate, Int32, bsonDoc, isDocument, type BsonDocument } from "../bson";
 import { toShell, toShellPretty } from "../format";
 import { OP_KINDS, POLL_MS, POLL_TIMEOUT_MS, WINDOW_MS, appendPoint, axisSteps, perfPoint, runningOps, topRows, type PerfPoint, type RunningOp, type TopRow } from "../perf";
 import { ShellText } from "./ShellText";
@@ -301,7 +301,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
     try {
       const batch = await api.find(
         { conn, db: target, coll: "system.profile" },
-        { filter: { ns: { $ne: `${target}.system.profile` } }, sort: { ts: new Int32(-1) }, limit: 50, poll: true },
+        { filter: bsonDoc({ ns: bsonDoc({ $ne: `${target}.system.profile` }) }), sort: bsonDoc({ ts: new Int32(-1) }), limit: 50, poll: true },
         signal,
       );
       if (profileRef.current.db === target) {
@@ -315,9 +315,9 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
 
   const loadProfile = async (target: string, signal?: AbortSignal) => {
     try {
-      const reply = await api.command(conn, target, { profile: new Int32(-1) }, false, signal, true);
+      const reply = await api.command(conn, target, bsonDoc({ profile: new Int32(-1) }), false, signal, true);
       if (profileRef.current.db !== target) return;
-      const status = { level: api.toNumber(reply.was), slowms: api.toNumber(reply.slowms) };
+      const status = { level: api.toNumber(reply.get("was")), slowms: api.toNumber(reply.get("slowms")) };
       setProfile(status);
       setProfileError(null);
       setLevel(String(status.level === 0 ? 1 : status.level));
@@ -341,7 +341,8 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
   }, [conn, profileDb]);
 
   // One poll: the sample, the running operations and `top`, each failing on
-  // its own (currentOp and top need privileges a user may lack). Requests
+  // its own (currentOp and top need privileges a user may lack). A mongos
+  // has no `top`, so it is not asked once a sample has shown one. Requests
   // still out after POLL_TIMEOUT_MS are aborted: what they would have shown
   // keeps its last value, and a missed sample breaks the chart lines.
   const poll = async (signal: AbortSignal, round: number) => {
@@ -355,8 +356,8 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
     }, POLL_TIMEOUT_MS);
     const [perf, current, topReply] = await Promise.allSettled([
       api.perf(conn, own.signal),
-      api.command(conn, "admin", { currentOp: new Int32(1), active: true }, false, own.signal, true),
-      api.command(conn, "admin", { top: new Int32(1) }, false, own.signal, true),
+      api.command(conn, "admin", bsonDoc({ currentOp: new Int32(1), active: true }), false, own.signal, true),
+      lastRef.current?.mongos ? Promise.resolve(null) : api.command(conn, "admin", bsonDoc({ top: new Int32(1) }), false, own.signal, true),
     ]);
     window.clearTimeout(timer);
     signal.removeEventListener("abort", stop);
@@ -380,12 +381,12 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
     } else if (!late(current)) {
       setOpsError(current.reason);
     }
-    if (topReply.status === "fulfilled") {
+    if (topReply.status === "fulfilled" && topReply.value !== null) {
       const rows = topRows(topReply.value, topRef.current);
       topRef.current = rows;
       setTop(rows);
       setTopError(null);
-    } else if (!late(topReply)) {
+    } else if (topReply.status === "rejected" && !late(topReply)) {
       setTopError(topReply.reason);
     }
     if (round > 0 && round % PROFILE_EVERY === 0 && profileRef.current.level > 0) {
@@ -429,7 +430,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
     const ok = await ask({ sql: command, keyword: t("작업 종료"), severity: "danger", reason: t("{op} · {ns} 작업을 끝냅니다 ({time} 실행 중)", { op: op.op || "—", ns: op.ns || "—", time: msText(op.micros / 1000) }) });
     if (!ok) return;
     try {
-      await api.command(conn, "admin", { killOp: new Int32(1), op: op.opid }, true);
+      await api.command(conn, "admin", bsonDoc({ killOp: new Int32(1), op: op.opid }), true);
       notify(t("작업을 끝냈습니다: {command}", { command }));
       setOps((list) => list?.filter((o) => o !== op) ?? null);
     } catch (error) {
@@ -452,7 +453,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
     if (!(await ask({ sql: command, keyword: t("프로파일링 수준"), severity: "write", reason }))) return;
     setBusy(true);
     try {
-      await api.command(conn, target, next === 1 ? { profile: new Int32(1), slowms: new Int32(ms) } : { profile: new Int32(next) }, true);
+      await api.command(conn, target, next === 1 ? bsonDoc({ profile: new Int32(1), slowms: new Int32(ms) }) : bsonDoc({ profile: new Int32(next) }), true);
       notify(t("프로파일링 수준을 바꿨습니다: {command}", { command }));
       await loadProfile(target);
       await loadEntries(target);
@@ -555,7 +556,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
               <thead>
                 <tr>
                   <th className="num">{t("실행 시간")}</th>
-                  <th>{t("작업")}</th>
+                  <th>{t("작업 [연산]")}</th>
                   <th>{t("네임스페이스")}</th>
                   <th>{t("클라이언트")}</th>
                   <th>{t("계획")}</th>
@@ -589,7 +590,9 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
         </Section>
 
         <Section title={t("컬렉션별 시간")} hint={t("top: 서버가 켜진 뒤 누적, '최근'은 직전 갱신 이후")}>
-          {topError !== null ? (
+          {sample?.mongos ? (
+            <div className="mg-perf-empty panel-dim">{t("mongos에는 top이 없습니다. 샤드의 mongod에 바로 연결하면 보입니다")}</div>
+          ) : topError !== null ? (
             <div className="mg-perf-empty">
               <ErrorNotice error={topError} context="admin" engine="mongodb" variant="compact" />
             </div>
@@ -681,16 +684,20 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
           ) : entries === null ? (
             <div className="mg-perf-empty panel-dim">{t("불러오는 중…")}</div>
           ) : entries.length === 0 ? (
-            <div className="mg-perf-empty panel-dim">{t("system.profile에 기록이 없습니다. 프로파일링을 켜면 여기에 쌓입니다")}</div>
+            <div className="mg-perf-empty panel-dim">
+              {sample?.mongos
+                ? t("mongos는 system.profile에 남기지 않습니다. 느린 작업은 mongos 로그에 남고, 기록은 샤드의 mongod에 바로 연결하면 보입니다")
+                : t("system.profile에 기록이 없습니다. 프로파일링을 켜면 여기에 쌓입니다")}
+            </div>
           ) : (
             <div className="mg-perf-scroll">
               <table className="panel-table mg-struct-table mg-perf-table">
                 <thead>
                   <tr>
                     <th>{t("시각")}</th>
-                    <th>{t("작업")}</th>
+                    <th>{t("작업 [연산]")}</th>
                     <th>{t("네임스페이스")}</th>
-                    <th className="num">{t("시간")}</th>
+                    <th className="num">{t("시간 [걸린]")}</th>
                     <th>{t("계획")}</th>
                     <th className="num">{t("검사 / 반환")}</th>
                     <th>{t("명령")}</th>
@@ -698,16 +705,23 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
                 </thead>
                 <tbody>
                   {entries.map((entry, i) => {
-                    const command = isDocument(entry.command) ? entry.command : null;
-                    const examined = entry.docsExamined !== undefined ? api.toNumber(entry.docsExamined).toLocaleString() : "—";
-                    const returned = entry.nreturned !== undefined ? api.toNumber(entry.nreturned).toLocaleString() : "—";
+                    const commandValue = entry.get("command");
+                    const command = isDocument(commandValue) ? commandValue : null;
+                    const docsExamined = entry.get("docsExamined");
+                    const nreturned = entry.get("nreturned");
+                    const examined = docsExamined !== undefined ? api.toNumber(docsExamined).toLocaleString() : "—";
+                    const returned = nreturned !== undefined ? api.toNumber(nreturned).toLocaleString() : "—";
+                    const ts = entry.get("ts");
+                    const op = entry.get("op");
+                    const ns = entry.get("ns");
+                    const planSummary = entry.get("planSummary");
                     return [
                       <tr key={i} className={`mg-perf-row${expanded === i ? " open" : ""}`} onClick={() => setExpanded(expanded === i ? null : i)}>
-                        <td className="mono">{entry.ts instanceof BsonDate ? clockText(Number(entry.ts.ms), true) : ""}</td>
-                        <td className="mono">{typeof entry.op === "string" ? entry.op : ""}</td>
-                        <td className="mono">{typeof entry.ns === "string" ? entry.ns : ""}</td>
-                        <td className="num mono">{msText(api.toNumber(entry.millis))}</td>
-                        <td className="mono">{typeof entry.planSummary === "string" ? entry.planSummary : <span className="panel-dim">—</span>}</td>
+                        <td className="mono">{ts instanceof BsonDate ? clockText(Number(ts.ms), true) : ""}</td>
+                        <td className="mono">{typeof op === "string" ? op : ""}</td>
+                        <td className="mono">{typeof ns === "string" ? ns : ""}</td>
+                        <td className="num mono">{msText(api.toNumber(entry.get("millis")))}</td>
+                        <td className="mono">{typeof planSummary === "string" ? planSummary : <span className="panel-dim">—</span>}</td>
                         <td className="num mono">{`${examined} / ${returned}`}</td>
                         <td className="mg-perf-cmd">
                           <ShellText text={preview(command)} />

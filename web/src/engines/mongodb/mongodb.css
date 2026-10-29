@@ -221,6 +221,26 @@
   font-family: var(--mono);
   font-size: 12px;
 }
+/* 옵션 row two: collation · hint · maxTimeMS (QueryOptionsRow). */
+.mg-qbar input.filter-value.mg-q-locale {
+  flex: none;
+  width: 140px;
+  height: 28px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.mg-qbar .mg-q-select {
+  flex: none;
+  max-width: 240px;
+  height: 28px;
+  font-size: 11.5px;
+}
+.mg-qbar .mg-q-select.invalid {
+  border-color: color-mix(in srgb, var(--error) 70%, var(--line));
+}
+.mg-qbar .mg-q-hint {
+  flex: 1 1 140px;
+}
 .mg-qbar input.filter-value.invalid {
   border-color: color-mix(in srgb, var(--error) 70%, var(--line));
 }

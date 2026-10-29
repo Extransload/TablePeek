@@ -1,11 +1,15 @@
-// BSON values held in the web app. Strings, booleans, null, arrays and plain
-// objects stand for themselves; every other BSON type is a small class whose
+// BSON values held in the web app. Strings, booleans, null and arrays stand
+// for themselves; a document is a `Map` so its fields keep their order even
+// when a name looks like a number ("2024", "0"), which a plain JS object
+// would move to the front. Every other BSON type is a small class whose
 // `type` field is the name Compass shows, so values never collapse into JS
 // numbers or Dates and Decimal128 is never turned into a float.
 //
-// Documents travel as canonical Extended JSON (spec: MONGODB.md §5).
-// `fromEJSON` also accepts relaxed and legacy forms so pasted text works;
-// `toEJSON` always writes canonical form.
+// Documents travel as canonical Extended JSON (spec: MONGODB.md §5). The
+// JSON text is read with `parseJson` and written with `stringifyJson`, which
+// keep key order where `JSON.parse`/`JSON.stringify` would not. `fromEJSON`
+// also accepts relaxed and legacy forms so pasted text works; `toEJSON`
+// always writes canonical form.
 
 import { t } from "../../i18n";
 
@@ -222,8 +226,14 @@ export type BsonScalar =
 
 export type BsonValue = string | boolean | null | BsonScalar | BsonValue[] | BsonDocument;
 
-export interface BsonDocument {
-  [key: string]: BsonValue;
+// A document: field names in their stored order. Copy before changing one
+// that is shared (`new Map(doc).set(key, value)`).
+export type BsonDocument = Map<string, BsonValue>;
+
+// A document from fields written as an object literal. Only for names that
+// do not look like array indices, whose order a JS object keeps.
+export function bsonDoc(fields: Record<string, BsonValue> = {}): BsonDocument {
+  return new Map(Object.entries(fields));
 }
 
 export type BsonNumber = Int32 | Int64 | Double | Decimal128;
@@ -237,11 +247,7 @@ export type BsonTypeName =
   | BsonScalar["type"];
 
 export function isDocument(v: unknown): v is BsonDocument {
-  if (v === null || typeof v !== "object" || Array.isArray(v)) {
-    return false;
-  }
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
+  return v instanceof Map;
 }
 
 export function isNumber(v: BsonValue | undefined): v is BsonNumber {
@@ -268,22 +274,14 @@ export function typeName(v: BsonValue): BsonTypeName {
   return v.type;
 }
 
-// Assigns a key without `__proto__` reaching the prototype setter.
-export function setField(doc: BsonDocument, key: string, value: BsonValue): void {
-  if (key === "__proto__") {
-    Object.defineProperty(doc, key, { value, enumerable: true, writable: true, configurable: true });
-  } else {
-    doc[key] = value;
-  }
-}
-
 // ---- Canonical Extended JSON ----
 
 export type EJSON = string | number | boolean | null | EJSON[] | { [key: string]: EJSON };
 
-// A value from canonical (or relaxed/legacy) Extended JSON. Wrapper objects
-// are recognised only with their exact key set; anything else stays a
-// document, so a query such as `{ $regex: "a", $options: "i" }` is untouched.
+// A value from canonical (or relaxed/legacy) Extended JSON as `parseJson`
+// returns it. Wrapper objects are recognised only with their exact key set;
+// anything else stays a document, so a query such as
+// `{ $regex: "a", $options: "i" }` is untouched.
 export function fromEJSON(json: unknown): BsonValue {
   if (json === null || typeof json === "string" || typeof json === "boolean") {
     return json;
@@ -297,16 +295,13 @@ export function fromEJSON(json: unknown): BsonValue {
   if (typeof json !== "object") {
     throw new Error(t("Extended JSON 값이 아닙니다: {text}", { text: String(json) }));
   }
-  const entries = Object.entries(json);
+  const record = json as Record<string, unknown>;
+  const entries = jsonKeys(record).map((key): [string, unknown] => [key, record[key]]);
   const wrapped = entries.length > 0 && entries[0][0].startsWith("$") ? fromWrapper(json, entries) : undefined;
   if (wrapped !== undefined) {
     return wrapped;
   }
-  const doc: BsonDocument = {};
-  for (const [key, value] of entries) {
-    setField(doc, key, fromEJSON(value));
-  }
-  return doc;
+  return new Map(entries.map(([key, value]) => [key, fromEJSON(value)]));
 }
 
 // Relaxed numbers: integers that fit int32 or int64 keep that type, the rest
@@ -419,7 +414,8 @@ function dateFromEJSON(x: unknown): BsonDate {
   throw new Error(t("$date 값을 읽을 수 없습니다"));
 }
 
-// Canonical Extended JSON for a value, ready for JSON.stringify.
+// Canonical Extended JSON for a value, to be written with `stringifyJson`
+// (documents keep their field order only through it).
 export function toEJSON(v: BsonValue): EJSON {
   if (v === null || typeof v === "string" || typeof v === "boolean") {
     return v;
@@ -428,15 +424,7 @@ export function toEJSON(v: BsonValue): EJSON {
     return v.map(toEJSON);
   }
   if (isDocument(v)) {
-    const out: { [key: string]: EJSON } = {};
-    for (const key of Object.keys(v)) {
-      if (key === "__proto__") {
-        Object.defineProperty(out, key, { value: toEJSON(v[key]), enumerable: true, writable: true, configurable: true });
-      } else {
-        out[key] = toEJSON(v[key]);
-      }
-    }
-    return out;
+    return jsonObject(Array.from(v, ([key, value]): [string, EJSON] => [key, toEJSON(value)]));
   }
   switch (v.type) {
     case "ObjectId":
@@ -484,6 +472,271 @@ export function doubleText(n: number): string {
   return /[.eE]/.test(text) ? text : `${text}.0`;
 }
 
+// ---- JSON text in true key order ----
+
+// JS objects list array-index keys ("0", "2024") first, in numeric order,
+// whatever order they were written in. Objects holding such keys carry their
+// true order under this symbol, set by `parseJson` and `toEJSON` and read by
+// `jsonKeys` and `stringifyJson`. It is enumerable so a spread copy keeps it.
+const KEY_ORDER = Symbol("keyOrder");
+
+function isIndexKey(key: string): boolean {
+  return /^(?:0|[1-9]\d{0,9})$/.test(key) && Number(key) < 4294967295;
+}
+
+// A plain object from entries, in their order (see KEY_ORDER), for JSON
+// written with `stringifyJson`. A later duplicate overwrites the value but
+// keeps the first position, as JSON.parse does.
+export function jsonObject<T>(entries: [string, T][]): Record<string, T> {
+  const out: Record<string, T> = {};
+  const keys: string[] = [];
+  let reordered = false;
+  for (const [key, value] of entries) {
+    if (!Object.hasOwn(out, key)) {
+      keys.push(key);
+      reordered ||= isIndexKey(key);
+    }
+    // defineProperty so `__proto__` stays an ordinary key.
+    Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true });
+  }
+  if (reordered) {
+    (out as Record<symbol, unknown>)[KEY_ORDER] = keys;
+  }
+  return out;
+}
+
+// An object's keys in the order they were written. Keys added after the
+// order was recorded (say, to a spread copy) follow in JS order.
+export function jsonKeys(obj: object): string[] {
+  const keys = Object.keys(obj);
+  const order = (obj as Record<symbol, unknown>)[KEY_ORDER];
+  if (!Array.isArray(order)) {
+    return keys;
+  }
+  const own = new Set(keys);
+  const out = (order as string[]).filter((key) => own.has(key));
+  if (out.length < keys.length) {
+    const seen = new Set(out);
+    out.push(...keys.filter((key) => !seen.has(key)));
+  }
+  return out;
+}
+
+// A JSON text that does not parse; `offset` is where reading stopped.
+export class JsonSyntaxError extends SyntaxError {
+  constructor(readonly offset: number) {
+    super(t("JSON을 읽을 수 없습니다 ({offset}번째 글자)", { offset: offset + 1 }));
+  }
+}
+
+// `JSON.parse` that keeps key order: objects with index-like keys record
+// their written order (read it with `jsonKeys`; `fromEJSON` does). Text
+// without such keys goes straight to JSON.parse. Bad text throws
+// `JsonSyntaxError`.
+export function parseJson(text: string): unknown {
+  // An index-like key is digits, each written plainly or as \u003X.
+  if (!/"\d+"\s*:|\\u003\d/.test(text)) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      // Read again below for the error's position.
+    }
+  }
+  const reader = new JsonReader(text);
+  const value = reader.value();
+  reader.end();
+  return value;
+}
+
+class JsonReader {
+  private pos = 0;
+  private static readonly NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+  constructor(private readonly text: string) {}
+
+  value(): unknown {
+    this.space();
+    switch (this.text[this.pos]) {
+      case "{":
+        return this.object();
+      case "[":
+        return this.array();
+      case '"':
+        return this.string();
+      case "t":
+        return this.word("true", true);
+      case "f":
+        return this.word("false", false);
+      case "n":
+        return this.word("null", null);
+    }
+    JsonReader.NUMBER.lastIndex = this.pos;
+    const m = JsonReader.NUMBER.exec(this.text);
+    if (!m) {
+      this.fail();
+    }
+    this.pos += m[0].length;
+    return Number(m[0]);
+  }
+
+  end(): void {
+    this.space();
+    if (this.pos < this.text.length) {
+      this.fail();
+    }
+  }
+
+  private object(): Record<string, unknown> {
+    this.pos++;
+    const entries: [string, unknown][] = [];
+    this.space();
+    if (this.text[this.pos] === "}") {
+      this.pos++;
+      return {};
+    }
+    for (;;) {
+      this.space();
+      if (this.text[this.pos] !== '"') {
+        this.fail();
+      }
+      const key = this.string();
+      this.expect(":");
+      entries.push([key, this.value()]);
+      if (this.next() === "}") {
+        return jsonObject(entries);
+      }
+    }
+  }
+
+  private array(): unknown[] {
+    this.pos++;
+    const out: unknown[] = [];
+    this.space();
+    if (this.text[this.pos] === "]") {
+      this.pos++;
+      return out;
+    }
+    for (;;) {
+      out.push(this.value());
+      if (this.next() === "]") {
+        return out;
+      }
+    }
+  }
+
+  // The separator after a member: "," or the given closer.
+  private next(): string {
+    this.space();
+    const c = this.text[this.pos++];
+    if (c !== "," && c !== "}" && c !== "]") {
+      this.pos--;
+      this.fail();
+    }
+    return c;
+  }
+
+  private string(): string {
+    const start = this.pos;
+    let escaped = false;
+    let i = start + 1;
+    for (;;) {
+      const c = this.text.charCodeAt(i);
+      if (Number.isNaN(c) || c < 0x20) {
+        this.pos = i;
+        this.fail();
+      }
+      if (c === 0x22) {
+        break;
+      }
+      if (c === 0x5c) {
+        escaped = true;
+        i += 2;
+      } else {
+        i++;
+      }
+    }
+    this.pos = i + 1;
+    if (!escaped) {
+      return this.text.slice(start + 1, i);
+    }
+    try {
+      return JSON.parse(this.text.slice(start, this.pos)) as string;
+    } catch {
+      this.pos = start;
+      this.fail();
+    }
+  }
+
+  private word<T>(word: string, value: T): T {
+    if (!this.text.startsWith(word, this.pos)) {
+      this.fail();
+    }
+    this.pos += word.length;
+    return value;
+  }
+
+  private expect(c: string): void {
+    this.space();
+    if (this.text[this.pos] !== c) {
+      this.fail();
+    }
+    this.pos++;
+  }
+
+  private space(): void {
+    for (;;) {
+      const c = this.text.charCodeAt(this.pos);
+      if (c !== 0x20 && c !== 0x0a && c !== 0x0d && c !== 0x09) {
+        return;
+      }
+      this.pos++;
+    }
+  }
+
+  private fail(): never {
+    throw new JsonSyntaxError(this.pos);
+  }
+}
+
+// `JSON.stringify` that writes keys in the order `jsonKeys` gives (only
+// plain data: no replacer, `toJSON` honoured, `undefined` skipped).
+export function stringifyJson(value: unknown, indent: number | string = ""): string {
+  const gap = typeof indent === "number" ? " ".repeat(Math.min(10, indent)) : indent.slice(0, 10);
+  return writeJson(value, gap, "") ?? "null";
+}
+
+function writeJson(value: unknown, gap: string, at: string): string | undefined {
+  if (value !== null && typeof value === "object" && "toJSON" in value && typeof value.toJSON === "function") {
+    value = value.toJSON();
+  }
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  // A document must go through toEJSON first; written as is it would be `{}`.
+  if (value instanceof Map) {
+    throw new TypeError("stringifyJson: a Map (BsonDocument) needs toEJSON first");
+  }
+  const inner = at + gap;
+  const open = gap ? `\n${inner}` : "";
+  const close = gap ? `\n${at}` : "";
+  const sep = gap ? `,\n${inner}` : ",";
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "[]";
+    }
+    return `[${open}${value.map((x) => writeJson(x, gap, inner) ?? "null").join(sep)}${close}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const key of jsonKeys(record)) {
+    const text = writeJson(record[key], gap, inner);
+    if (text !== undefined) {
+      parts.push(`${JSON.stringify(key)}:${gap ? " " : ""}${text}`);
+    }
+  }
+  return parts.length === 0 ? "{}" : `{${open}${parts.join(sep)}${close}}`;
+}
+
 // ---- Equality and ordering ----
 
 // Exact equality: same BSON types, same key order, NaN equals NaN.
@@ -495,12 +748,17 @@ export function deepEqual(a: BsonValue | undefined, b: BsonValue | undefined): b
     return Array.isArray(b) && a.length === b.length && a.every((x, i) => deepEqual(x, b[i]));
   }
   if (isDocument(a)) {
-    if (!isDocument(b)) {
+    if (!isDocument(b) || a.size !== b.size) {
       return false;
     }
-    const ka = Object.keys(a);
-    const kb = Object.keys(b);
-    return ka.length === kb.length && ka.every((k, i) => k === kb[i] && deepEqual(a[k], b[k]));
+    const kb = [...b.keys()];
+    let i = 0;
+    for (const [key, value] of a) {
+      if (key !== kb[i++] || !deepEqual(value, b.get(key))) {
+        return false;
+      }
+    }
+    return true;
   }
   if (a instanceof ObjectId) {
     return b instanceof ObjectId && a.hex === b.hex;
@@ -601,15 +859,17 @@ export function compareForSort(a: BsonValue | undefined, b: BsonValue | undefine
     return cmp(a.length, b.length);
   }
   if (isDocument(a) && isDocument(b)) {
-    const ka = Object.keys(a);
-    const kb = Object.keys(b);
-    for (let i = 0; i < Math.min(ka.length, kb.length); i++) {
-      const c = cmp(typeRank(a[ka[i]]), typeRank(b[kb[i]])) || cmp(ka[i], kb[i]) || compareForSort(a[ka[i]], b[kb[i]]);
+    const ea = [...a];
+    const eb = [...b];
+    for (let i = 0; i < Math.min(ea.length, eb.length); i++) {
+      const [ka, va] = ea[i];
+      const [kb, vb] = eb[i];
+      const c = cmp(typeRank(va), typeRank(vb)) || cmp(ka, kb) || compareForSort(va, vb);
       if (c !== 0) {
         return c;
       }
     }
-    return cmp(ka.length, kb.length);
+    return cmp(ea.length, eb.length);
   }
   if (isNumber(a) && isNumber(b)) {
     return compareNumbers(a, b);

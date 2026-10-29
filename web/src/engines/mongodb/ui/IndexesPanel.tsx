@@ -1,6 +1,7 @@
 // The 인덱스 sub-tab (MONGODB.md §3.6): the collection's indexes with their
 // keys (↑ ascending, ↓ descending), options, size and use count, a create
 // dialog that shows the command it will send, and drop with confirmation.
+// Below them, the Atlas Search indexes (SearchIndexesSection).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
@@ -11,10 +12,11 @@ import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
 import { createIndex, dropIndex, isAbort, listIndexes, type IndexInfo, type Namespace } from "../api";
-import { Int32, isNumber, setField, type BsonDocument } from "../bson";
+import { Int32, isNumber, type BsonDocument } from "../bson";
 import { shellCollection, toShell } from "../format";
 import { parseFilter } from "../shell/parse";
 import { ShellText } from "./ShellText";
+import { SearchIndexesSection } from "./SearchIndexesSection";
 import type { IndexCreateRequest, IndexesPanelProps } from "./types";
 import "./panels.css";
 
@@ -29,7 +31,7 @@ const SPECIAL_KINDS = ["text", "hashed", "2dsphere"];
 function KeyChips({ keys }: { keys: BsonDocument }) {
   return (
     <span className="mg-keychips">
-      {Object.entries(keys).map(([field, v]) => {
+      {[...keys].map(([field, v]) => {
         const dir = isNumber(v) ? (Number(v.value) < 0 ? "↓" : "↑") : typeof v === "string" ? v : toShell(v);
         return (
           <span key={field} className="mg-keychip" title={`${field}: ${toShell(v)}`}>
@@ -64,7 +66,7 @@ function IndexFlags({ index }: { index: IndexInfo }) {
         PARTIAL
       </span>
     ) : null,
-    Object.keys(index.key).length > 1 ? (
+    index.key.size > 1 ? (
       <span key="compound" className="mg-flag dim">
         {t("복합")}
       </span>
@@ -196,6 +198,7 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, onChan
           </section>
         )}
         <div className="mg-ix-hint panel-dim">{t("사용 횟수는 서버가 켜진 뒤 $indexStats가 센 값입니다. 권한이 없으면 크기·사용 칸은 비어 있습니다.")}</div>
+        <SearchIndexesSection ns={ns} readOnly={readOnly} fields={fields} host={host} />
       </div>
       {creating !== null ? (
         <CreateIndexDialog
@@ -223,7 +226,7 @@ interface KeyRow {
 }
 
 function keyRowsOf(keys: BsonDocument | null): KeyRow[] {
-  const entries = Object.entries(keys ?? {});
+  const entries = [...(keys ?? [])];
   if (entries.length === 0) {
     return [{ id: 0, field: "", kind: "1" }];
   }
@@ -260,36 +263,36 @@ function CreateIndexDialog({
 
   // The command as it will be sent, or why it cannot be.
   const spec = useMemo((): { keys: BsonDocument; options: BsonDocument } | { error: string } => {
-    const keys: BsonDocument = {};
+    const keys: BsonDocument = new Map();
     for (const row of rows) {
       const field = row.field.trim();
       if (field !== "") {
-        setField(keys, field, row.kind === "1" || row.kind === "-1" ? new Int32(Number(row.kind)) : row.kind);
+        keys.set(field, row.kind === "1" || row.kind === "-1" ? new Int32(Number(row.kind)) : row.kind);
       }
     }
-    const options: BsonDocument = {};
+    const options: BsonDocument = new Map();
     if (name.trim() !== "") {
-      options.name = name.trim();
+      options.set("name", name.trim());
     }
     if (unique) {
-      options.unique = true;
+      options.set("unique", true);
     }
     if (sparse) {
-      options.sparse = true;
+      options.set("sparse", true);
     }
     if (ttlOn) {
       const seconds = Number(ttl);
       if (!Number.isInteger(seconds) || seconds < 0) {
         return { error: t("TTL은 0 이상의 정수(초)여야 합니다") };
       }
-      options.expireAfterSeconds = new Int32(seconds);
+      options.set("expireAfterSeconds", new Int32(seconds));
     }
     if (partial.trim() !== "") {
       const parsed = parseFilter(partial);
       if (!parsed.ok) {
         return { error: t("부분 인덱스 조건: {message}", { message: parsed.error.message }) };
       }
-      options.partialFilterExpression = parsed.value;
+      options.set("partialFilterExpression", parsed.value);
     }
     return { keys, options };
   }, [rows, name, unique, sparse, ttlOn, ttl, partial]);
@@ -297,8 +300,8 @@ function CreateIndexDialog({
   const command =
     "error" in spec
       ? null
-      : `${shellCollection(ns.coll)}.createIndex(${toShell(spec.keys)}${Object.keys(spec.options).length > 0 ? `, ${toShell(spec.options)}` : ""})`;
-  const problem = "error" in spec ? spec.error : Object.keys(spec.keys).length === 0 ? t("필드를 하나 이상 고르세요") : null;
+      : `${shellCollection(ns.coll)}.createIndex(${toShell(spec.keys)}${spec.options.size > 0 ? `, ${toShell(spec.options)}` : ""})`;
+  const problem = "error" in spec ? spec.error : spec.keys.size === 0 ? t("필드를 하나 이상 고르세요") : null;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {

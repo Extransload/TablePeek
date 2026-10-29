@@ -3,8 +3,9 @@
 // the path tree with nested documents and the documents inside arrays, how
 // many documents have each path, the type mix, and a summary per kind of
 // value (histograms of numbers, dates and array lengths, frequent strings,
-// boolean ratio, ObjectId creation times). Clicking a value or a bar filters
-// the documents by it; the analysis exports as JSON and drafts a
+// boolean ratio, ObjectId creation times), and a world map of location
+// fields (GeoMap). Clicking a value or a bar, or drawing a region on the map,
+// filters the documents by it; the analysis exports as JSON and drafts a
 // `$jsonSchema` for the 검증 tab.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -14,11 +15,13 @@ import { LoadingState } from "../../../components/Spinner";
 import { downloadBlob } from "../../../export";
 import { t } from "../../../i18n";
 import { aggregate, count, isAbort, type CountResult, type Namespace } from "../api";
-import { BsonDate, Int32, ObjectId, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
+import { BsonDate, Int32, ObjectId, bsonDoc, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { sampleFields, type CompletionContext } from "../complete";
 import { shellCollection, toShell } from "../format";
+import { findGeoFields, type GeoField } from "../geo";
 import { SAMPLE_SIZES, analyzeSchema, draftJsonSchema, filterNumber, schemaExport, typesByCount, type SchemaAnalysis, type SchemaField } from "../schema";
 import { parseFilter } from "../shell/parse";
+import { GeoMap } from "./GeoMap";
 import { MongoEditor } from "./MongoEditor";
 import type { DocHost } from "./types";
 import "./panels.css";
@@ -134,16 +137,17 @@ function ValueBars({ rows, type }: { rows: { label: string; count: number; onCli
   );
 }
 
-// The summaries of a field, the kind seen most first.
-function FieldViz({ field, onFilter }: { field: SchemaField; onFilter(path: string, value: BsonValue): void }) {
+// The summaries of a field, the kind seen most first (a location map, when
+// the field holds locations, before them all).
+function FieldViz({ field, geo, onFilter }: { field: SchemaField; geo: GeoField | undefined; onFilter(path: string, value: BsonValue): void }) {
   const at = (value: BsonValue) => onFilter(field.path, value);
   const parts: { n: number; node: ReactNode }[] = [];
   const { number: num, date, string: str, objectId: oid, boolean: bool, array: arr } = field;
   if (arr) {
-    const bars: Bar[] = arr.lengths.map((count, n) => ({ count, label: t("원소 {count}개", { count: n }), onClick: () => at({ $size: new Int32(n) }) }));
+    const bars: Bar[] = arr.lengths.map((count, n) => ({ count, label: t("원소 {count}개", { count: n }), onClick: () => at(bsonDoc({ $size: new Int32(n) })) }));
     if (arr.longer > 0) {
       const cap = arr.lengths.length - 1;
-      bars.push({ count: arr.longer, label: t("원소 {count}개 넘게", { count: cap }), onClick: () => onFilter(`${field.path}.${cap}`, { $exists: true }) });
+      bars.push({ count: arr.longer, label: t("원소 {count}개 넘게", { count: cap }), onClick: () => onFilter(`${field.path}.${cap}`, bsonDoc({ $exists: true })) });
     }
     const elems = typesByCount(field.elemTypes).map(([type]) => type).join(", ");
     parts.push({
@@ -170,7 +174,7 @@ function FieldViz({ field, onFilter }: { field: SchemaField; onFilter(path: stri
           bars={num.bins.map((b, i) => ({
             count: b.count,
             label: b.lo === b.hi ? numberText(b.lo) : `${numberText(b.lo)} ~ ${numberText(b.hi)}`,
-            onClick: () => at(b.lo === b.hi ? filterNumber(b.lo) : { $gte: filterNumber(b.lo), [i === num.bins.length - 1 ? "$lte" : "$lt"]: filterNumber(b.hi) }),
+            onClick: () => at(b.lo === b.hi ? filterNumber(b.lo) : bsonDoc({ $gte: filterNumber(b.lo), [i === num.bins.length - 1 ? "$lte" : "$lt"]: filterNumber(b.hi) })),
           }))}
           type={typesByCount(field.types).find(([type]) => type === "Int32" || type === "Int64" || type === "Double" || type === "Decimal128")?.[0] ?? "Double"}
           minLabel={t("최소 {value}", { value: numberText(num.min) })}
@@ -190,7 +194,7 @@ function FieldViz({ field, onFilter }: { field: SchemaField; onFilter(path: stri
           bars={date.bins.map((b, i) => ({
             count: b.count,
             label: `${dayText(b.lo, withTime)} ~ ${dayText(b.hi, withTime)}`,
-            onClick: () => at({ $gte: new BsonDate(Math.floor(b.lo)), [i === date.bins.length - 1 ? "$lte" : "$lt"]: new BsonDate(Math.ceil(b.hi)) }),
+            onClick: () => at(bsonDoc({ $gte: new BsonDate(Math.floor(b.lo)), [i === date.bins.length - 1 ? "$lte" : "$lt"]: new BsonDate(Math.ceil(b.hi)) })),
           }))}
           type="Date"
           minLabel={dayText(date.min, withTime)}
@@ -288,13 +292,14 @@ function FieldViz({ field, onFilter }: { field: SchemaField; onFilter(path: stri
   }
   return (
     <div className="mg-schema-viz">
+      {geo !== undefined ? <GeoMap field={geo} onFilter={at} /> : null}
       {notes}
       {parts.map((p) => p.node)}
     </div>
   );
 }
 
-function FieldRow({ field, sampleSize, open, onToggle, onFilter }: { field: SchemaField; sampleSize: number; open: boolean; onToggle(): void; onFilter(path: string, value: BsonValue): void }) {
+function FieldRow({ field, geo, sampleSize, open, onToggle, onFilter }: { field: SchemaField; geo: GeoField | undefined; sampleSize: number; open: boolean; onToggle(): void; onFilter(path: string, value: BsonValue): void }) {
   const types = typesByCount(field.types);
   const total = types.reduce((n, [, c]) => n + c, 0) || 1;
   const missing = sampleSize - field.count;
@@ -336,7 +341,7 @@ function FieldRow({ field, sampleSize, open, onToggle, onFilter }: { field: Sche
           </span>
         </div>
       </div>
-      <FieldViz field={field} onFilter={onFilter} />
+      <FieldViz field={field} geo={geo} onFilter={onFilter} />
     </div>
   );
 }
@@ -392,7 +397,7 @@ export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }:
     setMatched(null);
     const command = `${shellCollection(ns.coll)}.aggregate([{ $match: ${toShell(filter)} }, { $sample: { size: ${n} } }])`;
     count(ns, filter, ctl.signal).then(setMatched, () => setMatched(null));
-    aggregate(ns, [{ $match: filter }, { $sample: { size: new Int32(n) } }], undefined, ctl.signal).then(
+    aggregate(ns, [bsonDoc({ $match: filter }), bsonDoc({ $sample: bsonDoc({ size: new Int32(n) }) })], undefined, ctl.signal).then(
       (batch) => {
         setShown({ filter, size: n, command, analysis: analyzeSchema(batch.docs), docs: batch.docs, elapsedMs: batch.elapsedMs, at: new Date() });
         setLoading(false);
@@ -432,6 +437,7 @@ export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }:
 
   const result = shown !== null && "analysis" in shown ? shown : null;
   const analysis = result?.analysis ?? null;
+  const geo = useMemo(() => (shown !== null && "docs" in shown ? findGeoFields(shown.docs) : new Map<string, GeoField>()), [shown]);
 
   let body;
   if (shown === null) {
@@ -450,7 +456,7 @@ export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }:
           continue;
         }
         const isOpen = open.has(path);
-        rows.push(<FieldRow key={path} field={f} sampleSize={a.sampleSize} open={isOpen} onToggle={() => toggle(path)} onFilter={onFilter} />);
+        rows.push(<FieldRow key={path} field={f} geo={geo.get(path)} sampleSize={a.sampleSize} open={isOpen} onToggle={() => toggle(path)} onFilter={onFilter} />);
         if (isOpen) {
           walk(f.children);
         }

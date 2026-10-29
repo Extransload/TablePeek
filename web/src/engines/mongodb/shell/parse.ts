@@ -21,7 +21,7 @@ import {
   fromEJSON,
   isDocument,
   isNumber,
-  setField,
+  jsonObject,
   toEJSON,
   type BsonDocument,
   type BsonValue,
@@ -512,7 +512,7 @@ class Parser {
         case "Long":
           return new Int64(a === undefined ? 0n : isNumber(a) && a.type === "Double" ? BigInt(Math.trunc(a.value)) : text(a));
         case "Double":
-          return new Double(a === undefined ? 0 : Number(text(a)));
+          return new Double(a === undefined ? 0 : isNumber(a) ? Number(a.value) : Number(text(a)));
         case "UUID":
           return Binary.fromUuid(a === undefined ? crypto.randomUUID() : text(a));
         case "BinData":
@@ -523,7 +523,7 @@ class Parser {
           return Binary.fromHex(typeof a === "string" ? a : fail(t("16진수 문자열이 와야 합니다")), int(b, 0));
         case "Timestamp":
           if (isDocument(a)) {
-            return new Timestamp(int(a.t, 0), int(a.i, 0));
+            return new Timestamp(int(a.get("t"), 0), int(a.get("i"), 0));
           }
           return new Timestamp(int(a, 0), int(b, 0));
         case "MinKey":
@@ -575,7 +575,7 @@ class Parser {
     const doc = this.entries("}");
     this.expect("}");
     // Extended JSON wrappers typed by hand ({ $oid: "…" }, { $date: "…" }).
-    const keys = Object.keys(doc);
+    const keys = [...doc.keys()];
     if (keys.length > 0 && keys.length <= 2 && keys[0].startsWith("$")) {
       let typed: BsonValue;
       try {
@@ -593,7 +593,7 @@ class Parser {
   // `key: value` entries up to `close`, or to the end of the input for a
   // query-bar filter written without braces.
   entries(close: "}" | null): BsonDocument {
-    const doc: BsonDocument = {};
+    const doc: BsonDocument = new Map();
     const done = () => (close === null ? this.atEnd() : this.isPunc(close));
     while (!done()) {
       if (this.isPunc(".") && this.isPunc(".", 1)) {
@@ -601,7 +601,7 @@ class Parser {
       }
       const key = this.key();
       this.expect(":");
-      setField(doc, key, this.value());
+      doc.set(key, this.value());
       if (!done()) {
         if (!this.isPunc(",")) {
           this.unexpected(
@@ -705,11 +705,7 @@ function plainEJSON(v: BsonValue): EJSON {
     return v.value;
   }
   if (isDocument(v)) {
-    const out: { [key: string]: EJSON } = {};
-    for (const key of Object.keys(v)) {
-      out[key] = plainEJSON(v[key]);
-    }
-    return out;
+    return jsonObject(Array.from(v, ([key, value]): [string, EJSON] => [key, plainEJSON(value)]));
   }
   return Array.isArray(v) ? v.map(plainEJSON) : toEJSON(v);
 }
@@ -742,7 +738,7 @@ export function parseFilter(text: string, offset = 0): ParseResult<BsonDocument>
   return capture(() => {
     const p = new Parser(text, offset, true);
     if (p.atEnd()) {
-      return {};
+      return new Map();
     }
     if (!p.isPunc("{")) {
       const doc = p.entries(null);
@@ -837,8 +833,9 @@ function dbStatement(p: Parser): DbRequest {
     if (method.text === "runCommand") {
       // Only the command History records for dropping a collection.
       const command = args.length === 1 ? args[0].value : null;
-      if (isDocument(command) && Object.keys(command).length === 1 && typeof command.drop === "string") {
-        return { kind: "drop", coll: command.drop };
+      const drop = isDocument(command) && command.size === 1 ? command.get("drop") : undefined;
+      if (typeof drop === "string") {
+        return { kind: "drop", coll: drop };
       }
       return p.unsupported(method, p.lastEnd());
     }
@@ -939,7 +936,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       const request: FindRequest = {
         kind: "find",
         coll,
-        filter: optionalDocArg(call, 0) ?? {},
+        filter: optionalDocArg(call, 0) ?? new Map(),
         projection: optionalDocArg(call, 1),
         sort: null,
         skip: null,
@@ -1001,18 +998,18 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
   switch (call.name) {
     case "findOne":
       arity(call, 0, 2);
-      return { kind: "findOne", coll, filter: optionalDocArg(call, 0) ?? {}, projection: optionalDocArg(call, 1) };
+      return { kind: "findOne", coll, filter: optionalDocArg(call, 0) ?? new Map(), projection: optionalDocArg(call, 1) };
     case "countDocuments": {
       arity(call, 0, 2);
       // { maxTimeMS } is allowed (History records it) but the app applies
       // its own time limit.
-      const options = optionalDocArg(call, 1) ?? {};
-      for (const key of Object.keys(options)) {
-        if (key !== "maxTimeMS" || !isNumber(options.maxTimeMS)) {
+      const options = optionalDocArg(call, 1) ?? new Map();
+      for (const [key, value] of options) {
+        if (key !== "maxTimeMS" || !isNumber(value)) {
           throw new ShellSyntaxError(t("지원하지 않는 옵션입니다: {name}", { name: key }), call.args[1].from, call.args[1].to);
         }
       }
-      return { kind: "countDocuments", coll, filter: optionalDocArg(call, 0) ?? {} };
+      return { kind: "countDocuments", coll, filter: optionalDocArg(call, 0) ?? new Map() };
     }
     case "estimatedDocumentCount":
       arity(call, 0, 0);
@@ -1023,7 +1020,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       if (typeof key !== "string") {
         throw new ShellSyntaxError(t("distinct()의 첫 인수는 필드 이름 문자열입니다"), call.args[0].from, call.args[0].to);
       }
-      return { kind: "distinct", coll, key, filter: optionalDocArg(call, 1) ?? {} };
+      return { kind: "distinct", coll, key, filter: optionalDocArg(call, 1) ?? new Map() };
     }
     case "insertOne":
       arity(call, 1, 1);
@@ -1042,7 +1039,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       // Update operators ({ $set: … }) or an update pipeline ([ { $set: … } ]).
       const raw = call.args[1].value;
       let update: BsonDocument | BsonDocument[];
-      if (isDocument(raw) && Object.keys(raw).length > 0 && Object.keys(raw).every((k) => k.startsWith("$"))) {
+      if (isDocument(raw) && raw.size > 0 && [...raw.keys()].every((k) => k.startsWith("$"))) {
         update = raw;
       } else if (Array.isArray(raw) && raw.every(isDocument)) {
         update = raw;
@@ -1060,7 +1057,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
     case "replaceOne": {
       arity(call, 2, 3);
       const replacement = docArg(call, 1);
-      if (Object.keys(replacement).some((k) => k.startsWith("$"))) {
+      if ([...replacement.keys()].some((k) => k.startsWith("$"))) {
         throw new ShellSyntaxError(t("바꿀 문서에는 $ 연산자를 쓸 수 없습니다"), call.args[1].from, call.args[1].to);
       }
       return { kind: "replaceOne", coll, filter: docArg(call, 0), replacement, upsert: upsertOption(call, 2) };
@@ -1071,7 +1068,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       return { kind: call.name, coll, filter: docArg(call, 0) };
     case "createIndex":
       arity(call, 1, 2);
-      return { kind: "createIndex", coll, keys: docArg(call, 0), options: optionalDocArg(call, 1) ?? {} };
+      return { kind: "createIndex", coll, keys: docArg(call, 0), options: optionalDocArg(call, 1) ?? new Map() };
     case "dropIndex": {
       arity(call, 1, 1);
       const index = call.args[0].value;
@@ -1180,13 +1177,13 @@ function upsertOption(call: Call, index: number): boolean {
   if (options === null) {
     return false;
   }
-  for (const key of Object.keys(options)) {
-    if (key !== "upsert" || typeof options.upsert !== "boolean") {
+  for (const [key, value] of options) {
+    if (key !== "upsert" || typeof value !== "boolean") {
       const arg = call.args[index];
       throw new ShellSyntaxError(t("지원하지 않는 옵션입니다: {name}", { name: key }), arg.from, arg.to);
     }
   }
-  return options.upsert === true;
+  return options.get("upsert") === true;
 }
 
 // ---- Scripts ----

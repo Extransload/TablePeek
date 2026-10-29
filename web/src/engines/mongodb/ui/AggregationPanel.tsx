@@ -5,19 +5,18 @@
 // delete, and beside the editor the first 10 documents the pipeline gives up
 // to that stage — asked for again 0.6 s after an edit, stale requests
 // aborted, errors on the card. A text mode edits the whole array and comes
-// back to the cards. Pipelines are saved per collection, copied as mongosh
-// code, saved as a view, explained, exported and run (`$out`/`$merge` after
+// back to the cards. Pipelines are saved per collection, turned into driver
+// or mongosh code (코드로), saved as a view, explained, exported and run (`$out`/`$merge` after
 // the safe-mode confirmation) with the result in the ☰ / {} / ⊞ views.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { writeClipboard } from "../../../clipboard";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
-import { ChevronDownIcon, CloseIcon, CodeIcon, CopyIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, RefreshIcon, TableIcon, TrashIcon } from "../../../components/icons";
+import { ChevronDownIcon, CloseIcon, CodeIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, RefreshIcon, TableIcon, TrashIcon } from "../../../components/icons";
 import { Spinner } from "../../../components/Spinner";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
 import { t } from "../../../i18n";
 import { aggregate, command, explain, isAbort, listCollections, type Namespace } from "../api";
-import { compareForSort, Int32, toEJSON, type BsonDocument } from "../bson";
+import { bsonDoc, compareForSort, Int32, stringifyJson, toEJSON, type BsonDocument } from "../bson";
 import { STAGES, sampleFields, type CompletionContext, type FieldStat } from "../complete";
 import { summarizeExplain, type PlanSummary } from "../explain";
 import { toShell, toShellPretty } from "../format";
@@ -41,6 +40,7 @@ import {
 } from "../pipeline";
 import type { ShellError } from "../shell/parse";
 import { CardView } from "./CardView";
+import { CodeExportModal } from "./CodeExportModal";
 import { useEscape } from "./DocModals";
 import { DocTableView } from "./DocTableView";
 import { ExportModal } from "./ExportModal";
@@ -128,7 +128,7 @@ function planStages(stages: Stage[]): StagePlan[] {
     }
     prefix.push(checked.stage);
     const pipeline = [...prefix];
-    out.push({ key: JSON.stringify(pipeline.map(toEJSON)), pipeline, fixed: null, error: null });
+    out.push({ key: stringifyJson(pipeline.map(toEJSON)), pipeline, fixed: null, error: null });
   }
   return out;
 }
@@ -242,7 +242,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
       () => {
         for (const plan of missing) {
           const key = plan.key as string;
-          aggregate(ns, [...(plan.pipeline ?? []), { $limit: new Int32(PREVIEW_LIMIT) }], maxTimeMS, controller.signal).then(
+          aggregate(ns, [...(plan.pipeline ?? []), bsonDoc({ $limit: new Int32(PREVIEW_LIMIT) })], maxTimeMS, controller.signal).then(
             (batch) => settle(key, { docs: batch.docs, elapsedMs: batch.elapsedMs }),
             (error: unknown) => {
               if (!isAbort(error)) {
@@ -305,7 +305,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
   const [sample, setSample] = useState<FieldStat[]>([]);
   useEffect(() => {
     const controller = new AbortController();
-    aggregate(ns, [{ $limit: new Int32(SAMPLE_SIZE) }], maxTimeMS, controller.signal).then(
+    aggregate(ns, [bsonDoc({ $limit: new Int32(SAMPLE_SIZE) })], maxTimeMS, controller.signal).then(
       (batch) => setSample(sampleFields(batch.docs)),
       () => undefined,
     );
@@ -340,7 +340,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
       const known = otherFields.current.get(coll);
       if (known === undefined) {
         otherFields.current.set(coll, null);
-        aggregate({ ...ns, coll }, [{ $limit: new Int32(SAMPLE_SIZE) }]).then(
+        aggregate({ ...ns, coll }, [bsonDoc({ $limit: new Int32(SAMPLE_SIZE) })]).then(
           (batch) => otherFields.current.set(coll, sampleFields(batch.docs)),
           () => otherFields.current.delete(coll),
         );
@@ -755,9 +755,9 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
             <RefreshIcon size={11} />
           </button>
         ) : null}
-        <button type="button" className="mg-qbtn" title={t("mongosh 코드로 보기·복사")} onClick={() => currentPipeline() !== null && setDialog("code")}>
-          <CopyIcon size={10} />
-          {t("mongosh 코드")}
+        <button type="button" className="mg-qbtn" title={t("이 파이프라인을 드라이버 코드로 (mongosh·Python·Node.js·Java·C#·Go·Rust·PHP·Ruby)")} onClick={() => currentPipeline() !== null && setDialog("code")}>
+          <CodeIcon size={10} />
+          {t("코드로")}
         </button>
         <button type="button" className="mg-qbtn" title={t("이 파이프라인으로 뷰 만들기 (create viewOn)")} onClick={() => openReadingDialog("view")}>
           <TableIcon size={10} />
@@ -863,14 +863,10 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
       {results}
       {picker !== null ? <StagePicker x={picker.x} y={picker.y} current={picker.replace !== null ? stages[picker.replace]?.op : undefined} onPick={pickOp} onClose={() => setPicker(null)} /> : null}
       {dialog === "code" && codePipeline !== null ? (
-        <CodeDialog
+        <CodeExportModal
           ns={ns}
-          code={aggregateCode(ns.coll, codePipeline)}
-          offNote={mode === "stages" && onCount < stages.length}
-          onCopy={(code) => {
-            void writeClipboard(code, host.notify);
-            host.notify(t("mongosh 코드를 복사했습니다"));
-          }}
+          source={{ kind: "aggregate", pipeline: codePipeline }}
+          note={mode === "stages" && onCount < stages.length ? t("꺼진 단계는 빠집니다") : undefined}
           onOpenShell={
             onOpenShell === undefined
               ? undefined
@@ -879,6 +875,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
                   setDialog(null);
                 }
           }
+          notify={host.notify}
           onClose={() => setDialog(null)}
         />
       ) : null}
@@ -912,9 +909,9 @@ function currentPipelineQuiet(mode: "stages" | "text", stages: Stage[], text: st
 }
 
 function sortedDocs(docs: BsonDocument[], sort: BsonDocument): BsonDocument[] {
-  const [key] = Object.keys(sort);
-  const dir = toShell(sort[key]) === "-1" ? -1 : 1;
-  return [...docs].sort((a, b) => compareForSort(a[key], b[key]) * dir);
+  const key = sort.keys().next().value ?? "";
+  const dir = toShell(sort.get(key) ?? null) === "-1" ? -1 : 1;
+  return [...docs].sort((a, b) => compareForSort(a.get(key), b.get(key)) * dir);
 }
 
 // ---- One stage card ----
@@ -1159,42 +1156,6 @@ function StagePicker({ x, y, current, onPick, onClose }: { x: number; y: number;
 
 // ---- Dialogs ----
 
-function CodeDialog({ ns, code, offNote, onCopy, onOpenShell, onClose }: { ns: Namespace; code: string; offNote: boolean; onCopy(code: string): void; onOpenShell?(code: string): void; onClose(): void }) {
-  useEscape(onClose);
-  const full = `use ${ns.db}\n\n${code}`;
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal mg-ix-modal" role="dialog" aria-label={t("mongosh 코드")} onClick={(event) => event.stopPropagation()}>
-        <div className="modal-head">
-          <span className="modal-title">{t("mongosh 코드")}</span>
-          <span className="modal-path">{`${ns.db}.${ns.coll}`}</span>
-        </div>
-        <div className="modal-body mg-form">
-          <pre className="panel-pre mg-export-code">
-            <ShellText text={full} />
-          </pre>
-          {offNote ? <span className="panel-dim">{t("꺼진 단계는 빠집니다")}</span> : null}
-        </div>
-        <div className="modal-foot">
-          <span className="spacer" />
-          <button type="button" onClick={onClose}>
-            {t("닫기")}
-          </button>
-          {onOpenShell !== undefined ? (
-            <button type="button" onClick={() => onOpenShell(code)}>
-              {t("mongosh 탭에서 열기")}
-            </button>
-          ) : null}
-          <button type="button" className="primary" autoFocus onClick={() => onCopy(full)}>
-            <CopyIcon size={10} />
-            {t("복사")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // 뷰로 저장: `create` with viewOn and the pipeline. A view of the same name
 // is replaced (`collMod`, after the safe-mode confirmation); a collection of
 // that name is left alone.
@@ -1222,7 +1183,7 @@ function SaveViewDialog({ ns, pipeline, host, onSaved, onClose }: { ns: Namespac
         return;
       }
       if (existing !== undefined) {
-        const replace: BsonDocument = { collMod: viewName, viewOn: ns.coll, pipeline };
+        const replace = bsonDoc({ collMod: viewName, viewOn: ns.coll, pipeline });
         if (host.safeMode !== 0) {
           const ok = await host.confirm({
             title: t("뷰 바꾸기"),
@@ -1238,7 +1199,7 @@ function SaveViewDialog({ ns, pipeline, host, onSaved, onClose }: { ns: Namespac
         onSaved(viewName, true);
         return;
       }
-      await command(ns.conn, ns.db, { create: viewName, viewOn: ns.coll, pipeline });
+      await command(ns.conn, ns.db, bsonDoc({ create: viewName, viewOn: ns.coll, pipeline }));
       onSaved(viewName, false);
     } catch (error) {
       setFailure(error);

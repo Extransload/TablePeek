@@ -15,7 +15,7 @@ import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { collStats, createCollection, dropCollection, dropDatabase, listCollections, renameCollection, type CollStats, type CollectionInfo } from "../api";
-import { Int32, Int64, isDocument, type BsonDocument } from "../bson";
+import { Int32, Int64, bsonDoc, isDocument, type BsonDocument } from "../bson";
 import { toShell, toShellPretty } from "../format";
 import { parseValue } from "../shell/parse";
 import { AdminModal, CommandPreview, Failure, collectionNameProblem, databaseNameProblem, shellNamespace } from "./AdminModal";
@@ -105,7 +105,7 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
     if (problem !== null) {
       return { error: problem };
     }
-    const options: BsonDocument = {};
+    const options: BsonDocument = new Map();
     const integer = (text: string, label: string, min: number): Int32 | Int64 | null | { error: string } => {
       const trimmed = text.trim();
       if (trimmed === "") {
@@ -127,8 +127,8 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
       if (!Array.isArray(parsed.value) || !parsed.value.every(isDocument)) {
         return { error: t("파이프라인은 단계 문서의 배열이어야 합니다") };
       }
-      options.viewOn = viewOn;
-      options.pipeline = parsed.value;
+      options.set("viewOn", viewOn);
+      options.set("pipeline", parsed.value);
     }
     if (kind === "capped") {
       const size = integer(cappedSize, t("최대 크기"), 1);
@@ -142,41 +142,41 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
       if (max !== null && "error" in max) {
         return max;
       }
-      options.capped = true;
-      options.size = size;
+      options.set("capped", true);
+      options.set("size", size);
       if (max !== null) {
-        options.max = max;
+        options.set("max", max);
       }
     }
     if (kind === "timeseries") {
       if (timeField.trim() === "") {
         return { error: t("시간 필드를 쓰세요") };
       }
-      const ts: BsonDocument = { timeField: timeField.trim() };
+      const ts = bsonDoc({ timeField: timeField.trim() });
       if (metaField.trim() !== "") {
-        ts.metaField = metaField.trim();
+        ts.set("metaField", metaField.trim());
       }
       if (granularity !== "") {
-        ts.granularity = granularity;
+        ts.set("granularity", granularity);
       }
-      options.timeseries = ts;
+      options.set("timeseries", ts);
       const seconds = integer(expire, t("만료"), 1);
       if (seconds !== null && "error" in seconds) {
         return seconds;
       }
       if (seconds !== null) {
-        options.expireAfterSeconds = seconds;
+        options.set("expireAfterSeconds", seconds);
       }
     }
     if (locale.trim() !== "") {
-      const collation: BsonDocument = { locale: locale.trim() };
+      const collation = bsonDoc({ locale: locale.trim() });
       if (strength !== "") {
-        collation.strength = new Int32(Number(strength));
+        collation.set("strength", new Int32(Number(strength)));
       }
-      options.collation = collation;
+      options.set("collation", collation);
     }
     if (kind === "plain" && clustered) {
-      options.clusteredIndex = { key: { _id: new Int32(1) }, unique: true };
+      options.set("clusteredIndex", bsonDoc({ key: bsonDoc({ _id: new Int32(1) }), unique: true }));
     }
     if (kind !== "view" && validatorOn) {
       const parsed = parseValue(validatorText);
@@ -186,17 +186,19 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
       if (!isDocument(parsed.value)) {
         return { error: t("검증 규칙은 문서여야 합니다") };
       }
-      options.validator = parsed.value;
-      options.validationLevel = validationLevel;
-      options.validationAction = validationAction;
+      options.set("validator", parsed.value);
+      options.set("validationLevel", validationLevel);
+      options.set("validationAction", validationAction);
     }
     const base = `db.getSiblingDB(${JSON.stringify(target)})`;
     let command: string;
     if (kind === "view") {
-      const { viewOn: on, pipeline, ...rest } = options;
-      command = `${base}.createView(${JSON.stringify(collName)}, ${JSON.stringify(on)}, ${toShellPretty(pipeline)}${Object.keys(rest).length > 0 ? `, ${toShell(rest)}` : ""})`;
+      const rest = new Map(options);
+      rest.delete("viewOn");
+      rest.delete("pipeline");
+      command = `${base}.createView(${JSON.stringify(collName)}, ${JSON.stringify(viewOn)}, ${toShellPretty(options.get("pipeline") ?? [])}${rest.size > 0 ? `, ${toShell(rest)}` : ""})`;
     } else {
-      command = `${base}.createCollection(${JSON.stringify(collName)}${Object.keys(options).length > 0 ? `, ${toShellPretty(options)}` : ""})`;
+      command = `${base}.createCollection(${JSON.stringify(collName)}${options.size > 0 ? `, ${toShellPretty(options)}` : ""})`;
     }
     return { options, command };
   }, [target, collName, kind, viewOn, pipelineText, cappedSize, cappedMax, timeField, metaField, granularity, expire, locale, strength, clustered, validatorOn, validatorText, validationLevel, validationAction]);
@@ -222,7 +224,7 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
     { id: "plain", label: t("일반") },
     { id: "capped", label: "capped" },
     { id: "timeseries", label: t("시계열") },
-    ...(db !== null ? [{ id: "view" as const, label: t("뷰") }] : []),
+    ...(db !== null ? [{ id: "view" as const, label: t("뷰 [종류]") }] : []),
   ];
   const sizeText = formatBytes(Number(cappedSize));
   return (
@@ -579,7 +581,7 @@ function StatsModal({ conn, db, coll, onClose }: { conn: string; db: string; col
           [t("인덱스"), stats.nindexes.toLocaleString()],
           [t("인덱스 크기"), formatBytes(stats.totalIndexSize) ?? "—"],
         ];
-  const options = info !== null && Object.keys(info.options).length > 0 ? info.options : null;
+  const options = info !== null && info.options.size > 0 ? info.options : null;
   return (
     <AdminModal
       title={t("컬렉션 통계")}
@@ -609,11 +611,11 @@ function StatsModal({ conn, db, coll, onClose }: { conn: string; db: string; col
             {info !== null ? (
               <div className="mg-stats-cell">
                 <div className="mg-form-label">{t("종류")}</div>
-                <div className="mono">{info.type === "timeseries" ? t("시계열") : info.type === "view" ? t("뷰") : options?.capped === true ? "capped" : t("일반")}</div>
+                <div className="mono">{info.type === "timeseries" ? t("시계열") : info.type === "view" ? t("뷰 [종류]") : options?.get("capped") === true ? "capped" : t("일반")}</div>
               </div>
             ) : null}
           </div>
-          {Object.keys(stats.indexSizes).length > 0 ? (
+          {stats.indexSizes.size > 0 ? (
             <table className="panel-table mg-stats-table">
               <thead>
                 <tr>
@@ -622,7 +624,7 @@ function StatsModal({ conn, db, coll, onClose }: { conn: string; db: string; col
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(stats.indexSizes).map(([index, size]) => (
+                {[...stats.indexSizes].map(([index, size]) => (
                   <tr key={index}>
                     <td className="mono">{index}</td>
                     <td className="num mono">{formatBytes(size) ?? "—"}</td>
@@ -662,6 +664,6 @@ export function DocAdminDialogs({ conn, request, safeMode, notify, onEffect, onC
     case "import":
       return <ImportModal conn={conn} db={request.db} coll={request.coll} notify={notify} onImported={(coll) => onEffect({ kind: "imported", db: request.db, coll })} onClose={onClose} />;
     case "export":
-      return <ExportModal ns={{ conn, db: request.db, coll: request.coll }} source={{ kind: "find", filter: {}, projection: null, sort: null, limit: null }} notify={notify} onClose={onClose} />;
+      return <ExportModal ns={{ conn, db: request.db, coll: request.coll }} source={{ kind: "find", filter: new Map(), projection: null, sort: null, limit: null }} notify={notify} onClose={onClose} />;
   }
 }

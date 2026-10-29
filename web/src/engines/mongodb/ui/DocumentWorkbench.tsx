@@ -1,5 +1,5 @@
-// A collection tab (MONGODB.md §3.2, §6.2): sub-tabs 문서 | 집계 | 스키마 |
-// 검증 | 인덱스 | 실행 계획 with the collection's stats, the query bar (문서
+// A collection tab (MONGODB.md §3.2, §6.2, §8.1): sub-tabs 문서 | 집계 |
+// 스키마 | 검증 | 인덱스 | 실행 계획 | 변경 보기 with the collection's stats, the query bar (문서
 // and 실행 계획), the results toolbar (+ 문서, fold all, EJSON, copy page,
 // the ☰ / {} / ⊞ switch), the documents in the chosen view and the pager.
 // What the tab shows (sub-tab, query, view, page, drill path) is remembered
@@ -10,37 +10,41 @@ import { writeClipboard } from "../../../clipboard";
 import { ContextMenu } from "../../../components/ContextMenu";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { isAppServerDown } from "../../../errorHelp";
-import { ChevronDownIcon, CopyIcon, DownloadIcon, PlusIcon, RefreshIcon } from "../../../components/icons";
+import { ChevronDownIcon, CodeIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { store } from "../../../store";
 import { collStats, count as countDocs, find, insert, isAbort, remove, type CollStats, type Namespace } from "../api";
-import { ObjectId, toEJSON, type BsonDocument, type BsonValue } from "../bson";
+import { ObjectId, bsonDoc, stringifyJson, toEJSON, type BsonDocument, type BsonValue } from "../bson";
 import { sampleFields, type CompletionContext } from "../complete";
 import { toShell, toShellPretty } from "../format";
+import { idFilter } from "../guard";
 import type { AggDraft } from "../pipeline";
 import { AggregationPanel } from "./AggregationPanel";
+import { BulkModal, type BulkMode } from "./BulkModal";
 import { CardView } from "./CardView";
 import { ConfirmModal, ConflictModal, type ConfirmRequest } from "./DocModals";
 import { DocTableView } from "./DocTableView";
 import { ExplainPanel } from "./ExplainPanel";
+import { CodeExportModal } from "./CodeExportModal";
 import { ExportModal } from "./ExportModal";
 import { CollapseIcon, ExpandIcon } from "./icons";
 import { IndexesPanel } from "./IndexesPanel";
 import { InsertDocModal, templateDoc } from "./InsertDocModal";
 import { JsonView } from "./JsonView";
-import { EMPTY_QUERY, QueryBar, parseQuery, recordQuery, withFilterValue, type QueryError, type QueryText } from "./QueryBar";
+import { EMPTY_QUERY, QueryBar, normalizeQuery, parseQuery, recordQuery, withFilterValue, type QueryError, type QueryText } from "./QueryBar";
 import { SchemaPanel } from "./SchemaPanel";
 import type { DocHost, DocQuery, IndexCreateRequest } from "./types";
 import { useDocEdits } from "./useDocEdits";
 import { ValidationPanel } from "./ValidationPanel";
+import { ChangeStreamPanel } from "./ChangeStreamPanel";
 import { ViewSwitch, viewForKey, type DocView } from "./ViewSwitch";
 import { OpenValidationContext, asError } from "./writeErrors";
 import "../mongodb.css";
 
-export type DocSubTab = "docs" | "agg" | "schema" | "validation" | "indexes" | "explain";
+export type DocSubTab = "docs" | "agg" | "schema" | "validation" | "indexes" | "explain" | "changes";
 
 // What a collection tab keeps across a page reload.
 export interface DocTabState {
@@ -57,6 +61,7 @@ const SUBTABS: { id: DocSubTab; label: string }[] = [
   { id: "validation", label: "검증" },
   { id: "indexes", label: "인덱스" },
   { id: "explain", label: "실행 계획" },
+  { id: "changes", label: "변경 보기" },
 ];
 
 const PAGE_SIZES = [10, 20, 50, 100];
@@ -136,11 +141,11 @@ function idSortDirection(sort: BsonDocument | null): 1 | -1 | null {
   if (sort === null) {
     return null;
   }
-  const keys = Object.keys(sort);
-  if (keys.length !== 1 || keys[0] !== "_id") {
+  const id = sort.get("_id");
+  if (sort.size !== 1 || id === undefined) {
     return null;
   }
-  const text = toShell(sort._id);
+  const text = toShell(id);
   return text === "1" ? 1 : text === "-1" ? -1 : null;
 }
 
@@ -170,12 +175,13 @@ export function DocumentWorkbench({
   const ns: Namespace = useMemo(() => ({ conn, db, coll }), [conn, db, coll]);
   const nsText = `${db}.${coll}`;
   const remembered = memory.get(tabKey);
-  // A view has neither indexes nor a validation rule: a stored 인덱스 or 검증 sub-tab falls back to 문서.
+  // A view has neither indexes, a validation rule nor a change stream: a
+  // stored 인덱스, 검증 or 변경 보기 sub-tab falls back to 문서.
   const storedSub = remembered?.sub ?? persisted?.sub ?? "docs";
-  const [sub, setSub] = useState<DocSubTab>(readOnly && (storedSub === "validation" || storedSub === "indexes") ? "docs" : storedSub);
-  const [query, setQuery] = useState<QueryText>(remembered?.query ?? persisted?.query ?? EMPTY_QUERY);
+  const [sub, setSub] = useState<DocSubTab>(readOnly && (storedSub === "validation" || storedSub === "indexes" || storedSub === "changes") ? "docs" : storedSub);
+  const [query, setQuery] = useState<QueryText>(remembered?.query ?? normalizeQuery(persisted?.query));
   const [optsOpen, setOptsOpen] = useState(remembered?.optsOpen ?? false);
-  const [applied, setApplied] = useState<QueryText>(remembered?.applied ?? persisted?.applied ?? EMPTY_QUERY);
+  const [applied, setApplied] = useState<QueryText>(remembered?.applied ?? normalizeQuery(persisted?.applied));
   const [view, setView] = useState<DocView>(remembered?.view ?? persisted?.view ?? "cards");
   const [page, setPage] = useState(remembered?.page ?? 0);
   const [pageSize, setPageSize] = useState(remembered?.pageSize ?? 20);
@@ -209,6 +215,9 @@ export function DocumentWorkbench({
   const insertDraftRef = useRef<string | null>(null);
   const [confirm, setConfirm] = useState<{ request: ConfirmRequest; resolve(ok: boolean): void } | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  // 코드로: the query as it was when the dialog opened.
+  const [codeQuery, setCodeQuery] = useState<DocQuery | null>(null);
+  const [bulk, setBulk] = useState<BulkMode | null>(null);
 
   useEffect(() => {
     memory.set(tabKey, { sub, query, optsOpen, applied, view, page, pageSize, path, canonical });
@@ -290,7 +299,7 @@ export function DocumentWorkbench({
     let filter = q.filter;
     let skip = q.skip + start;
     if (direction !== null && q.skip === 0 && anchor !== null && anchor.key === `${queryKey}|${pageSize}` && anchor.page === page - 1) {
-      filter = { $and: [q.filter, { _id: { [direction > 0 ? "$gt" : "$lt"]: anchor.lastId } }] };
+      filter = bsonDoc({ $and: [q.filter, bsonDoc({ _id: bsonDoc({ [direction > 0 ? "$gt" : "$lt"]: anchor.lastId }) })] });
       skip = 0;
     }
     setLoading(true);
@@ -300,12 +309,14 @@ export function DocumentWorkbench({
       setLoading(false);
       return;
     }
-    find(ns, { filter, projection: q.projection, sort: q.sort, skip, limit, maxTimeMS }, controller.signal).then(
+    // The query's own maxTimeMS (옵션) replaces the settings' timeout.
+    find(ns, { filter, projection: q.projection, sort: q.sort, skip, limit, maxTimeMS: q.options?.maxTimeMS ?? maxTimeMS, collation: q.options?.collation, hint: q.options?.hint }, controller.signal).then(
       (batch) => {
         setResult({ docs: batch.docs, elapsedMs: batch.elapsedMs, start });
         setLoading(false);
         const last = batch.docs[batch.docs.length - 1];
-        anchorRef.current = last && last._id !== undefined ? { key: `${queryKey}|${pageSize}`, page, lastId: last._id } : null;
+        const lastId = last?.get("_id");
+        anchorRef.current = lastId !== undefined ? { key: `${queryKey}|${pageSize}`, page, lastId } : null;
       },
       (error: unknown) => {
         if (isAbort(error)) {
@@ -325,7 +336,7 @@ export function DocumentWorkbench({
     }
     const controller = new AbortController();
     setTotal(null);
-    countDocs(ns, appliedQuery.filter, controller.signal).then(
+    countDocs(ns, appliedQuery.filter, controller.signal, appliedQuery.options).then(
       (r) => setTotal(r),
       (error: unknown) => {
         if (!isAbort(error)) {
@@ -342,8 +353,8 @@ export function DocumentWorkbench({
     if (appliedQuery === null) {
       return;
     }
-    const filter = Object.keys(appliedQuery.filter).length === 0 ? { _id: { $exists: true } } : appliedQuery.filter;
-    countDocs(ns, filter).then(
+    const filter = appliedQuery.filter.size === 0 ? bsonDoc({ _id: bsonDoc({ $exists: true }) }) : appliedQuery.filter;
+    countDocs(ns, filter, undefined, appliedQuery.options).then(
       (r) => {
         setTotal({ count: r.count, exact: r.count !== null });
         if (r.count !== null) {
@@ -369,7 +380,7 @@ export function DocumentWorkbench({
       }
       setQueryError(null);
       recordQuery(nsText, next);
-      if (["projection", "sort", "skip", "limit"].some((k) => next[k as keyof QueryText].trim() !== "")) {
+      if (["projection", "sort", "skip", "limit", "locale", "strength", "hint", "maxTimeMS"].some((k) => next[k as keyof QueryText].trim() !== "")) {
         setOptsOpen(true);
       }
       if (sub === "explain") {
@@ -392,10 +403,10 @@ export function DocumentWorkbench({
   // The stored document for a projected row (edits that replace it must
   // start from all its fields).
   const fullDoc = async (doc: BsonDocument): Promise<BsonDocument> => {
-    if (appliedQuery === null || appliedQuery.projection === null || doc._id === undefined) {
+    if (appliedQuery === null || appliedQuery.projection === null || !doc.has("_id")) {
       return doc;
     }
-    return (await find(ns, { filter: { _id: doc._id }, limit: 1 })).docs[0] ?? doc;
+    return (await find(ns, { filter: idFilter(doc), limit: 1 })).docs[0] ?? doc;
   };
 
   const openEditor = async (mode: "insert" | "clone" | "replace", doc: BsonDocument | null) => {
@@ -407,7 +418,7 @@ export function DocumentWorkbench({
         return;
       }
       const full = await fullDoc(doc);
-      const shown = mode === "clone" ? Object.fromEntries(Object.entries(full).filter(([k]) => k !== "_id")) : full;
+      const shown = mode === "clone" ? new Map([...full].filter(([k]) => k !== "_id")) : full;
       setEditor({ mode, doc: full, initial: toShellPretty(shown) });
     } catch (error) {
       notifyError(error, { context: "document" });
@@ -444,21 +455,22 @@ export function DocumentWorkbench({
   };
 
   const deleteDoc = async (doc: BsonDocument) => {
-    if (doc._id === undefined) {
+    const id = doc.get("_id");
+    if (id === undefined) {
       return;
     }
-    const idText = doc._id instanceof ObjectId ? doc._id.hex : toShell(doc._id);
+    const idText = id instanceof ObjectId ? id.hex : toShell(id);
     const ok = await host.confirm({
       title: t("문서 삭제"),
       message: t("이 문서를 삭제할까요?\n_id: {id}\n되돌릴 수 없습니다.", { id: idText }),
-      command: `db.${coll}.deleteOne({ _id: ${toShell(doc._id)} })`,
+      command: `db.${coll}.deleteOne({ _id: ${toShell(id)} })`,
       okLabel: t("삭제"),
     });
     if (!ok) {
       return;
     }
     try {
-      const deleted = await remove(ns, { _id: doc._id }, false);
+      const deleted = await remove(ns, idFilter(doc), false);
       notify(deleted > 0 ? t("문서를 삭제했습니다") : t("다른 곳에서 삭제되었습니다"));
       reload();
     } catch (error) {
@@ -468,7 +480,7 @@ export function DocumentWorkbench({
 
   const copyPage = () => {
     const docs = result?.docs ?? [];
-    void writeClipboard(canonical ? JSON.stringify(docs.map(toEJSON), null, 2) : toShellPretty(docs), notify);
+    void writeClipboard(canonical ? stringifyJson(docs.map(toEJSON), 2) : toShellPretty(docs), notify);
     notify(t("문서 {count}개를 복사했습니다", { count: docs.length }));
   };
 
@@ -630,7 +642,7 @@ export function DocumentWorkbench({
     <div className="mg-root mg-coll">
       <div className="mg-subbar">
         <div className="mg-subtabs" role="tablist">
-          {SUBTABS.filter((s) => !(readOnly && (s.id === "indexes" || s.id === "validation"))).map((s) => (
+          {SUBTABS.filter((s) => !(readOnly && (s.id === "indexes" || s.id === "validation" || s.id === "changes"))).map((s) => (
             <button key={s.id} type="button" role="tab" aria-selected={sub === s.id} className={sub === s.id ? "active" : undefined} onClick={() => setSub(s.id)}>
               {t(s.label)}
             </button>
@@ -642,6 +654,7 @@ export function DocumentWorkbench({
       {sub === "docs" || sub === "explain" ? (
         <QueryBar
           ns={nsText}
+          namespace={ns}
           query={query}
           onChange={setQuery}
           optsOpen={optsOpen}
@@ -700,10 +713,32 @@ export function DocumentWorkbench({
                   </>
                 ) : null}
                 {dirtyCount > 0 && view === "cards" ? <span className="mg-dirty-note">{t("저장하지 않은 문서 {count}개", { count: dirtyCount })}</span> : null}
+                <button
+                  type="button"
+                  className="footer-button"
+                  title={t("이 쿼리를 드라이버 코드로 (Python·Node.js·Java·C#·Go·Rust·PHP·Ruby·mongosh)")}
+                  disabled={!liveQuery.ok && appliedQuery === null}
+                  onClick={() => setCodeQuery(liveQuery.ok ? liveQuery.value : appliedQuery)}
+                >
+                  <CodeIcon size={11} />
+                  <span className="footer-label">{t("코드로")}</span>
+                </button>
                 <button type="button" className="footer-button" title={t("이 쿼리의 결과를 파일로 내보내기 (JSON·NDJSON·CSV)")} disabled={appliedQuery === null} onClick={() => setExportOpen(true)}>
                   <DownloadIcon size={11} />
                   <span className="footer-label">{t("내보내기")}</span>
                 </button>
+                {editable ? (
+                  <>
+                    <button type="button" className="footer-button" title={t("지금 필터에 맞는 문서를 한꺼번에 고치기 (updateMany)")} onClick={() => setBulk("update")}>
+                      <PencilIcon size={10} />
+                      <span className="footer-label">{t("일괄 수정")}</span>
+                    </button>
+                    <button type="button" className="footer-button" title={t("지금 필터에 맞는 문서를 한꺼번에 지우기 (deleteMany)")} onClick={() => setBulk("delete")}>
+                      <TrashIcon size={10} />
+                      <span className="footer-label">{t("일괄 삭제")}</span>
+                    </button>
+                  </>
+                ) : null}
               </div>
               <div className="footer-end">
                 <ViewSwitch view={view} onChange={switchView} />
@@ -826,6 +861,7 @@ export function DocumentWorkbench({
             />
           </div>
         ) : null}
+        {sub === "changes" ? <ChangeStreamPanel conn={conn} db={db} coll={coll} sessionKey={tabKey} notify={notify} /> : null}
       </div>
       {sizeMenu !== null ? (
         <ContextMenu
@@ -846,7 +882,7 @@ export function DocumentWorkbench({
       {editor !== null ? (
         <InsertDocModal
           title={editor.mode === "insert" ? t("문서 추가") : editor.mode === "clone" ? t("문서 복제") : t("문서 편집")}
-          path={editor.mode === "replace" && editor.doc._id !== undefined ? `${nsText} · _id ${toShell(editor.doc._id)}` : nsText}
+          path={editor.mode === "replace" && editor.doc.has("_id") ? `${nsText} · _id ${toShell(editor.doc.get("_id") ?? null)}` : nsText}
           initial={editor.initial}
           okLabel={editor.mode === "replace" ? t("저장 (replaceOne)") : t("추가 (insertOne)")}
           hint={editor.mode === "replace" ? t("_id는 바꿀 수 없습니다 · ⌘↩ 저장") : t("_id는 비워 두면 자동으로 만듭니다 · ⌘↩ 추가")}
@@ -868,9 +904,35 @@ export function DocumentWorkbench({
       {exportOpen && appliedQuery !== null ? (
         <ExportModal
           ns={ns}
-          source={{ kind: "find", filter: appliedQuery.filter, projection: appliedQuery.projection, sort: appliedQuery.sort, skip: appliedQuery.skip, limit: appliedQuery.limit > 0 ? appliedQuery.limit : null }}
+          source={{ kind: "find", filter: appliedQuery.filter, projection: appliedQuery.projection, sort: appliedQuery.sort, skip: appliedQuery.skip, limit: appliedQuery.limit > 0 ? appliedQuery.limit : null, options: appliedQuery.options }}
           notify={notify}
           onClose={() => setExportOpen(false)}
+        />
+      ) : null}
+      {codeQuery !== null ? (
+        <CodeExportModal
+          ns={ns}
+          source={{ kind: "find", filter: codeQuery.filter, projection: codeQuery.projection, sort: codeQuery.sort, skip: codeQuery.skip, limit: codeQuery.limit }}
+          options={codeQuery.options}
+          onOpenShell={onOpenShell === undefined ? undefined : (code) => {
+            onOpenShell(db, code);
+            setCodeQuery(null);
+          }}
+          notify={notify}
+          onClose={() => setCodeQuery(null)}
+        />
+      ) : null}
+      {bulk !== null ? (
+        <BulkModal
+          ns={ns}
+          mode={bulk}
+          filterText={query.filter}
+          options={liveQuery.ok ? liveQuery.value.options : appliedQuery?.options}
+          safeMode={safeMode}
+          completion={completion}
+          notify={notify}
+          onDone={reload}
+          onClose={() => setBulk(null)}
         />
       ) : null}
       {edits.conflict !== null ? <ConflictModal conflict={edits.conflict} /> : null}

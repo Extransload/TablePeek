@@ -66,12 +66,17 @@ export interface AppSettings {
   csvEncoding: CsvEncoding;
   // Rows a query run fetches at most.
   maxRows: number;
+  // Seconds a MongoDB query (its maxTimeMS) or a mongosh script may run;
+  // 0 for no limit.
+  queryTimeout: number;
   keymap: Keymap;
   // The keymap defaults this was saved under (see KEYMAP_VERSION).
   keymapVersion: number;
 }
 
 export const MAX_ROWS_LIMIT = 500000;
+// A day: the longest query time limit Settings takes.
+export const MAX_QUERY_TIMEOUT = 86400;
 export const EDITOR_FONT_MIN = 10;
 export const EDITOR_FONT_MAX = 24;
 export const GRID_FONT_MIN = 10;
@@ -108,6 +113,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   csvHeader: true,
   csvEncoding: "utf-8",
   maxRows: 10000,
+  queryTimeout: 60,
   keymap: normalizeKeymap(null),
   keymapVersion: KEYMAP_VERSION,
 };
@@ -165,6 +171,10 @@ function readSettings(): AppSettings {
         typeof parsed.maxRows === "number" && Number.isFinite(parsed.maxRows)
           ? Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(parsed.maxRows)))
           : DEFAULT_SETTINGS.maxRows,
+      queryTimeout:
+        typeof parsed.queryTimeout === "number" && Number.isFinite(parsed.queryTimeout)
+          ? Math.min(MAX_QUERY_TIMEOUT, Math.max(0, Math.trunc(parsed.queryTimeout)))
+          : DEFAULT_SETTINGS.queryTimeout,
       // Settings saved before keymapVersion existed count as version 1.
       keymap: normalizeKeymap(parsed.keymap, typeof parsed.keymapVersion === "number" ? parsed.keymapVersion : 1),
       keymapVersion: KEYMAP_VERSION,

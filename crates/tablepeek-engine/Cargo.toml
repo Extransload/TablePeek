@@ -7,7 +7,7 @@ edition = "2021"
 async-trait = "0.1"
 arrow = { version = "60.0.0", features = ["ipc"] }
 chrono = "0.4.45"
-futures-util = "=0.3.32"
+futures-util = { version = "=0.3.32", features = ["io"] }
 fallible-iterator = "0.2"
 mysql_async = { version = "0.37.1", features = ["default-rustls-ring"] }
 tablepeek-types = { path = "../tablepeek-types" }
@@ -19,10 +19,30 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tiberius = { version = "0.13", default-features = false, features = ["rustls", "chrono", "tds73"] }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
 postgres-protocol = "0.6.12"
 tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 tokio-postgres-rustls = { version = "0.14", features = ["native-certs", "ring"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 uuid.workspace = true
-mongodb = "3"
+# MONGODB-AWS, OIDC machine logins on Azure and GCP, and a SOCKS5 hop so a
+# tunnelled replica set keeps its members' real names (TLS checks them).
+mongodb = { version = "3", features = ["aws-auth", "azure-oidc", "gcp-oidc", "socks5-proxy"] }
+# SRV and TXT records of a tunnelled `mongodb+srv://` name, read here
+# rather than by the driver (the same version it uses).
+hickory-resolver = "0.26"
+# OIDC browser logins: the IdP's discovery document and token endpoint,
+# trusting the system's roots as well (a company CA; SSL_CERT_FILE too).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
+sha2 = "0.10"
+base64 = "0.22"
+
+# Kerberos (GSSAPI) links the system's GSSAPI library: always on macOS
+# (GSS.framework); elsewhere only with `--features kerberos`, which needs
+# the Kerberos headers (libkrb5-dev) and libclang to build and the
+# library at run time.
+[target.'cfg(target_os = "macos")'.dependencies]
+mongodb = { version = "3", features = ["gssapi-auth"] }
+
+[features]
+kerberos = ["mongodb/gssapi-auth"]

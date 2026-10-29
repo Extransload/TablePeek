@@ -1,0 +1,141 @@
+/* ---- 일괄 수정·삭제 ---- */
+
+.modal.mg-bulk-modal {
+  width: min(900px, 96vw);
+  max-width: 96vw;
+}
+.mg-bulk-editor {
+  height: 120px;
+  flex: none;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mg-bulk-filter {
+  height: 64px;
+}
+.mg-bulk-headrow,
+.mg-bulk-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mg-bulk-count-v {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mg-bulk-count-v.danger {
+  color: var(--error);
+}
+.mg-bulk-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.mg-bulk-check select.mg-input {
+  height: 24px;
+}
+.mg-bulk-note {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line-soft));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg));
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mg-bulk-outcome {
+  font-weight: 600;
+}
+/* JsonView fills its positioned parent and scrolls itself. */
+.mg-bulk-docs {
+  position: relative;
+  flex: none;
+  height: 320px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* 바뀌기 전 · 뒤 */
+.mg-bulk-samples {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: none;
+}
+.mg-bulk-sample {
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mg-bulk-sample.unchanged {
+  opacity: 0.75;
+}
+.mg-bulk-sample-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--hover-fill);
+  font-size: 12px;
+}
+.mg-bulk-changes {
+  color: var(--warn);
+  font-size: 11.5px;
+}
+.mg-bulk-diff {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.6fr) 1fr 1fr;
+  font-size: 12px;
+}
+.mg-bulk-row {
+  display: contents;
+}
+.mg-bulk-row > span {
+  min-width: 0;
+  padding: 2px 8px;
+  border-top: 1px solid var(--line-soft);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mg-bulk-row.head > span {
+  color: var(--muted);
+  font-size: 11px;
+  border-top: none;
+}
+.mg-bulk-row.same > span {
+  color: var(--muted);
+}
+.mg-bulk-row.changed > span {
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg));
+}
+.mg-bulk-row.changed > .mg-bulk-key {
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+.mg-bulk-row.added > span {
+  background: color-mix(in srgb, var(--ok) 11%, var(--bg));
+}
+.mg-bulk-row.added > .mg-bulk-key {
+  box-shadow: inset 2px 0 0 var(--ok);
+}
+.mg-bulk-row.removed > span {
+  background: color-mix(in srgb, var(--error) 10%, var(--bg));
+}
+.mg-bulk-row.removed > .mg-bulk-key {
+  box-shadow: inset 2px 0 0 var(--error);
+  text-decoration: line-through;
+}
+.mg-bulk-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mg-bulk-missing {
+  color: var(--faint);
+}

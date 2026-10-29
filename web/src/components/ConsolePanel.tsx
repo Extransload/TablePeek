@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { t } from "../i18n";
+import { t, tServer } from "../i18n";
 import type { ConsoleEntry } from "../net/socket";
 import { store } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
@@ -53,7 +53,8 @@ const ConsoleLine = memo(function ConsoleLine({
     <div className="console-entry">
       <span className={highlight ? "sx-comment" : undefined}>{stamp(entry.atMs)}</span>
       {"\n"}
-      <SqlText sql={entry.sql} highlight={highlight} />
+      {/* Code as sent; the server's own comments ("// 미리보기: …") in the UI language. */}
+      <SqlText sql={tServer(entry.sql)} highlight={highlight} />
     </div>
   );
 });

@@ -168,3 +168,29 @@ textarea.mg-import-paste {
   align-items: center;
   gap: 5px;
 }
+
+/* 코드로 내보내기 (CodeExportModal) */
+.mg-code-modal {
+  width: min(860px, 96vw);
+}
+.mg-code-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.mg-code-head .mg-input {
+  width: 200px;
+}
+.mg-code-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.mg-code-modal pre.mg-code-text {
+  max-height: 56vh;
+  min-height: 120px;
+  overflow: auto;
+  white-space: pre;
+  tab-size: 4;
+}

@@ -6,7 +6,9 @@ import {
   CloseIcon,
   CodeIcon,
   DiagramIcon,
+  EyeIcon,
   FileIcon,
+  FolderIcon,
   GaugeIcon,
   ListIcon,
   ServerIcon,
@@ -39,6 +41,10 @@ function tabIcon(tab: WorkbenchTab): ReactElement {
       return <CodeIcon {...props} />;
     case "perf":
       return <GaugeIcon {...props} />;
+    case "watch":
+      return <EyeIcon {...props} />;
+    case "gridfs":
+      return <FolderIcon {...props} />;
   }
 }
 
@@ -64,6 +70,10 @@ function tabKindLabel(tab: WorkbenchTab): string {
       return "mongosh";
     case "perf":
       return t("성능");
+    case "watch":
+      return t("변경 보기");
+    case "gridfs":
+      return "GridFS";
   }
 }
 

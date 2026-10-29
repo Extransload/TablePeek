@@ -87,8 +87,53 @@
             "sets": {
               "tls": true
             }
+          },
+          {
+            "value": "aws",
+            "label": "AWS IAM"
+          },
+          {
+            "value": "ldap",
+            "label": "LDAP"
+          },
+          {
+            "value": "kerberos",
+            "label": "Kerberos"
+          },
+          {
+            "value": "oidc",
+            "label": "OIDC"
           }
         ]
+      },
+      {
+        "key": "oidc_flow",
+        "type": "select",
+        "label": "OIDC 방식",
+        "default": "human",
+        "options": [
+          {
+            "value": "human",
+            "label": "브라우저 로그인"
+          },
+          {
+            "value": "azure",
+            "label": "Azure 관리 ID"
+          },
+          {
+            "value": "gcp",
+            "label": "GCP 서비스 계정"
+          },
+          {
+            "value": "k8s",
+            "label": "Kubernetes 서비스 계정"
+          }
+        ],
+        "visible_when": {
+          "auth": [
+            "oidc"
+          ]
+        }
       },
       {
         "key": "user",
@@ -97,9 +142,52 @@
         "required_to_connect": true,
         "visible_when": {
           "auth": [
-            "password"
+            "password",
+            "aws",
+            "ldap",
+            "kerberos",
+            "oidc"
           ]
-        }
+        },
+        "variants": [
+          {
+            "when": {
+              "auth": [
+                "aws"
+              ]
+            },
+            "label": "액세스 키 ID",
+            "placeholder": "(선택) 비우면 환경 변수·프로필·역할의 자격 증명",
+            "required_to_connect": false
+          },
+          {
+            "when": {
+              "auth": [
+                "ldap"
+              ]
+            },
+            "label": "LDAP 사용자"
+          },
+          {
+            "when": {
+              "auth": [
+                "kerberos"
+              ]
+            },
+            "label": "사용자 주체",
+            "placeholder": "user@EXAMPLE.COM (kinit으로 받은 티켓을 씀)"
+          },
+          {
+            "when": {
+              "auth": [
+                "oidc"
+              ]
+            },
+            "label": "사용자 이름",
+            "placeholder": "(선택) 로그인 힌트, Azure는 관리 ID의 클라이언트 ID",
+            "required_to_connect": false
+          }
+        ]
       },
       {
         "key": "password",
@@ -107,7 +195,113 @@
         "label": "비밀번호",
         "visible_when": {
           "auth": [
-            "password"
+            "password",
+            "aws",
+            "ldap"
+          ]
+        },
+        "variants": [
+          {
+            "when": {
+              "auth": [
+                "aws"
+              ]
+            },
+            "label": "비밀 액세스 키",
+            "placeholder": "액세스 키 ID를 넣었을 때만"
+          },
+          {
+            "when": {
+              "auth": [
+                "ldap"
+              ]
+            },
+            "label": "LDAP 비밀번호"
+          }
+        ]
+      },
+      {
+        "key": "aws_session_token",
+        "type": "secret",
+        "label": "세션 토큰",
+        "placeholder": "(선택) 임시 자격 증명일 때",
+        "visible_when": {
+          "auth": [
+            "aws"
+          ]
+        }
+      },
+      {
+        "key": "kerberos_service_name",
+        "type": "text",
+        "label": "서비스 이름",
+        "default": "mongodb",
+        "visible_when": {
+          "auth": [
+            "kerberos"
+          ]
+        }
+      },
+      {
+        "key": "kerberos_service_realm",
+        "type": "text",
+        "label": "서비스 영역",
+        "placeholder": "(선택) 사용자 주체의 영역과 다를 때",
+        "visible_when": {
+          "auth": [
+            "kerberos"
+          ]
+        }
+      },
+      {
+        "key": "kerberos_service_host",
+        "type": "text",
+        "label": "서비스 호스트",
+        "placeholder": "(선택) 서비스 주체의 호스트, 접속 주소와 다를 때",
+        "visible_when": {
+          "auth": [
+            "kerberos"
+          ]
+        }
+      },
+      {
+        "key": "kerberos_canonicalize",
+        "type": "select",
+        "label": "호스트 이름 정규화",
+        "default": "none",
+        "options": [
+          {
+            "value": "none",
+            "label": "안 함"
+          },
+          {
+            "value": "forward",
+            "label": "정방향 (CNAME)"
+          },
+          {
+            "value": "forwardAndReverse",
+            "label": "정방향·역방향"
+          }
+        ],
+        "visible_when": {
+          "auth": [
+            "kerberos"
+          ]
+        }
+      },
+      {
+        "key": "oidc_token_resource",
+        "type": "text",
+        "label": "토큰 리소스",
+        "placeholder": "토큰의 audience (예: api://…)",
+        "required_to_connect": true,
+        "visible_when": {
+          "auth": [
+            "oidc"
+          ],
+          "oidc_flow": [
+            "azure",
+            "gcp"
           ]
         }
       },

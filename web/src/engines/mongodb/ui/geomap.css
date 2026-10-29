@@ -1,0 +1,159 @@
+/* The location map of a 스키마 field (GeoMap.tsx). */
+
+.mg-geo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mg-geo-head,
+.mg-geo-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+.mg-geo-head .mg-viz-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-geo-tools {
+  margin: 0;
+}
+.mg-geo-tools button {
+  height: var(--control-h-sm);
+  padding: 0 9px;
+}
+.mg-geo-map {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg);
+  touch-action: none;
+  user-select: none;
+}
+.mg-geo-map svg {
+  display: block;
+}
+.mg-geo-map.tool-pan svg {
+  cursor: grab;
+}
+.mg-geo-map.tool-pan svg:active {
+  cursor: grabbing;
+}
+.mg-geo-map.tool-box svg,
+.mg-geo-map.tool-circle svg {
+  cursor: crosshair;
+}
+.mg-geo-sea {
+  fill: color-mix(in srgb, var(--accent) 7%, var(--panel));
+}
+.mg-geo-grid {
+  fill: none;
+  stroke: var(--line-soft);
+  stroke-width: 1;
+}
+.mg-geo-land {
+  fill: color-mix(in srgb, var(--muted) 22%, var(--panel));
+  stroke: color-mix(in srgb, var(--muted) 45%, var(--panel));
+  stroke-width: 0.8;
+}
+.mg-geo-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+.mg-geo-line.area {
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.mg-geo-line:hover {
+  stroke-width: 2.6;
+}
+.mg-geo-dot {
+  fill: var(--accent);
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+.mg-geo-dot.legacy {
+  fill: var(--warn);
+}
+.mg-geo-dot:hover {
+  stroke: var(--ink);
+}
+.mg-geo-cluster {
+  cursor: zoom-in;
+}
+.mg-geo-cluster circle {
+  fill: color-mix(in srgb, var(--accent) 75%, transparent);
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+.mg-geo-cluster:hover circle {
+  fill: var(--accent);
+}
+.mg-geo-cluster text {
+  fill: #fff;
+  font: 600 10.5px var(--ui);
+  text-anchor: middle;
+  pointer-events: none;
+}
+.mg-geo-dot.out,
+.mg-geo-cluster.out,
+.mg-geo-line.out {
+  opacity: 0.3;
+}
+.mg-geo-region {
+  fill: color-mix(in srgb, var(--accent) 12%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+  pointer-events: none;
+}
+.mg-geo-center {
+  fill: var(--accent);
+  pointer-events: none;
+}
+.mg-geo-tip {
+  position: absolute;
+  z-index: 2;
+  max-width: 260px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+  width: max-content;
+  max-width: 260px;
+  pointer-events: none;
+  transform: translate(12px, 12px);
+}
+.mg-geo-tip.left {
+  transform: translate(calc(-100% - 12px), 12px);
+}
+.mg-geo-tip-item + .mg-geo-tip-item,
+.mg-geo-tip-item + .panel-dim {
+  margin-top: 4px;
+}
+.mg-geo-tip-item .mono {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.mg-geo-foot {
+  flex-wrap: wrap;
+  min-height: var(--control-h-sm);
+}
+.mg-geo-sum {
+  color: var(--ink);
+}
+.mg-geo-filter {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

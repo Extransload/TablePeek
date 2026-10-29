@@ -90,6 +90,17 @@ export interface ConnectionField {
   // A toggle's text beside its switch.
   description?: string;
   placeholder?: string;
+  // What changes while a condition holds (the user field reads "액세스 키
+  // ID" for AWS); the first variant whose condition holds applies.
+  variants?: FieldVariant[];
+}
+
+export interface FieldVariant {
+  when: FieldCondition;
+  label?: string;
+  placeholder?: string;
+  description?: string;
+  required_to_connect?: boolean;
 }
 
 export interface ConnectionSpec {

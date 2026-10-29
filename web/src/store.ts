@@ -1245,10 +1245,70 @@ async function openDb(path: string | null): Promise<LiveConn> {
 }
 
 async function connect(input: ConnectInput): Promise<LiveConn> {
-  return api<LiveConn>("/api/connect", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  return watchOidcLogins(
+    api<LiveConn>("/api/connect", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+// A MongoDB OIDC browser login the server waits for: its provider's page.
+export interface OidcLogin {
+  id: string;
+  url: string;
+  issuer: string;
+}
+
+const oidcListeners = new Set<(logins: OidcLogin[]) => void>();
+let oidcWatchers = 0;
+
+// Calls `listener` with the browser logins waiting while a connect runs
+// (empty once none is); returns the unsubscribe.
+export function onOidcLogins(listener: (logins: OidcLogin[]) => void): () => void {
+  oidcListeners.add(listener);
+  return () => oidcListeners.delete(listener);
+}
+
+function emitOidcLogins(logins: OidcLogin[]): void {
+  for (const listener of oidcListeners) {
+    listener(logins);
+  }
+}
+
+// While `request` (a connect) is slower than a second, asks the server
+// every second for browser logins it is waiting on, so the page can send
+// the user to the provider.
+async function watchOidcLogins<T>(request: Promise<T>): Promise<T> {
+  let done = false;
+  oidcWatchers += 1;
+  void (async () => {
+    while (!done) {
+      // The lib target (ES2022) has no Promise.withResolvers.
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      if (done) {
+        break;
+      }
+      try {
+        emitOidcLogins(await api<OidcLogin[]>("/api/oidc/logins"));
+      } catch {
+        // The connect's own result says what went wrong.
+      }
+    }
+  })();
+  try {
+    return await request;
+  } finally {
+    done = true;
+    oidcWatchers -= 1;
+    if (oidcWatchers === 0) {
+      emitOidcLogins([]);
+    }
+  }
+}
+
+async function cancelOidcLogin(id: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/oidc/logins?id=${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 // Every engine the server can connect to, as it describes them.
@@ -1265,15 +1325,26 @@ export interface ConnectSecrets {
 
 // Secrets passed here are used for this connect only and never stored.
 async function connectSaved(id: string, secrets?: ConnectSecrets): Promise<LiveConn> {
-  return api<LiveConn>(`/api/connections/${encodeURIComponent(id)}/connect`, {
-    method: "POST",
-    ...(secrets !== undefined ? { body: JSON.stringify(secrets) } : {}),
-  });
+  return watchOidcLogins(
+    api<LiveConn>(`/api/connections/${encodeURIComponent(id)}/connect`, {
+      method: "POST",
+      ...(secrets !== undefined ? { body: JSON.stringify(secrets) } : {}),
+    }),
+  );
 }
 
 async function listConns(): Promise<ConnSummary[]> {
   const body = await api<{ conns: ConnSummary[] }>("/api/conns");
   return body.conns;
+}
+
+// The settings a live connection was opened with, secrets left out (the
+// saved profile, or the request for an unsaved one); null for a file or demo.
+async function connectionInfo(conn: string): Promise<{ driver: string; config: Record<string, unknown> } | null> {
+  const body = await api<{ driver: string | null; config: Record<string, unknown> | null }>(
+    `/api/connection-info?conn=${encodeURIComponent(conn)}`,
+  );
+  return body.driver === null || body.config === null ? null : { driver: body.driver, config: body.config };
 }
 
 // The font families installed on this machine (Settings lists them all).
@@ -1384,10 +1455,13 @@ async function testConnection(
   input: ConnectInput,
   savedId?: string,
 ): Promise<ConnectionTestResult> {
-  return api<ConnectionTestResult>("/api/connections/test", {
-    method: "POST",
-    body: JSON.stringify({ connect: input, saved_id: savedId }),
-  });
+  // A test of an OIDC browser login waits for the provider's page too.
+  return watchOidcLogins(
+    api<ConnectionTestResult>("/api/connections/test", {
+      method: "POST",
+      body: JSON.stringify({ connect: input, saved_id: savedId }),
+    }),
+  );
 }
 
 async function deleteConnection(id: string): Promise<void> {
@@ -1756,7 +1830,9 @@ export const store = {
   connect,
   listEngines,
   connectSaved,
+  cancelOidcLogin,
   listConns,
+  connectionInfo,
   closeConn,
   listFonts,
   listConnections,

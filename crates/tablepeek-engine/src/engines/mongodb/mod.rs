@@ -4,6 +4,11 @@
 //! (see `shell`).
 
 mod docs;
+mod gridfs;
+#[cfg(test)]
+mod live_conn;
+pub mod oidc;
+mod route;
 mod shell;
 
 use std::path::PathBuf;
@@ -16,7 +21,7 @@ use futures_util::TryStreamExt;
 use mongodb::bson::{doc, Bson, Document};
 use mongodb::options::{
     AuthMechanism, ClientOptions, ReadPreference, ReadPreferenceOptions, SelectionCriteria,
-    ServerAddress, Tls, TlsOptions,
+    ServerAddress, Socks5Proxy, Tls, TlsOptions,
 };
 use mongodb::Client;
 use serde::Deserialize;
@@ -28,7 +33,7 @@ use tablepeek_types::{
 use crate::driver::{CancelRequest, DocumentDriver, Driver};
 use crate::registry::{
     check_host, parse_descriptor, percent_decode, redact_uri_passwords, typed_config,
-    ConfigProblem, DriverFactory, EngineDescriptor, NetRoute,
+    ConfigProblem, DriverFactory, EngineDescriptor, NetRoute, TunnelTarget,
 };
 use crate::sql_log::SqlLog;
 use crate::EngineError;
@@ -53,12 +58,27 @@ struct Settings {
     uri: Option<String>,
     host: Option<String>,
     port: Option<u16>,
-    /// "none", "password" or "x509"; see `auth`.
+    /// "none", "password", "x509", "aws", "ldap", "kerberos" or "oidc";
+    /// see `auth`.
     auth: Option<String>,
+    /// The user; for AWS the access key id, for Kerberos the principal, for
+    /// OIDC a login hint (the client id of an Azure managed identity).
     user: Option<String>,
+    /// The password; for AWS the secret access key.
     password: Option<String>,
     auth_source: Option<String>,
     auth_mechanism: Option<String>,
+    aws_session_token: Option<String>,
+    kerberos_service_name: Option<String>,
+    kerberos_service_realm: Option<String>,
+    /// The host in the service principal (`mongodb/<host>`), when it is
+    /// not the address dialled (an IP, a tunnel, a load balancer).
+    kerberos_service_host: Option<String>,
+    /// "none", "forward" or "forwardAndReverse".
+    kerberos_canonicalize: Option<String>,
+    /// "human" (a browser login), "azure", "gcp" or "k8s".
+    oidc_flow: Option<String>,
+    oidc_token_resource: Option<String>,
     database: Option<String>,
     tls: Option<bool>,
     tls_ca_file: Option<String>,
@@ -84,50 +104,87 @@ enum Auth {
     Password,
     /// The client certificate, over TLS.
     X509,
+    /// MONGODB-AWS: an access key and secret (and session token), or
+    /// without a key the environment's credentials or role.
+    Aws,
+    /// PLAIN against the server's LDAP directory, in `$external`.
+    Ldap,
+    /// GSSAPI, with the ticket the system's Kerberos holds (`kinit`).
+    Kerberos,
+    /// MONGODB-OIDC: a browser login or the platform's workload identity.
+    Oidc,
 }
 
 impl Auth {
+    const ALL: [Auth; 7] = [
+        Auth::None,
+        Auth::Password,
+        Auth::X509,
+        Auth::Aws,
+        Auth::Ldap,
+        Auth::Kerberos,
+        Auth::Oidc,
+    ];
+
     fn name(self) -> &'static str {
         match self {
             Auth::None => "none",
             Auth::Password => "password",
             Auth::X509 => "x509",
+            Auth::Aws => "aws",
+            Auth::Ldap => "ldap",
+            Auth::Kerberos => "kerberos",
+            Auth::Oidc => "oidc",
         }
+    }
+
+    /// The choice a mechanism of its own stands for (PLAIN is how MongoDB
+    /// asks an LDAP directory).
+    fn of_mechanism(name: &str) -> Option<Auth> {
+        [
+            ("MONGODB-X509", Auth::X509),
+            ("MONGODB-AWS", Auth::Aws),
+            ("PLAIN", Auth::Ldap),
+            ("GSSAPI", Auth::Kerberos),
+            ("MONGODB-OIDC", Auth::Oidc),
+        ]
+        .into_iter()
+        .find(|(mechanism, _)| name.eq_ignore_ascii_case(mechanism))
+        .map(|(_, auth)| auth)
     }
 }
 
 /// The authentication `settings` ask for. Without an `auth` choice (a
 /// profile saved before the form had one, or a request that leaves it out)
-/// it is what the other settings imply: the X.509 mechanism, typed or in
-/// the connection string, means X.509; a user or password means a
+/// it is what the other settings imply: a mechanism with a choice of its
+/// own (X.509, AWS, PLAIN for LDAP, GSSAPI for Kerberos, OIDC), typed or in
+/// the connection string, means that choice; a user or password means a
 /// password; nothing means none.
 fn auth(settings: &Settings) -> Result<Auth, ConfigProblem> {
-    Ok(match given(&settings.auth) {
-        Some("none") => Auth::None,
-        Some("password") => Auth::Password,
-        Some("x509") => Auth::X509,
-        Some(other) => {
-            return Err(ConfigProblem::invalid(format!(
-                "지원하지 않는 인증 방식입니다: {other}"
-            )))
-        }
-        None => {
-            let uri = given(&settings.uri);
-            let mechanism = given(&settings.auth_mechanism)
-                .map(str::to_string)
-                .or_else(|| uri.and_then(|uri| uri_option(uri, "authMechanism")));
-            if mechanism.is_some_and(|name| name.eq_ignore_ascii_case("MONGODB-X509")) {
-                Auth::X509
-            } else if given(&settings.user).is_some()
-                || given(&settings.password).is_some()
-                || uri.and_then(uri_user).is_some()
-            {
-                Auth::Password
-            } else {
-                Auth::None
-            }
-        }
-    })
+    if let Some(name) = given(&settings.auth) {
+        return Auth::ALL
+            .into_iter()
+            .find(|auth| auth.name() == name)
+            .ok_or_else(|| {
+                ConfigProblem::invalid(format!("지원하지 않는 인증 방식입니다: {name}"))
+            });
+    }
+    let uri = given(&settings.uri);
+    let mechanism = given(&settings.auth_mechanism)
+        .map(str::to_string)
+        .or_else(|| uri.and_then(|uri| uri_option(uri, "authMechanism")));
+    Ok(
+        if let Some(auth) = mechanism.as_deref().and_then(Auth::of_mechanism) {
+            auth
+        } else if given(&settings.user).is_some()
+            || given(&settings.password).is_some()
+            || uri.and_then(uri_user).is_some()
+        {
+            Auth::Password
+        } else {
+            Auth::None
+        },
+    )
 }
 
 /// A host of a connection string and its port, if it names one.
@@ -184,13 +241,43 @@ fn settings(descriptor: &EngineDescriptor, config: &ConnConfig) -> Result<Settin
     }
     let auth = auth(&settings)?;
     if let Some(mechanism) = given(&settings.auth_mechanism) {
-        let parsed = AuthMechanism::from_str(mechanism).map_err(|_| {
-            ConfigProblem::invalid(format!("지원하지 않는 인증 방식입니다: {mechanism}"))
-        })?;
-        if auth == Auth::Password && parsed == AuthMechanism::MongoDbX509 {
-            return Err(ConfigProblem::invalid(
-                "X.509는 사용자·비밀번호가 아니라 인증 방식에서 고르세요",
-            ));
+        // A mechanism with a choice of its own is picked there (PLAIN stays
+        // usable with a password, as before LDAP had a choice).
+        match Auth::of_mechanism(mechanism) {
+            Some(own) if auth == Auth::Password && own != Auth::Ldap => {
+                return Err(ConfigProblem::invalid(format!(
+                    "{mechanism}는 사용자·비밀번호가 아니라 인증 방식에서 고르세요"
+                )));
+            }
+            Some(_) => {}
+            None => {
+                AuthMechanism::from_str(mechanism).map_err(|_| {
+                    ConfigProblem::invalid(format!("지원하지 않는 인증 방식입니다: {mechanism}"))
+                })?;
+            }
+        }
+    }
+    if auth == Auth::Oidc {
+        match given(&settings.oidc_flow).unwrap_or("human") {
+            "human" | "k8s" => {}
+            "azure" | "gcp" if given(&settings.oidc_token_resource).is_none() => {
+                return Err(ConfigProblem::invalid(
+                    "Azure·GCP OIDC에는 토큰 리소스(audience)가 필요합니다",
+                ));
+            }
+            "azure" | "gcp" => {}
+            other => {
+                return Err(ConfigProblem::invalid(format!(
+                    "OIDC 방식이 올바르지 않습니다: {other}"
+                )))
+            }
+        }
+    }
+    if let Some(canonicalize) = given(&settings.kerberos_canonicalize) {
+        if !["none", "forward", "forwardAndReverse"].contains(&canonicalize) {
+            return Err(ConfigProblem::invalid(format!(
+                "호스트 이름 정규화 값이 올바르지 않습니다: {canonicalize}"
+            )));
         }
     }
     if let Some(preference) = given(&settings.read_preference) {
@@ -238,29 +325,37 @@ impl DriverFactory for Factory {
         }
     }
 
-    /// Only a user and password take one: no authentication and X.509 never
-    /// read a stored password or ask for one.
+    /// A user and password, an LDAP login, or an AWS access key take one
+    /// (an AWS secret key is the password); no authentication, X.509,
+    /// Kerberos (a ticket), OIDC, and AWS from the environment never read a
+    /// stored password or ask for one.
     fn needs_password(&self, config: &ConnConfig) -> bool {
-        !matches!(
-            typed_config(self.descriptor(), config).and_then(|settings| auth(&settings)),
-            Ok(Auth::None | Auth::X509)
-        )
+        let Ok(settings) = typed_config::<Settings>(self.descriptor(), config) else {
+            return true;
+        };
+        match auth(&settings) {
+            Ok(Auth::None | Auth::X509 | Auth::Kerberos | Auth::Oidc) => false,
+            Ok(Auth::Aws) => {
+                given(&settings.user).is_some() || given(&settings.uri).and_then(uri_user).is_some()
+            }
+            Ok(Auth::Password | Auth::Ldap) | Err(_) => true,
+        }
     }
 
-    /// A tunnel leads to one server: never to an SRV name or a list of hosts.
-    fn tunnel_target(&self, config: &ConnConfig) -> Result<(String, u16), ConfigProblem> {
+    /// A tunnel leads to one server, or, for an SRV name or a list of
+    /// hosts, to every member the driver finds (see `route`).
+    fn tunnel_target(&self, config: &ConnConfig) -> Result<TunnelTarget, ConfigProblem> {
         let settings = settings(self.descriptor(), config)?;
-        let single = || ConfigProblem::invalid("터널은 단일 호스트 연결에서만 쓸 수 있습니다");
         match given(&settings.uri) {
             Some(uri) => match uri_hosts(uri) {
                 Some((false, hosts)) if hosts.len() == 1 => {
-                    let (host, port) = hosts.into_iter().next().ok_or_else(single)?;
-                    Ok((host, port.unwrap_or(DEFAULT_PORT)))
+                    let (host, port) = hosts.into_iter().next().unwrap_or_default();
+                    Ok(TunnelTarget::Address(host, port.unwrap_or(DEFAULT_PORT)))
                 }
-                _ => Err(single()),
+                _ => Ok(TunnelTarget::Members),
             },
-            None => Ok((
-                given(&settings.host).ok_or_else(single)?.to_string(),
+            None => Ok(TunnelTarget::Address(
+                given(&settings.host).unwrap_or("127.0.0.1").to_string(),
                 settings.port.unwrap_or(DEFAULT_PORT),
             )),
         }
@@ -311,7 +406,7 @@ impl DriverFactory for Factory {
         let settings = settings(self.descriptor(), config)
             .map_err(|problem| EngineError::BadRequest(problem.message))?;
         let label = self.address(config);
-        MongoDriver::open(settings, net, label, log).await
+        MongoDriver::open(settings, net, label, log, None).await
     }
 }
 
@@ -433,6 +528,13 @@ pub(crate) fn mongo_err(err: mongodb::error::Error) -> EngineError {
         ErrorKind::DnsResolve { message, .. } => (None, format!("DNS 조회 실패: {message}")),
         ErrorKind::Io(io) => (None, io_summary(&io.to_string(), None)),
         ErrorKind::InvalidTlsConfig { message, .. } => (None, format!("TLS 설정 오류: {message}")),
+        // A browser login that failed says why itself.
+        ErrorKind::Custom(_) if err.get_custom::<oidc::LoginFailed>().is_some() => (
+            None,
+            err.get_custom::<oidc::LoginFailed>()
+                .map(|failed| failed.0.clone())
+                .unwrap_or_default(),
+        ),
         // The kind's own words, without the labels and source dump.
         other => (None, other.to_string()),
     };
@@ -549,6 +651,51 @@ fn io_summary(error: &str, address: Option<&str>) -> String {
     }
 }
 
+/// An error of connecting that the driver didn't raise (an SRV name that
+/// doesn't resolve), shaped as the driver's are: `mongodb_error`.
+pub(super) fn failure(message: String) -> EngineError {
+    EngineError::Driver {
+        engine: "mongodb",
+        code: None,
+        message,
+        interrupted: false,
+        fields: Box::default(),
+    }
+}
+
+/// The hosts an OIDC browser login may send its token to: the driver's own
+/// list (Atlas, this machine) plus the hosts the settings name, and their
+/// domain, which the members they lead to usually share.
+fn oidc_allowed_hosts(hosts: &[ServerAddress]) -> Vec<Bson> {
+    let mut allowed: Vec<String> = [
+        "*.mongodb.net",
+        "*.mongodb-qa.net",
+        "*.mongodb-dev.net",
+        "*.mongodbgov.net",
+        "*.mongo.com",
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    ]
+    .map(String::from)
+    .into();
+    for address in hosts {
+        let ServerAddress::Tcp { host, .. } = address else {
+            continue;
+        };
+        let wildcard = host
+            .split_once('.')
+            .filter(|(_, parent)| parent.contains('.'))
+            .map(|(_, parent)| format!("*.{parent}"));
+        for pattern in wildcard.into_iter().chain([host.clone()]) {
+            if !allowed.contains(&pattern) {
+                allowed.push(pattern);
+            }
+        }
+    }
+    allowed.into_iter().map(Bson::String).collect()
+}
+
 pub(crate) struct MongoDriver {
     client: Client,
     label: String,
@@ -559,17 +706,102 @@ pub(crate) struct MongoDriver {
     /// The comment tag of the read running now: a cancel kills the
     /// operations carrying it.
     running: Arc<Mutex<Option<String>>>,
+    /// The SOCKS hop into a tunnel to a replica set or cluster, while the
+    /// client uses it.
+    _socks: Option<route::Socks>,
 }
 
 impl MongoDriver {
+    /// `nameserver` resolves an SRV name instead of the system's DNS
+    /// (tests).
     async fn open(
         settings: Settings,
         net: &NetRoute,
         label: String,
         log: SqlLog,
+        nameserver: Option<std::net::SocketAddr>,
     ) -> Result<Arc<dyn Driver>, EngineError> {
         crate::ensure_crypto_provider();
+        // Through a tunnel an SRV name is read here, so the driver starts
+        // from the members it stands for (see `route`).
+        let srv_seeds = matches!(net, NetRoute::Tunnel(_)).then_some(nameserver);
+        let mut options = Self::client_options(&settings, srv_seeds).await?;
+        // Through a tunnel to one server there is that one to talk to,
+        // never the set's other members it would report. Through one to a
+        // replica set or cluster, every member is reached by its name over
+        // the SOCKS hop.
+        let socks = match net {
+            NetRoute::Direct => None,
+            NetRoute::Via { host, port } => {
+                options.hosts = vec![ServerAddress::Tcp {
+                    host: host.clone(),
+                    port: Some(*port),
+                }];
+                options.direct_connection = Some(true);
+                None
+            }
+            NetRoute::Tunnel(forwarder) => {
+                let socks = route::Socks::start(forwarder.clone()).await?;
+                options.socks5_proxy = Some(
+                    Socks5Proxy::builder()
+                        .host("127.0.0.1".to_string())
+                        .port(Some(socks.port))
+                        .authentication(Some((socks.user.clone(), socks.password.clone())))
+                        .build(),
+                );
+                Some(socks)
+            }
+        };
+        options.server_selection_timeout = Some(SELECTION_TIMEOUT);
+        options.connect_timeout = Some(SELECTION_TIMEOUT);
+        options.app_name = Some("TablePeek".into());
+        let default_db = options.default_database.clone();
+        let client = Client::with_options(options).map_err(mongo_err)?;
+        log.record_command("db.hello()");
+        let hello = client
+            .database("admin")
+            .run_command(doc! { "hello": 1 })
+            .await
+            .map_err(mongo_err)?;
+        let topology = if hello.get_str("msg") == Ok("isdbgrid") {
+            "sharded"
+        } else if hello.contains_key("setName") {
+            "replica_set"
+        } else {
+            "standalone"
+        };
+        // The driver connects lazily: a wrong password shows only now.
+        if let Some(db) = default_db.as_deref() {
+            client
+                .database(db)
+                .run_command(doc! { "ping": 1 })
+                .await
+                .map_err(mongo_err)?;
+        }
+        Ok(Arc::new(MongoDriver {
+            client,
+            label,
+            default_db,
+            topology: topology.into(),
+            log,
+            running: Arc::new(Mutex::new(None)),
+            _socks: socks,
+        }))
+    }
+
+    /// The driver's options for `settings`, before any tunnel. With
+    /// `srv_seeds` (and the DNS server it may name) an SRV name is resolved
+    /// here into the members it stands for.
+    async fn client_options(
+        settings: &Settings,
+        srv_seeds: Option<Option<std::net::SocketAddr>>,
+    ) -> Result<ClientOptions, EngineError> {
         let mut options = match given(&settings.uri) {
+            Some(uri) if srv_seeds.is_some() && uri.starts_with("mongodb+srv://") => {
+                let nameserver = srv_seeds.flatten();
+                let seeds = route::seed_list(uri, nameserver).await?;
+                ClientOptions::parse(&seeds).await.map_err(mongo_err)?
+            }
             Some(uri) => ClientOptions::parse(uri).await.map_err(mongo_err)?,
             None => {
                 let mut options = ClientOptions::default();
@@ -580,24 +812,71 @@ impl MongoDriver {
                 options
             }
         };
-        let auth = auth(&settings).map_err(|problem| EngineError::BadRequest(problem.message))?;
+        let auth = auth(settings).map_err(|problem| EngineError::BadRequest(problem.message))?;
+        let bad = |message: &str| EngineError::BadRequest(message.into());
+        // Fields typed in the form win over the connection string's.
+        let mut credential = options.credential.take().unwrap_or_default();
+        let user = given(&settings.user).map(str::to_string);
+        let password = given(&settings.password).map(str::to_string);
+        let mut properties = credential.mechanism_properties.take().unwrap_or_default();
+        let mut set_property = |name: &str, value: Option<&str>| {
+            if let Some(value) = value {
+                properties.insert(name, value);
+            }
+        };
+        match auth {
+            Auth::None | Auth::Password | Auth::X509 | Auth::Ldap => {}
+            Auth::Aws => {
+                set_property("AWS_SESSION_TOKEN", given(&settings.aws_session_token));
+            }
+            Auth::Kerberos => {
+                set_property("SERVICE_NAME", given(&settings.kerberos_service_name));
+                set_property("SERVICE_REALM", given(&settings.kerberos_service_realm));
+                set_property("SERVICE_HOST", given(&settings.kerberos_service_host));
+                set_property(
+                    "CANONICALIZE_HOST_NAME",
+                    given(&settings.kerberos_canonicalize),
+                );
+            }
+            Auth::Oidc => match given(&settings.oidc_flow).unwrap_or("human") {
+                "human" => {}
+                environment => {
+                    set_property("ENVIRONMENT", Some(environment));
+                    set_property("TOKEN_RESOURCE", given(&settings.oidc_token_resource));
+                }
+            },
+        }
+        credential.mechanism_properties = (!properties.is_empty()).then_some(properties);
         match auth {
             // Not even a user the connection string names.
-            Auth::None => options.credential = None,
+            Auth::None => credential = Default::default(),
             Auth::Password => {
-                // Fields typed in the form win over the connection string's.
-                let mut credential = options.credential.take().unwrap_or_default();
-                if let Some(user) = given(&settings.user) {
-                    credential.username = Some(user.to_string());
+                if user.is_some() {
+                    credential.username = user;
                 }
                 if credential.username.is_none() {
-                    return Err(EngineError::BadRequest("사용자를 입력하세요".into()));
+                    return Err(bad("사용자를 입력하세요"));
                 }
-                if let Some(password) = given(&settings.password) {
-                    credential.password = Some(password.to_string());
+                if password.is_some() {
+                    credential.password = password;
                 }
                 if let Some(name) = given(&settings.auth_mechanism) {
                     credential.mechanism = Some(AuthMechanism::from_str(name).map_err(mongo_err)?);
+                }
+                // Another mechanism the connection string names has a
+                // choice of its own; a password means SCRAM (or PLAIN).
+                if !matches!(
+                    credential.mechanism,
+                    None | Some(
+                        AuthMechanism::ScramSha1
+                            | AuthMechanism::ScramSha256
+                            | AuthMechanism::Plain
+                    )
+                ) {
+                    credential.mechanism = None;
+                    credential.mechanism_properties = None;
+                    // Its $external source went with it.
+                    credential.source = None;
                 }
                 if let Some(source) = given(&settings.auth_source) {
                     credential.source = Some(source.to_string());
@@ -609,18 +888,99 @@ impl MongoDriver {
                 {
                     credential.source = Some("admin".into());
                 }
-                options.credential = Some(credential);
             }
             // The certificate says who it is; a password or another
             // database would only make the server refuse it.
             Auth::X509 => {
-                let mut credential = options.credential.take().unwrap_or_default();
                 credential.mechanism = Some(AuthMechanism::MongoDbX509);
                 credential.password = None;
                 credential.source = None;
-                options.credential = Some(credential);
+                credential.mechanism_properties = None;
+            }
+            // The directory checks the password; users live in $external.
+            Auth::Ldap => {
+                if user.is_some() {
+                    credential.username = user;
+                }
+                if password.is_some() {
+                    credential.password = password;
+                }
+                if credential.username.is_none() {
+                    return Err(bad("LDAP 사용자를 입력하세요"));
+                }
+                if credential.password.is_none() {
+                    return Err(bad("LDAP 비밀번호를 입력하세요"));
+                }
+                credential.mechanism = Some(AuthMechanism::Plain);
+                credential.source = Some("$external".into());
+                credential.mechanism_properties = None;
+            }
+            // A key and its secret, or none at all: the environment's
+            // credentials or the role the machine runs as.
+            Auth::Aws => {
+                if user.is_some() {
+                    credential.username = user;
+                }
+                if password.is_some() {
+                    credential.password = password;
+                }
+                if credential.username.is_some() && credential.password.is_none() {
+                    return Err(bad("AWS 비밀 액세스 키를 입력하세요"));
+                }
+                if credential.username.is_none() {
+                    // The environment brings its own session token too.
+                    credential.password = None;
+                    credential.mechanism_properties = None;
+                }
+                credential.mechanism = Some(AuthMechanism::MongoDbAws);
+                credential.source = Some("$external".into());
+            }
+            // The ticket `kinit` left; the principal names whose it is.
+            Auth::Kerberos => {
+                #[cfg(any(target_os = "macos", feature = "kerberos"))]
+                {
+                    if user.is_some() {
+                        credential.username = user;
+                    }
+                    if credential.username.is_none() {
+                        return Err(bad("Kerberos 사용자 주체(principal)를 입력하세요"));
+                    }
+                    credential.mechanism = Some(AuthMechanism::Gssapi);
+                    credential.source = Some("$external".into());
+                    credential.password = None;
+                }
+                #[cfg(not(any(target_os = "macos", feature = "kerberos")))]
+                return Err(bad(
+                    "이 TablePeek 빌드에는 Kerberos(GSSAPI) 인증이 없습니다 (--features kerberos로 빌드하세요)",
+                ));
+            }
+            Auth::Oidc => {
+                credential.mechanism = Some(AuthMechanism::MongoDbOidc);
+                credential.source = Some("$external".into());
+                credential.password = None;
+                match given(&settings.oidc_flow).unwrap_or("human") {
+                    "human" => {
+                        if user.is_some() {
+                            credential.username = user;
+                        }
+                        let mut properties =
+                            credential.mechanism_properties.take().unwrap_or_default();
+                        properties.insert("ALLOWED_HOSTS", oidc_allowed_hosts(&options.hosts));
+                        credential.mechanism_properties = Some(properties);
+                        credential.oidc_callback = oidc::callback(credential.username.clone());
+                    }
+                    // Azure takes the managed identity's client id as the
+                    // user; the others take none.
+                    "azure" => {
+                        if user.is_some() {
+                            credential.username = user;
+                        }
+                    }
+                    _ => credential.username = None,
+                }
             }
         }
+        options.credential = (auth != Auth::None).then_some(credential);
         if let Some(database) = given(&settings.database) {
             options.default_database = Some(database.to_string());
         }
@@ -655,49 +1015,7 @@ impl MongoDriver {
                 .map_err(|problem| EngineError::BadRequest(problem.message))?;
             options.selection_criteria = Some(SelectionCriteria::ReadPreference(preference));
         }
-        // Through a tunnel there is one server to talk to, never the set's
-        // other members it would report.
-        if let NetRoute::Via { host, port } = net {
-            options.hosts = vec![ServerAddress::Tcp {
-                host: host.clone(),
-                port: Some(*port),
-            }];
-            options.direct_connection = Some(true);
-        }
-        options.server_selection_timeout = Some(SELECTION_TIMEOUT);
-        options.connect_timeout = Some(SELECTION_TIMEOUT);
-        options.app_name = Some("TablePeek".into());
-        let default_db = options.default_database.clone();
-        let client = Client::with_options(options).map_err(mongo_err)?;
-        log.record_command("db.hello()");
-        let hello = client
-            .database("admin")
-            .run_command(doc! { "hello": 1 })
-            .await
-            .map_err(mongo_err)?;
-        let topology = if hello.get_str("msg") == Ok("isdbgrid") {
-            "sharded"
-        } else if hello.contains_key("setName") {
-            "replica_set"
-        } else {
-            "standalone"
-        };
-        // The driver connects lazily: a wrong password shows only now.
-        if let Some(db) = default_db.as_deref() {
-            client
-                .database(db)
-                .run_command(doc! { "ping": 1 })
-                .await
-                .map_err(mongo_err)?;
-        }
-        Ok(Arc::new(MongoDriver {
-            client,
-            label,
-            default_db,
-            topology: topology.into(),
-            log,
-            running: Arc::new(Mutex::new(None)),
-        }))
+        Ok(options)
     }
 
     /// Database names, without MongoDB's own unless `include_system`.
@@ -1029,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_and_tunnels_single_hosts_only() {
+    fn validates_and_names_where_tunnels_lead() {
         let factory = &FACTORY;
         assert_eq!(
             factory.validate(&ConnConfig::new()).unwrap_err().message,
@@ -1040,18 +1358,25 @@ mod tests {
             .is_err());
         assert!(factory.validate(&config(json!({ "port": 27017 }))).is_err());
         let single = config(json!({ "uri": "mongodb://u:pw@db:27018/shop" }));
-        assert_eq!(factory.tunnel_target(&single), Ok(("db".into(), 27018)));
-        for refused in [
+        assert_eq!(
+            factory.tunnel_target(&single),
+            Ok(TunnelTarget::Address("db".into(), 27018))
+        );
+        // An SRV name or a seed list: every member, through the tunnel.
+        for members in [
             json!({ "uri": "mongodb+srv://cluster0.example.net" }),
             json!({ "uri": "mongodb://a,b/shop" }),
         ] {
             assert_eq!(
-                factory.tunnel_target(&config(refused)).unwrap_err().message,
-                "터널은 단일 호스트 연결에서만 쓸 수 있습니다"
+                factory.tunnel_target(&config(members)),
+                Ok(TunnelTarget::Members)
             );
         }
         let fields = config(json!({ "host": "db", "user": "app", "database": "shop" }));
-        assert_eq!(factory.tunnel_target(&fields), Ok(("db".into(), 27017)));
+        assert_eq!(
+            factory.tunnel_target(&fields),
+            Ok(TunnelTarget::Address("db".into(), 27017))
+        );
         assert_eq!(factory.address(&fields), "app@db:27017/shop");
         // A connection string's password never reaches the label.
         assert_eq!(factory.address(&single), "u@db:27018/shop");
@@ -1084,6 +1409,23 @@ mod tests {
                 json!({ "host": "db", "user": "app", "auth_mechanism": "SCRAM-SHA-1" }),
                 "password",
             ),
+            // Mechanisms with a choice of their own, from a connection string.
+            (
+                json!({ "uri": "mongodb://AKIA@db/?authMechanism=MONGODB-AWS" }),
+                "aws",
+            ),
+            (
+                json!({ "uri": "mongodb://ann@db/?authMechanism=PLAIN&authSource=$external" }),
+                "ldap",
+            ),
+            (
+                json!({ "uri": "mongodb://ann%40EXAMPLE.COM@db/?authMechanism=GSSAPI" }),
+                "kerberos",
+            ),
+            (
+                json!({ "uri": "mongodb://db/?authMechanism=MONGODB-OIDC" }),
+                "oidc",
+            ),
         ] {
             assert_eq!(upgraded(old.clone()), Some(json!(want)), "{old}");
         }
@@ -1095,15 +1437,28 @@ mod tests {
     }
 
     #[test]
-    fn only_a_password_choice_takes_a_password() {
+    fn only_choices_with_a_secret_take_a_password() {
         let needs = |value: Value| FACTORY.needs_password(&config(value));
         assert!(needs(
             json!({ "host": "db", "auth": "password", "user": "app" })
+        ));
+        assert!(needs(
+            json!({ "host": "db", "auth": "ldap", "user": "ann" })
         ));
         assert!(!needs(
             json!({ "host": "db", "auth": "none", "user": "app" })
         ));
         assert!(!needs(json!({ "host": "db", "auth": "x509", "tls": true })));
+        assert!(!needs(
+            json!({ "host": "db", "auth": "kerberos", "user": "ann@EXAMPLE.COM" })
+        ));
+        assert!(!needs(json!({ "host": "db", "auth": "oidc" })));
+        // AWS takes its secret key only with an access key; without one the
+        // environment or role signs.
+        assert!(needs(
+            json!({ "host": "db", "auth": "aws", "user": "AKIA1" })
+        ));
+        assert!(!needs(json!({ "host": "db", "auth": "aws" })));
         // Saved before the choice: by what the profile has.
         assert!(needs(json!({ "host": "db", "user": "app" })));
         assert!(!needs(json!({ "host": "db" })));
@@ -1112,29 +1467,203 @@ mod tests {
     #[test]
     fn auth_choices_are_checked() {
         let factory = &FACTORY;
-        for good in ["none", "password", "x509"] {
+        for good in [
+            "none", "password", "x509", "aws", "ldap", "kerberos", "oidc",
+        ] {
             assert!(factory
                 .validate(&config(json!({ "host": "db", "auth": good })))
                 .is_ok());
         }
         assert_eq!(
             factory
-                .validate(&config(json!({ "host": "db", "auth": "kerberos" })))
+                .validate(&config(json!({ "host": "db", "auth": "ntlm" })))
                 .unwrap_err()
                 .message,
-            "지원하지 않는 인증 방식입니다: kerberos"
+            "지원하지 않는 인증 방식입니다: ntlm"
         );
-        // X.509 is its own choice, never a password's mechanism.
+        // A mechanism with a choice of its own is never a password's.
+        for own in ["MONGODB-X509", "MONGODB-AWS", "GSSAPI", "MONGODB-OIDC"] {
+            assert!(factory
+                .validate(&config(json!({
+                    "host": "db", "auth": "password", "user": "app", "auth_mechanism": own
+                })))
+                .is_err());
+        }
+        for fine in ["SCRAM-SHA-256", "PLAIN"] {
+            assert!(factory
+                .validate(&config(json!({
+                    "host": "db", "auth": "password", "user": "app", "auth_mechanism": fine
+                })))
+                .is_ok());
+        }
+        let oidc = |flow: &str, resource: Option<&str>| {
+            let mut value = json!({ "host": "db", "auth": "oidc", "oidc_flow": flow });
+            if let Some(resource) = resource {
+                value["oidc_token_resource"] = json!(resource);
+            }
+            factory.validate(&config(value))
+        };
+        assert!(oidc("human", None).is_ok());
+        assert!(oidc("k8s", None).is_ok());
+        assert!(oidc("azure", Some("api://mongo")).is_ok());
+        assert_eq!(
+            oidc("gcp", None).unwrap_err().message,
+            "Azure·GCP OIDC에는 토큰 리소스(audience)가 필요합니다"
+        );
+        assert!(oidc("okta", None).is_err());
         assert!(factory
             .validate(&config(json!({
-                "host": "db", "auth": "password", "user": "app", "auth_mechanism": "MONGODB-X509"
+                "host": "db", "auth": "kerberos", "kerberos_canonicalize": "sometimes"
             })))
             .is_err());
-        assert!(factory
-            .validate(&config(json!({
-                "host": "db", "auth": "password", "user": "app", "auth_mechanism": "SCRAM-SHA-256"
-            })))
-            .is_ok());
+    }
+
+    /// The driver options `value` gives, before any tunnel.
+    async fn options(value: Value) -> Result<ClientOptions, EngineError> {
+        let settings = settings(&DESCRIPTOR, &config(value)).unwrap();
+        MongoDriver::client_options(&settings, None).await
+    }
+
+    #[tokio::test]
+    async fn each_choice_sends_its_own_credential() {
+        let credential = |options: ClientOptions| options.credential.unwrap();
+        let property = |options: &ClientOptions, name: &str| {
+            options
+                .credential
+                .as_ref()
+                .and_then(|credential| credential.mechanism_properties.as_ref())
+                .and_then(|properties| properties.get(name).cloned())
+        };
+
+        // LDAP: PLAIN in $external, whatever authSource the form kept.
+        let ldap = credential(
+            options(json!({
+                "host": "db", "auth": "ldap", "user": "ann", "password": "pw", "auth_source": "admin"
+            }))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(ldap.mechanism, Some(AuthMechanism::Plain));
+        assert_eq!(ldap.source.as_deref(), Some("$external"));
+        assert_eq!(ldap.username.as_deref(), Some("ann"));
+        assert_eq!(ldap.password.as_deref(), Some("pw"));
+        assert!(matches!(
+            options(json!({ "host": "db", "auth": "ldap", "user": "ann" })).await,
+            Err(EngineError::BadRequest(message)) if message == "LDAP 비밀번호를 입력하세요"
+        ));
+
+        // AWS with a key: the key, its secret and the session token.
+        let keyed = options(json!({
+            "host": "db", "auth": "aws", "user": "AKIA1", "password": "secret",
+            "aws_session_token": "token"
+        }))
+        .await
+        .unwrap();
+        assert_eq!(
+            property(&keyed, "AWS_SESSION_TOKEN"),
+            Some(Bson::from("token"))
+        );
+        let keyed = credential(keyed);
+        assert_eq!(keyed.mechanism, Some(AuthMechanism::MongoDbAws));
+        assert_eq!(keyed.username.as_deref(), Some("AKIA1"));
+        assert_eq!(keyed.password.as_deref(), Some("secret"));
+        // Without one: nothing but the mechanism, even a stale token.
+        let ambient = credential(
+            options(json!({
+                "host": "db", "auth": "aws", "password": "stale", "aws_session_token": "stale"
+            }))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(ambient.mechanism, Some(AuthMechanism::MongoDbAws));
+        assert!(ambient.username.is_none() && ambient.password.is_none());
+        assert!(ambient.mechanism_properties.is_none());
+        assert!(matches!(
+            options(json!({ "host": "db", "auth": "aws", "user": "AKIA1" })).await,
+            Err(EngineError::BadRequest(_))
+        ));
+
+        // OIDC on a platform: its environment and token resource.
+        let azure = options(json!({
+            "host": "db", "auth": "oidc", "oidc_flow": "azure",
+            "oidc_token_resource": "api://mongo", "user": "client-id", "password": "ignored"
+        }))
+        .await
+        .unwrap();
+        assert_eq!(property(&azure, "ENVIRONMENT"), Some(Bson::from("azure")));
+        assert_eq!(
+            property(&azure, "TOKEN_RESOURCE"),
+            Some(Bson::from("api://mongo"))
+        );
+        let azure = credential(azure);
+        assert_eq!(azure.mechanism, Some(AuthMechanism::MongoDbOidc));
+        assert_eq!(azure.username.as_deref(), Some("client-id"));
+        assert!(azure.password.is_none());
+        // A browser login: no environment, and the hosts named are allowed.
+        let human = options(json!({
+            "uri": "mongodb://db1.corp.example:27017,db2.corp.example/?replicaSet=rs0",
+            "auth": "oidc", "oidc_flow": "human"
+        }))
+        .await
+        .unwrap();
+        assert_eq!(property(&human, "ENVIRONMENT"), None);
+        let Some(Bson::Array(allowed)) = property(&human, "ALLOWED_HOSTS") else {
+            panic!("no ALLOWED_HOSTS");
+        };
+        for host in [
+            "db1.corp.example",
+            "db2.corp.example",
+            "*.corp.example",
+            "*.mongodb.net",
+        ] {
+            assert!(allowed.contains(&Bson::from(host)), "{host}");
+        }
+
+        // Kerberos: the principal and the service properties typed.
+        let kerberos = options(json!({
+            "host": "db", "auth": "kerberos", "user": "ann@EXAMPLE.COM",
+            "kerberos_service_name": "mongo", "kerberos_service_realm": "EXAMPLE.COM",
+            "kerberos_service_host": "db.example.com", "kerberos_canonicalize": "forward"
+        }))
+        .await;
+        #[cfg(any(target_os = "macos", feature = "kerberos"))]
+        {
+            let kerberos = kerberos.unwrap();
+            assert_eq!(
+                property(&kerberos, "SERVICE_NAME"),
+                Some(Bson::from("mongo"))
+            );
+            assert_eq!(
+                property(&kerberos, "SERVICE_REALM"),
+                Some(Bson::from("EXAMPLE.COM"))
+            );
+            assert_eq!(
+                property(&kerberos, "SERVICE_HOST"),
+                Some(Bson::from("db.example.com"))
+            );
+            assert_eq!(
+                property(&kerberos, "CANONICALIZE_HOST_NAME"),
+                Some(Bson::from("forward"))
+            );
+            let kerberos = credential(kerberos);
+            assert_eq!(kerberos.mechanism, Some(AuthMechanism::Gssapi));
+            assert_eq!(kerberos.source.as_deref(), Some("$external"));
+            assert_eq!(kerberos.username.as_deref(), Some("ann@EXAMPLE.COM"));
+        }
+        #[cfg(not(any(target_os = "macos", feature = "kerberos")))]
+        assert!(matches!(kerberos, Err(EngineError::BadRequest(_))));
+
+        // A password choice drops a mechanism of another choice the
+        // connection string names.
+        let password = credential(
+            options(json!({
+                "uri": "mongodb://app:pw@db/?authMechanism=MONGODB-AWS", "auth": "password"
+            }))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(password.mechanism, None);
+        assert_eq!(password.source.as_deref(), Some("admin"));
     }
 }
 
@@ -1147,7 +1676,7 @@ mod live {
     use crate::driver::{
         AggregateRequest, CommandRequest, CountRequest, CreateIndexRequest, DistinctRequest,
         DropIndexRequest, ExplainFind, ExplainRequest, ExportRequest, FindRequest, InsertRequest,
-        UpdateRequest,
+        QueryOptions, UpdateRequest,
     };
     use futures_util::StreamExt;
     use serde_json::{json, Value};
@@ -1307,7 +1836,10 @@ mod live {
                 sort: Some(json!({ "_id": 1 })),
                 skip: Some(1),
                 limit: 2,
-                max_time_ms: Some(5_000),
+                options: QueryOptions {
+                    max_time_ms: Some(5_000),
+                    ..QueryOptions::default()
+                },
                 poll: false,
             })
             .await
@@ -1319,6 +1851,7 @@ mod live {
                 db: "shop".into(),
                 coll: "orders".into(),
                 filter: json!({}),
+                options: QueryOptions::default(),
             })
             .await
             .unwrap();
@@ -1328,6 +1861,7 @@ mod live {
                 db: "shop".into(),
                 coll: "orders".into(),
                 filter: json!({ "_id": { "$exists": true } }),
+                options: QueryOptions::default(),
             })
             .await
             .unwrap();
@@ -1340,7 +1874,7 @@ mod live {
                     json!({ "$group": { "_id": "$status", "n": { "$sum": 1 } } }),
                     json!({ "$sort": { "_id": 1 } }),
                 ],
-                max_time_ms: None,
+                options: QueryOptions::default(),
                 confirmed: false,
             })
             .await
@@ -1369,6 +1903,7 @@ mod live {
                 }),
                 aggregate: None,
                 verbosity: "executionStats".into(),
+                options: QueryOptions::default(),
             })
             .await
             .unwrap();
@@ -1421,7 +1956,7 @@ mod live {
                 sort: None,
                 skip: None,
                 limit: 1,
-                max_time_ms: None,
+                options: QueryOptions::default(),
                 poll: false,
             })
             .await
@@ -1454,6 +1989,7 @@ mod live {
             many: false,
             upsert: false,
             confirmed: false,
+            options: crate::driver::WriteOptions::default(),
         };
         let first = ops.update(&guarded("pending")).await.unwrap();
         assert_eq!((first.matched, first.modified), (1, 1));
@@ -1469,6 +2005,7 @@ mod live {
             many: false,
             upsert: false,
             confirmed: false,
+            options: crate::driver::WriteOptions::default(),
         };
         crate::driver::check_write(&by_status.filter, by_status.confirmed).unwrap();
         let shipped = ops.update(&by_status).await.unwrap();
@@ -1561,7 +2098,7 @@ mod live {
                     sort: None,
                     skip: None,
                     limit: 1000,
-                    max_time_ms: None,
+                    options: QueryOptions::default(),
                     poll: false,
                 })
                 .await
@@ -1657,6 +2194,7 @@ mod live {
                 db: "tablepeek_test".into(),
                 coll: coll.clone(),
                 filter: json!({ "_id": { "$exists": true } }),
+                options: QueryOptions::default(),
             })
             .await
             .unwrap();
@@ -1715,7 +2253,7 @@ mod live {
                 json!({ "$match": { "n": { "$gte": 2 } } }),
                 json!({ "$out": target }),
             ],
-            max_time_ms: None,
+            options: QueryOptions::default(),
             confirmed: true,
         };
         assert!(crate::driver::check_aggregate(&request).unwrap());
@@ -1726,6 +2264,7 @@ mod live {
                 db: "tablepeek_test".into(),
                 coll: target.clone(),
                 filter: json!({ "n": { "$exists": true } }),
+                options: QueryOptions::default(),
             })
             .await
             .unwrap();
@@ -1754,6 +2293,7 @@ mod live {
             sort: Some(json!({ "_id": 1 })),
             limit,
             pipeline,
+            options: QueryOptions::default(),
         };
         // No limit: every document, past the first batch of 101.
         let all: Vec<_> = ops

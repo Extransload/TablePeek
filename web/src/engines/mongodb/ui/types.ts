@@ -2,7 +2,7 @@
 // explain view, and what they need from the workbench around them.
 
 import type { SafeMode } from "../../../sqlTools";
-import type { Namespace } from "../api";
+import type { Namespace, QueryOptions } from "../api";
 import type { BsonDocument } from "../bson";
 import type { DocEdit } from "../guard";
 
@@ -20,6 +20,8 @@ export interface DocQuery {
   sort: BsonDocument | null;
   skip: number;
   limit: number;
+  // The 옵션 row's collation, hint and time limit; missing when none is set.
+  options?: QueryOptions;
 }
 
 // What the panels need from the app around them.

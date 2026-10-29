@@ -271,12 +271,26 @@ impl ConfigProblem {
 }
 
 /// Where a connection actually goes once tunnels are open.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum NetRoute {
     /// To the address the settings name.
     Direct,
     /// Through a local tunnel end instead.
     Via { host: String, port: u16 },
+    /// Through a tunnel that reaches any address behind it, for an engine
+    /// that talks to several servers (a replica set's members) and opens a
+    /// stream to each one it needs.
+    Tunnel(Arc<dyn Forwarder>),
+}
+
+impl std::fmt::Debug for NetRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetRoute::Direct => f.write_str("Direct"),
+            NetRoute::Via { host, port } => write!(f, "Via({host}:{port})"),
+            NetRoute::Tunnel(_) => f.write_str("Tunnel"),
+        }
+    }
 }
 
 impl NetRoute {
@@ -291,6 +305,28 @@ impl NetRoute {
             *port = *via_port;
         }
     }
+}
+
+/// A byte stream through a tunnel to one address behind it.
+pub trait TunnelStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> TunnelStream for T {}
+
+/// An open SSH or HTTP tunnel, able to reach any address behind it.
+#[async_trait]
+pub trait Forwarder: Send + Sync {
+    /// A new stream to `host:port`, as the far end of the tunnel names it.
+    async fn connect(&self, host: &str, port: u16) -> Result<Box<dyn TunnelStream>, String>;
+}
+
+/// Where an SSH or HTTP tunnel must lead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TunnelTarget {
+    /// One server: a local end leads to it (`NetRoute::Via`).
+    Address(String, u16),
+    /// Several servers, found only once connected (a seed list or an SRV
+    /// name): the engine gets the tunnel itself (`NetRoute::Tunnel`).
+    Members,
 }
 
 /// Makes connections of one engine.
@@ -313,11 +349,11 @@ pub trait DriverFactory: Send + Sync {
         self.descriptor().secret_keys().next().is_some()
     }
 
-    /// The server address an SSH or HTTP tunnel must lead to. By default
-    /// the `host` and `port` keys, the port falling back to the engine's
-    /// default; an engine with no single network address (a file, a
-    /// replica set) says why it can't be tunnelled.
-    fn tunnel_target(&self, config: &ConnConfig) -> Result<(String, u16), ConfigProblem> {
+    /// Where an SSH or HTTP tunnel must lead. By default the server the
+    /// `host` and `port` keys name, the port falling back to the engine's
+    /// default; an engine with no network address (a file) says why it
+    /// can't be tunnelled.
+    fn tunnel_target(&self, config: &ConnConfig) -> Result<TunnelTarget, ConfigProblem> {
         let descriptor = self.descriptor();
         let refused = || {
             ConfigProblem::invalid(format!(
@@ -339,7 +375,7 @@ pub trait DriverFactory: Send + Sync {
             .and_then(|port| u16::try_from(port).ok())
             .or(descriptor.default_port)
             .ok_or_else(refused)?;
-        Ok((host.to_string(), port))
+        Ok(TunnelTarget::Address(host.to_string(), port))
     }
 
     /// The connection's full address, shown as its label when it has no
@@ -552,7 +588,7 @@ mod tests {
         let config = json!({ "host": "sql", "port": 14330 });
         assert_eq!(
             mssql.tunnel_target(config.as_object().unwrap()),
-            Ok(("sql".to_string(), 14330))
+            Ok(TunnelTarget::Address("sql".to_string(), 14330))
         );
         let sqlite = factory("sqlite").unwrap();
         let config = json!({ "path": "/tmp/a.db" });

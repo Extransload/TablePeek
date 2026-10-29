@@ -91,3 +91,413 @@ services:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 2s
       retries: 60
+
+  # The services below are in profiles, so plain `make test-db` leaves them
+  # out; name one in ENGINE (`make test-db ENGINE=mongodb-rs`) to start it.
+
+  # TLS required and X.509 logins. `make test-db` first writes a throwaway
+  # CA, server and client certificate under testdb/x509 (gen.sh); the
+  # client's subject is the $external user the init script creates.
+  mongodb-x509:
+    image: mongo:7
+    profiles: [mongodb-x509]
+    command:
+      - --tlsMode
+      - requireTLS
+      - --tlsCertificateKeyFile
+      - /certs/server.pem
+      - --tlsCAFile
+      - /certs/ca.pem
+      - --bind_ip_all
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: tablepeek
+      MONGO_INITDB_ROOT_PASSWORD: tablepeek_test_pw
+    ports:
+      - "127.0.0.1:27020:27017"
+    volumes:
+      - ./x509:/certs:ro
+      - ./mongodb-x509.js:/docker-entrypoint-initdb.d/10-x509.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--tls", "--tlsCAFile", "/certs/ca.pem", "--tlsCertificateKeyFile", "/certs/client.pem", "--host", "localhost", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 60
+
+  # MongoDB Enterprise checking PLAIN logins against OpenLDAP. The directory
+  # holds uid=ann (password ann_ldap_pw); `make test-db` gives her a
+  # $external user. Enterprise Server is for evaluation and development
+  # only without a subscription, as here.
+  openldap:
+    image: osixia/openldap:1.5.0
+    profiles: [mongodb-ldap]
+    # Copy the mounted bootstrap folder rather than writing into it.
+    command: ["--copy-service"]
+    environment:
+      LDAP_ORGANISATION: TablePeek
+      LDAP_DOMAIN: tablepeek.test
+      LDAP_ADMIN_PASSWORD: ldap_admin_pw
+    volumes:
+      - ./ldap.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/50-people.ldif:ro
+    healthcheck:
+      test: ["CMD", "ldapwhoami", "-x", "-H", "ldap://localhost", "-D", "uid=ann,ou=people,dc=tablepeek,dc=test", "-w", "ann_ldap_pw"]
+      interval: 2s
+      retries: 60
+
+  mongodb-ldap:
+    image: mongodb/mongodb-enterprise-server:7.0-ubuntu2204
+    profiles: [mongodb-ldap]
+    depends_on:
+      openldap:
+        condition: service_healthy
+    command:
+      - mongod
+      - --bind_ip_all
+      - --setParameter
+      - authenticationMechanisms=PLAIN,SCRAM-SHA-256
+      - --ldapServers
+      - openldap:389
+      - --ldapTransportSecurity
+      - none
+      - --ldapBindMethod
+      - simple
+      - --ldapUserToDNMapping
+      - '[{match: "(.+)", substitution: "uid={0},ou=people,dc=tablepeek,dc=test"}]'
+    environment:
+      MONGODB_INITDB_ROOT_USERNAME: tablepeek
+      MONGODB_INITDB_ROOT_PASSWORD: tablepeek_test_pw
+    ports:
+      - "127.0.0.1:27021:27017"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 60
+
+  # MongoDB Enterprise taking GSSAPI (Kerberos) logins, with an MIT KDC for
+  # the realm TABLEPEEK.TEST on 127.0.0.1:1088 (UDP and TCP). The KDC writes
+  # the server's keytab to a volume both share (testdb/kerberos/kdc.sh); the
+  # server calls itself kerberos.tablepeek.test, so clients ask for the
+  # service principal mongodb/kerberos.tablepeek.test whatever address they
+  # dial. `make test-db` gives ann@TABLEPEEK.TEST a $external user.
+  kdc:
+    build:
+      context: ./kerberos
+      dockerfile_inline: |
+        FROM debian:bookworm-slim
+        RUN apt-get update \
+          && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends krb5-kdc krb5-admin-server \
+          && rm -rf /var/lib/apt/lists/*
+    image: tablepeek-testdb-kdc
+    profiles: [mongodb-kerberos]
+    command: ["sh", "/kerberos/kdc.sh"]
+    ports:
+      - "127.0.0.1:1088:88/udp"
+      - "127.0.0.1:1088:88/tcp"
+    volumes:
+      - ./kerberos:/kerberos:ro
+      - kerberos-keytab:/keytab
+    healthcheck:
+      test: ["CMD", "test", "-s", "/keytab/mongodb.keytab"]
+      interval: 2s
+      retries: 60
+
+  mongodb-kerberos:
+    # The image lacks the Cyrus SASL GSSAPI plugin the server's Kerberos
+    # logins go through.
+    build:
+      context: ./kerberos
+      dockerfile_inline: |
+        FROM mongodb/mongodb-enterprise-server:7.0-ubuntu2204
+        USER root
+        RUN apt-get update \
+          && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libsasl2-modules-gssapi-mit \
+          && rm -rf /var/lib/apt/lists/*
+        USER mongodb
+    image: tablepeek-testdb-mongodb-kerberos
+    profiles: [mongodb-kerberos]
+    depends_on:
+      kdc:
+        condition: service_healthy
+    hostname: kerberos.tablepeek.test
+    command:
+      - mongod
+      - --bind_ip_all
+      - --setParameter
+      - authenticationMechanisms=GSSAPI,SCRAM-SHA-256
+      - --setParameter
+      - saslHostName=kerberos.tablepeek.test
+    # The client's krb5.conf, for its default realm (the server never asks
+    # the KDC anything; the keytab is enough).
+    environment:
+      KRB5_CONFIG: /seed/kerberos/krb5.conf
+      KRB5_KTNAME: /keytab/mongodb.keytab
+      MONGODB_INITDB_ROOT_USERNAME: tablepeek
+      MONGODB_INITDB_ROOT_PASSWORD: tablepeek_test_pw
+    ports:
+      - "127.0.0.1:27022:27017"
+    volumes:
+      - ./:/seed:ro
+      - kerberos-keytab:/keytab:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 60
+
+  # MongoDB Enterprise taking MONGODB-OIDC logins from a local identity
+  # provider (mock-oauth2-server, issuer https://127.0.0.1:8180/tablepeek):
+  # its login page takes any user name, and the authorization-code flow
+  # with PKCE as well as client credentials hand out tokens for the
+  # audience `tablepeek`. MongoDB reads the provider's keys over HTTPS
+  # only, so the provider serves the certificate testdb/x509/gen.sh writes
+  # (localhost, 127.0.0.1) and the server trusts that CA alone. The server
+  # shares the provider's network, so the issuer address is the same inside
+  # and on the host (the token's `iss` must match); its port is published
+  # here too. `make test-db` gives the browser user tp/ann and the machine
+  # identity tp/tablepeek-machine $external users.
+  oidc-idp:
+    image: ghcr.io/navikt/mock-oauth2-server:2.1.10
+    profiles: [mongodb-oidc]
+    environment:
+      SERVER_PORT: "8180"
+      # Every token is for the audience `tablepeek`; the subject is the name
+      # typed on the login page, or tablepeek-machine for client credentials
+      # (the workload identity of the machine flow).
+      JSON_CONFIG: >-
+        {"interactiveLogin": true, "httpServer": {"type": "NettyWrapper", "ssl": {
+        "keystoreFile": "/certs/idp.p12", "keystoreType": "PKCS12",
+        "keystorePassword": "tablepeek", "keyPassword": "tablepeek"}},
+        "tokenCallbacks": [{"issuerId": "tablepeek", "requestMappings": [
+        {"requestParam": "grant_type", "match": "client_credentials",
+        "claims": {"sub": "tablepeek-machine", "aud": ["tablepeek"]}},
+        {"requestParam": "grant_type", "match": "*", "claims": {"aud": ["tablepeek"]}}]}]}
+    ports:
+      - "127.0.0.1:8180:8180"
+      - "127.0.0.1:27023:27017"
+    volumes:
+      - ./x509:/certs:ro
+
+  mongodb-oidc:
+    image: mongodb/mongodb-enterprise-server:8.0-ubuntu2204
+    profiles: [mongodb-oidc]
+    network_mode: "service:oidc-idp"
+    depends_on: [oidc-idp]
+    command:
+      - mongod
+      - --bind_ip_all
+      - --setParameter
+      - authenticationMechanisms=MONGODB-OIDC,SCRAM-SHA-256
+      - --setParameter
+      - 'oidcIdentityProviders=[{"issuer": "https://127.0.0.1:8180/tablepeek", "audience": "tablepeek", "clientId": "tablepeek", "requestScopes": ["profile"], "authNamePrefix": "tp", "useAuthorizationClaim": false, "supportsHumanFlows": true}]'
+    environment:
+      MONGODB_INITDB_ROOT_USERNAME: tablepeek
+      MONGODB_INITDB_ROOT_PASSWORD: tablepeek_test_pw
+    volumes:
+      - ./:/seed:ro
+      - ./x509/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 60
+
+  # MongoDB Enterprise taking MONGODB-AWS logins. The server checks a login
+  # by passing the request the client signed on to STS; here a stand-in
+  # (testdb/aws/sts.py) that checks the signature for its one test key and
+  # answers with the caller's ARN, over HTTPS with the test certificate
+  # (testdb/x509/gen.sh), as the server takes only an https:// STS. The
+  # server shares the stand-in's network and trusts that CA alone; its port
+  # is published here. `make test-db` gives the IAM user and the assumed
+  # role $external users.
+  aws-sts:
+    image: python:3.12-alpine
+    profiles: [mongodb-aws]
+    command: ["python", "-u", "/aws/sts.py"]
+    ports:
+      - "127.0.0.1:27024:27017"
+    volumes:
+      - ./aws:/aws:ro
+      - ./x509:/certs:ro
+
+  mongodb-aws:
+    image: mongodb/mongodb-enterprise-server:8.0-ubuntu2204
+    profiles: [mongodb-aws]
+    network_mode: "service:aws-sts"
+    depends_on: [aws-sts]
+    command:
+      - mongod
+      - --bind_ip_all
+      - --setParameter
+      - authenticationMechanisms=MONGODB-AWS,SCRAM-SHA-256
+      - --setParameter
+      - awsSTSUrl=https://127.0.0.1:8443
+    environment:
+      MONGODB_INITDB_ROOT_USERNAME: tablepeek
+      MONGODB_INITDB_ROOT_PASSWORD: tablepeek_test_pw
+    volumes:
+      - ./:/seed:ro
+      - ./x509/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 60
+
+  # A three-member replica set that only an SSH server can reach: the
+  # members go by names (rs1.tablepeek.test, …) that resolve inside this
+  # network alone, and the DNS server answers the SRV name
+  # rs.tablepeek.test with them. The first member initiates the set from
+  # its health check. Host ports 27031-27033 are for a look from outside
+  # (directConnection only).
+  mongo-rs1:
+    image: mongo:7
+    profiles: [mongodb-rs]
+    command: ["--replSet", "rs1", "--bind_ip_all"]
+    # Its own name too, so a read says which member served it
+    # (local.startup_log's hostname).
+    hostname: rs1.tablepeek.test
+    networks:
+      default:
+        aliases: [rs1.tablepeek.test]
+    ports:
+      - "127.0.0.1:27031:27017"
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status().ok } catch (e) { rs.initiate({ _id: "rs1", members: [
+          { _id: 0, host: "rs1.tablepeek.test:27017" },
+          { _id: 1, host: "rs2.tablepeek.test:27017" },
+          { _id: 2, host: "rs3.tablepeek.test:27017" }] }).ok }
+      interval: 2s
+      retries: 60
+
+  mongo-rs2:
+    image: mongo:7
+    profiles: [mongodb-rs]
+    command: ["--replSet", "rs1", "--bind_ip_all"]
+    # Its own name too, so a read says which member served it
+    # (local.startup_log's hostname).
+    hostname: rs2.tablepeek.test
+    networks:
+      default:
+        aliases: [rs2.tablepeek.test]
+    ports:
+      - "127.0.0.1:27032:27017"
+
+  mongo-rs3:
+    image: mongo:7
+    profiles: [mongodb-rs]
+    command: ["--replSet", "rs1", "--bind_ip_all"]
+    # Its own name too, so a read says which member served it
+    # (local.startup_log's hostname).
+    hostname: rs3.tablepeek.test
+    networks:
+      default:
+        aliases: [rs3.tablepeek.test]
+    ports:
+      - "127.0.0.1:27033:27017"
+
+  # The way in: user tablepeek with the key `make test-db` writes to
+  # testdb/ssh (no password), TCP forwarding on.
+  sshd:
+    image: lscr.io/linuxserver/openssh-server:latest
+    profiles: [mongodb-rs]
+    environment:
+      USER_NAME: tablepeek
+      PUBLIC_KEY_FILE: /keys/id_ed25519.pub
+      DOCKER_MODS: linuxserver/mods:openssh-server-ssh-tunnel
+    ports:
+      - "127.0.0.1:2223:2222"
+    volumes:
+      - ./ssh:/keys:ro
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q '^AllowTcpForwarding yes' /config/sshd/sshd_config && nc -z localhost 2222"]
+      interval: 2s
+      retries: 90
+
+  # Answers for tablepeek.test on 127.0.0.1:1053: the SRV and TXT records
+  # of rs.tablepeek.test (a DNS server of the tests' own, so no real DNS is
+  # touched).
+  dns:
+    image: coredns/coredns:1.11.3
+    profiles: [mongodb-rs]
+    command: ["-conf", "/dns/Corefile"]
+    ports:
+      - "127.0.0.1:1053:53/udp"
+      - "127.0.0.1:1053:53/tcp"
+    volumes:
+      - ./dns:/dns:ro
+
+  # Atlas Local (mongod with mongot): search and vector search indexes.
+  # A one-member replica set without authentication.
+  mongodb-atlas:
+    image: mongodb/mongodb-atlas-local:7.0
+    profiles: [mongodb-atlas]
+    ports:
+      - "127.0.0.1:27019:27017"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/runner", "healthcheck"]
+      interval: 3s
+      retries: 100
+
+  # A small sharded cluster: a config server, one shard (each a one-member
+  # replica set that initiates itself from its health check) and mongos on
+  # 27040. `make test-db` adds the shard.
+  mongo-cfg:
+    image: mongo:7
+    profiles: [mongodb-sharded]
+    command: ["--configsvr", "--replSet", "cfg", "--bind_ip_all", "--port", "27017"]
+    networks:
+      default:
+        aliases: [cfg.tablepeek.test]
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status().ok } catch (e) { rs.initiate({ _id: "cfg", configsvr: true,
+          members: [{ _id: 0, host: "cfg.tablepeek.test:27017" }] }).ok }
+      interval: 2s
+      retries: 60
+
+  mongo-shard1:
+    image: mongo:7
+    profiles: [mongodb-sharded]
+    command: ["--shardsvr", "--replSet", "sh1", "--bind_ip_all", "--port", "27017"]
+    networks:
+      default:
+        aliases: [sh1.tablepeek.test]
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status().ok } catch (e) { rs.initiate({ _id: "sh1",
+          members: [{ _id: 0, host: "sh1.tablepeek.test:27017" }] }).ok }
+      interval: 2s
+      retries: 60
+
+  mongos:
+    image: mongo:7
+    profiles: [mongodb-sharded]
+    depends_on:
+      mongo-cfg:
+        condition: service_healthy
+      mongo-shard1:
+        condition: service_healthy
+    command: ["mongos", "--configdb", "cfg/cfg.tablepeek.test:27017", "--bind_ip_all"]
+    ports:
+      - "127.0.0.1:27040:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 60
+
+# The keytab the KDC writes for the Kerberos test server.
+volumes:
+  kerberos-keytab:
