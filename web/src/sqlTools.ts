@@ -1,5 +1,6 @@
 import { firstRowsSql } from "./dataQuery";
 import { quoteIdent } from "./ddl";
+import type { SqlDialect } from "./engines/sqlDialect";
 import { t } from "./i18n";
 import { escapeString, lexingFor } from "./sqlSplit";
 
@@ -44,8 +45,8 @@ const DML = /\b(insert|update|delete|merge|replace)\b/i;
 // Comments and quoted text can't trigger or hide keywords.
 // # starts a comment only in MySQL (and when the engine isn't known); in
 // PostgreSQL it's an operator and in SQL Server a temporary table's name.
-function scanText(sql: string, dialect?: string): string {
-  const hashComments = dialect === undefined || dialect === "" || dialect === "mysql" || dialect === "mariadb";
+function scanText(sql: string, dialect?: SqlDialect): string {
+  const hashComments = lexingFor(dialect).hashComments;
   return sql
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(hashComments ? /(--|#)[^\n]*/g : /--[^\n]*/g, " ")
@@ -59,12 +60,12 @@ function scanText(sql: string, dialect?: string): string {
 // Statements after which the database's tables, views or columns may differ.
 const SCHEMA_KEYWORDS = new Set(["create", "drop", "alter", "rename"]);
 
-export function changesSchema(sql: string, dialect?: string): boolean {
+export function changesSchema(sql: string, dialect?: SqlDialect): boolean {
   const keyword = (/^([a-z]+)/i.exec(scanText(sql, dialect))?.[1] ?? "").toLowerCase();
   return SCHEMA_KEYWORDS.has(keyword);
 }
 
-export function classifyStatement(sql: string, dialect?: string): ReviewItem | null {
+export function classifyStatement(sql: string, dialect?: SqlDialect): ReviewItem | null {
   const scan = scanText(sql, dialect);
   const keyword = (/^([a-z]+)/i.exec(scan)?.[1] ?? "").toLowerCase();
   if (keyword === "" || SESSION_KEYWORDS.has(keyword)) {
@@ -112,7 +113,7 @@ export function classifyStatement(sql: string, dialect?: string): ReviewItem | n
   }
 }
 
-export function reviewStatements(statements: string[], mode: SafeMode, dialect?: string): ReviewItem[] {
+export function reviewStatements(statements: string[], mode: SafeMode, dialect?: SqlDialect): ReviewItem[] {
   if (mode === 0) {
     return [];
   }
@@ -121,23 +122,6 @@ export function reviewStatements(statements: string[], mode: SafeMode, dialect?:
     .filter(
       (item): item is ReviewItem => item !== null && (mode === 2 || item.severity === "danger"),
     );
-}
-
-export function explainPrefixFor(engineKind: string): string | null {
-  const kind = engineKind.trim().toLowerCase();
-  if (kind === "sqlite") {
-    return "EXPLAIN QUERY PLAN ";
-  }
-  if (
-    kind === "postgres" ||
-    kind === "postgresql" ||
-    kind === "cockroach" ||
-    kind === "cockroachdb" ||
-    kind === "mysql"
-  ) {
-    return "EXPLAIN ";
-  }
-  return null;
 }
 
 // Leading comments ("-- why\nEXPLAIN …", MySQL's "# why") don't hide an
@@ -174,16 +158,16 @@ export interface Snippet {
   sql: string;
 }
 
-export function snippetList(table: string, explainPrefix: string, kind = "postgres"): Snippet[] {
-  const quoted = quoteIdent(kind, table);
+export function snippetList(table: string, explainPrefix: string, dialect: SqlDialect): Snippet[] {
+  const quoted = quoteIdent(dialect, table);
   return [
-    { name: kind === "mssql" ? "SELECT TOP" : "SELECT LIMIT", sql: firstRowsSql(kind, quoted) },
+    { name: dialect.firstRowsName, sql: firstRowsSql(dialect, quoted) },
     { name: "COUNT", sql: `SELECT count(*) FROM ${quoted};` },
     { name: "INSERT", sql: `INSERT INTO ${quoted} (column1, column2) VALUES (value1, value2);` },
     { name: "UPDATE WHERE", sql: `UPDATE ${quoted} SET column1 = value1 WHERE id = 1;` },
     {
       name: "CREATE INDEX",
-      sql: `CREATE INDEX ${quoteIdent(kind, `idx_${table}_column1`)} ON ${quoted} (column1);`,
+      sql: `CREATE INDEX ${quoteIdent(dialect, `idx_${table}_column1`)} ON ${quoted} (column1);`,
     },
     { name: "EXPLAIN", sql: `${explainPrefix}SELECT * FROM ${quoted};` },
   ];
@@ -278,7 +262,7 @@ interface SqlChunk {
 // Text, string literals (quoted names too) and comments, so a rewrite (keywords
 // upper-cased, lines broken, parameters bound) touches only the text. What
 // counts as a quote or a comment is the dialect's, as when splitting statements.
-function chunkSql(sql: string, dialect?: string): SqlChunk[] {
+function chunkSql(sql: string, dialect?: SqlDialect): SqlChunk[] {
   const lex = lexingFor(dialect);
   const chunks: SqlChunk[] = [];
   let current = "";
@@ -370,7 +354,7 @@ const TOKEN = /\s+|::|@@?[A-Za-z_][A-Za-z0-9_$#@]*|:[A-Za-z_][A-Za-z0-9_]*|\$[A-
 
 // The SQL as tokens: words, names, blanks and punctuation from its text, and
 // its strings and comments whole, never looked into.
-function tokenizeSql(sql: string, dialect?: string): SqlToken[] {
+function tokenizeSql(sql: string, dialect?: SqlDialect): SqlToken[] {
   const tokens: SqlToken[] = [];
   for (const chunk of chunkSql(sql, dialect)) {
     if (chunk.kind === "string") {
@@ -431,7 +415,7 @@ function phraseAt(tokens: SqlToken[], at: number, phrases: string[][]): number {
 }
 
 // Keywords upper-cased in the text alone; strings and comments as written.
-export function uppercaseSql(sql: string, dialect?: string): string {
+export function uppercaseSql(sql: string, dialect?: SqlDialect): string {
   return tokenizeSql(sql, dialect)
     .map((token) => (token.kind === "word" && KEYWORD_SET.has(token.text.toUpperCase()) ? token.text.toUpperCase() : token.text))
     .join("");
@@ -441,7 +425,7 @@ export function uppercaseSql(sql: string, dialect?: string): string {
 // outside parentheses, blanks squeezed to one and keywords upper-cased.
 // Minify: one line, letter case as written (uppercaseSql is the caller's call). Neither changes a string literal or a comment; a -- or #
 // comment becomes /* … */ on one line, so the code after it isn't commented out.
-export function formatSql(sql: string, mode: "beautify" | "minify", dialect?: string): string {
+export function formatSql(sql: string, mode: "beautify" | "minify", dialect?: SqlDialect): string {
   const tokens = tokenizeSql(sql, dialect);
   const lines: string[] = [];
   let line = "";
@@ -547,7 +531,7 @@ export function formatSql(sql: string, mode: "beautify" | "minify", dialect?: st
   return (mode === "minify" ? lines.join(" ") : lines.join("\n")).replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export function extractParams(sql: string, dialect?: string): string[] {
+export function extractParams(sql: string, dialect?: SqlDialect): string[] {
   const chunks = chunkSql(sql, dialect);
   const names: string[] = [];
   for (const chunk of chunks) {
@@ -570,7 +554,7 @@ export function bindParams(
   sql: string,
   values: Record<string, string>,
   literal: (value: string) => string,
-  dialect?: string,
+  dialect?: SqlDialect,
 ): string {
   const chunks = chunkSql(sql, dialect);
   return chunks

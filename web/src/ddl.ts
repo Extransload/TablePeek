@@ -1,3 +1,4 @@
+import type { SqlDialect } from "./engines/sqlDialect";
 import { t } from "./i18n";
 import type { TableDetail, TableDetailForeignKey } from "./store";
 
@@ -43,7 +44,7 @@ export interface DiffResult {
 
 let draftSeq = 0;
 
-function sig(value: unknown): string {
+export function sig(value: unknown): string {
   return JSON.stringify(value, (key, item) =>
     key === "key" ? undefined : item,
   );
@@ -54,26 +55,16 @@ export function draftKey(): string {
   return `d-${draftSeq}`;
 }
 
-function quotePart(kind: string, part: string): string {
-  if (kind === "mysql") {
-    return `\`${part.replace(/`/g, "``")}\``;
-  }
-  if (kind === "mssql") {
-    return `[${part.replace(/]/g, "]]")}]`;
-  }
-  return `"${part.replace(/"/g, '""')}"`;
-}
-
-export function quoteIdent(kind: string, name: string): string {
+export function quoteIdent(dialect: SqlDialect, name: string): string {
   return name
     .split(".")
-    .map((part) => quotePart(kind, part.trim()))
+    .map((part) => dialect.quotePart(part.trim()))
     .join(".");
 }
 
 // A column's name, never schema-qualified: a dot in it is part of the name.
-export function quoteName(kind: string, name: string): string {
-  return quotePart(kind, name.trim());
+export function quoteName(dialect: SqlDialect, name: string): string {
+  return dialect.quotePart(name.trim());
 }
 
 export function splitList(text: string): string[] {
@@ -83,8 +74,8 @@ export function splitList(text: string): string[] {
     .filter((part) => part !== "");
 }
 
-function columnDef(kind: string, column: ColumnDraft): string {
-  const parts = [quoteName(kind, column.name), column.type.trim()];
+export function columnDef(dialect: SqlDialect, column: ColumnDraft): string {
+  const parts = [quoteName(dialect, column.name), column.type.trim()];
   if (column.notNull) {
     parts.push("NOT NULL");
   }
@@ -189,7 +180,7 @@ export function validateDraft(draft: StructureDraft): string[] {
   return errors;
 }
 
-function pkList(columns: ColumnDraft[]): string[] {
+export function pkList(columns: ColumnDraft[]): string[] {
   return columns
     .filter((column) => column.pk)
     .map((column) => column.name.trim());
@@ -203,412 +194,209 @@ function pkIdentity(columns: ColumnDraft[]): string {
     .join(",");
 }
 
-function indexSql(kind: string, table: string, index: IndexDraft): string {
-  return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteIdent(kind, index.name)} ON ${quoteIdent(kind, table)} (${splitList(
+export function indexSql(dialect: SqlDialect, table: string, index: IndexDraft): string {
+  return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteIdent(dialect, index.name)} ON ${quoteIdent(dialect, table)} (${splitList(
     index.columns,
   )
-    .map((column) => quoteIdent(kind, column))
+    .map((column) => quoteIdent(dialect, column))
     .join(", ")})`;
 }
 
-function dropIndexSql(kind: string, table: string, name: string): string {
-  if (kind === "mssql") {
-    return `DROP INDEX ${quoteIdent(kind, name)} ON ${quoteIdent(kind, table)}`;
+// An index lives in its table's schema (PostgreSQL, CockroachDB, an attached
+// SQLite database), so DROP INDEX names it there.
+export function dropIndexSql(dialect: SqlDialect, table: string, name: string): string {
+  if (dialect.dropIndex !== undefined) {
+    return dialect.dropIndex(table, name);
   }
-  return `DROP INDEX ${quoteIdent(kind, name)}`;
+  const dot = table.lastIndexOf(".");
+  const schema = dot < 0 ? "" : `${quoteIdent(dialect, table.slice(0, dot))}.`;
+  return `DROP INDEX ${schema}${quoteName(dialect, name)}`;
 }
 
-function fkAddSql(kind: string, table: string, fk: FkDraft): string {
+// A FOREIGN KEY clause, as CREATE TABLE and ALTER TABLE … ADD write it.
+export function fkClause(dialect: SqlDialect, fk: FkDraft): string {
   const name =
-    fk.name.trim() === "" ? "" : `CONSTRAINT ${quoteIdent(kind, fk.name)} `;
+    fk.name.trim() === "" ? "" : `CONSTRAINT ${quoteIdent(dialect, fk.name)} `;
   const columns = splitList(fk.columns)
-    .map((column) => quoteIdent(kind, column))
+    .map((column) => quoteIdent(dialect, column))
     .join(", ");
   const refColumns = splitList(fk.refColumns)
-    .map((column) => quoteIdent(kind, column))
+    .map((column) => quoteIdent(dialect, column))
     .join(", ");
-  return `ALTER TABLE ${quoteIdent(kind, table)} ADD ${name}FOREIGN KEY (${columns}) REFERENCES ${quoteIdent(kind, fk.refTable)} (${refColumns})`;
+  return `${name}FOREIGN KEY (${columns}) REFERENCES ${quoteIdent(dialect, fk.refTable)} (${refColumns})`;
 }
 
-function fkDropSql(kind: string, table: string, name: string): string {
-  if (kind === "mysql") {
-    return `ALTER TABLE ${quoteIdent(kind, table)} DROP FOREIGN KEY ${quoteIdent(kind, name)}`;
-  }
-  return `ALTER TABLE ${quoteIdent(kind, table)} DROP CONSTRAINT ${quoteIdent(kind, name)}`;
+function fkAddSql(dialect: SqlDialect, table: string, fk: FkDraft): string {
+  return `ALTER TABLE ${quoteIdent(dialect, table)} ADD ${fkClause(dialect, fk)}`;
 }
 
-function rebuildSqlite(table: string, draft: StructureDraft): string[] {
-  const tmp = `${table.split(".").pop() ?? table}_tablepeek_tmp`;
-  const columns = draft.columns.map((column) => columnDef("sqlite", column));
-  const pk = pkList(draft.columns);
-  if (pk.length > 0) {
-    columns.push(
-      `PRIMARY KEY (${pk.map((name) => quoteIdent("sqlite", name)).join(", ")})`,
-    );
-  }
-  for (const fk of draft.foreignKeys) {
-    const columnsList = splitList(fk.columns)
-      .map((column) => quoteIdent("sqlite", column))
-      .join(", ");
-    const refColumns = splitList(fk.refColumns)
-      .map((column) => quoteIdent("sqlite", column))
-      .join(", ");
-    const name =
-      fk.name.trim() === ""
-        ? ""
-        : `CONSTRAINT ${quoteIdent("sqlite", fk.name)} `;
-    columns.push(
-      `${name}FOREIGN KEY (${columnsList}) REFERENCES ${quoteIdent("sqlite", fk.refTable)} (${refColumns})`,
-    );
-  }
-  const copied = draft.columns.filter((column) => column.orig !== null);
-  // SQLite's documented way to rebuild a table: with foreign keys off, so
-  // dropping the original neither cascades into child tables nor fails on them.
-  const statements = [
-    "PRAGMA foreign_keys = OFF",
-    `DROP TABLE IF EXISTS ${quoteIdent("sqlite", tmp)}`,
-    `CREATE TABLE ${quoteIdent("sqlite", tmp)} (\n  ${columns.join(",\n  ")}\n)`,
-  ];
-  if (copied.length > 0) {
-    statements.push(
-      `INSERT INTO ${quoteIdent("sqlite", tmp)} (${copied
-        .map((column) => quoteIdent("sqlite", column.name))
-        .join(", ")}) SELECT ${copied
-        .map((column) => quoteIdent("sqlite", column.orig ?? column.name))
-        .join(", ")} FROM ${quoteIdent("sqlite", table)}`,
-    );
-  }
-  statements.push(`DROP TABLE ${quoteIdent("sqlite", table)}`);
-  statements.push(
-    `ALTER TABLE ${quoteIdent("sqlite", tmp)} RENAME TO ${quoteIdent("sqlite", table)}`,
+function fkDropSql(dialect: SqlDialect, table: string, name: string): string {
+  return (
+    dialect.dropForeignKey?.(table, name) ??
+    `ALTER TABLE ${quoteIdent(dialect, table)} DROP CONSTRAINT ${quoteIdent(dialect, name)}`
   );
-  for (const index of draft.indexes) {
-    if (index.name.trim() !== "") {
-      statements.push(indexSql("sqlite", table, index));
-    }
-  }
-  statements.push("PRAGMA foreign_keys = ON");
-  return statements;
 }
 
 export function diffStructure(
-  kind: string,
+  dialect: SqlDialect,
   table: string,
   orig: StructureDraft,
   next: StructureDraft,
 ): DiffResult {
-  const errors = validateDraft(next);
-  if (kind === "sqlite") {
-    for (const column of next.columns) {
-      if (column.orig === null && column.notNull && column.def.trim() === "") {
-        errors.push(
-          t("SQLite는 기본값 없는 NOT NULL 컬럼을 추가할 수 없습니다: {name}", { name: column.name }),
-        );
-      }
-    }
-    const origByName = new Map(
-      orig.columns.map((column) => [column.orig ?? column.name, column]),
-    );
-    let needsRebuild = false;
-    for (const column of next.columns) {
-      const before =
-        column.orig === null ? undefined : origByName.get(column.orig);
-      if (before === undefined) {
-        continue;
-      }
-      if (
-        before.type !== column.type ||
-        before.notNull !== column.notNull ||
-        before.def !== column.def ||
-        before.pk !== column.pk ||
-        before.name !== column.name
-      ) {
-        needsRebuild = true;
-      }
-    }
-    const origPk = pkList(orig.columns).join(",");
-    if (origPk !== pkList(next.columns).join(",")) {
-      needsRebuild = true;
-    }
-    const removed = orig.columns.some(
-      (column) =>
-        !next.columns.some(
-          (candidate) => candidate.orig === (column.orig ?? column.name),
-        ),
-    );
-    const added = next.columns.some((column) => column.orig === null);
-    // SQLite cannot alter a foreign key; the rebuild writes the new ones.
-    if (sig(orig.foreignKeys) !== sig(next.foreignKeys)) {
-      needsRebuild = true;
-    }
-    const indexChanged = sig(orig.indexes) !== sig(next.indexes);
-    if (needsRebuild) {
-      return {
-        statements: errors.length === 0 ? rebuildSqlite(table, next) : [],
-        errors,
-      };
-    }
-    const statements: string[] = [];
-    if (added || removed) {
-      if (removed) {
-        return {
-          statements: errors.length === 0 ? rebuildSqlite(table, next) : [],
-          errors,
-        };
-      }
-      for (const column of next.columns) {
-        if (column.orig === null && column.name.trim() !== "") {
-          statements.push(
-            `ALTER TABLE ${quoteIdent(kind, table)} ADD COLUMN ${columnDef(kind, column)}`,
-          );
-        }
-      }
-    }
-    if (indexChanged && errors.length === 0) {
-      const origIndexes = new Map(
-        orig.indexes.map((index) => [index.orig ?? index.name, index]),
-      );
-      for (const index of next.indexes) {
-        const before =
-          index.orig === null ? undefined : origIndexes.get(index.orig);
-        if (before === undefined) {
-          statements.push(indexSql(kind, table, index));
-        } else if (sig(before) !== sig(index)) {
-          statements.push(dropIndexSql(kind, table, before.name));
-          statements.push(indexSql(kind, table, index));
-        }
-      }
-      for (const index of orig.indexes) {
-        if (
-          !next.indexes.some(
-            (candidate) => candidate.orig === (index.orig ?? index.name),
-          )
-        ) {
-          statements.push(dropIndexSql(kind, table, index.name));
-        }
-      }
-    }
-    return { statements, errors };
+  if (dialect.diffStructure !== undefined) {
+    return dialect.diffStructure(table, orig, next);
   }
-
+  const errors = validateDraft(next);
   const statements: string[] = [];
   if (errors.length > 0) {
     return { statements, errors };
   }
 
+  const quotedTable = quoteIdent(dialect, table);
+  const dropped = orig.columns.filter(
+    (column) => !next.columns.some((candidate) => candidate.orig === (column.orig ?? column.name)),
+  );
+  const droppedNames = new Set(dropped.map((column) => column.name));
+  // Each kept column's draft before the save, and its new name by its old one.
+  const befores = new Map<ColumnDraft, ColumnDraft>();
+  const renamed = new Map<string, string>();
+  // The columns whose indexes have to go first: on SQL Server an index stops
+  // its column being retyped, made (not) null or dropped.
+  const held = new Set<string>();
   for (const column of next.columns) {
     const before =
       column.orig === null
         ? undefined
-        : orig.columns.find(
-            (candidate) => (candidate.orig ?? candidate.name) === column.orig,
-          );
+        : orig.columns.find((candidate) => (candidate.orig ?? candidate.name) === column.orig);
     if (before === undefined) {
-      statements.push(
-        `ALTER TABLE ${quoteIdent(kind, table)} ADD COLUMN ${columnDef(kind, column)}`,
-      );
-      if (kind === "mssql" && column.def.trim() !== "") {
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} ADD CONSTRAINT ${quotePart(
-            kind,
-            `DF_${table.replace(/\./g, "_")}_${column.name}`,
-          )} DEFAULT ${column.def.trim()} FOR ${quoteIdent(kind, column.name)}`,
-        );
-      }
       continue;
     }
-    if (before.name !== column.name) {
-      if (kind === "mssql") {
-        statements.push(
-          `EXEC sp_rename N'${table}.${before.name}', N'${column.name}', 'COLUMN'`,
-        );
-      } else {
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} RENAME COLUMN ${quoteIdent(kind, before.name)} TO ${quoteIdent(kind, column.name)}`,
-        );
-      }
+    befores.set(column, before);
+    renamed.set(before.name, column.name);
+    if (dialect.indexesHoldColumns && (before.type !== column.type || before.notNull !== column.notNull)) {
+      held.add(before.name);
     }
-    const typeChanged = before.type !== column.type;
-    const nullChanged = before.notNull !== column.notNull;
-    const defChanged = before.def !== column.def;
-    if (!typeChanged && !nullChanged && !defChanged) {
-      continue;
-    }
-    if (kind === "postgres" || kind === "cockroach") {
-      if (typeChanged) {
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name)} TYPE ${column.type.trim()}`,
-        );
-      }
-      if (nullChanged) {
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name)} ${column.notNull ? "SET" : "DROP"} NOT NULL`,
-        );
-      }
-      if (defChanged) {
-        statements.push(
-          column.def.trim() === ""
-            ? `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name)} DROP DEFAULT`
-            : `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name)} SET DEFAULT ${column.def.trim()}`,
-        );
-      }
-      continue;
-    }
-    if (kind === "mysql") {
-      statements.push(
-        `ALTER TABLE ${quoteIdent(kind, table)} MODIFY COLUMN ${columnDef(kind, column)}`,
-      );
-      continue;
-    }
-    if (kind === "mssql") {
-      if (defChanged) {
-        errors.push(t("MSSQL은 기본값 변경을 지원하지 않습니다: {name}", { name: column.name }));
-        continue;
-      }
-      statements.push(
-        `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name)} ${column.type.trim()} ${column.notNull ? "NOT NULL" : "NULL"}`,
-      );
-    }
+  }
+  if (dialect.indexesHoldColumns) {
+    droppedNames.forEach((name) => held.add(name));
   }
 
-  // The key changes before any column goes: dropping a key column would take
-  // the key with it (PostgreSQL) or be refused (CockroachDB).
-  const origPk = pkList(orig.columns);
-  const nextPk = pkList(next.columns);
-  if (pkIdentity(orig.columns) !== pkIdentity(next.columns)) {
-    if (kind === "mysql") {
-      if (origPk.length > 0) {
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} DROP PRIMARY KEY`,
-        );
-      }
-      if (nextPk.length > 0) {
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} ADD PRIMARY KEY (${nextPk
-            .map((name) => quoteIdent(kind, name))
-            .join(", ")})`,
-        );
-      }
-    } else if (kind === "cockroach") {
-      // CockroachDB swaps a primary key in one statement and keeps one always;
-      // its columns must be NOT NULL first (others make them so themselves).
-      if (nextPk.length > 0) {
-        for (const column of next.columns) {
-          if (column.pk && !column.notNull) {
-            statements.push(
-              `ALTER TABLE ${quoteIdent(kind, table)} ALTER COLUMN ${quoteIdent(kind, column.name.trim())} SET NOT NULL`,
-            );
-          }
-        }
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} ALTER PRIMARY KEY USING COLUMNS (${nextPk
-            .map((name) => quoteIdent(kind, name))
-            .join(", ")})`,
-        );
-      } else {
-        errors.push(t("CockroachDB 테이블에서는 기본 키를 없앨 수 없습니다"));
-      }
-    } else if (kind === "postgres") {
-      // The old key goes first: a table can't hold two. Its real name, when
-      // known; a renamed table keeps its key's old one.
-      if (origPk.length > 0) {
-        const short = table.split(".").pop() ?? table;
-        const constraint = orig.primaryName ?? `${short}_pkey`;
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} DROP CONSTRAINT IF EXISTS ${quotePart(kind, constraint)}`,
-        );
-      }
-      if (nextPk.length > 0) {
-        statements.push(
-          `ALTER TABLE ${quoteIdent(kind, table)} ADD PRIMARY KEY (${nextPk
-            .map((name) => quoteIdent(kind, name))
-            .join(", ")})`,
-        );
-      }
-    } else {
-      errors.push(t("이 엔진은 기본 키 변경을 지원하지 않습니다"));
-    }
-  }
-
-  for (const column of orig.columns) {
-    if (
-      !next.columns.some(
-        (candidate) => candidate.orig === (column.orig ?? column.name),
-      )
-    ) {
-      statements.push(
-        `ALTER TABLE ${quoteIdent(kind, table)} DROP COLUMN ${quoteIdent(kind, column.name)}`,
-      );
-    }
-  }
-
-  const origIndexes = new Map(
-    orig.indexes.map((index) => [index.orig ?? index.name, index]),
-  );
-  for (const index of next.indexes) {
-    const before =
-      index.orig === null ? undefined : origIndexes.get(index.orig);
-    if (before === undefined) {
-      statements.push(indexSql(kind, table, index));
-    } else if (
-      before.unique !== index.unique ||
-      before.columns !== index.columns ||
-      before.name !== index.name
-    ) {
-      statements.push(dropIndexSql(kind, table, before.name));
-      statements.push(indexSql(kind, table, index));
-    }
-  }
-  for (const index of orig.indexes) {
-    if (
-      !next.indexes.some(
-        (candidate) => candidate.orig === (index.orig ?? index.name),
-      )
-    ) {
-      statements.push(dropIndexSql(kind, table, index.name));
-    }
-  }
-
-  const origFks = new Map(
-    orig.foreignKeys.map((fk) => [fk.orig ?? fk.name, fk]),
-  );
+  // What goes comes off first, foreign keys before the indexes they may need,
+  // so no column change or drop runs into either. What is added or made again
+  // comes after the columns, under their new names.
+  const origFks = new Map(orig.foreignKeys.map((fk) => [fk.orig ?? fk.name, fk]));
+  const fkAdds: string[] = [];
   for (const fk of next.foreignKeys) {
     const before = fk.orig === null ? undefined : origFks.get(fk.orig);
     if (before === undefined) {
-      statements.push(fkAddSql(kind, table, fk));
+      fkAdds.push(fkAddSql(dialect, table, fk));
     } else if (
       before.columns !== fk.columns ||
       before.refTable !== fk.refTable ||
       before.refColumns !== fk.refColumns ||
       before.name !== fk.name
     ) {
-      statements.push(fkDropSql(kind, table, before.name));
-      statements.push(fkAddSql(kind, table, fk));
+      statements.push(fkDropSql(dialect, table, before.name));
+      fkAdds.push(fkAddSql(dialect, table, fk));
     }
   }
   for (const fk of orig.foreignKeys) {
-    if (
-      !next.foreignKeys.some(
-        (candidate) => candidate.orig === (fk.orig ?? fk.name),
-      )
-    ) {
-      statements.push(fkDropSql(kind, table, fk.name));
+    if (!next.foreignKeys.some((candidate) => candidate.orig === (fk.orig ?? fk.name))) {
+      statements.push(fkDropSql(dialect, table, fk.name));
     }
   }
+
+  const origIndexes = new Map(orig.indexes.map((index) => [index.orig ?? index.name, index]));
+  const indexAdds: string[] = [];
+  for (const index of next.indexes) {
+    const before = index.orig === null ? undefined : origIndexes.get(index.orig);
+    if (before === undefined) {
+      indexAdds.push(indexSql(dialect, table, index));
+    } else if (before.unique !== index.unique || before.columns !== index.columns || before.name !== index.name) {
+      statements.push(dropIndexSql(dialect, table, before.name));
+      indexAdds.push(indexSql(dialect, table, index));
+    } else if (splitList(before.columns).some((name) => held.has(name))) {
+      // Made again as it was, unless one of its columns went (PostgreSQL
+      // drops such an index with the column too).
+      statements.push(dropIndexSql(dialect, table, before.name));
+      const columns = splitList(before.columns);
+      if (!columns.some((name) => droppedNames.has(name))) {
+        indexAdds.push(
+          indexSql(dialect, table, { ...index, columns: columns.map((name) => renamed.get(name) ?? name).join(", ") }),
+        );
+      }
+    }
+  }
+  for (const index of orig.indexes) {
+    if (!next.indexes.some((candidate) => candidate.orig === (index.orig ?? index.name))) {
+      statements.push(dropIndexSql(dialect, table, index.name));
+    }
+  }
+
+  for (const column of next.columns) {
+    const before = befores.get(column);
+    if (before === undefined) {
+      statements.push(
+        ...(dialect.addColumn?.(table, column) ?? [`ALTER TABLE ${quotedTable} ADD COLUMN ${columnDef(dialect, column)}`]),
+      );
+      continue;
+    }
+    if (before.name !== column.name) {
+      statements.push(
+        dialect.renameColumn?.(table, before.name, column.name) ??
+          `ALTER TABLE ${quotedTable} RENAME COLUMN ${quoteIdent(dialect, before.name)} TO ${quoteIdent(dialect, column.name)}`,
+      );
+    }
+    const change = {
+      type: before.type !== column.type,
+      notNull: before.notNull !== column.notNull,
+      def: before.def !== column.def,
+    };
+    if (!change.type && !change.notNull && !change.def) {
+      continue;
+    }
+    if (dialect.alterColumn === undefined) {
+      errors.push(t("이 엔진은 컬럼 변경을 지원하지 않습니다: {name}", { name: column.name }));
+      continue;
+    }
+    statements.push(...dialect.alterColumn(table, column, change, errors));
+  }
+
+  // The key changes before any column goes: dropping a key column would take
+  // the key with it (PostgreSQL) or be refused (CockroachDB).
+  if (pkIdentity(orig.columns) !== pkIdentity(next.columns)) {
+    if (dialect.changePrimaryKey !== undefined) {
+      statements.push(...dialect.changePrimaryKey(table, orig, next, errors));
+    } else {
+      errors.push(t("이 엔진은 기본 키 변경을 지원하지 않습니다"));
+    }
+  }
+
+  for (const column of dropped) {
+    statements.push(
+      ...(dialect.dropColumn?.(table, column.name) ?? [
+        `ALTER TABLE ${quotedTable} DROP COLUMN ${quoteIdent(dialect, column.name)}`,
+      ]),
+    );
+  }
+
+  statements.push(...indexAdds, ...fkAdds);
 
   return { statements, errors };
 }
 
+// CREATE TABLE's own options, written where the engine has them (MySQL's
+// ENGINE=, DEFAULT CHARSET= and the rest).
 export interface CreateTableOptions {
-  mysqlEngine?: string;
-  mysqlCharset?: string;
-  mysqlCollation?: string;
-  mysqlRowFormat?: string;
-  mysqlComment?: string;
+  engine?: string;
+  charset?: string;
+  collation?: string;
+  rowFormat?: string;
+  comment?: string;
 }
 
 export function createTableSql(
-  kind: string,
+  dialect: SqlDialect,
   table: string,
   draft: StructureDraft,
   options: CreateTableOptions = {},
@@ -617,81 +405,42 @@ export function createTableSql(
   if (errors.length > 0) {
     return { statements: [], errors };
   }
-  const body = draft.columns.map((column) => columnDef(kind, column));
+  const body = draft.columns.map((column) => columnDef(dialect, column));
   const pk = pkList(draft.columns);
   if (pk.length > 0) {
     body.push(
-      `PRIMARY KEY (${pk.map((name) => quoteIdent(kind, name)).join(", ")})`,
+      `PRIMARY KEY (${pk.map((name) => quoteIdent(dialect, name)).join(", ")})`,
     );
   }
   for (const fk of draft.foreignKeys) {
-    const columnsList = splitList(fk.columns)
-      .map((column) => quoteIdent(kind, column))
-      .join(", ");
-    const refColumns = splitList(fk.refColumns)
-      .map((column) => quoteIdent(kind, column))
-      .join(", ");
-    const name =
-      fk.name.trim() === "" ? "" : `CONSTRAINT ${quoteIdent(kind, fk.name)} `;
-    body.push(
-      `${name}FOREIGN KEY (${columnsList}) REFERENCES ${quoteIdent(kind, fk.refTable)} (${refColumns})`,
-    );
+    body.push(fkClause(dialect, fk));
   }
-  let suffix = "";
-  if (kind === "mysql") {
-    const parts: string[] = [];
-    if (options.mysqlEngine && options.mysqlEngine.trim() !== "") {
-      parts.push(`ENGINE=${options.mysqlEngine.trim()}`);
-    }
-    if (options.mysqlCharset && options.mysqlCharset.trim() !== "") {
-      parts.push(`DEFAULT CHARSET=${options.mysqlCharset.trim()}`);
-    }
-    if (options.mysqlCollation && options.mysqlCollation.trim() !== "") {
-      parts.push(`COLLATE=${options.mysqlCollation.trim()}`);
-    }
-    if (options.mysqlRowFormat && options.mysqlRowFormat.trim() !== "") {
-      parts.push(`ROW_FORMAT=${options.mysqlRowFormat.trim().toUpperCase()}`);
-    }
-    if (options.mysqlComment && options.mysqlComment.trim() !== "") {
-      parts.push(`COMMENT=${laravelString(options.mysqlComment.trim())}`);
-    }
-    if (parts.length > 0) {
-      suffix = ` ${parts.join(" ")}`;
-    }
-  }
+  const suffix = dialect.tableOptions?.(options) ?? "";
   const statements = [
-    `CREATE TABLE ${quoteIdent(kind, table)} (\n  ${body.join(",\n  ")}\n)${suffix}`,
+    `CREATE TABLE ${quoteIdent(dialect, table)} (\n  ${body.join(",\n  ")}\n)${suffix}`,
   ];
   for (const index of draft.indexes) {
     if (index.name.trim() !== "" && splitList(index.columns).length > 0) {
-      statements.push(indexSql(kind, table, index));
+      statements.push(indexSql(dialect, table, index));
     }
   }
   return { statements, errors };
 }
 
 export function renameTableSql(
-  kind: string,
+  dialect: SqlDialect,
   table: string,
   newName: string,
 ): string {
-  if (kind === "mysql") {
-    return `RENAME TABLE ${quoteIdent(kind, table)} TO ${quoteIdent(kind, newName)}`;
-  }
-  if (kind === "mssql") {
-    const target = newName.includes(".")
-      ? newName
-      : table.split(".")[0]
-        ? `${table.split(".")[0]}.${newName}`
-        : newName;
-    return `EXEC sp_rename N'${table}', N'${target.split(".").pop() ?? target}'`;
+  if (dialect.renameTable !== undefined) {
+    return dialect.renameTable(table, newName);
   }
   const short = newName.split(".").pop() ?? newName;
-  return `ALTER TABLE ${quoteIdent(kind, table)} RENAME TO ${quoteIdent(kind, short)}`;
+  return `ALTER TABLE ${quoteIdent(dialect, table)} RENAME TO ${quoteIdent(dialect, short)}`;
 }
 
-export function dropTableSql(kind: string, table: string): string {
-  return `DROP TABLE ${quoteIdent(kind, table)}`;
+export function dropTableSql(dialect: SqlDialect, table: string): string {
+  return `DROP TABLE ${quoteIdent(dialect, table)}`;
 }
 
 // Tables ordered so each comes after the ones it references among them:
@@ -717,137 +466,80 @@ export function dependencyOrder(names: string[], references: (name: string) => s
   return order;
 }
 
+// A table's secondary indexes, for a dump to make after the table's rows (no
+// index kept up to date row by row) and before the foreign keys, which may
+// need a unique one. The servers' CREATE TABLE text carries none; SQLite's
+// stored definition does (none here). The engine's own statement is taken
+// where it gives one (PostgreSQL, CockroachDB); otherwise the statement is
+// written from the key parts (MySQL's prefixes and expressions), the
+// included columns and the predicate (SQL Server's filtered indexes). An
+// index with no key to write is left out.
+export function dumpIndexSql(dialect: SqlDialect, table: string, detail: TableDetail): string[] {
+  if (dialect.keysInCreate) {
+    return [];
+  }
+  const statements: string[] = [];
+  for (const index of detail.indexes) {
+    if (index.primary) {
+      continue;
+    }
+    if (index.definition !== undefined && index.definition.trim() !== "") {
+      statements.push(index.definition.trim().replace(/;$/, ""));
+      continue;
+    }
+    const keys =
+      index.parts?.map(
+        (part) =>
+          `${
+            part.expression !== undefined
+              ? `(${part.expression})`
+              : `${quoteName(dialect, part.column ?? "")}${part.prefix_length !== undefined ? `(${part.prefix_length})` : ""}`
+          }${part.descending === true ? " DESC" : ""}`,
+      ) ?? index.columns.map((column) => quoteName(dialect, column));
+    if (keys.length === 0) {
+      continue;
+    }
+    const included =
+      index.included !== undefined && index.included.length > 0
+        ? ` INCLUDE (${index.included.map((column) => quoteName(dialect, column)).join(", ")})`
+        : "";
+    const where = index.where !== undefined && index.where.trim() !== "" ? ` WHERE ${index.where.trim()}` : "";
+    statements.push(
+      `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteName(dialect, index.name)} ON ${quoteIdent(dialect, table)} (${keys.join(", ")})${included}${where}`,
+    );
+  }
+  return statements;
+}
+
 // A foreign key added once every table exists and holds its rows, as a dump
 // does: rows then go in any order, and a table may reference itself or be
 // one of two that reference each other. SQLite can't add one this way; its
 // CREATE TABLE already carries them.
-export function foreignKeySql(kind: string, table: string, fk: TableDetailForeignKey): string {
-  const list = (columns: string[]): string => columns.map((column) => quoteIdent(kind, column)).join(", ");
-  const name = fk.name.trim() === "" ? "" : `CONSTRAINT ${quoteIdent(kind, fk.name)} `;
-  return `ALTER TABLE ${quoteIdent(kind, table)} ADD ${name}FOREIGN KEY (${list(fk.columns)}) REFERENCES ${quoteIdent(kind, fk.ref_table)} (${list(fk.ref_columns)})`;
+export function foreignKeySql(dialect: SqlDialect, table: string, fk: TableDetailForeignKey): string {
+  const list = (columns: string[]): string => columns.map((column) => quoteIdent(dialect, column)).join(", ");
+  const name = fk.name.trim() === "" ? "" : `CONSTRAINT ${quoteIdent(dialect, fk.name)} `;
+  return `ALTER TABLE ${quoteIdent(dialect, table)} ADD ${name}FOREIGN KEY (${list(fk.columns)}) REFERENCES ${quoteIdent(dialect, fk.ref_table)} (${list(fk.ref_columns)})`;
 }
 
 // Two tables that reference each other can't be dropped in either order, so
 // the reference goes first. MySQL drops with its key checks off and SQLite
 // doesn't hold DROP to them, so they need none (null).
-export function dropForeignKeySql(kind: string, table: string, fk: TableDetailForeignKey): string | null {
+export function dropForeignKeySql(dialect: SqlDialect, table: string, fk: TableDetailForeignKey): string | null {
   if (fk.name.trim() === "") {
     return null;
   }
-  const name = quoteIdent(kind, fk.name);
-  if (kind === "postgres" || kind === "cockroach") {
-    return `ALTER TABLE IF EXISTS ${quoteIdent(kind, table)} DROP CONSTRAINT IF EXISTS ${name}`;
-  }
-  if (kind === "mssql") {
-    // A constraint is named within its table's schema.
-    const dot = table.lastIndexOf(".");
-    const qualified = dot < 0 ? name : `${quoteIdent(kind, table.slice(0, dot))}.${name}`;
-    return `IF OBJECT_ID(N'${qualified.replace(/'/g, "''")}', N'F') IS NOT NULL ALTER TABLE ${quoteIdent(kind, table)} DROP CONSTRAINT ${name}`;
-  }
-  return null;
+  return dialect.dropForeignKeyIfExists?.(table, fk) ?? null;
 }
 
 // What an export's "Drop" writes before CREATE, so the file runs again on a
 // database that already has the object.
-export function dropIfExistsSql(kind: string, name: string, object: "table" | "view" = "table"): string {
-  const keyword = object === "view" ? "VIEW" : "TABLE";
-  const quoted = quoteIdent(kind, name);
-  if (kind === "mssql") {
-    // DROP … IF EXISTS needs SQL Server 2016; OBJECT_ID works on older servers too.
-    return `IF OBJECT_ID(N'${quoted.replace(/'/g, "''")}', N'${object === "view" ? "V" : "U"}') IS NOT NULL DROP ${keyword} ${quoted}`;
-  }
-  return `DROP ${keyword} IF EXISTS ${quoted}`;
+export function dropIfExistsSql(dialect: SqlDialect, name: string, object: "table" | "view" = "table"): string {
+  const quoted = quoteIdent(dialect, name);
+  return dialect.dropIfExists?.(quoted, object) ?? `DROP ${object === "view" ? "VIEW" : "TABLE"} IF EXISTS ${quoted}`;
 }
 
-// Bare words SQLite reads in a DEFAULT as values, not as strings.
-const SQLITE_DEFAULT_WORDS = new Set(["null", "true", "false", "current_time", "current_date", "current_timestamp"]);
-
-// The text of a default spelled as one name: a bare word, "…" or `…` with
-// their quotes doubled inside, or […].
-function sqliteDefaultName(expr: string): string | null {
-  const quoted = /^"((?:[^"]|"")*)"$/.exec(expr) ?? /^`((?:[^`]|``)*)`$/.exec(expr);
-  if (quoted !== null) {
-    const quote = expr[0];
-    return quoted[1].split(quote + quote).join(quote);
-  }
-  const bracketed = /^\[([^\]]*)\]$/.exec(expr);
-  if (bracketed !== null) {
-    return bracketed[1];
-  }
-  return /^[A-Za-z_\u0080-\uffff][\w$\u0080-\uffff]*$/.test(expr) && !SQLITE_DEFAULT_WORDS.has(expr.toLowerCase())
-    ? expr
-    : null;
-}
-
-// Whether an expression holds a bind parameter (?, ?1, :x, @x, $x) outside
-// its strings, quoted names and comments. Unclosed ones count.
-function hasBindParameter(sql: string): boolean {
-  const word = /[\w$\u0080-\uffff]/;
-  for (let i = 0; i < sql.length; i += 1) {
-    const ch = sql[i];
-    const close = ch === "'" || ch === '"' || ch === "`" ? ch : ch === "[" ? "]" : null;
-    if (close !== null) {
-      // A doubled quote is two strings side by side.
-      const end = sql.indexOf(close, i + 1);
-      if (end < 0) {
-        return true;
-      }
-      i = end;
-      continue;
-    }
-    if (sql.startsWith("--", i)) {
-      const end = sql.indexOf("\n", i);
-      if (end < 0) {
-        return false;
-      }
-      i = end;
-      continue;
-    }
-    if (sql.startsWith("/*", i)) {
-      const end = sql.indexOf("*/", i + 2);
-      if (end < 0) {
-        return true;
-      }
-      i = end + 1;
-      continue;
-    }
-    const next = sql[i + 1] ?? "";
-    const startsName = word.test(next) && next !== "$";
-    const afterWord = i > 0 && word.test(sql[i - 1]);
-    if (ch === "?" || ((ch === ":" || ch === "@" || ch === "$") && startsName && !afterWord)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// SQLite has no `SET col = DEFAULT`: the column's declared default stands
-// in, as the engine writes it when it applies one (crates/tablepeek-engine,
-// sqlite_default_sql), and NULL without one. A default spelled as one name
-// (DEFAULT active, "x", [x], `x`) is a string in CREATE TABLE but would name
-// a column in an UPDATE, so it is written as the string. null: the default
-// holds a bind parameter, which the engine refuses too.
-export function sqliteDefaultSql(declared: string | null): string | null {
-  if (declared === null) {
-    return "NULL";
-  }
-  const name = sqliteDefaultName(declared.trim());
-  if (name !== null) {
-    return `'${name.replace(/'/g, "''")}'`;
-  }
-  if (hasBindParameter(declared)) {
-    return null;
-  }
-  // pragma_table_info drops the outer parentheses but keeps a trailing
-  // `-- comment`, which would swallow the closing one: it ends a line here.
-  return declared.includes("--") ? `(${declared}\n)` : `(${declared})`;
-}
-
-export function truncateTableSql(kind: string, table: string): string {
-  if (kind === "sqlite") {
-    return `DELETE FROM ${quoteIdent(kind, table)}`;
-  }
-  return `TRUNCATE TABLE ${quoteIdent(kind, table)}`;
+export function truncateTableSql(dialect: SqlDialect, table: string): string {
+  return `${dialect.truncateStatement} ${quoteIdent(dialect, table)}`;
 }
 
 function laravelString(value: string): string {
@@ -890,10 +582,10 @@ function laravelType(decl: string | null): { method: string; args: string[] } {
   if (/^(text|tinytext|mediumtext|longtext|citext)$/.test(base)) {
     return { method: "text", args: [] };
   }
-  if (/^(timestamp with time zone|timestamptz)$/.test(base)) {
+  if (/^(timestamp with time zone|timestamptz|datetimeoffset)$/.test(base)) {
     return { method: "dateTimeTz", args: [] };
   }
-  if (/^(timestamp|datetime)$/.test(base)) {
+  if (/^(timestamp|timestamp without time zone|datetime|datetime2|smalldatetime)$/.test(base)) {
     return { method: "dateTime", args: args.length > 0 ? [args[0]] : [] };
   }
   if (base === "date") {
@@ -931,34 +623,49 @@ function laravelType(decl: string | null): { method: string; args: string[] } {
   return { method: "string", args: [] };
 }
 
+// The modifier a column's default becomes, or null when it has none Laravel
+// can write (an expression, a sequence).
 function laravelDefault(value: string | null): string | null {
   if (value === null) {
     return null;
   }
-  const text = value.trim();
+  let text = value.trim();
+  // SQL Server keeps a default in parentheses: ((0)), (N'x'), (getdate()).
+  while (text.startsWith("(") && text.endsWith(")")) {
+    let depth = 0;
+    let closes = -1;
+    for (let at = 0; at < text.length && closes < 0; at += 1) {
+      depth += text[at] === "(" ? 1 : text[at] === ")" ? -1 : 0;
+      closes = depth === 0 ? at : -1;
+    }
+    if (closes !== text.length - 1) {
+      break;
+    }
+    text = text.slice(1, -1).trim();
+  }
   if (text === "" || /^null$/i.test(text)) {
     return null;
   }
   if (/^(true|false)$/i.test(text)) {
-    return text.toLowerCase();
+    return `default(${text.toLowerCase()})`;
   }
   if (/^-?\d+(\.\d+)?$/.test(text)) {
-    return text;
+    return `default(${text})`;
   }
-  const cast = /^'(.*)'::[a-z0-9 _[\]]+$/i.exec(text);
+  const cast = /^'(.*)'::[a-z0-9 _[\]]+$/is.exec(text);
   if (cast) {
-    return laravelString(cast[1].replace(/''/g, "'"));
+    return `default(${laravelString(cast[1].replace(/''/g, "'"))})`;
   }
-  if (/^'.*'$/s.test(text)) {
-    return laravelString(text.slice(1, -1).replace(/''/g, "'"));
+  if (/^N?'.*'$/s.test(text)) {
+    return `default(${laravelString(text.slice(text.indexOf("'") + 1, -1).replace(/''/g, "'"))})`;
   }
-  if (/^(now\(\)|current_timestamp)$/i.test(text)) {
-    return "DB::raw('CURRENT_TIMESTAMP')";
+  if (/^(now\(\)|current_timestamp(\(\d*\))?|getdate\(\)|sysdatetime\(\))$/i.test(text)) {
+    return "useCurrent()";
   }
   return null;
 }
 
-export function laravelSchemaScript(detail: TableDetail, kind: string): string {
+export function laravelSchemaScript(detail: TableDetail, dialect: SqlDialect): string {
   const tableName = (detail.name.split(".").pop() ?? detail.name).trim();
   const lines: string[] = [
     `Schema::create(${laravelString(tableName)}, function (Blueprint $table) {`,
@@ -969,24 +676,27 @@ export function laravelSchemaScript(detail: TableDetail, kind: string): string {
   for (const column of detail.columns) {
     const type = laravelType(column.decl_type);
     const args = [laravelString(column.name), ...type.args].join(", ");
+    // Each modifier is its own call: ->primary()->nullable()->default(5).
     const modifiers: string[] = [];
-    if (column.pk && primary.length === 1) {
-      modifiers.push("primary");
+    // A sequence's column (PostgreSQL's serial reads back as nextval()) is
+    // autoIncrement, which makes it the key by itself.
+    const increments =
+      /^(serial|bigserial|smallserial)/i.test((column.decl_type ?? "").trim()) ||
+      /^nextval\(/i.test((column.default ?? "").trim());
+    if (column.pk && primary.length === 1 && !increments) {
+      modifiers.push("primary()");
     }
     if (!column.not_null) {
-      modifiers.push("nullable");
+      modifiers.push("nullable()");
     }
     const fallback = laravelDefault(column.default);
     if (fallback !== null) {
-      modifiers.push(`default(${fallback})`);
+      modifiers.push(fallback);
     }
-    if (
-      /^(serial|bigserial|smallserial)/i.test((column.decl_type ?? "").trim())
-    ) {
-      modifiers.push("autoIncrement");
+    if (increments) {
+      modifiers.push("autoIncrement()");
     }
-    const suffix = modifiers.length > 0 ? `->${modifiers.join("->")}()` : "";
-    lines.push(`    $table->${type.method}(${args})${suffix};`);
+    lines.push(`    $table->${type.method}(${args})${modifiers.map((call) => `->${call}`).join("")};`);
   }
   if (primary.length > 1) {
     lines.push(
@@ -1011,8 +721,8 @@ export function laravelSchemaScript(detail: TableDetail, kind: string): string {
       `    $table->foreign(${columns}, ${laravelString(fk.name)})->references(${refs})->on(${laravelString(target)});`,
     );
   }
-  if (kind === "mysql") {
-    lines.push("    $table->engine = 'InnoDB';");
+  if (dialect.laravelEngine !== undefined) {
+    lines.push(`    $table->engine = '${dialect.laravelEngine}';`);
   }
   lines.push("});");
   return lines.join("\n");

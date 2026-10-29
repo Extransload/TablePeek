@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import { createTableSql, emptyDrafts, type StructureDraft } from "../ddl";
+import type { SqlDialect } from "../engines/sqlDialect";
 import { t } from "../i18n";
 import { store, type EngineMeta } from "../store";
 import { ColumnsEditor, DdlPreview, IndexesEditor } from "./DraftEditors";
-import { ErrorNotice } from "./ErrorNotice";
+import { ErrorNotice, FieldError } from "./ErrorNotice";
 
 interface CreateTableModalProps {
   conn: string;
-  kind: string;
+  dialect: SqlDialect;
   meta: EngineMeta;
   onClose(): void;
   onCreated(table: string): void;
@@ -17,7 +18,7 @@ function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: CreateTableModalProps) {
+export function CreateTableModal({ conn, dialect, meta, onClose, onCreated }: CreateTableModalProps) {
   const [name, setName] = useState("");
   const [draft, setDraft] = useState<StructureDraft>(() => emptyDrafts());
   const [preview, setPreview] = useState(false);
@@ -33,14 +34,14 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
     if (name.trim() === "") {
       return { statements: [], errors: [t("테이블 이름을 입력하세요")] };
     }
-    return createTableSql(kind, name.trim(), draft, {
-      mysqlEngine: engine,
-      mysqlCharset: charset,
-      mysqlCollation: collation,
-      mysqlRowFormat: rowFormat,
-      mysqlComment: comment,
+    return createTableSql(dialect, name.trim(), draft, {
+      engine,
+      charset,
+      collation,
+      rowFormat,
+      comment,
     });
-  }, [kind, name, draft, engine, charset, collation, rowFormat, comment]);
+  }, [dialect, name, draft, engine, charset, collation, rowFormat, comment]);
 
   async function run(): Promise<void> {
     if (result.errors.length > 0 || result.statements.length === 0) {
@@ -81,7 +82,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
               onChange={(event) => setName(event.target.value)}
             />
           </label>
-          {kind === "mysql" ? (
+          {dialect.tableOptions !== undefined ? (
             <>
               <div className="create-inline">
                 <label className="field">
@@ -139,12 +140,10 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
             />
           </section>
           {preview ? <DdlPreview result={result} /> : null}
-          {error ? <ErrorNotice message={error} /> : null}
+          {error ? <ErrorNotice error={error} context="structure" /> : null}
         </div>
         <div className="modal-foot">
-          {result.errors.length > 0 ? (
-            <span className="connect-error">{result.errors[0]}</span>
-          ) : null}
+          <FieldError id="create-table-problem" error={result.errors[0]} />
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={() => setPreview((value) => !value)}>
             {preview ? t("미리보기 숨기기") : t("미리보기")}
@@ -156,6 +155,7 @@ export function CreateTableModal({ conn, kind, meta, onClose, onCreated }: Creat
             type="button"
             className="primary"
             disabled={busy || result.errors.length > 0 || name.trim() === ""}
+            aria-describedby={result.errors.length > 0 ? "create-table-problem" : undefined}
             onClick={() => void run()}
           >
             {t("생성")}

@@ -1,3 +1,5 @@
+import type { SqlDialect } from "./engines/sqlDialect";
+
 // A statement as written in the editor, and where it is.
 export interface SqlRange {
   // Its first character (comments written just before it count as part of it).
@@ -12,8 +14,8 @@ export interface SqlRange {
 
 // What the engine's SQL allows, which decides what ends a statement:
 // # comments, backslash escapes and /*! code */ are MySQL's, [names] SQL
-// Server's and SQLite's, $tag$ bodies and E'…' strings PostgreSQL's.
-// Unknown: everything, as before.
+// Server's and SQLite's, $tag$ bodies and E'…' strings PostgreSQL's. Each
+// dialect has its own (SqlDialect.lexing).
 export interface Lexing {
   hashComments: boolean;
   backslashEscapes: boolean;
@@ -23,36 +25,18 @@ export interface Lexing {
   escapeStrings: boolean;
 }
 
-const NONE: Lexing = {
-  hashComments: false,
-  backslashEscapes: false,
-  bracketNames: false,
-  dollarQuotes: false,
-  executableComments: false,
-  escapeStrings: false,
+// With no connection to say: everything, as before.
+const ANY_ENGINE: Lexing = {
+  hashComments: true,
+  backslashEscapes: true,
+  bracketNames: true,
+  dollarQuotes: true,
+  executableComments: true,
+  escapeStrings: true,
 };
 
-export function lexingFor(dialect: string | undefined): Lexing {
-  switch (dialect) {
-    case "mysql":
-    case "mariadb":
-      return { ...NONE, hashComments: true, backslashEscapes: true, executableComments: true };
-    case "postgres":
-    case "cockroach":
-      return { ...NONE, dollarQuotes: true, escapeStrings: true };
-    case "mssql":
-    case "sqlite":
-      return { ...NONE, bracketNames: true };
-    default:
-      return {
-        hashComments: true,
-        backslashEscapes: true,
-        bracketNames: true,
-        dollarQuotes: true,
-        executableComments: true,
-        escapeStrings: true,
-      };
-  }
+export function lexingFor(dialect: SqlDialect | undefined): Lexing {
+  return dialect?.lexing ?? ANY_ENGINE;
 }
 
 // BEGIN opens a block (a trigger's or procedure's body, closed by END) when
@@ -82,7 +66,7 @@ const BLANK = /\s/;
 // (triggers, procedures), with their places. A stretch holding only comments
 // isn't a statement: it would run as nothing, or fail. MySQL's /*! … */ is
 // code, which mysqldump writes its SET and CREATE VIEW statements in.
-export function splitSqlRanges(input: string, dialect?: string): SqlRange[] {
+export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] {
   const lex = lexingFor(dialect);
   const ranges: SqlRange[] = [];
   let start = -1;
@@ -288,7 +272,7 @@ export function escapeString(input: string, at: number): boolean {
   return input[at] === "'" && /[Ee]/.test(input[at - 1] ?? "") && !/[A-Za-z0-9_$]/.test(input[at - 2] ?? "");
 }
 
-export function splitSqlStatements(input: string, dialect?: string): string[] {
+export function splitSqlStatements(input: string, dialect?: SqlDialect): string[] {
   return splitSqlRanges(input, dialect).map((range) => range.text);
 }
 
@@ -297,7 +281,7 @@ export function splitSqlStatements(input: string, dialect?: string): string[] {
 // "SELECT 1; -- note") lies between; else the one after it when only blank
 // space does. Nothing for a cursor in comment lines: a commented-out statement
 // above another must not run that other one.
-export function statementAt(input: string, offset: number, dialect?: string): SqlRange | null {
+export function statementAt(input: string, offset: number, dialect?: SqlDialect): SqlRange | null {
   const ranges = splitSqlRanges(input, dialect);
   // A cursor at the start of a comment line is on that line, not after the
   // statement above it.

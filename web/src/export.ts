@@ -1,5 +1,6 @@
+import type { SqlDialect } from "./engines/sqlDialect";
 import type { ValueExpr, WindowedRowSource } from "./grid/windowSource";
-import { booleanLiteral, escapeSqlIdentifier, quoteIdentifier, quoteLiteral, stringLiteral } from "./dataQuery";
+import { escapeSqlIdentifier, quoteIdentifier, quoteLiteral } from "./dataQuery";
 
 export { escapeSqlIdentifier, quoteIdentifier, quoteLiteral };
 
@@ -169,24 +170,13 @@ export class SqlExpression {
   }
 }
 
-// NOW() as each server writes it when it applies one.
-export function nowSql(kind: string): string {
-  if (kind === "postgres" || kind === "cockroach") {
-    return "now()";
-  }
-  if (kind === "mysql" || kind === "mariadb") {
-    return "NOW()";
-  }
-  return kind === "mssql" ? "GETDATE()" : "CURRENT_TIMESTAMP";
-}
-
 function isDefault(value: unknown): boolean {
   return value instanceof SqlExpression && value.expr === "default" && value.sql === null;
 }
 
-export function sqlLiteral(value: unknown, kind = "postgres"): string {
+export function sqlLiteral(value: unknown, dialect: SqlDialect): string {
   if (value instanceof SqlExpression) {
-    return value.sql ?? (value.expr === "now" ? nowSql(kind) : "DEFAULT");
+    return value.sql ?? (value.expr === "now" ? dialect.nowSql : "DEFAULT");
   }
   if (value === null || value === undefined) {
     return "NULL";
@@ -195,12 +185,12 @@ export function sqlLiteral(value: unknown, kind = "postgres"): string {
     return Number.isFinite(value) ? String(value) : quoteLiteral(String(value));
   }
   if (typeof value === "boolean") {
-    return booleanLiteral(value, kind);
+    return dialect.booleanLiteral(value);
   }
   if (typeof value === "bigint") {
     return value.toString();
   }
-  return stringLiteral(typeof value === "string" ? value : cellText(value), kind);
+  return dialect.stringLiteral(typeof value === "string" ? value : cellText(value));
 }
 
 // A binary cell too big to show: its size only, which no copy can write back.
@@ -211,7 +201,7 @@ export function isBlobPlaceholder(value: unknown): boolean {
 // A binary column's value as the engine takes hex (`\x00ff`, `0x00FF`,
 // `X'00FF'`, or bare but on SQLite, whose columns hold text too) as the
 // engine's binary literal, so it loads back as those bytes, not as the text.
-function binaryLiteral(value: unknown, kind: string): string | null {
+function binaryLiteral(value: unknown, dialect: SqlDialect): string | null {
   if (typeof value !== "string") {
     return null;
   }
@@ -219,19 +209,16 @@ function binaryLiteral(value: unknown, kind: string): string | null {
   const match =
     /^(?:\\x|0[xX])([0-9a-fA-F]*)$/.exec(text) ??
     /^[xX]'([0-9a-fA-F]*)'$/.exec(text) ??
-    (kind === "sqlite" ? null : /^([0-9a-fA-F]*)$/.exec(text));
+    (dialect.bareHexIsBinary ? /^([0-9a-fA-F]*)$/.exec(text) : null);
   const hex = match?.[1];
   if (hex === undefined || hex.length % 2 !== 0) {
     return null;
   }
-  if (kind === "postgres" || kind === "cockroach") {
-    return `'\\x${hex.toLowerCase()}'`;
-  }
-  return kind === "mssql" ? `0x${hex.toUpperCase()}` : `X'${hex.toUpperCase()}'`;
+  return dialect.binaryLiteral(hex);
 }
 
-function columnLiteral(value: unknown, kind: string, binary: boolean | undefined): string {
-  return (binary === true ? binaryLiteral(value, kind) : null) ?? sqlLiteral(value, kind);
+function columnLiteral(value: unknown, dialect: SqlDialect, binary: boolean | undefined): string {
+  return (binary === true ? binaryLiteral(value, dialect) : null) ?? sqlLiteral(value, dialect);
 }
 
 // The columns a row leaves out: those at DEFAULT, as applying a new row does.
@@ -250,13 +237,13 @@ export function toSqlInserts(
   table: string,
   columns: string[],
   rows: unknown[][],
-  kind = "postgres",
+  dialect: SqlDialect,
   binary: readonly boolean[] = [],
 ): string {
   if (columns.length === 0) {
     return "";
   }
-  const target = quoteIdentifier(table, kind);
+  const target = quoteIdentifier(table, dialect);
   const chunks: string[] = [];
   // Rows leaving out the same columns share a statement, up to INSERT_CHUNK.
   for (let start = 0; start < rows.length; ) {
@@ -268,15 +255,15 @@ export function toSqlInserts(
     const kept = columns.map((_, c) => c).filter((c) => !isDefault(rows[start][c]));
     if (kept.length === 0) {
       // Every column at its default; MySQL spells it its own way.
-      const statement = kind === "mysql" || kind === "mariadb" ? `INSERT INTO ${target} () VALUES ();` : `INSERT INTO ${target} DEFAULT VALUES;`;
+      const statement = dialect.emptyInsert(target);
       for (let r = start; r < end; r += 1) {
         chunks.push(statement);
       }
     } else {
-      const head = `INSERT INTO ${target} (${kept.map((c) => escapeSqlIdentifier(columns[c], kind)).join(", ")}) VALUES`;
+      const head = `INSERT INTO ${target} (${kept.map((c) => escapeSqlIdentifier(columns[c], dialect)).join(", ")}) VALUES`;
       const lines = new Array<string>(end - start);
       for (let r = start; r < end; r += 1) {
-        lines[r - start] = `  (${kept.map((c) => columnLiteral(rows[r][c], kind, binary[c])).join(", ")})`;
+        lines[r - start] = `  (${kept.map((c) => columnLiteral(rows[r][c], dialect, binary[c])).join(", ")})`;
       }
       chunks.push(`${head}\n${lines.join(",\n")};`);
     }
@@ -293,7 +280,7 @@ export function buildUpdateSql(
   columns: string[],
   row: unknown[],
   pk: string[],
-  kind = "postgres",
+  dialect: SqlDialect,
   original?: unknown[],
   binary: readonly boolean[] = [],
 ): string | null {
@@ -308,7 +295,7 @@ export function buildUpdateSql(
       continue;
     }
     if (!pkSet.has(columns[c]) || (original !== undefined && row[c] !== original[c])) {
-      sets.push(`${escapeSqlIdentifier(columns[c], kind)} = ${columnLiteral(row[c], kind, binary[c])}`);
+      sets.push(`${escapeSqlIdentifier(columns[c], dialect)} = ${columnLiteral(row[c], dialect, binary[c])}`);
     }
   }
   if (sets.length === 0) {
@@ -318,9 +305,9 @@ export function buildUpdateSql(
   const wheres: string[] = [];
   for (const key of pk) {
     const index = columns.indexOf(key);
-    wheres.push(`${escapeSqlIdentifier(key, kind)} = ${columnLiteral(index >= 0 ? keyRow[index] : null, kind, binary[index])}`);
+    wheres.push(`${escapeSqlIdentifier(key, dialect)} = ${columnLiteral(index >= 0 ? keyRow[index] : null, dialect, binary[index])}`);
   }
-  return `UPDATE ${quoteIdentifier(table, kind)} SET ${sets.join(", ")} WHERE ${wheres.join(" AND ")};`;
+  return `UPDATE ${quoteIdentifier(table, dialect)} SET ${sets.join(", ")} WHERE ${wheres.join(" AND ")};`;
 }
 
 function pad2(value: number): string {

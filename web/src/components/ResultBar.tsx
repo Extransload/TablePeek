@@ -1,4 +1,5 @@
 import type { QueryMeta } from "../net/socket";
+import type { AppError, ErrorAction } from "../errorHelp";
 import { t, tServer } from "../i18n";
 import { ErrorNotice } from "./ErrorNotice";
 import { DownloadIcon } from "./icons";
@@ -18,7 +19,7 @@ export interface StatementMessage {
   label: string;
   // Shown on hover; empty when the editor already holds it.
   sql: string;
-  outcome: { kind: "ok"; meta: QueryMeta } | { kind: "error"; error: string } | { kind: "cancelled" };
+  outcome: { kind: "ok"; meta: QueryMeta } | { kind: "error"; error: AppError } | { kind: "cancelled" };
 }
 
 // "12 ms", or seconds from one second up.
@@ -123,8 +124,20 @@ export function ResultBar({ view, planAvailable, shown, canExport, onView, onExp
 }
 
 // The Message view: a line per executed statement ("결과 2: 1행 영향 · 3 ms"),
-// a failure's explanation under its line.
-export function StatementMessages({ entries }: { entries: StatementMessage[] }) {
+// a failure's explanation under its line, and where in the editor it failed
+// when the server says (a click puts the cursor there).
+export function StatementMessages({
+  entries,
+  errorSpot,
+  onRevealError,
+  onFix,
+}: {
+  entries: StatementMessage[];
+  errorSpot?(error: AppError): { line: number; column: number } | undefined;
+  onRevealError?(): void;
+  // One-click fixes the editor can apply (refresh the schema, say).
+  onFix?: Partial<Record<ErrorAction, () => void>>;
+}) {
   if (entries.length === 0) {
     return null;
   }
@@ -146,12 +159,22 @@ export function StatementMessages({ entries }: { entries: StatementMessage[] }) 
                   <span className="result-message-time">· {elapsedText(outcome.meta.elapsedMs)}</span>
                 </>
               ) : outcome.kind === "error" ? (
-                <span className="result-message-error">{t("오류")}</span>
+                <>
+                  <span className="result-message-error">{t("오류")}</span>
+                  {(() => {
+                    const spot = errorSpot?.(outcome.error);
+                    return spot === undefined ? null : (
+                      <button type="button" className="result-message-spot" onClick={onRevealError}>
+                        {t("{line}번째 줄, {column}번째 글자", spot)}
+                      </button>
+                    );
+                  })()}
+                </>
               ) : (
                 <span>{t("취소됨")}</span>
               )}
             </div>
-            {outcome.kind === "error" ? <ErrorNotice message={outcome.error} /> : null}
+            {outcome.kind === "error" ? <ErrorNotice error={outcome.error} context="editor" onFix={onFix} /> : null}
           </li>
         );
       })}

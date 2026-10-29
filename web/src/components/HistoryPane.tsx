@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { writeClipboard } from "../clipboard";
 import { getLanguage, t } from "../i18n";
 import { downloadSql } from "../savedQueries";
 import { store, type HistoryEntry } from "../store";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { confirmDialog } from "./ConfirmDialog";
 import { ErrorNotice } from "./ErrorNotice";
 import { PromptModal } from "./PromptModal";
 import { LoadingState } from "./Spinner";
@@ -65,11 +66,13 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
     }
   }, [conn]);
 
+  // Read again when the server comes back (the app banner said it was gone).
+  const serverEpoch = useSyncExternalStore(store.subscribe, () => store.getState().server.epoch);
   useEffect(() => {
     if (active) {
       void load();
     }
-  }, [load, version, active]);
+  }, [load, version, active, serverEpoch]);
 
   // Changes committed from the grid and other views land here too. The server
   // files them in the background, a moment after the change itself returns, so
@@ -140,7 +143,13 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
   }
 
   async function clearAll(): Promise<void> {
-    if (!window.confirm(t("이 연결의 실행 기록을 모두 지울까요?"))) {
+    const ok = await confirmDialog({
+      title: t("실행 기록 지우기"),
+      message: t("이 연결의 실행 기록을 모두 지울까요?"),
+      confirmLabel: t("모두 지우기"),
+      danger: true,
+    });
+    if (!ok) {
       return;
     }
     try {
@@ -200,7 +209,7 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
       <div className="schema-list history-list" ref={listRef} tabIndex={0} onKeyDown={onKeyDown}>
         {error !== null ? (
           <div className="schema-error-slot">
-            <ErrorNotice message={error} variant="compact" />
+            <ErrorNotice error={error} variant="compact" />
           </div>
         ) : null}
         {entries === null ? (

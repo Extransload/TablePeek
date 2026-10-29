@@ -5,15 +5,17 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactElement,
 } from "react";
 import { t } from "../i18n";
 import { loadObjects, loadSchema, peekObjects, peekSchema } from "../schemaCache";
 import { store, type ObjectList, type TableDetail, type TableSchema } from "../store";
 import type { DefinitionKind } from "../sqlTools";
+import type { SqlDialect } from "../engines/sqlDialect";
 import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
-import { ErrorNotice } from "./ErrorNotice";
+import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { LoadingState, Spinner } from "./Spinner";
 import { TableInfoCard } from "./TableInfoCard";
 import { TABLE_COLORS, tableColorValue } from "../tableColors";
@@ -46,6 +48,8 @@ export type TableAction =
 interface SchemaSidebarProps {
   conn: string;
   kind: string;
+  // The connection's SQL, for the object templates; none for an engine without it.
+  dialect: SqlDialect | undefined;
   refreshKey: string;
   pinned: string[];
   // The table open in the current tab, marked in the list.
@@ -167,6 +171,7 @@ function fuzzyScore(name: string, query: string): number {
 export function SchemaSidebar({
   conn,
   kind,
+  dialect,
   refreshKey,
   pinned,
   activeTable,
@@ -266,9 +271,11 @@ export function SchemaSidebar({
     }
   }, [conn, system, refreshKey]);
 
+  // Read again when the server comes back (the app banner said it was gone).
+  const serverEpoch = useSyncExternalStore(store.subscribe, () => store.getState().server.epoch);
   useEffect(() => {
     void load();
-  }, [load, nonce]);
+  }, [load, nonce, serverEpoch]);
 
   function toggle(name: string): void {
     setExpanded((prev) => ({ ...prev, [name]: !(prev[name] ?? false) }));
@@ -820,7 +827,7 @@ export function SchemaSidebar({
       <div className="schema-list" ref={listRef}>
         {error ? (
           <div className="schema-error-slot">
-            <ErrorNotice message={error} variant="compact" />
+            <ErrorNotice error={error} variant="compact" />
           </div>
         ) : orderedTables === null ? (
           <LoadingState variant="compact" label={t("스키마를 불러오는 중…")} />
@@ -990,7 +997,7 @@ export function SchemaSidebar({
                     const detail = await store.fetchDefinition(conn, objectMenu.obj, objectMenu.name);
                     onOpenSql(detail.ddl ?? `-- ${objectMenu.name}`, objectMenu.name);
                   } catch {
-                    store.setError(t("정의를 불러오지 못했습니다"));
+                    notifyError(t("정의를 불러오지 못했습니다"));
                   }
                 })();
               },
@@ -1002,7 +1009,7 @@ export function SchemaSidebar({
               label: t("DROP 문 템플릿"),
               separatorBefore: true,
               onSelect: () =>
-                onOpenSql(dropTemplate(kind, objectMenu.obj, objectMenu.name), objectMenu.name),
+                onOpenSql(dialect === undefined ? "" : dropTemplate(dialect, objectMenu.obj, objectMenu.name), objectMenu.name),
             },
           ]}
           onClose={() => setObjectMenu(null)}
@@ -1063,7 +1070,7 @@ export function SchemaSidebar({
             {
               label: t("새 오브젝트 템플릿"),
               onSelect: () => {
-                const template = createTemplate(kind, sectionMenu.obj);
+                const template = dialect === undefined ? "" : createTemplate(dialect, sectionMenu.obj);
                 if (template === "") {
                   store.setInfo(t("이 엔진은 해당 오브젝트 템플릿을 지원하지 않습니다"));
                   return;

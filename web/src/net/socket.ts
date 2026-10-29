@@ -1,4 +1,5 @@
 import { tableFromIPC } from "apache-arrow";
+import type { AppError } from "../errorHelp";
 import { WindowedRowSource, type ValueExpr } from "../grid/windowSource";
 import { t } from "../i18n";
 
@@ -94,11 +95,22 @@ type RowOpMessage =
   | ({ type: "insert_row" } & InsertRowRequest)
   | ({ type: "delete_row" } & DeleteRowRequest);
 
+// A query or edit that failed, with what the server said about it (see
+// AppError): the code, and the SQLSTATE, position and driver text when known.
 export class TablePeekSocketError extends Error {
   readonly cancelled: boolean;
   // A COMMIT the server turned into a rollback (the transaction had failed):
   // nothing is open any more and nothing was written.
   readonly rolledBack: boolean;
+  // "network" when the TablePeek server could not be reached; otherwise the
+  // server's code ("" when it gave none).
+  code = "";
+  sqlstate?: string;
+  position?: AppError["position"];
+  server_code?: number;
+  code_name?: string;
+  details?: unknown;
+  raw?: string;
   // For a failed query: whether a transaction is still open after it, and
   // whether it ended one (see QueryMeta).
   inTx?: boolean;
@@ -108,12 +120,28 @@ export class TablePeekSocketError extends Error {
   // it may have committed, so it doesn't count as rolled back.
   outcomeUnknown?: boolean;
 
-  constructor(message: string, cancelled: boolean, rolledBack = false) {
+  constructor(message: string, cancelled: boolean, rolledBack = false, fields?: ServerErrorFields) {
     super(message);
     this.name = "TablePeekSocketError";
     this.cancelled = cancelled;
     this.rolledBack = rolledBack;
+    if (fields !== undefined) {
+      this.code = fields.code ?? "";
+      this.sqlstate = fields.sqlstate;
+      this.position = fields.position;
+      this.server_code = fields.server_code;
+      this.code_name = fields.code_name;
+      this.details = fields.details;
+      this.raw = fields.raw;
+    }
   }
+}
+
+type ServerErrorFields = Partial<Omit<AppError, "message">>;
+
+// The server could not be reached, or the socket to it dropped.
+function networkError(message: string): TablePeekSocketError {
+  return new TablePeekSocketError(t(message), false, false, { code: "network" });
 }
 
 interface MetaMessage {
@@ -142,7 +170,7 @@ interface WindowMessage {
   count: number;
 }
 
-interface ErrorMessage {
+interface ErrorMessage extends ServerErrorFields {
   type: "error";
   conn?: string | null;
   id: string | null;
@@ -348,7 +376,7 @@ export class TablePeekSocket {
         }
         failed = true;
         this.connectPromise = null;
-        reject(new TablePeekSocketError(t(CONNECT_ERROR), false));
+        reject(networkError(CONNECT_ERROR));
       };
       ws.onopen = () => {
         if (this.ws !== ws) {
@@ -372,7 +400,7 @@ export class TablePeekSocket {
           this.ws = null;
           this.connectPromise = null;
           this.setStatus("closed");
-          this.failPending(new TablePeekSocketError(t(CLOSED_ERROR), false));
+          this.failPending(networkError(CLOSED_ERROR));
         }
         failConnect();
       };
@@ -392,7 +420,7 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
+      throw networkError(CLOSED_ERROR);
     }
     const job = options.job === true;
     if (!job) {
@@ -466,7 +494,7 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
+      throw networkError(CLOSED_ERROR);
     }
     const key = this.windowKey(conn, id, offset);
     const existing = this.windowWaiters.get(key);
@@ -498,7 +526,7 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
+      throw networkError(CLOSED_ERROR);
     }
     if (this.editWaiters.has(conn)) {
       throw new TablePeekSocketError(t("이전 수정 요청이 아직 완료되지 않았습니다"), false);
@@ -552,7 +580,7 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
+      throw networkError(CLOSED_ERROR);
     }
     const id = crypto.randomUUID();
     const promise = new Promise<RowChange>((resolve, reject) => {
@@ -573,7 +601,7 @@ export class TablePeekSocket {
     }
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
+      throw networkError(CLOSED_ERROR);
     }
     ws.send(JSON.stringify({ type: "console", conn, since }));
   }
@@ -610,7 +638,7 @@ export class TablePeekSocket {
     await this.connect();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new TablePeekSocketError(t(CLOSED_ERROR), false);
+      throw networkError(CLOSED_ERROR);
     }
     if (this.txWaiters.has(conn)) {
       throw new TablePeekSocketError(t("이전 트랜잭션 요청이 아직 완료되지 않았습니다"), false);
@@ -704,12 +732,12 @@ export class TablePeekSocket {
       const rolledBack = message.id == null && message.conn != null ? this.txWaiters.get(message.conn) : undefined;
       if (rolledBack?.rolledBack) {
         this.txWaiters.delete(rolledBack.conn);
-        const failure = new TablePeekSocketError(message.message, false, true);
+        const failure = new TablePeekSocketError(message.message, false, true, message);
         failure.outcomeUnknown = rolledBack.unknown === true;
         rolledBack.reject(failure);
         return;
       }
-      const error = new TablePeekSocketError(message.message, message.cancelled);
+      const error = new TablePeekSocketError(message.message, message.cancelled, false, message);
       error.inTx = message.in_tx;
       error.txEnded = message.tx;
       error.invalidated = message.invalidate;
@@ -758,7 +786,7 @@ export class TablePeekSocket {
         }
       }
       const txError = (tx: TxWaiter): TablePeekSocketError =>
-        tx.rolledBack ? new TablePeekSocketError(message.message, false, true) : error;
+        tx.rolledBack ? new TablePeekSocketError(message.message, false, true, message) : error;
       if (idless && message.conn != null) {
         const tx = this.txWaiters.get(message.conn);
         if (tx) {

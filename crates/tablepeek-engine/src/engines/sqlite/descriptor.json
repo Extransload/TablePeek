@@ -1,0 +1,61 @@
+{
+  "id": "sqlite",
+  "aliases": [],
+  "label": "SQLite",
+  "paradigm": "sql",
+  "family": "sqlite",
+  "transport": "file",
+  "url_schemes": [],
+  "capabilities": {
+    "language": "sql",
+    "objects": [
+      "table",
+      "view",
+      "trigger"
+    ],
+    "schema": "declared",
+    "edit_by_key": true,
+    "transactions": "always",
+    "foreign_keys": true,
+    "ddl": true,
+    "databases": "none",
+    "users": false,
+    "explain": "sqlite",
+    "exact_count": true,
+    "dump": "sql",
+    "import_formats": [
+      "csv",
+      "json",
+      "sql"
+    ],
+    "export_formats": [
+      "csv",
+      "json",
+      "sql",
+      "xlsx"
+    ],
+    "sessions": {
+      "kill": false
+    },
+    "validation": false,
+    "aggregation": false,
+    "indexes": {
+      "create": true,
+      "drop": true
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "path",
+        "type": "path",
+        "label": "데이터베이스 경로",
+        "required": true,
+        "placeholder": "SQLite 파일 경로"
+      }
+    ],
+    "tunnels": [],
+    "summary": "{path}",
+    "detail": "{path}"
+  }
+}

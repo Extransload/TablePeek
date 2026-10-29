@@ -1,7 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { getConnMeta, setConnMeta } from "../connMeta";
-import { explainError, type ErrorHelp } from "../errorHelp";
+import { engineById, engines, unsupportedEngine, type ConnectionField, type Engine } from "../engines";
+import {
+  basename,
+  choiceValues,
+  configFromValues,
+  defaultValues,
+  fieldVisible,
+  optionsOf,
+  parseConnectionUrl,
+  valuesFromConfig,
+  type FormValues,
+} from "../engines/connection";
 import { t } from "../i18n";
+import { confirmDialog } from "./ConfirmDialog";
 import {
   ApiRequestError,
   missingSecretOf,
@@ -9,16 +21,12 @@ import {
   type MissingSecret,
   type ConnectInput,
   type ConnectSecrets,
-  type DbInput,
-  type Driver,
   type LiveConn,
   type SavedConnection,
-  type SslMode,
 } from "../store";
 import { DriverIcon } from "./DriverIcon";
 import { ErrorNotice } from "./ErrorNotice";
 import { FilePickerModal } from "./FilePickerModal";
-import { SQLITE_EXTENSIONS } from "./FsModal";
 import {
   CheckIcon,
   CloseIcon,
@@ -39,9 +47,9 @@ interface ConnectModalProps {
   notice?: string | null;
   // Secret the dialog was opened to ask for (focused and highlighted).
   missingSecret?: MissingSecret | null;
-  // Picked on the home screen before opening a new connection: a driver, the
-  // group to save into (its id), or a connection URL to fill the form from.
-  initialDriver?: Driver | null;
+  // Picked on the home screen before opening a new connection: an engine id,
+  // the group to save into (its id), or a connection URL to fill the form from.
+  initialDriver?: string | null;
   initialGroup?: string | null;
   initialUrl?: string | null;
   onClose(): void;
@@ -51,45 +59,20 @@ interface ConnectModalProps {
 }
 
 type SshAuth = "password" | "key";
-type FileField = "sslClientKey" | "sslClientCert" | "sslRootCert" | "sshKeyPath" | "path";
-type FieldKey =
-  | "host"
-  | "port"
-  | "user"
-  | "database"
-  | "path"
-  | "password"
-  | "sslClientKey"
-  | "sslClientCert"
-  | "sshHost"
-  | "sshPort"
-  | "sshUser"
-  | "sshPassword"
-  | "sshKeyPath"
-  | "httpHost"
-  | "httpPort"
-  | "httpUser"
-  | "httpPassword";
+// The SSH key's file slot; every other file slot is one of the engine's fields.
+const SSH_KEY = "sshKeyPath";
 
 interface ConnectForm {
-  driver: Driver;
+  // The engine's id.
+  driver: string;
   name: string;
   color: string;
   group: string;
   tags: string;
-  host: string;
-  port: string;
-  user: string;
-  password: string;
+  // The engine's connection fields, by key. Values of fields another engine
+  // had stay here while switching, so switching back keeps them.
+  values: FormValues;
   persistPassword: boolean;
-  database: string;
-  // The database file of a SQLite profile.
-  path: string;
-  sslMode: SslMode;
-  sslRootCert: string;
-  sslClientCert: string;
-  sslClientKey: string;
-  encrypt: boolean;
   sshEnabled: boolean;
   sshHost: string;
   sshPort: string;
@@ -104,88 +87,35 @@ interface ConnectForm {
   httpPassword: string;
 }
 
+// A change to the form outside the engine's fields (those go through updateValues).
+type FormPatch = Partial<Omit<ConnectForm, "values">>;
+
 interface Problem {
-  field: FieldKey;
+  // A connection field's key, or one of the tunnel fields ("sshHost", …).
+  field: string;
   message: string;
 }
 
 interface Status {
   kind: "ok" | "error" | "info";
   text: string;
-  // Server error code, which helps explain the error.
-  code?: string;
+  // What the server said, for an error it gave (its code, SQLSTATE, …).
+  error?: unknown;
 }
 
 function errorStatus(err: unknown, fallback: string): Status {
-  return {
-    kind: "error",
-    text: err instanceof Error ? err.message : fallback,
-    code: err instanceof ApiRequestError ? err.code : undefined,
-  };
+  return { kind: "error", text: err instanceof Error ? err.message : fallback, error: err };
 }
 
-// The radio row switches between server drivers only; a SQLite profile is a
-// file, so it keeps its own form and never shows the row.
-type ServerDriver = Exclude<Driver, "sqlite">;
-const DRIVERS: ServerDriver[] = ["postgres", "mysql", "mssql", "cockroach"];
-const DEFAULT_PORT: Record<Driver, string> = {
-  postgres: "5432",
-  cockroach: "26257",
-  mysql: "3306",
-  mssql: "1433",
-  // A file has no port.
-  sqlite: "",
-};
-const DRIVER_LABEL: Record<Driver, string> = {
-  postgres: "PostgreSQL",
-  cockroach: "CockroachDB",
-  mysql: "MySQL",
-  mssql: "SQL Server",
-  sqlite: "SQLite",
-};
-const DRIVER_SUB: Record<ServerDriver, string> = {
-  postgres: "기본 포트 5432",
-  cockroach: "PG 호환 · 26257",
-  mysql: "MariaDB · 3306",
-  mssql: "기본 포트 1433",
-};
-const KNOWN_PORTS = new Set(Object.values(DEFAULT_PORT));
-const SSL_MODES: { value: SslMode; label: string }[] = [
-  { value: "disable", label: "사용 안 함" },
-  { value: "prefer", label: "가능하면 (Prefer)" },
-  { value: "require", label: "필수 (Require)" },
-];
 const SWATCHES = ["#22c55e", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444", "#64748b"];
-const URL_DRIVERS: Record<string, Driver> = {
-  postgres: "postgres",
-  postgresql: "postgres",
-  cockroach: "cockroach",
-  cockroachdb: "cockroach",
-  mysql: "mysql",
-  mariadb: "mysql",
-  sqlserver: "mssql",
-  mssql: "mssql",
-};
 
-const EMPTY_FORM: ConnectForm = {
-  driver: "postgres",
+const EMPTY_FORM: Omit<ConnectForm, "driver" | "values"> = {
   name: "",
   color: "",
   group: "",
   tags: "",
-  host: "127.0.0.1",
-  port: DEFAULT_PORT.postgres,
-  user: "",
-  password: "",
   // New profiles keep their passwords in the OS keychain unless told otherwise.
   persistPassword: true,
-  database: "",
-  path: "",
-  sslMode: "prefer",
-  sslRootCert: "",
-  sslClientCert: "",
-  sslClientKey: "",
-  encrypt: true,
   sshEnabled: false,
   sshHost: "",
   sshPort: "22",
@@ -200,36 +130,23 @@ const EMPTY_FORM: ConnectForm = {
   httpPassword: "",
 };
 
-function normDriver(value: string): Driver {
-  return value === "mysql" || value === "cockroach" || value === "mssql" || value === "sqlite"
-    ? value
-    : "postgres";
+function newForm(engine: Engine | undefined, driver: string): ConnectForm {
+  return { ...EMPTY_FORM, driver: engine?.id ?? driver, values: engine ? defaultValues(engine) : {} };
 }
 
 function formFromSaved(saved: SavedConnection): ConnectForm {
-  const driver = normDriver(saved.driver);
-  const db = saved.postgres ?? saved.cockroach ?? saved.mysql ?? saved.mssql;
-  const tls = saved.postgres ?? saved.cockroach ?? saved.mysql;
+  const engine = engineById(saved.driver);
   const meta = getConnMeta(saved.id);
   const keyPath = saved.ssh?.private_key_path ?? "";
   return {
     ...EMPTY_FORM,
-    driver,
+    driver: engine?.id ?? saved.driver,
+    values: engine ? valuesFromConfig(engine, saved.config) : {},
     name: saved.name,
     color: meta?.color ?? "",
     group: meta?.group ?? "",
     tags: (meta?.tags ?? []).join(", "),
-    host: db?.host ?? "",
-    port: db ? String(db.port) : DEFAULT_PORT[driver],
-    user: db?.user ?? "",
     persistPassword: saved.persist_password,
-    database: db?.database ?? "",
-    path: saved.sqlite?.path ?? "",
-    sslMode: tls?.ssl_mode ?? "disable",
-    sslRootCert: tls?.ssl_root_cert ?? "",
-    sslClientCert: tls?.ssl_client_cert ?? "",
-    sslClientKey: tls?.ssl_client_key ?? "",
-    encrypt: saved.mssql?.encrypt ?? true,
     sshEnabled: saved.ssh !== undefined,
     sshHost: saved.ssh?.host ?? "",
     sshPort: saved.ssh ? String(saved.ssh.port) : "22",
@@ -245,69 +162,38 @@ function formFromSaved(saved: SavedConnection): ConnectForm {
 
 const URL_LIKE = /^(jdbc:)?[a-z][a-z0-9+.-]*:\/\//i;
 
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
+// The engine's password: the first secret field, the one the keychain keeps
+// as the profile's own secret.
+function passwordField(engine: Engine): ConnectionField | undefined {
+  return engine.connection.fields.find((field) => field.type === "secret");
 }
 
-const SECRET_FIELD: Record<MissingSecret, FieldKey> = {
-  db: "password",
-  ssh: "sshPassword",
-  http: "httpPassword",
-};
-
-// "postgres://user:pass@host:5432/db?sslmode=require", optionally "jdbc:"-prefixed.
-function parseConnectionUrl(text: string): Partial<ConnectForm> | null {
-  const trimmed = text.trim().replace(/^jdbc:/i, "");
-  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(trimmed);
-  const driver = scheme ? URL_DRIVERS[scheme[1].toLowerCase()] : undefined;
-  if (driver === undefined) {
-    return null;
+// The form field a missing secret is typed into.
+function secretFieldOf(secret: MissingSecret, engine: Engine | undefined): string {
+  if (secret === "ssh") {
+    return "sshPassword";
   }
-  let url: URL;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    return null;
+  if (secret === "http") {
+    return "httpPassword";
   }
-  const patch: Partial<ConnectForm> = { driver, port: url.port || DEFAULT_PORT[driver] };
-  if (url.hostname !== "") {
-    patch.host = safeDecode(url.hostname.replace(/^\[|\]$/g, ""));
-  }
-  const user = url.username !== "" ? safeDecode(url.username) : url.searchParams.get("user");
-  if (user) {
-    patch.user = user;
-  }
-  const password =
-    url.password !== "" ? safeDecode(url.password) : url.searchParams.get("password");
-  if (password) {
-    patch.password = password;
-  }
-  const database = safeDecode(url.pathname.replace(/^\/+/, ""));
-  if (database !== "") {
-    patch.database = database;
-  }
-  const ssl = (url.searchParams.get("sslmode") ?? url.searchParams.get("ssl-mode") ?? "").toLowerCase();
-  if (ssl !== "") {
-    patch.sslMode =
-      ssl === "disable" || ssl === "disabled"
-        ? "disable"
-        : ssl === "prefer" || ssl === "preferred" || ssl === "allow"
-          ? "prefer"
-          : "require";
-  }
-  return patch;
+  return (engine && passwordField(engine)?.key) ?? "password";
 }
 
-function autoName(form: ConnectForm): string {
-  if (form.driver === "sqlite") {
-    return basename(form.path.trim()) || "SQLite";
+function text(values: FormValues, key: string): string {
+  const value = values[key];
+  return typeof value === "string" ? value : "";
+}
+
+function autoName(engine: Engine | undefined, form: ConnectForm): string {
+  if (engine === undefined) {
+    return form.driver;
   }
-  const host = form.host.trim() || "localhost";
-  const database = form.database.trim();
+  if (engine.transport === "file") {
+    const path = engine.connection.fields.find((field) => field.type === "path");
+    return (path && basename(text(form.values, path.key).trim())) || engine.label;
+  }
+  const host = text(form.values, "host").trim() || "localhost";
+  const database = text(form.values, "database").trim();
   return database === "" ? host : `${database} @ ${host}`;
 }
 
@@ -316,58 +202,19 @@ function validPort(value: string): boolean {
   return Number.isInteger(port) && port >= 1 && port <= 65535;
 }
 
-function basename(path: string): string {
-  const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return index >= 0 ? path.slice(index + 1) : path;
+// "사용자를", "호스트를", "비밀번호를": the object particle that fits the word.
+function withObjectParticle(word: string): string {
+  const code = word.charCodeAt(word.length - 1) - 0xac00;
+  if (code < 0 || code > 11171) {
+    return `${word}을(를)`;
+  }
+  return `${word}${code % 28 === 0 ? "를" : "을"}`;
 }
 
-function buildInput(form: ConnectForm): ConnectInput {
-  // A file needs no password, SSL or tunnel.
-  if (form.driver === "sqlite") {
-    return { driver: "sqlite", sqlite: { path: form.path.trim() } };
-  }
-  const database: DbInput = {
-    host: form.host.trim(),
-    port: Number(form.port.trim()),
-    user: form.user.trim(),
-    database: form.database.trim(),
-    ssl_mode: form.sslMode,
-  };
-  if (form.password !== "") {
-    database.password = form.password;
-  }
-  if (form.sslMode !== "disable") {
-    if (form.sslRootCert.trim() !== "") {
-      database.ssl_root_cert = form.sslRootCert.trim();
-    }
-    if (form.sslClientCert.trim() !== "") {
-      database.ssl_client_cert = form.sslClientCert.trim();
-    }
-    if (form.sslClientKey.trim() !== "") {
-      database.ssl_client_key = form.sslClientKey.trim();
-    }
-  }
-  let input: ConnectInput;
-  if (form.driver === "mysql") {
-    input = { driver: "mysql", mysql: database };
-  } else if (form.driver === "cockroach") {
-    input = { driver: "cockroach", cockroach: database };
-  } else if (form.driver === "mssql") {
-    input = {
-      driver: "mssql",
-      mssql: {
-        host: database.host,
-        port: database.port,
-        user: database.user,
-        database: database.database,
-        encrypt: form.encrypt,
-        ...(form.password !== "" ? { password: form.password } : {}),
-      },
-    };
-  } else {
-    input = { driver: "postgres", postgres: database };
-  }
-  if (form.sshEnabled) {
+function buildInput(engine: Engine, form: ConnectForm): ConnectInput {
+  const input: ConnectInput = { driver: engine.id, config: configFromValues(engine, form.values) };
+  const tunnels = engine.connection.tunnels;
+  if (form.sshEnabled && tunnels.includes("ssh")) {
     const useKey = form.sshAuth === "key";
     input.ssh = {
       host: form.sshHost.trim(),
@@ -376,7 +223,7 @@ function buildInput(form: ConnectForm): ConnectInput {
       private_key_path: useKey ? form.sshKeyPath.trim() : "",
       ...(!useKey && form.sshPassword !== "" ? { password: form.sshPassword } : {}),
     };
-  } else if (form.httpEnabled) {
+  } else if (form.httpEnabled && tunnels.includes("http")) {
     input.http_tunnel = {
       host: form.httpHost.trim(),
       port: Number(form.httpPort.trim()),
@@ -388,41 +235,59 @@ function buildInput(form: ConnectForm): ConnectInput {
 }
 
 // "save" only needs a well-formed profile; "connect" also needs what the server will ask for.
-function problemsOf(form: ConnectForm, purpose: "save" | "connect", storedSecrets: boolean): Problem[] {
-  if (form.driver === "sqlite") {
-    return form.path.trim() === ""
-      ? [{ field: "path", message: t("SQLite 파일 경로를 입력하세요") }]
-      : [];
-  }
+function problemsOf(
+  engine: Engine,
+  form: ConnectForm,
+  purpose: "save" | "connect",
+  storedSecrets: boolean,
+): Problem[] {
   const problems: Problem[] = [];
   // Stored secrets only count while the profile keeps storing them.
   const hasStored = storedSecrets && form.persistPassword;
-  const host = form.host.trim();
-  if (host === "") {
-    problems.push({ field: "host", message: t("호스트를 입력하세요") });
-  } else if (host.includes("://") || /[\s/@?]/.test(host)) {
-    problems.push({ field: "host", message: t("호스트에는 주소만 입력하세요 (URL·계정 정보 제외)") });
+  for (const field of engine.connection.fields) {
+    if (!fieldVisible(field, form.values)) {
+      continue;
+    }
+    const value = text(form.values, field.key).trim();
+    const label = t(field.label ?? field.key);
+    if (field.type === "port") {
+      if (!validPort(value)) {
+        problems.push({ field: field.key, message: t("포트가 올바르지 않습니다") });
+      }
+      continue;
+    }
+    const needed =
+      field.required === true ||
+      (purpose === "connect" && field.required_to_connect === true) ||
+      (field.required_unless !== undefined && text(form.values, field.required_unless).trim() === "");
+    if (needed && value === "") {
+      problems.push({
+        field: field.key,
+        message:
+          field.type === "path"
+            ? t(`${engine.label} 파일 경로를 입력하세요`)
+            : t(`${withObjectParticle(field.label ?? field.key)} 입력하세요`),
+      });
+    } else if (field.type === "host" && (value.includes("://") || /[\s/@?]/.test(value))) {
+      problems.push({ field: field.key, message: t("호스트에는 주소만 입력하세요 (URL·계정 정보 제외)") });
+    } else if (field.type === "number" && value !== "" && !Number.isFinite(Number(value))) {
+      problems.push({ field: field.key, message: t("{label}: 숫자를 입력하세요", { label }) });
+    }
   }
-  if (!validPort(form.port)) {
-    problems.push({ field: "port", message: t("포트가 올바르지 않습니다") });
-  }
-  if (purpose === "connect" && form.user.trim() === "") {
-    problems.push({ field: "user", message: t("사용자를 입력하세요") });
-  }
-  if (purpose === "connect" && form.database.trim() === "") {
-    problems.push({ field: "database", message: t("데이터베이스를 입력하세요") });
-  }
+  // A client certificate goes with its key.
+  const cert = engine.connection.fields.find((field) => field.key === "ssl_client_cert");
   if (
-    form.driver !== "mssql" &&
-    form.sslMode !== "disable" &&
-    (form.sslClientCert.trim() === "") !== (form.sslClientKey.trim() === "")
+    cert !== undefined &&
+    fieldVisible(cert, form.values) &&
+    (text(form.values, "ssl_client_cert").trim() === "") !== (text(form.values, "ssl_client_key").trim() === "")
   ) {
     problems.push({
-      field: form.sslClientCert.trim() === "" ? "sslClientCert" : "sslClientKey",
+      field: text(form.values, "ssl_client_cert").trim() === "" ? "ssl_client_cert" : "ssl_client_key",
       message: t("클라이언트 인증서와 키는 함께 지정하세요"),
     });
   }
-  if (form.sshEnabled) {
+  const tunnels = engine.connection.tunnels;
+  if (form.sshEnabled && tunnels.includes("ssh")) {
     if (form.sshHost.trim() === "") {
       problems.push({ field: "sshHost", message: t("SSH 서버를 입력하세요") });
     }
@@ -444,7 +309,7 @@ function problemsOf(form: ConnectForm, purpose: "save" | "connect", storedSecret
       problems.push({ field: "sshPassword", message: t("SSH 비밀번호를 입력하세요") });
     }
   }
-  if (form.httpEnabled) {
+  if (form.httpEnabled && tunnels.includes("http")) {
     if (form.httpHost.trim() === "") {
       problems.push({ field: "httpHost", message: t("프록시 호스트를 입력하세요") });
     }
@@ -523,33 +388,45 @@ export function ConnectModal({
   // The group isn't edited here (the home list owns it); the form only carries
   // it so saving keeps an existing group or files a new connection into one.
   // Parsed once: only the initial form and status read it.
-  const [urlPatch] = useState(() =>
+  const [parsedUrl] = useState(() =>
     editing === null && initialUrl !== null ? parseConnectionUrl(initialUrl) : null,
   );
   const [form, setForm] = useState<ConnectForm>(() => {
     if (editing !== null) {
       return formFromSaved(editing);
     }
-    const base = initialDriver
-      ? { ...EMPTY_FORM, driver: initialDriver, port: DEFAULT_PORT[initialDriver] }
-      : EMPTY_FORM;
-    return { ...base, ...(urlPatch ?? {}), group: initialGroup ?? "" };
+    if (parsedUrl !== null) {
+      const base = newForm(parsedUrl.engine, parsedUrl.engine.id);
+      return { ...base, values: { ...base.values, ...parsedUrl.values }, group: initialGroup ?? "" };
+    }
+    // The picked engine, or with nothing picked the first server engine.
+    const engine =
+      initialDriver !== null
+        ? engineById(initialDriver)
+        : engines().find((candidate) => candidate.transport === "server");
+    return { ...newForm(engine, initialDriver ?? ""), group: initialGroup ?? "" };
   });
+  const engine = engineById(form.driver);
   const [savedId, setSavedId] = useState<string | null>(editing?.id ?? null);
   const [storedSecrets, setStoredSecrets] = useState(editing?.persist_password ?? false);
+  // The engine's advanced fields: folded unless one was changed from its default.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [problems, setProblems] = useState<Problem[]>(() =>
     missingSecret !== null && notice !== null
-      ? [{ field: SECRET_FIELD[missingSecret], message: notice }]
+      ? [{ field: secretFieldOf(missingSecret, engine), message: notice }]
       : [],
   );
   const [status, setStatus] = useState<Status | null>(() => {
+    if (engine === undefined) {
+      return { kind: "error", text: unsupportedEngine(form.driver) };
+    }
     if (notice !== null) {
       return { kind: "info", text: notice };
     }
     if (initialUrl === null || editing !== null) {
       return null;
     }
-    return urlPatch === null
+    return parsedUrl === null
       ? { kind: "error", text: t("연결 URL을 인식하지 못했습니다") }
       : { kind: "ok", text: t("URL에서 접속 정보를 채웠습니다") };
   });
@@ -557,7 +434,7 @@ export function ConnectModal({
   // Set by an error's fix button: test again once the changed form renders.
   const [retest, setRetest] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [picker, setPicker] = useState<{ field: FileField; title: string } | null>(null);
+  const [picker, setPicker] = useState<{ field: string; title: string } | null>(null);
   const passwordRef = useRef<HTMLInputElement | null>(null);
   const sshPasswordRef = useRef<HTMLInputElement | null>(null);
   const httpPasswordRef = useRef<HTMLInputElement | null>(null);
@@ -586,7 +463,7 @@ export function ConnectModal({
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
-        requestCloseRef.current();
+        void requestCloseRef.current();
         return;
       }
       if ((event.metaKey || event.ctrlKey) && (event.key === "s" || event.key === "S")) {
@@ -601,35 +478,111 @@ export function ConnectModal({
   }, []);
 
   const invalid = new Set(problems.map((problem) => problem.field));
+  // An invalid field points at the error box that says why.
+  const invalidProps = (key: string): { "aria-invalid"?: true; "aria-describedby"?: string } =>
+    invalid.has(key) ? { "aria-invalid": true, "aria-describedby": "cm-error" } : {};
   const isEdit = savedId !== null;
   const color = form.color || "var(--accent)";
 
-  function update(patch: Partial<ConnectForm>): void {
+  function update(patch: FormPatch): void {
     setForm((prev) => ({ ...prev, ...patch }));
     setProblems((prev) => (prev.length === 0 ? prev : []));
     setStatus((prev) => (prev?.kind === "info" ? prev : null));
   }
 
+  function updateValues(patch: FormValues): void {
+    setForm((prev) => ({ ...prev, values: { ...prev.values, ...patch } }));
+    setProblems((prev) => (prev.length === 0 ? prev : []));
+    setStatus((prev) => (prev?.kind === "info" ? prev : null));
+  }
+
   // Closing is ignored mid-request, and asks before dropping unsaved edits.
-  function requestClose(): void {
+  async function requestClose(): Promise<void> {
     if (busy !== null) {
       return;
     }
     const dirty = JSON.stringify(form) !== JSON.stringify(initialRef.current);
-    if (dirty && !window.confirm(t("저장하지 않은 변경사항이 있습니다. 닫을까요?"))) {
+    if (
+      dirty &&
+      !(await confirmDialog({
+        title: t("변경사항 버리기"),
+        message: t("저장하지 않은 변경사항이 있습니다. 닫을까요?"),
+        confirmLabel: t("버리기"),
+        danger: true,
+      }))
+    ) {
       return;
     }
     onClose();
   }
   requestCloseRef.current = requestClose;
 
-  function changeDriver(driver: Driver): void {
-    const port = form.port.trim();
-    update({ driver, port: port === "" || KNOWN_PORTS.has(port) ? DEFAULT_PORT[driver] : form.port });
+  // Another engine keeps what was typed; its fields that weren't filled yet
+  // start at their defaults, and a port still at some engine's default takes the new one's.
+  function changeDriver(next: Engine, patch: FormValues = {}): void {
+    const port = text(form.values, "port").trim();
+    const knownPort = engines().some((candidate) => String(candidate.default_port ?? "") === port);
+    const values: FormValues = { ...defaultValues(next), ...form.values };
+    if (port === "" || knownPort) {
+      values.port = next.default_port !== undefined ? String(next.default_port) : "";
+    }
+    setForm((prev) => ({ ...prev, driver: next.id, values: { ...values, ...patch } }));
+    setProblems((prev) => (prev.length === 0 ? prev : []));
+    setStatus((prev) => (prev?.kind === "info" ? prev : null));
+  }
+
+  // A pasted connection URL fills the form (switching to the engine it names)
+  // instead of landing in the field.
+  function pasteUrl(pasted: string): void {
+    const parsed = parseConnectionUrl(pasted);
+    if (parsed === null) {
+      setStatus({ kind: "error", text: t("연결 URL을 인식하지 못했습니다") });
+      return;
+    }
+    changeDriver(parsed.engine, parsed.values);
+    setStatus({
+      kind: "ok",
+      text: /sslmode=verify/i.test(pasted)
+        ? t("URL에서 채웠습니다 · verify 모드는 Require로 설정했습니다")
+        : t("URL에서 접속 정보를 채웠습니다"),
+    });
+  }
+
+  // A URL typed (rather than pasted) into a host or connection-string field
+  // fills the form the same way once the field is left or Enter is pressed.
+  // True when it did something, so Enter fills instead of connecting; a
+  // connection string already in its kept form (a seed list or SRV name
+  // without its password) is left alone.
+  function fillFromTyped(field: ConnectionField, typed: string): boolean {
+    const trimmed = typed.trim();
+    if (!URL_LIKE.test(trimmed)) {
+      return false;
+    }
+    const parsed = parseConnectionUrl(trimmed);
+    if (field.type !== "host" && (field.fills_others !== true || parsed === null)) {
+      return false;
+    }
+    if (parsed !== null && field.type !== "host" && parsed.values[field.key] === trimmed && parsed.values.password === undefined) {
+      // Only the authentication follows a string kept as typed: it says
+      // whether there is a user (or X.509) to sign in with.
+      const auth = engine?.connection.fields.find((candidate) => candidate.key === "auth");
+      const implied = parsed.values.auth;
+      if (auth === undefined || typeof implied !== "string" || implied === form.values.auth) {
+        return false;
+      }
+      updateValues(choiceValues(auth, implied));
+      return true;
+    }
+    pasteUrl(trimmed);
+    return true;
   }
 
   function check(purpose: "save" | "connect"): boolean {
-    const found = problemsOf(form, purpose, storedSecrets);
+    if (engine === undefined) {
+      setStatus({ kind: "error", text: unsupportedEngine(form.driver) });
+      return false;
+    }
+    const found = problemsOf(engine, form, purpose, storedSecrets);
     setProblems(found);
     if (found.length > 0) {
       setStatus({ kind: "error", text: found[0].message });
@@ -638,51 +591,49 @@ export function ConnectModal({
     return true;
   }
 
-  // Files the form points at must be there and readable; a SQLite profile's
+  // Files the form points at must be there and readable; a file engine's
   // database file is checked on save as well.
-  async function checkFiles(): Promise<boolean> {
-    if (form.driver === "sqlite") {
-      const path = form.path.trim();
+  async function checkFiles(purpose: "save" | "connect"): Promise<boolean> {
+    if (engine === undefined) {
+      return false;
+    }
+    const files: { field: ConnectionField; path: string }[] = [];
+    for (const field of engine.connection.fields) {
+      const path = text(form.values, field.key).trim();
+      const wanted = field.type === "path" || (purpose === "connect" && field.type === "file");
+      if (wanted && path !== "" && fieldVisible(field, form.values)) {
+        files.push({ field, path });
+      }
+    }
+    if (purpose === "connect" && form.sshEnabled && form.sshAuth === "key" && form.sshKeyPath.trim() !== "") {
+      files.push({ field: { key: SSH_KEY, type: "file", label: "SSH 키" }, path: form.sshKeyPath.trim() });
+    }
+    for (const { field, path } of files) {
       const stat = await store.statPath(path);
       if (!stat.exists || !stat.is_file || !stat.readable) {
-        const text = t("데이터베이스 파일을 읽을 수 없습니다: {path}", { path });
-        setProblems([{ field: "path", message: text }]);
-        setStatus({ kind: "error", text });
-        return false;
-      }
-      return true;
-    }
-    const files: { path: string; label: string }[] = [];
-    if (form.driver !== "mssql" && form.sslMode !== "disable") {
-      if (form.sslRootCert.trim() !== "") {
-        files.push({ path: form.sslRootCert.trim(), label: t("CA 인증서") });
-      }
-      if (form.sslClientCert.trim() !== "") {
-        files.push({ path: form.sslClientCert.trim(), label: t("클라이언트 인증서") });
-      }
-      if (form.sslClientKey.trim() !== "") {
-        files.push({ path: form.sslClientKey.trim(), label: t("클라이언트 키") });
-      }
-    }
-    if (form.sshEnabled && form.sshAuth === "key" && form.sshKeyPath.trim() !== "") {
-      files.push({ path: form.sshKeyPath.trim(), label: t("SSH 키") });
-    }
-    for (const file of files) {
-      const stat = await store.statPath(file.path);
-      if (!stat.exists || !stat.is_file || !stat.readable) {
-        setStatus({
-          kind: "error",
-          text: t("{label} 파일을 읽을 수 없습니다: {path}", { label: file.label, path: file.path }),
-        });
+        if (field.type === "path") {
+          const message = t("데이터베이스 파일을 읽을 수 없습니다: {path}", { path });
+          setProblems([{ field: field.key, message }]);
+          setStatus({ kind: "error", text: message });
+        } else {
+          setStatus({
+            kind: "error",
+            text: t("{label} 파일을 읽을 수 없습니다: {path}", { label: t(field.label ?? field.key), path }),
+          });
+        }
         return false;
       }
     }
     return true;
   }
 
+  // A password typed before switching to an authentication without one stays
+  // in the form but isn't sent.
   function secrets(): ConnectSecrets {
+    const password = engine !== undefined ? passwordField(engine) : undefined;
+    const typed = password !== undefined && fieldVisible(password, form.values) ? text(form.values, password.key) : "";
     return {
-      ...(form.password !== "" ? { password: form.password } : {}),
+      ...(typed !== "" ? { password: typed } : {}),
       ...(form.sshEnabled && form.sshAuth === "password" && form.sshPassword !== ""
         ? { ssh_password: form.sshPassword }
         : {}),
@@ -690,11 +641,12 @@ export function ConnectModal({
     };
   }
 
-  async function persist(): Promise<string> {
-    const name = form.name.trim() || autoName(form);
-    const input = buildInput(form);
-    // A SQLite file has no password to keep.
-    const persistPassword = form.driver !== "sqlite" && form.persistPassword;
+  async function persist(current: Engine): Promise<string> {
+    const name = form.name.trim() || autoName(current, form);
+    const input = buildInput(current, form);
+    // An engine without secrets (a SQLite file) has no password to keep.
+    const password = passwordField(current);
+    const persistPassword = password !== undefined && form.persistPassword;
     let id = savedId;
     if (id !== null) {
       try {
@@ -717,7 +669,9 @@ export function ConnectModal({
       tags: form.tags.split(","),
     });
     const typedSecret =
-      form.password !== "" || form.sshPassword !== "" || form.httpPassword !== "";
+      (password !== undefined && fieldVisible(password, form.values) && text(form.values, password.key) !== "") ||
+      form.sshPassword !== "" ||
+      form.httpPassword !== "";
     setStoredSecrets(persistPassword && (storedSecrets || typedSecret));
     initialRef.current = form;
     onSaved();
@@ -725,15 +679,15 @@ export function ConnectModal({
   }
 
   async function save(): Promise<void> {
-    if (busy !== null || !check("save")) {
+    if (busy !== null || !check("save") || engine === undefined) {
       return;
     }
     setBusy("save");
     try {
-      if (form.driver === "sqlite" && !(await checkFiles())) {
+      if (!(await checkFiles("save"))) {
         return;
       }
-      await persist();
+      await persist(engine);
       onClose();
     } catch (err) {
       setStatus(errorStatus(err, t("저장하지 못했습니다")));
@@ -744,26 +698,31 @@ export function ConnectModal({
   saveRef.current = () => void save();
 
   async function test(): Promise<void> {
-    if (busy !== null || !check("connect")) {
+    if (busy !== null || !check("connect") || engine === undefined) {
       return;
     }
     setBusy("test");
     setStatus(null);
     try {
-      if (!(await checkFiles())) {
+      if (!(await checkFiles("connect"))) {
         return;
       }
       const result = await store.testConnection(
-        buildInput(form),
+        buildInput(engine, form),
         form.persistPassword ? (savedId ?? undefined) : undefined,
       );
       setStatus({
         kind: "ok",
-        text: t("연결 성공 · {driver} · 테이블 {tables}개 · {ms}ms", {
-          driver: DRIVER_LABEL[form.driver],
-          tables: result.tables,
-          ms: Math.round(result.elapsed_ms),
-        }),
+        text: t(
+          engine.workbench === "document"
+            ? "연결 성공 · {driver} · 컬렉션 {tables}개 · {ms}ms"
+            : "연결 성공 · {driver} · 테이블 {tables}개 · {ms}ms",
+          {
+            driver: engine.label,
+            tables: result.tables,
+            ms: Math.round(result.elapsed_ms),
+          },
+        ),
       });
     } catch (err) {
       setStatus(errorStatus(err, t("연결하지 못했습니다")));
@@ -773,16 +732,16 @@ export function ConnectModal({
   }
 
   async function connect(): Promise<void> {
-    if (busy !== null || !check("connect")) {
+    if (busy !== null || !check("connect") || engine === undefined) {
       return;
     }
     setBusy("connect");
     setStatus(null);
     try {
-      if (!(await checkFiles())) {
+      if (!(await checkFiles("connect"))) {
         return;
       }
-      const id = await persist();
+      const id = await persist(engine);
       if (openConnId !== null) {
         onSwitch(openConnId);
         return;
@@ -791,9 +750,9 @@ export function ConnectModal({
     } catch (err) {
       const missing = missingSecretOf(err);
       if (missing !== null) {
-        const text = err instanceof Error ? t(err.message) : t("비밀번호를 입력하세요");
-        setProblems([{ field: SECRET_FIELD[missing], message: text }]);
-        setStatus({ kind: "error", text });
+        const message = err instanceof Error ? t(err.message) : t("비밀번호를 입력하세요");
+        setProblems([{ field: secretFieldOf(missing, engine), message }]);
+        setStatus({ kind: "error", text: message });
         focusSecret(missing);
       } else {
         setStatus(errorStatus(err, t("연결하지 못했습니다")));
@@ -811,65 +770,49 @@ export function ConnectModal({
     // Runs after the fix's form change has rendered, so test() sees it.
   }, [retest]);
 
-  // One-click versions of the fixes an explained error suggests.
-  function errorActions(help: ErrorHelp): ReactNode {
-    if (form.driver === "mssql" || form.driver === "sqlite" || busy !== null) {
-      return null;
+  // One-click versions of the fixes an explained error suggests, where the
+  // engine has the setting: the SSL mode, MongoDB's direct connection. Each
+  // changes the form and tests again.
+  function settingFix(key: string, value: string | boolean): (() => void) | undefined {
+    const field = engine?.connection.fields.find((candidate) => candidate.key === key);
+    if (field === undefined || busy !== null || form.values[key] === value) {
+      return undefined;
     }
-    if (help.action === "ssl-off" && form.sslMode !== "disable") {
-      return (
-        <button
-          type="button"
-          onClick={() => {
-            update({ sslMode: "disable" });
-            setRetest(true);
-          }}
-        >
-          {t("SSL 끄고 다시 테스트")}
-        </button>
-      );
-    }
-    if (help.action === "ssl-on" && form.sslMode !== "require") {
-      return (
-        <button
-          type="button"
-          onClick={() => {
-            update({ sslMode: "require" });
-            setRetest(true);
-          }}
-        >
-          {t("SSL ‘필수’로 바꾸고 다시 테스트")}
-        </button>
-      );
-    }
-    return null;
+    return () => {
+      updateValues({ [key]: value });
+      setRetest(true);
+    };
   }
 
-  const statusHelp = useMemo(
-    () => (status?.kind === "error" ? explainError(status.text, status.code) : null),
-    [status],
-  );
+  function fileValue(field: string): string {
+    return field === SSH_KEY ? form.sshKeyPath : text(form.values, field);
+  }
 
-  function fileValue(field: FileField): string {
-    return form[field];
+  function setFile(field: string, path: string): void {
+    if (field === SSH_KEY) {
+      update({ sshKeyPath: path });
+    } else {
+      updateValues({ [field]: path });
+    }
   }
 
   // The system's open dialog, in the current file's folder (an SSH key's in
-  // ~/.ssh), showing only SQLite files for a database path; where there is
-  // none, the in-app file list.
-  async function pickFile(field: FileField, title: string): Promise<void> {
+  // ~/.ssh), showing only the engine's own files for a database path; where
+  // there is none, the in-app file list.
+  async function pickFile(field: string, title: string, isPath = false): Promise<void> {
     if (pickingRef.current) {
       return;
     }
     pickingRef.current = true;
     const current = fileValue(field).trim();
     const slash = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"));
-    const dir = slash > 0 ? current.slice(0, slash) : field === "sshKeyPath" ? "~/.ssh" : undefined;
-    const filter = field === "path" ? { name: "SQLite", extensions: SQLITE_EXTENSIONS } : undefined;
+    const dir = slash > 0 ? current.slice(0, slash) : field === SSH_KEY ? "~/.ssh" : undefined;
+    const extensions = isPath ? engine?.fileExtensions : undefined;
+    const filter = extensions !== undefined && engine !== undefined ? { name: engine.label, extensions } : undefined;
     try {
-      const path = await store.pickFile({ title, filter, dir, hidden: field === "sshKeyPath" });
+      const path = await store.pickFile({ title, filter, dir, hidden: field === SSH_KEY });
       if (path !== null) {
-        update({ [field]: path } as Partial<ConnectForm>);
+        setFile(field, path);
       }
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === "native_picker_unavailable") {
@@ -883,7 +826,269 @@ export function ConnectModal({
   }
 
   const storedPlaceholder = isEdit && storedSecrets ? t("저장된 비밀번호 사용") : "";
-  const title = editing !== null ? t("연결 편집") : t("{driver} 연결", { driver: DRIVER_LABEL[form.driver] });
+  const title =
+    editing !== null
+      ? t("연결 편집")
+      : t("{driver} 연결", { driver: engine?.label ?? form.driver });
+
+  // One input per field kind, laid out as the dialog always has been: a host
+  // with its port on one row, the password with its keychain choice, a
+  // select as a segmented control, consecutive files of a group as one row
+  // of file slots.
+  function renderFields(current: Engine, advanced: boolean): ReactNode[] {
+    const shown = current.connection.fields.filter(
+      (field) => (field.advanced === true) === advanced && fieldVisible(field, form.values),
+    );
+    const firstSecret = passwordField(current);
+    const rows: ReactNode[] = [];
+    for (let index = 0; index < shown.length; index += 1) {
+      const field = shown[index];
+      const label = t(field.label ?? field.key);
+      const value = text(form.values, field.key);
+      const id = `cm-${field.key}`;
+      const invalidClass = invalid.has(field.key) ? "invalid" : "";
+      const next = shown[index + 1];
+      if (field.type === "host" || field.type === "uri") {
+        const port = field.type === "host" && next?.type === "port" ? next : undefined;
+        if (port !== undefined) {
+          index += 1;
+        }
+        rows.push(
+          <Row key={field.key} label={label} htmlFor={id}>
+            <div className="cm-pair">
+              <div className="cm-input-wrap">
+                <input
+                  id={id}
+                  className={invalidClass}
+                  {...invalidProps(field.key)}
+                  value={value}
+                  spellCheck={false}
+                  placeholder={field.placeholder !== undefined ? t(field.placeholder) : undefined}
+                  onChange={(event) => updateValues({ [field.key]: event.target.value })}
+                  onBlur={(event) => void fillFromTyped(field, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.nativeEvent.isComposing && fillFromTyped(field, event.currentTarget.value)) {
+                      event.preventDefault();
+                    }
+                  }}
+                  onPaste={(event) => {
+                    const pasted = event.clipboardData.getData("text");
+                    if (!URL_LIKE.test(pasted.trim())) {
+                      return;
+                    }
+                    // Never let a URL (and the password inside it) land in a host field;
+                    // a connection-string field fills the form, keeping only what
+                    // the fields can't say (see parseConnectionUrl).
+                    if (field.type === "host") {
+                      event.preventDefault();
+                    } else if (field.fills_others !== true || parseConnectionUrl(pasted) === null) {
+                      return;
+                    } else {
+                      event.preventDefault();
+                    }
+                    pasteUrl(pasted);
+                  }}
+                />
+                <LinkPasteIcon size={11} className="cm-input-icon" />
+              </div>
+              {port !== undefined ? (
+                <>
+                  <span className="cm-inline-label">{t(port.label ?? port.key)}</span>
+                  <input
+                    className={`cm-port${invalid.has(port.key) ? " invalid" : ""}`}
+                    {...invalidProps(port.key)}
+                    inputMode="numeric"
+                    value={text(form.values, port.key)}
+                    onChange={(event) => updateValues({ [port.key]: event.target.value.replace(/[^0-9]/g, "") })}
+                    aria-label={t(port.label ?? port.key)}
+                  />
+                </>
+              ) : null}
+            </div>
+          </Row>,
+        );
+      } else if (field.type === "port") {
+        rows.push(
+          <Row key={field.key} label={label} htmlFor={id}>
+            <input
+              id={id}
+              className={`cm-port${invalid.has(field.key) ? " invalid" : ""}`}
+              {...invalidProps(field.key)}
+              inputMode="numeric"
+              value={value}
+              onChange={(event) => updateValues({ [field.key]: event.target.value.replace(/[^0-9]/g, "") })}
+            />
+          </Row>,
+        );
+      } else if (field.type === "secret") {
+        const own = field === firstSecret;
+        rows.push(
+          <Row key={field.key} label={label} htmlFor={id}>
+            <div className="cm-pair">
+              <div className="cm-input-wrap">
+                <input
+                  id={id}
+                  ref={own ? passwordRef : undefined}
+                  className={invalidClass}
+                  {...invalidProps(field.key)}
+                  type={showPassword ? "text" : "password"}
+                  value={value}
+                  placeholder={storedPlaceholder}
+                  autoComplete="new-password"
+                  onChange={(event) => updateValues({ [field.key]: event.target.value })}
+                />
+                <button
+                  type="button"
+                  className="cm-eye"
+                  onClick={() => setShowPassword((shownNow) => !shownNow)}
+                  title={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
+                  aria-label={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
+                >
+                  {showPassword ? <EyeOffIcon size={11} /> : <EyeIcon size={11} />}
+                </button>
+              </div>
+              {own ? (
+                <Select
+                  className="cm-store"
+                  value={form.persistPassword ? "keychain" : "none"}
+                  onChange={(event) => update({ persistPassword: event.target.value === "keychain" })}
+                  title={t("DB·SSH·프록시 비밀번호 저장 방식")}
+                >
+                  <option value="keychain">{t("키체인에 저장")}</option>
+                  <option value="none">{t("매번 입력")}</option>
+                </Select>
+              ) : null}
+            </div>
+          </Row>,
+        );
+      } else if (field.type === "select") {
+        rows.push(
+          <Row key={field.key} label={label}>
+            <div className="cm-segmented" role="radiogroup" aria-label={label}>
+              {optionsOf(field).map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={value === option.value}
+                  className={value === option.value ? "active" : ""}
+                  onClick={() => updateValues(choiceValues(field, option.value))}
+                >
+                  {t(option.label)}
+                </button>
+              ))}
+            </div>
+          </Row>,
+        );
+      } else if (field.type === "toggle") {
+        rows.push(
+          <Row key={field.key} label={label}>
+            <label className="cm-switch">
+              <input
+                type="checkbox"
+                checked={form.values[field.key] === true}
+                onChange={(event) => updateValues({ [field.key]: event.target.checked })}
+              />
+              <span>{t(field.description ?? field.label ?? field.key)}</span>
+            </label>
+          </Row>,
+        );
+      } else if (field.type === "file") {
+        const group = [field];
+        while (field.group !== undefined && shown[index + 1]?.type === "file" && shown[index + 1].group === field.group) {
+          index += 1;
+          group.push(shown[index]);
+        }
+        rows.push(
+          <Row key={field.key} label={t(field.group ?? field.label ?? field.key)}>
+            <div className={`cm-files${group.length === 1 ? " single" : ""}`}>
+              {group.map((slot) => {
+                const slotLabel = t(slot.label ?? slot.key);
+                return (
+                  <FileSlot
+                    key={slot.key}
+                    label={slotLabel}
+                    value={text(form.values, slot.key)}
+                    invalid={invalid.has(slot.key)}
+                    onPick={() => void pickFile(slot.key, t(`${slot.label ?? slot.key} 선택`))}
+                    onClear={() => updateValues({ [slot.key]: "" })}
+                  />
+                );
+              })}
+            </div>
+          </Row>,
+        );
+      } else if (field.type === "path") {
+        rows.push(
+          <Row key={field.key} label={label} htmlFor={id}>
+            <div className="cm-pair">
+              <input
+                id={id}
+                className={invalidClass}
+                {...invalidProps(field.key)}
+                value={value}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder={field.placeholder !== undefined ? t(field.placeholder) : undefined}
+                onChange={(event) => updateValues({ [field.key]: event.target.value })}
+              />
+              <button
+                type="button"
+                className="cm-path-pick"
+                onClick={() => void pickFile(field.key, t(`${current.label} 파일 선택`), true)}
+              >
+                <FileIcon size={11} />
+                {t("파일 선택…")}
+              </button>
+            </div>
+          </Row>,
+        );
+      } else if (field.type === "textarea") {
+        rows.push(
+          <Row key={field.key} label={label} htmlFor={id}>
+            <textarea
+              id={id}
+              className={invalidClass}
+              {...invalidProps(field.key)}
+              value={value}
+              spellCheck={false}
+              placeholder={field.placeholder !== undefined ? t(field.placeholder) : undefined}
+              onChange={(event) => updateValues({ [field.key]: event.target.value })}
+            />
+          </Row>,
+        );
+      } else {
+        rows.push(
+          <Row key={field.key} label={label} htmlFor={id}>
+            <input
+              id={id}
+              className={invalidClass}
+              {...invalidProps(field.key)}
+              value={value}
+              spellCheck={false}
+              autoComplete="off"
+              inputMode={field.type === "number" ? "decimal" : undefined}
+              placeholder={field.placeholder !== undefined ? t(field.placeholder) : undefined}
+              onChange={(event) => updateValues({ [field.key]: event.target.value })}
+            />
+          </Row>,
+        );
+      }
+    }
+    return rows;
+  }
+
+  // The server engines the card row switches between; a file engine (SQLite)
+  // keeps its own form and never shows the row.
+  const switchable = engine?.transport === "server" ? engines().filter((candidate) => candidate.transport === "server") : [];
+  const tunnels = engine?.connection.tunnels ?? [];
+  const defaults = engine !== undefined ? defaultValues(engine) : {};
+  const advancedShown =
+    advancedOpen ||
+    (engine?.connection.fields.some(
+      (field) => field.advanced === true && (invalid.has(field.key) || String(form.values[field.key] ?? "") !== String(defaults[field.key] ?? "")),
+    ) ??
+      false);
 
   return (
     <div
@@ -894,7 +1099,7 @@ export function ConnectModal({
       onClick={(event) => {
         // Only a click that started on the backdrop closes; a drag out of an input doesn't.
         if (backdropDownRef.current && event.target === event.currentTarget) {
-          requestClose();
+          void requestClose();
         }
         backdropDownRef.current = false;
       }}
@@ -914,9 +1119,9 @@ export function ConnectModal({
           </span>
           <div className="cm-head-text">
             <div className="cm-title">{title}</div>
-            <div className="cm-subtitle">{form.name.trim() || autoName(form)}</div>
+            <div className="cm-subtitle">{form.name.trim() || autoName(engine, form)}</div>
           </div>
-          <button type="button" className="icon-button cm-close" onClick={requestClose} title={t("닫기")}>
+          <button type="button" className="icon-button cm-close" onClick={() => void requestClose()} title={t("닫기")}>
             <CloseIcon size={11} />
           </button>
         </header>
@@ -927,24 +1132,25 @@ export function ConnectModal({
               {t("이 연결은 열려 있습니다. 바뀐 설정은 다음에 연결할 때부터 적용됩니다.")}
             </div>
           ) : null}
+          {engine === undefined ? <div className="cm-banner">{unsupportedEngine(form.driver)}</div> : null}
 
-          {form.driver !== "sqlite" ? (
+          {switchable.length > 0 ? (
             <div className="cm-drivers" role="radiogroup" aria-label={t("데이터베이스 종류")}>
-              {DRIVERS.map((driver) => (
+              {switchable.map((choice) => (
                 <button
-                  key={driver}
+                  key={choice.id}
                   type="button"
                   role="radio"
-                  aria-checked={form.driver === driver}
-                  className={`cm-driver${form.driver === driver ? " active" : ""}`}
-                  onClick={() => changeDriver(driver)}
+                  aria-checked={form.driver === choice.id}
+                  className={`cm-driver${form.driver === choice.id ? " active" : ""}`}
+                  onClick={() => changeDriver(choice)}
                 >
-                  <DriverIcon kind={driver} size={28} />
+                  <DriverIcon kind={choice.id} size={28} />
                   <span className="cm-driver-text">
-                    <span className="cm-driver-name">{DRIVER_LABEL[driver]}</span>
-                    <span className="cm-driver-sub">{t(DRIVER_SUB[driver])}</span>
+                    <span className="cm-driver-name">{choice.label}</span>
+                    <span className="cm-driver-sub">{t(choice.subtitle)}</span>
                   </span>
-                  {form.driver === driver ? <CheckIcon size={11} className="cm-driver-check" /> : null}
+                  {form.driver === choice.id ? <CheckIcon size={11} className="cm-driver-check" /> : null}
                 </button>
               ))}
             </div>
@@ -956,7 +1162,7 @@ export function ConnectModal({
                 id="cm-name"
                 ref={nameRef}
                 value={form.name}
-                placeholder={autoName(form)}
+                placeholder={autoName(engine, form)}
                 onChange={(event) => update({ name: event.target.value })}
               />
             </Row>
@@ -1009,190 +1215,28 @@ export function ConnectModal({
             </Row>
           </section>
 
-          {form.driver === "sqlite" ? (
-            <section className="cm-card">
-              <Row label={t("데이터베이스 경로")} htmlFor="cm-path">
-                <div className="cm-pair">
-                  <input
-                    id="cm-path"
-                    className={invalid.has("path") ? "invalid" : ""}
-                    value={form.path}
-                    spellCheck={false}
-                    autoComplete="off"
-                    placeholder={t("SQLite 파일 경로")}
-                    onChange={(event) => update({ path: event.target.value })}
-                  />
-                  <button
-                    type="button"
-                    className="cm-path-pick"
-                    onClick={() => void pickFile("path", t("SQLite 파일 선택"))}
-                  >
-                    <FileIcon size={11} />
-                    {t("파일 선택…")}
-                  </button>
-                </div>
-              </Row>
-            </section>
-          ) : (
-            <>
-              <section className="cm-card">
-                <Row label={t("호스트")} htmlFor="cm-host">
-                  <div className="cm-pair">
-                    <div className="cm-input-wrap">
-                      <input
-                        id="cm-host"
-                        className={invalid.has("host") ? "invalid" : ""}
-                        value={form.host}
-                        spellCheck={false}
-                        placeholder={t("호스트 또는 연결 URL 붙여넣기")}
-                        onChange={(event) => update({ host: event.target.value })}
-                        onPaste={(event) => {
-                          const text = event.clipboardData.getData("text");
-                          if (!URL_LIKE.test(text.trim())) {
-                            return;
-                          }
-                          // Never let a URL (and the password inside it) land in the host field.
-                          event.preventDefault();
-                          const patch = parseConnectionUrl(text);
-                          if (patch === null) {
-                            setStatus({ kind: "error", text: t("연결 URL을 인식하지 못했습니다") });
-                            return;
-                          }
-                          update(patch);
-                          setStatus({
-                            kind: "ok",
-                            text: /sslmode=verify/i.test(text)
-                              ? t("URL에서 채웠습니다 · verify 모드는 Require로 설정했습니다")
-                              : t("URL에서 접속 정보를 채웠습니다"),
-                          });
-                        }}
-                      />
-                      <LinkPasteIcon size={11} className="cm-input-icon" />
-                    </div>
-                    <span className="cm-inline-label">{t("포트")}</span>
-                    <input
-                      className={`cm-port${invalid.has("port") ? " invalid" : ""}`}
-                      inputMode="numeric"
-                      value={form.port}
-                      onChange={(event) => update({ port: event.target.value.replace(/[^0-9]/g, "") })}
-                      aria-label={t("포트")}
-                    />
-                  </div>
-                </Row>
-                <Row label={t("사용자")} htmlFor="cm-user">
-                  <input
-                    id="cm-user"
-                    className={invalid.has("user") ? "invalid" : ""}
-                    value={form.user}
-                    spellCheck={false}
-                    autoComplete="off"
-                    onChange={(event) => update({ user: event.target.value })}
-                  />
-                </Row>
-                <Row label={t("비밀번호")} htmlFor="cm-password">
-                  <div className="cm-pair">
-                    <div className="cm-input-wrap">
-                      <input
-                        id="cm-password"
-                        ref={passwordRef}
-                        className={invalid.has("password") ? "invalid" : ""}
-                        type={showPassword ? "text" : "password"}
-                        value={form.password}
-                        placeholder={storedPlaceholder}
-                        autoComplete="new-password"
-                        onChange={(event) => update({ password: event.target.value })}
-                      />
-                      <button
-                        type="button"
-                        className="cm-eye"
-                        onClick={() => setShowPassword((value) => !value)}
-                        title={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
-                        aria-label={showPassword ? t("비밀번호 숨기기") : t("비밀번호 보기")}
-                      >
-                        {showPassword ? <EyeOffIcon size={11} /> : <EyeIcon size={11} />}
-                      </button>
-                    </div>
-                    <Select
-                      className="cm-store"
-                      value={form.persistPassword ? "keychain" : "none"}
-                      onChange={(event) => update({ persistPassword: event.target.value === "keychain" })}
-                      title={t("DB·SSH·프록시 비밀번호 저장 방식")}
-                    >
-                      <option value="keychain">{t("키체인에 저장")}</option>
-                      <option value="none">{t("매번 입력")}</option>
-                    </Select>
-                  </div>
-                </Row>
-                <Row label={t("데이터베이스")} htmlFor="cm-database">
-                  <input
-                    id="cm-database"
-                    className={invalid.has("database") ? "invalid" : ""}
-                    value={form.database}
-                    spellCheck={false}
-                    onChange={(event) => update({ database: event.target.value })}
-                  />
-                </Row>
-                {form.driver === "mssql" ? (
-                  <Row label={t("암호화")}>
-                    <label className="cm-switch">
-                      <input
-                        type="checkbox"
-                        checked={form.encrypt}
-                        onChange={(event) => update({ encrypt: event.target.checked })}
-                      />
-                      <span>{t("TLS로 암호화 (자체 서명 인증서 허용)")}</span>
-                    </label>
-                  </Row>
-                ) : (
-                  <>
-                    <Row label={t("SSL 모드")}>
-                      <div className="cm-segmented" role="radiogroup" aria-label={t("SSL 모드")}>
-                        {SSL_MODES.map((mode) => (
-                          <button
-                            key={mode.value}
-                            type="button"
-                            role="radio"
-                            aria-checked={form.sslMode === mode.value}
-                            className={form.sslMode === mode.value ? "active" : ""}
-                            onClick={() => update({ sslMode: mode.value })}
-                          >
-                            {t(mode.label)}
-                          </button>
-                        ))}
-                      </div>
-                    </Row>
-                    {form.sslMode !== "disable" ? (
-                      <Row label={t("SSL 키")}>
-                        <div className="cm-files">
-                          <FileSlot
-                            label={t("클라이언트 키")}
-                            value={form.sslClientKey}
-                            invalid={invalid.has("sslClientKey")}
-                            onPick={() => void pickFile("sslClientKey", t("클라이언트 키 선택"))}
-                            onClear={() => update({ sslClientKey: "" })}
-                          />
-                          <FileSlot
-                            label={t("클라이언트 인증서")}
-                            value={form.sslClientCert}
-                            invalid={invalid.has("sslClientCert")}
-                            onPick={() => void pickFile("sslClientCert", t("클라이언트 인증서 선택"))}
-                            onClear={() => update({ sslClientCert: "" })}
-                          />
-                          <FileSlot
-                            label={t("CA 인증서")}
-                            value={form.sslRootCert}
-                            invalid={false}
-                            onPick={() => void pickFile("sslRootCert", t("CA 인증서 선택"))}
-                            onClear={() => update({ sslRootCert: "" })}
-                          />
-                        </div>
-                      </Row>
-                    ) : null}
-                  </>
-                )}
-              </section>
+          {engine !== undefined ? <section className="cm-card">{renderFields(engine, false)}</section> : null}
 
+          {engine !== undefined && engine.connection.fields.some((field) => field.advanced === true && fieldVisible(field, form.values)) ? (
+            <>
               <div className="cm-tunnels">
+                <button
+                  type="button"
+                  className={`cm-tunnel${advancedShown ? " active" : ""}`}
+                  aria-expanded={advancedShown}
+                  onClick={() => setAdvancedOpen(!advancedShown)}
+                >
+                  {t("고급 설정")}
+                </button>
+                <span className="cm-tunnel-hint">{t("레플리카셋·읽기 선호처럼 보통은 그대로 두는 설정")}</span>
+              </div>
+              {advancedShown ? <section className="cm-card">{renderFields(engine, true)}</section> : null}
+            </>
+          ) : null}
+
+          {tunnels.length > 0 ? (
+            <div className="cm-tunnels">
+              {tunnels.includes("ssh") ? (
                 <button
                   type="button"
                   className={`cm-tunnel${form.sshEnabled ? " active" : ""}`}
@@ -1201,6 +1245,8 @@ export function ConnectModal({
                 >
                   {t("SSH 터널")}
                 </button>
+              ) : null}
+              {tunnels.includes("http") ? (
                 <button
                   type="button"
                   className={`cm-tunnel${form.httpEnabled ? " active" : ""}`}
@@ -1209,22 +1255,23 @@ export function ConnectModal({
                 >
                   {t("HTTP 프록시")}
                 </button>
-                <span className="cm-tunnel-hint">
-                  {form.sshEnabled || form.httpEnabled
-                    ? t("DB 호스트는 터널 서버에서 본 주소로 입력하세요 (예: 127.0.0.1)")
-                    : t("방화벽 너머의 DB라면 터널을 켜세요")}
-                </span>
-              </div>
-            </>
-          )}
+              ) : null}
+              <span className="cm-tunnel-hint">
+                {form.sshEnabled || form.httpEnabled
+                  ? t("DB 호스트는 터널 서버에서 본 주소로 입력하세요 (예: 127.0.0.1)")
+                  : t("방화벽 너머의 DB라면 터널을 켜세요")}
+              </span>
+            </div>
+          ) : null}
 
-          {form.sshEnabled ? (
+          {form.sshEnabled && tunnels.includes("ssh") ? (
             <section className="cm-card cm-reveal">
               <Row label={t("서버")} htmlFor="cm-ssh-host">
                 <div className="cm-pair">
                   <input
                     id="cm-ssh-host"
                     className={invalid.has("sshHost") ? "invalid" : ""}
+                    {...invalidProps("sshHost")}
                     value={form.sshHost}
                     spellCheck={false}
                     placeholder="bastion.example.com"
@@ -1233,6 +1280,7 @@ export function ConnectModal({
                   <span className="cm-inline-label">{t("포트")}</span>
                   <input
                     className={`cm-port${invalid.has("sshPort") ? " invalid" : ""}`}
+                    {...invalidProps("sshPort")}
                     inputMode="numeric"
                     value={form.sshPort}
                     onChange={(event) => update({ sshPort: event.target.value.replace(/[^0-9]/g, "") })}
@@ -1244,6 +1292,7 @@ export function ConnectModal({
                 <input
                   id="cm-ssh-user"
                   className={invalid.has("sshUser") ? "invalid" : ""}
+                  {...invalidProps("sshUser")}
                   value={form.sshUser}
                   spellCheck={false}
                   onChange={(event) => update({ sshUser: event.target.value })}
@@ -1277,6 +1326,7 @@ export function ConnectModal({
                     id="cm-ssh-password"
                     ref={sshPasswordRef}
                     className={invalid.has("sshPassword") ? "invalid" : ""}
+                    {...invalidProps("sshPassword")}
                     type="password"
                     value={form.sshPassword}
                     placeholder={storedPlaceholder}
@@ -1291,7 +1341,7 @@ export function ConnectModal({
                       label={t("개인 키")}
                       value={form.sshKeyPath}
                       invalid={invalid.has("sshKeyPath")}
-                      onPick={() => void pickFile("sshKeyPath", t("SSH 개인 키 선택"))}
+                      onPick={() => void pickFile(SSH_KEY, t("SSH 개인 키 선택"))}
                       onClear={() => update({ sshKeyPath: "" })}
                     />
                   </div>
@@ -1300,13 +1350,14 @@ export function ConnectModal({
             </section>
           ) : null}
 
-          {form.httpEnabled ? (
+          {form.httpEnabled && tunnels.includes("http") ? (
             <section className="cm-card cm-reveal">
               <Row label={t("프록시")} htmlFor="cm-http-host">
                 <div className="cm-pair">
                   <input
                     id="cm-http-host"
                     className={invalid.has("httpHost") ? "invalid" : ""}
+                    {...invalidProps("httpHost")}
                     value={form.httpHost}
                     spellCheck={false}
                     placeholder="proxy.example.com"
@@ -1315,6 +1366,7 @@ export function ConnectModal({
                   <span className="cm-inline-label">{t("포트")}</span>
                   <input
                     className={`cm-port${invalid.has("httpPort") ? " invalid" : ""}`}
+                    {...invalidProps("httpPort")}
                     inputMode="numeric"
                     value={form.httpPort}
                     onChange={(event) => update({ httpPort: event.target.value.replace(/[^0-9]/g, "") })}
@@ -1327,6 +1379,7 @@ export function ConnectModal({
                   <input
                     id="cm-http-user"
                     className={invalid.has("httpUser") ? "invalid" : ""}
+                    {...invalidProps("httpUser")}
                     value={form.httpUser}
                     placeholder={t("선택")}
                     onChange={(event) => update({ httpUser: event.target.value })}
@@ -1335,6 +1388,7 @@ export function ConnectModal({
                   <input
                     ref={httpPasswordRef}
                     className={invalid.has("httpPassword") ? "invalid" : ""}
+                    {...invalidProps("httpPassword")}
                     type="password"
                     value={form.httpPassword}
                     placeholder={storedPlaceholder}
@@ -1348,19 +1402,26 @@ export function ConnectModal({
           ) : null}
         </div>
 
-        {status !== null && statusHelp !== null && busy === null ? (
-          <div className="cm-error-slot">
+        {/* An error shows once, here: explained when a rule knows it, its
+            first line otherwise, with the fixes this dialog can apply. */}
+        {status !== null && status.kind === "error" && busy === null ? (
+          <div className="cm-error-slot" id="cm-error">
             <ErrorNotice
-              message={status.text}
-              code={status.code}
+              error={status.error ?? status.text}
+              context="connect"
+              engine={form.driver}
               variant="compact"
-              renderActions={errorActions}
+              onFix={{
+                "ssl-off": settingFix("ssl_mode", "disable"),
+                "ssl-on": settingFix("ssl_mode", "require"),
+                "direct-connection": settingFix("direct_connection", true),
+              }}
               onClose={() => setStatus(null)}
             />
           </div>
         ) : null}
         <footer className="cm-foot">
-          <span className={`cm-status${status ? ` ${status.kind}` : ""}`} role="status">
+          <span className={`cm-status${status !== null && status.kind !== "error" ? ` ${status.kind}` : ""}`} role="status">
             {busy === "test" ? (
               <>
                 <Spinner size={11} />
@@ -1371,24 +1432,24 @@ export function ConnectModal({
                 <Spinner size={11} />
                 {t("연결하는 중…")}
               </>
-            ) : status ? (
+            ) : status !== null && status.kind !== "error" ? (
               <>
                 {status.kind === "ok" ? <CheckIcon size={11} /> : null}
-                {statusHelp !== null ? statusHelp.title : status.text}
+                {status.text}
               </>
             ) : (
               <span className="cm-hint">{t("Enter 연결 · ⌘S 저장 · Esc 닫기")}</span>
             )}
           </span>
-          <button type="button" onClick={() => void save()} disabled={busy !== null}>
+          <button type="button" onClick={() => void save()} disabled={busy !== null || engine === undefined}>
             {busy === "save" ? <Spinner size={11} /> : null}
             {t("저장")}
           </button>
-          <button type="button" onClick={() => void test()} disabled={busy !== null}>
+          <button type="button" onClick={() => void test()} disabled={busy !== null || engine === undefined}>
             {t("테스트")}
           </button>
-          <button type="submit" className="primary" disabled={busy !== null}>
-            {openConnId !== null ? t("저장 후 열기") : t("연결")}
+          <button type="submit" className="primary" disabled={busy !== null || engine === undefined}>
+            {openConnId !== null ? t("저장 후 열기") : t("연결 [버튼]")}
           </button>
         </footer>
       </form>
@@ -1396,9 +1457,9 @@ export function ConnectModal({
         <FilePickerModal
           title={picker.title}
           current={fileValue(picker.field)}
-          homeSubdir={picker.field === "sshKeyPath" ? ".ssh" : undefined}
+          homeSubdir={picker.field === SSH_KEY ? ".ssh" : undefined}
           onPick={(path) => {
-            update({ [picker.field]: path } as Partial<ConnectForm>);
+            setFile(picker.field, path);
             setPicker(null);
           }}
           onClose={() => setPicker(null)}

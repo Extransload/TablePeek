@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { t } from "../i18n";
 import { getPasscodeHash, sha256Hex } from "../settings";
+import { FieldError, fieldErrorProps } from "./ErrorNotice";
 
 interface LockScreenProps {
   onUnlock(): void;
@@ -45,8 +46,9 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
           value={value}
           placeholder={t("암호")}
           onChange={(event) => setValue(event.target.value)}
+          {...fieldErrorProps("lock-error", error)}
         />
-        {error !== null ? <div className="lock-error">{error}</div> : null}
+        <FieldError id="lock-error" error={error} />
         <button type="submit" className="primary" disabled={busy || value.length === 0}>
           {t("잠금 해제")}
         </button>

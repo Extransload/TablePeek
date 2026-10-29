@@ -14,6 +14,10 @@ pub const LOG_CAP: usize = 1_000;
 const LONG_STATEMENT: usize = 20_000;
 /// How much of a long statement the note keeps.
 const LONG_KEEP: usize = 2_000;
+/// Shell commands (`db.c.insertMany([…])`) longer than this many characters
+/// keep only their head in the console and History; a page that shows
+/// hundreds of entries can't hold megabytes of documents.
+pub const COMMAND_CAP: usize = 4_000;
 /// Statements a subscriber may fall behind by before it is told it lagged.
 const CHANNEL_CAP: usize = 1_024;
 /// What a redacted password shows as.
@@ -112,6 +116,22 @@ impl SqlLog {
         let Some(sql) = console_text(sql, dialect) else {
             return;
         };
+        self.push(sql);
+    }
+
+    /// Adds an operation of an engine that speaks no SQL, written as its
+    /// own shell would (`db.orders.find({…})`), as it is.
+    pub fn record_command(&self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.push(clip_command(text).into_owned());
+    }
+
+    /// Every entry, SQL or not, shows a URL's password as `****`.
+    fn push(&self, sql: String) {
+        let sql = crate::registry::redact_uri_passwords(&sql);
         let at_ms = unix_ms();
         let mut ring = self.ring();
         let entry = LogEntry {
@@ -129,8 +149,10 @@ impl SqlLog {
     }
 
     /// A change that went through. Made inside an open transaction it waits
-    /// for `settle`; otherwise it goes out at once.
-    pub fn changed(&self, change: Change, in_tx: bool) {
+    /// for `settle`; otherwise it goes out at once. Like the console, History
+    /// never keeps a URL's password.
+    pub fn changed(&self, mut change: Change, in_tx: bool) {
+        change.sql = crate::registry::redact_uri_passwords(&change.sql);
         let mut changes = self.changes();
         if in_tx {
             changes.pending.push(change);
@@ -223,6 +245,21 @@ impl SqlLog {
 
     pub fn subscribe(&self) -> broadcast::Receiver<LogEntry> {
         self.0.statements.subscribe()
+    }
+}
+
+/// A shell command cut to COMMAND_CAP characters, the rest noted in a
+/// comment the shell would skip.
+pub fn clip_command(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.len() <= COMMAND_CAP {
+        return text.into();
+    }
+    match text.char_indices().nth(COMMAND_CAP) {
+        Some((cut, _)) => {
+            let rest = text[cut..].chars().count();
+            format!("{} /* … {rest}자 생략 */", &text[..cut]).into()
+        }
+        None => text.into(),
     }
 }
 
@@ -890,6 +927,22 @@ mod tests {
     }
 
     #[test]
+    fn long_shell_commands_keep_their_head() {
+        let log = SqlLog::new();
+        let short = "db.c.insertOne({ a: 1 })";
+        log.record_command(short);
+        let long = format!("db.c.insertMany([{}])", "{ é: 1 }, ".repeat(1_000));
+        log.record_command(&long);
+        let (entries, _) = log.since(None);
+        assert_eq!(entries[0].sql, short);
+        let (kept, note) = entries[1].sql.split_once(" /* … ").unwrap();
+        assert_eq!(kept.chars().count(), COMMAND_CAP);
+        assert!(long.starts_with(kept));
+        let rest = long.chars().count() - COMMAND_CAP;
+        assert_eq!(note, format!("{rest}자 생략 */"));
+    }
+
+    #[test]
     fn terminator_stays_out_of_a_trailing_line_comment() {
         let shown = |sql: &str, dialect: Dialect| console_text(sql, dialect).unwrap();
         assert_eq!(shown("SELECT 1 -- note", LITE), "SELECT 1 -- note");
@@ -1291,6 +1344,33 @@ mod tests {
         );
         assert!(redact_secrets("SELECT 1 WHERE @password IS NULL", ms).is_none());
         assert!(redact_secrets("SELECT 'cd $PWD/bin'", ms).is_none());
+    }
+
+    #[test]
+    fn console_and_history_hide_url_passwords() {
+        let log = SqlLog::new();
+        let mut changes = log.take_changes().unwrap();
+        log.record_command(
+            "db.getSiblingDB(\"s\").c.insertOne({ link: \"mongodb://app:s3cret@db/x\" })",
+        );
+        log.record("SELECT 'postgres://u:pw@h/d'", Dialect::Postgres);
+        let shown: Vec<String> = log.since(None).0.into_iter().map(|e| e.sql).collect();
+        assert_eq!(
+            shown,
+            [
+                "db.getSiblingDB(\"s\").c.insertOne({ link: \"mongodb://app:****@db/x\" })",
+                "SELECT '********';",
+            ]
+        );
+        log.changed(
+            Change {
+                sql: "x mongodb://a:b@c".into(),
+                ms: 1,
+                rows: 1,
+            },
+            false,
+        );
+        assert_eq!(changes.try_recv().unwrap().sql, "x mongodb://a:****@c");
     }
 
     #[test]

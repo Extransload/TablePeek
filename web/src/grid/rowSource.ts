@@ -15,6 +15,14 @@ export interface RowSource {
   cellInk?(row: number, col: number): string | null;
   // Shown as the tooltip while the pointer is over the cell.
   cellTitle?(row: number, col: number): string | undefined;
+  // A short tag drawn as a pill before the value, in its own ink (a
+  // document's `{…}`, an array's `[3]`).
+  cellBadge?(row: number, col: number): { text: string; ink: string } | null;
+  // Overrides where the text sits; numbers sit right by default.
+  cellAlign?(row: number, col: number): "left" | "right" | null;
+  // A faint mark after a column's name in the header (`›` on a column that
+  // opens a child table).
+  headerMark?(col: number): string | null;
 }
 
 export class JsonRowSource implements RowSource {

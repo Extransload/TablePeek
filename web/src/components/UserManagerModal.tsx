@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { capabilitiesOf, engineById } from "../engines";
+import type { UserRow, UserStatement } from "../engines/sqlDialect";
 import { t } from "../i18n";
+import { confirmDialog, promptDialog } from "./ConfirmDialog";
 import { store, type EngineMeta } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon } from "./icons";
@@ -14,29 +17,13 @@ function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function quoteLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function quoteName(kind: string, name: string): string {
-  if (kind === "mysql") {
-    return `\`${name.replace(/`/g, "``")}\``;
-  }
-  if (kind === "mssql") {
-    return `[${name.replace(/]/g, "]]")}]`;
-  }
-  return `"${name.replace(/"/g, '""')}"`;
-}
-
-interface UserRow {
-  name: string;
-  extra: string;
-}
-
 export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps) {
-  const kind = meta.kind;
-  const supported = kind === "postgres" || kind === "cockroach" || kind === "mysql" || kind === "mssql";
+  // How the engine lists and changes its users (its SQL dialect's).
+  const admin = engineById(meta.kind)?.sql?.users;
+  const supported = capabilitiesOf(meta)?.users === true && admin !== undefined;
   const [users, setUsers] = useState<UserRow[] | null>(null);
+  // The list stopped at the server's row cap.
+  const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newName, setNewName] = useState("");
@@ -45,44 +32,22 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
   const [superUser, setSuperUser] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
-    if (!supported) {
+    if (!supported || admin === undefined) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      if (kind === "mysql") {
-        const result = await store.exec(conn, "SELECT user, host FROM mysql.user ORDER BY user, host");
-        const rows = result.rows.map((row) => ({
-          name: String(row[0] ?? ""),
-          extra: String(row[1] ?? ""),
-        }));
-        setUsers(rows);
-      } else if (kind === "mssql") {
-        const result = await store.exec(
-          conn,
-          "SELECT name, type_desc FROM sys.server_principals WHERE type IN ('S','U','G') ORDER BY name",
-        );
-        const rows = result.rows.map((row) => ({
-          name: String(row[0] ?? ""),
-          extra: String(row[1] ?? ""),
-        }));
-        setUsers(rows);
-      } else {
-        const result = await store.exec(conn, "SELECT usename, usesuper FROM pg_user ORDER BY usename");
-        const rows = result.rows.map((row) => ({
-          name: String(row[0] ?? ""),
-          extra: row[1] === true || row[1] === "t" ? "SUPERUSER" : "",
-        }));
-        setUsers(rows);
-      }
+      const result = await store.exec(conn, admin.listSql);
+      setUsers(result.rows.map((row) => admin.readRow(row)));
+      setTruncated(result.truncated);
     } catch (err) {
       setError(errorOf(err, t("사용자 목록을 불러오지 못했습니다")));
       setUsers([]);
     } finally {
       setBusy(false);
     }
-  }, [conn, kind, supported]);
+  }, [conn, admin, supported]);
 
   useEffect(() => {
     void load();
@@ -90,7 +55,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
 
   // A statement carrying a password runs but stays out of History, which is
   // kept on disk and offers its entries for copying and re-running.
-  async function runSql(statements: (string | { sql: string; secret: true })[], info: string): Promise<void> {
+  async function runSql(statements: UserStatement[], info: string): Promise<void> {
     setBusy(true);
     setError(null);
     try {
@@ -108,89 +73,50 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
   }
 
   async function createUser(): Promise<void> {
+    if (admin === undefined) {
+      return;
+    }
     const name = newName.trim();
     if (name === "" || newPassword === "") {
       setError(t("이름과 비밀번호를 입력하세요"));
       return;
     }
-    if (kind === "mysql") {
-      const statements = [
-        {
-          sql: `CREATE USER ${quoteLiteral(name)}@${quoteLiteral(newHost.trim() || "%")} IDENTIFIED BY ${quoteLiteral(newPassword)}`,
-          secret: true as const,
-        },
-      ];
-      void runSql(statements, t("사용자를 생성했습니다: {name}", { name }));
-      return;
-    }
-    if (kind === "mssql") {
-      void runSql(
-        [{ sql: `CREATE LOGIN ${quoteName(kind, name)} WITH PASSWORD = ${quoteLiteral(newPassword)}`, secret: true }],
-        t("로그인을 생성했습니다: {name}", { name }),
-      );
-      return;
-    }
-    const statements: (string | { sql: string; secret: true })[] = [
-      { sql: `CREATE ROLE ${quoteName(kind, name)} LOGIN PASSWORD ${quoteLiteral(newPassword)}`, secret: true },
-    ];
-    if (superUser && kind === "postgres") {
-      statements.push(`ALTER ROLE ${quoteName(kind, name)} SUPERUSER`);
-    }
-    void runSql(statements, t("역할을 생성했습니다: {name}", { name }));
+    void runSql(
+      admin.createSql(name, newPassword, newHost, superUser && admin.superUserOption),
+      t(admin.createdInfo, { name }),
+    );
   }
 
   async function dropUser(row: UserRow): Promise<void> {
-    if (!window.confirm(t("사용자 {name}을(를) 삭제할까요?", { name: row.name }))) {
+    if (admin === undefined) {
       return;
     }
-    if (kind === "mysql") {
-      void runSql(
-        [`DROP USER ${quoteLiteral(row.name)}@${quoteLiteral(row.extra)}`],
-        t("사용자를 삭제했습니다: {name}", { name: row.name }),
-      );
+    const ok = await confirmDialog({
+      title: t("사용자 삭제"),
+      message: t("사용자 {name}을(를) 삭제할까요?", { name: row.name }),
+      confirmLabel: t("삭제"),
+      danger: true,
+    });
+    if (!ok) {
       return;
     }
-    if (kind === "mssql") {
-      void runSql(
-        [`DROP LOGIN ${quoteName(kind, row.name)}`],
-        t("로그인을 삭제했습니다: {name}", { name: row.name }),
-      );
-      return;
-    }
-    void runSql(
-      [`DROP ROLE ${quoteName(kind, row.name)}`],
-      t("역할을 삭제했습니다: {name}", { name: row.name }),
-    );
+    void runSql([admin.dropSql(row)], t(admin.droppedInfo, { name: row.name }));
   }
 
   async function changePassword(row: UserRow): Promise<void> {
-    const password = window.prompt(t("{name}의 새 비밀번호", { name: row.name }), "");
-    if (password === null || password === "") {
+    if (admin === undefined) {
       return;
     }
-    if (kind === "mysql") {
-      void runSql(
-        [
-          {
-            sql: `ALTER USER ${quoteLiteral(row.name)}@${quoteLiteral(row.extra)} IDENTIFIED BY ${quoteLiteral(password)}`,
-            secret: true,
-          },
-        ],
-        t("비밀번호를 변경했습니다: {name}", { name: row.name }),
-      );
+    const password = await promptDialog({
+      title: t("비밀번호 변경"),
+      label: t("{name}의 새 비밀번호", { name: row.name }),
+      confirmLabel: t("변경"),
+      secret: true,
+    });
+    if (password === null) {
       return;
     }
-    if (kind === "mssql") {
-      void runSql(
-        [{ sql: `ALTER LOGIN ${quoteName(kind, row.name)} WITH PASSWORD = ${quoteLiteral(password)}`, secret: true }],
-        t("비밀번호를 변경했습니다: {name}", { name: row.name }),
-      );
-      return;
-    }
-    void runSql(
-      [{ sql: `ALTER ROLE ${quoteName(kind, row.name)} WITH PASSWORD ${quoteLiteral(password)}`, secret: true }],
-      t("비밀번호를 변경했습니다: {name}", { name: row.name }),
-    );
+    void runSql([admin.passwordSql(row, password)], t("비밀번호를 변경했습니다: {name}", { name: row.name }));
   }
 
   const canCreate = newName.trim() !== "" && newPassword !== "";
@@ -220,12 +146,12 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
         ) : (
           <>
             <div className="modal-body user-body">
-              {error ? <ErrorNotice message={error} /> : null}
+              {error ? <ErrorNotice error={error} context="admin" /> : null}
               <table className="panel-table">
                 <thead>
                   <tr>
                     <th>{t("이름")}</th>
-                    <th>{kind === "mysql" ? t("호스트") : t("유형")}</th>
+                    <th>{t(admin?.extraLabel ?? "유형")}</th>
                     <th />
                   </tr>
                 </thead>
@@ -259,6 +185,9 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
               {users !== null && users.length === 0 && !error ? (
                 <div className="panel-empty-inline">{t("사용자가 없습니다")}</div>
               ) : null}
+              {truncated ? (
+                <p className="helper">{t("처음 {count}명만 표시합니다", { count: (users ?? []).length.toLocaleString() })}</p>
+              ) : null}
             </div>
             <div className="modal-body user-create">
               <div className="section-title">{t("사용자 생성")}</div>
@@ -271,7 +200,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                     onChange={(event) => setNewName(event.target.value)}
                   />
                 </label>
-                {kind === "mysql" ? (
+                {admin?.hostField ? (
                   <label className="field">
                     <span>{t("호스트")}</span>
                     <input
@@ -290,8 +219,8 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                     onChange={(event) => setNewPassword(event.target.value)}
                   />
                 </label>
-                {/* CockroachDB has no SUPERUSER role option. */}
-                {kind === "postgres" ? (
+                {/* Where the engine's roles take a SUPERUSER option (not CockroachDB's). */}
+                {admin?.superUserOption ? (
                   <label className="check-row inline">
                     <input
                       type="checkbox"

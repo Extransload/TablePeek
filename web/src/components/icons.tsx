@@ -499,3 +499,12 @@ export function FitIcon({ size = 12, className }: IconProps) {
     </svg>
   );
 }
+
+export function GaugeIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M2.6 11.6a5.6 5.6 0 1 1 10.8 0M8 10.2l2.6-3.6" />
+      <circle cx="8" cy="10.6" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}

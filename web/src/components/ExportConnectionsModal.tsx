@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MIN_FILE_PASSWORD } from "../connectionsFile";
 import { t } from "../i18n";
+import { ErrorNotice, FieldError, fieldErrorProps } from "./ErrorNotice";
 import { Spinner } from "./Spinner";
 
 interface ExportConnectionsModalProps {
@@ -20,8 +21,11 @@ export function ExportConnectionsModal({ title, count, onExport, onClose }: Expo
   const [failure, setFailure] = useState<string | null>(null);
   const firstRef = useRef<HTMLInputElement | null>(null);
 
-  const tooShort = passphrase.length > 0 && [...passphrase].length < MIN_FILE_PASSWORD;
-  const mismatch = confirm.length > 0 && confirm !== passphrase;
+  const tooShort =
+    passphrase.length > 0 && [...passphrase].length < MIN_FILE_PASSWORD
+      ? t("파일 암호는 {count}자 이상이어야 합니다", { count: MIN_FILE_PASSWORD })
+      : null;
+  const mismatch = confirm.length > 0 && confirm !== passphrase ? t("두 암호가 서로 다릅니다") : null;
   const ready = [...passphrase].length >= MIN_FILE_PASSWORD && confirm === passphrase;
 
   useEffect(() => {
@@ -87,13 +91,14 @@ export function ExportConnectionsModal({ title, count, onExport, onClose }: Expo
               autoComplete="new-password"
               value={passphrase}
               disabled={busy}
-              aria-invalid={tooShort}
+              {...fieldErrorProps("export-passphrase-problem", tooShort)}
               onChange={(event) => {
                 setPassphrase(event.target.value);
                 setFailure(null);
               }}
             />
           </label>
+          <FieldError id="export-passphrase-problem" error={tooShort} />
           <label className="export-field">
             <span className="prompt-label">{t("파일 암호 확인")}</span>
             <input
@@ -101,21 +106,15 @@ export function ExportConnectionsModal({ title, count, onExport, onClose }: Expo
               autoComplete="new-password"
               value={confirm}
               disabled={busy}
-              aria-invalid={mismatch}
+              {...fieldErrorProps("export-confirm-problem", mismatch)}
               onChange={(event) => {
                 setConfirm(event.target.value);
                 setFailure(null);
               }}
             />
           </label>
-          {tooShort || mismatch || failure !== null ? (
-            <span className="prompt-problem" role="alert">
-              {failure ??
-                (tooShort
-                  ? t("파일 암호는 {count}자 이상이어야 합니다", { count: MIN_FILE_PASSWORD })
-                  : t("두 암호가 서로 다릅니다"))}
-            </span>
-          ) : null}
+          <FieldError id="export-confirm-problem" error={mismatch} />
+          {failure !== null ? <ErrorNotice error={failure} variant="compact" /> : null}
           <label className="cm-switch export-include">
             <input
               type="checkbox"

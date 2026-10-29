@@ -21,9 +21,10 @@ import {
   importErrorText,
 } from "../connectionsFile";
 import { t } from "../i18n";
+import { confirmDialog } from "./ConfirmDialog";
 import { inputFromSaved } from "../savedInput";
 import { withHint } from "../shortcuts";
-import { ApiRequestError, store, type ConnSummary, type Driver, type SavedConnection } from "../store";
+import { ApiRequestError, store, type ConnSummary, type SavedConnection } from "../store";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
 import { ExportConnectionsModal } from "./ExportConnectionsModal";
@@ -48,7 +49,8 @@ function errorText(err: unknown, fallback: string): string {
 }
 
 export interface NewConnectionOptions {
-  driver?: Driver;
+  // The engine's id.
+  driver?: string;
   // Group id the new connection goes into.
   group?: string;
   // Connection URL to fill the dialog from.
@@ -73,9 +75,6 @@ interface HomeScreenProps {
   settingsHint: string;
   // Bumped when the connection dialog saved a profile, so the list reloads.
   savedVersion: number;
-  // The app's latest error, shown here instead of in a corner toast.
-  appError: string | null;
-  onDismissAppError(): void;
 }
 
 export function HomeScreen({
@@ -93,8 +92,6 @@ export function HomeScreen({
   paletteHint,
   settingsHint,
   savedVersion,
-  appError,
-  onDismissAppError,
 }: HomeScreenProps) {
   const [saved, setSaved] = useState<SavedConnection[] | null>(null);
   const [savedError, setSavedError] = useState<string | null>(null);
@@ -134,13 +131,13 @@ export function HomeScreen({
   }, []);
 
   async function deleteSaved(connection: SavedConnection): Promise<void> {
-    if (
-      !window.confirm(
-        t("{name} 연결을 삭제할까요? 열려 있는 세션은 유지됩니다.", {
-          name: connection.name,
-        }),
-      )
-    ) {
+    const ok = await confirmDialog({
+      title: t("연결 삭제"),
+      message: t("{name} 연결을 삭제할까요? 열려 있는 세션은 유지됩니다.", { name: connection.name }),
+      confirmLabel: t("삭제"),
+      danger: true,
+    });
+    if (!ok) {
       return;
     }
     setSavedError(null);
@@ -202,12 +199,14 @@ export function HomeScreen({
     }
   }
 
-  function removeGroup(group: ConnGroup): void {
-    if (
-      window.confirm(
-        t("‘{name}’ 그룹을 삭제할까요? 안의 연결은 그룹 밖으로 옮겨집니다.", { name: group.name }),
-      )
-    ) {
+  async function removeGroup(group: ConnGroup): Promise<void> {
+    const ok = await confirmDialog({
+      title: t("그룹 삭제"),
+      message: t("‘{name}’ 그룹을 삭제할까요? 안의 연결은 그룹 밖으로 옮겨집니다.", { name: group.name }),
+      confirmLabel: t("삭제"),
+      danger: true,
+    });
+    if (ok) {
       deleteGroup(group.id);
     }
   }
@@ -371,7 +370,7 @@ export function HomeScreen({
             onSelect: () => updateGroup(group.id, { color }),
           })),
         },
-        { label: t("그룹 삭제"), danger: true, onSelect: () => removeGroup(group) },
+        { label: t("그룹 삭제"), danger: true, onSelect: () => void removeGroup(group) },
         { ...newSubmenu(group.id), separatorBefore: true },
         exportSubmenu(group, null),
       ];
@@ -485,11 +484,6 @@ export function HomeScreen({
           <p className="home-tagline">{t("빠르고 정확한 전문가용 데이터베이스 클라이언트")}</p>
           <p className="home-specs">{t("Rust 엔진 · Arrow 스트리밍 · 캔버스 그리드")}</p>
         </div>
-        {appError !== null && appError !== savedError ? (
-          <div className="home-notice">
-            <ErrorNotice message={appError} onClose={onDismissAppError} />
-          </div>
-        ) : null}
         <div className="home-actions">
           <button type="button" className="launcher-action" onClick={() => onNewConnection()}>
             <span className="launcher-action-icon" aria-hidden="true">
@@ -538,7 +532,7 @@ export function HomeScreen({
           {notice !== null ? (
             <div className="launcher-notice">
               {notice.kind === "error" ? (
-                <ErrorNotice message={notice.text} variant="compact" onClose={() => setNotice(null)} />
+                <ErrorNotice error={notice.text} variant="compact" onClose={() => setNotice(null)} />
               ) : (
                 <div className="launcher-notice-ok" role="status">
                   <span>{notice.text}</span>
@@ -551,10 +545,7 @@ export function HomeScreen({
           ) : null}
           {failed ? (
             <div className="launcher-load-error">
-              <ErrorNotice message={savedError} variant="compact" />
-              <button type="button" onClick={() => void loadSaved()}>
-                {t("다시 시도")}
-              </button>
+              <ErrorNotice error={savedError} variant="compact" onRetry={() => void loadSaved()} />
             </div>
           ) : null}
           {listArea}

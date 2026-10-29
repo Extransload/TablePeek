@@ -1,11 +1,17 @@
 import type { QueryMeta } from "./net/socket";
 import type { DefinitionDetail, EngineMeta, QueryOutcome, TabSnapshot, TableDetail } from "./store";
+import type { AppError } from "./errorHelp";
 import type { WindowedRowSource } from "./grid/windowSource";
 import type { AnalysisState } from "./chartData";
+import type { AggDraft } from "./engines/mongodb/pipeline";
+import type { DocTabState } from "./engines/mongodb/ui/DocumentWorkbench";
 import { buildDataSql, buildWhere, firstRowsSql, type FilterState, type SortState } from "./dataQuery";
 import { quoteIdent } from "./ddl";
+import { engineById, type SqlDialect } from "./engines";
 import { definitionTabTitle, type DefinitionKind } from "./sqlTools";
 import { t } from "./i18n";
+
+export type ErrorFrom = "filter" | "apply";
 
 export interface QueryTab {
   id: string;
@@ -19,7 +25,9 @@ export interface QueryTab {
   source?: WindowedRowSource;
   meta?: QueryMeta;
   info?: string;
-  error?: string;
+  error?: AppError;
+  // What failed: the tab's run (unset), its filter, or applying its edits.
+  errorFrom?: ErrorFrom;
   // The Chart or Pivot view of the result, and how each is set up.
   analysis?: AnalysisState;
 }
@@ -36,7 +44,8 @@ export interface DataTab {
   source?: WindowedRowSource;
   meta?: QueryMeta;
   info?: string;
-  error?: string;
+  error?: AppError;
+  errorFrom?: ErrorFrom;
   filter?: FilterState;
   sorts?: SortState[];
   pkColumns?: string[];
@@ -100,6 +109,39 @@ export interface DefinitionTab {
   definition?: DefinitionDetail;
 }
 
+// A MongoDB collection (or view) in the document workbench; what it shows
+// inside (query, view, page) the workbench keeps per tab id.
+export interface CollectionTab {
+  id: string;
+  kind: "collection";
+  title: string;
+  db: string;
+  coll: string;
+  // A MongoDB view: read-only.
+  isView?: boolean;
+  // The 집계 sub-tab's pipeline being edited (restored after a reload).
+  agg?: AggDraft;
+  // The sub-tab, documents view and query last shown (restored after a reload).
+  doc?: DocTabState;
+}
+
+// A mongosh tab: its text, and the database `db` refers to (`use` changes it).
+export interface MongoshTab {
+  id: string;
+  kind: "mongosh";
+  title: string;
+  db: string;
+  text: string;
+}
+
+// A document connection's 성능 tab (one per connection); the charts'
+// history lives with the open page, not in the saved tabs.
+export interface PerfTab {
+  id: string;
+  kind: "perf";
+  title: string;
+}
+
 export type WorkbenchTab =
   | QueryTab
   | DataTab
@@ -107,7 +149,10 @@ export type WorkbenchTab =
   | ServerTab
   | OverviewTab
   | DiagramTab
-  | DefinitionTab;
+  | DefinitionTab
+  | CollectionTab
+  | MongoshTab
+  | PerfTab;
 
 export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<DataTab, "id" | "kind">> &
@@ -115,7 +160,9 @@ export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<ServerTab, "id" | "kind">> &
   Partial<Omit<OverviewTab, "id" | "kind">> &
   Partial<Omit<DiagramTab, "id" | "kind">> &
-  Partial<Omit<DefinitionTab, "id" | "kind">>;
+  Partial<Omit<DefinitionTab, "id" | "kind">> &
+  Partial<Omit<CollectionTab, "id" | "kind">> &
+  Partial<Omit<MongoshTab, "id" | "kind">>;
 
 export interface TabsState {
   tabs: WorkbenchTab[];
@@ -141,6 +188,18 @@ export function createQueryTab(seq: number, sql = ""): QueryTab {
   };
 }
 
+export function createCollectionTab(db: string, coll: string, isView = false): CollectionTab {
+  return { id: nextId(), kind: "collection", title: coll, db, coll, ...(isView ? { isView } : {}) };
+}
+
+export function createMongoshTab(seq: number, db: string, text: string): MongoshTab {
+  return { id: nextId(), kind: "mongosh", title: `mongosh ${seq}`, db, text };
+}
+
+export function createPerfTab(): PerfTab {
+  return { id: nextId(), kind: "perf", title: t("성능") };
+}
+
 // The number in a query tab's default name ("쿼리 3", "Query 3"); null for a
 // name the user gave it.
 export function queryNumberOf(title: string): number | null {
@@ -159,7 +218,9 @@ export function freeQueryNumber(titles: string[]): number {
   return number;
 }
 
-export function createDataTab(table: string, pageSize = DEFAULT_PAGE_SIZE, kind = "postgres"): DataTab {
+// A table tab's first SQL, in the connection's dialect; none without one
+// (a restored tab whose engine is unknown), until the tab first runs.
+export function createDataTab(table: string, pageSize: number, dialect: SqlDialect | undefined): DataTab {
   const tab: DataTab = {
     id: nextId(),
     kind: "data",
@@ -169,7 +230,7 @@ export function createDataTab(table: string, pageSize = DEFAULT_PAGE_SIZE, kind 
     offset: 0,
     pageSize,
   };
-  tab.sql = buildDataSql({ kind, table, limit: pageSize, offset: 0 });
+  tab.sql = dialect === undefined ? "" : buildDataSql({ dialect, table, limit: pageSize, offset: 0 });
   return tab;
 }
 
@@ -218,8 +279,8 @@ export function createDefinitionTab(obj: DefinitionKind, name: string): Definiti
 }
 
 // The tab's count, only when it was taken under the filter it shows now.
-export function countFor(tab: DataTab, kind: string): number | null {
-  const key = buildWhere(tab.filter ?? null, kind) ?? "";
+export function countFor(tab: DataTab, dialect: SqlDialect): number | null {
+  const key = buildWhere(tab.filter ?? null, dialect) ?? "";
   return tab.count !== undefined && (tab.countFilter ?? "") === key ? tab.count : null;
 }
 
@@ -272,19 +333,29 @@ export function dataPageInfo(tab: DataTab, exact?: number | null): DataPageInfo 
   };
 }
 
-export function migrateTabsState(state: TabsState): TabsState {
+export function migrateTabsState(state: TabsState, dialect: SqlDialect | undefined): TabsState {
   let changed = false;
   const tabs = state.tabs.map((saved): WorkbenchTab => {
     // A standalone structure tab from older versions becomes a table tab on
     // its Structure view, which has the Data and Index views beside it.
     if (saved.kind === "structure") {
       changed = true;
-      return { ...createDataTab(saved.table), id: saved.id, view: "structure" };
+      return { ...createDataTab(saved.table, DEFAULT_PAGE_SIZE, dialect), id: saved.id, view: "structure" };
+    }
+    // A restored tab has no rows or staged edits yet: an error from reading
+    // them (a data tab reads again on open) or from applying edits is stale.
+    if (saved.kind === "query" && saved.errorFrom === "apply") {
+      changed = true;
+      return { ...saved, error: undefined, errorFrom: undefined };
     }
     if (saved.kind !== "data") {
       return saved;
     }
     let tab = saved;
+    if (tab.error !== undefined) {
+      tab = { ...tab, error: undefined, errorFrom: undefined };
+      changed = true;
+    }
     // The DDL view was folded into Structure, which ends with the DDL.
     if ((tab.view as string | undefined) === "ddl") {
       tab = { ...tab, view: "structure" };
@@ -371,12 +442,13 @@ export function patchFromOutcome(state: TabsState, id: string, outcome: QueryOut
       meta: outcome.result.meta,
       info: undefined,
       error: undefined,
+      errorFrom: undefined,
     });
   }
   if (outcome.kind === "cancelled") {
-    return patchTab(state, id, { info: t("쿼리가 취소되었습니다"), error: undefined });
+    return patchTab(state, id, { info: t("쿼리가 취소되었습니다"), error: undefined, errorFrom: undefined });
   }
-  return patchTab(state, id, { info: undefined, error: outcome.error });
+  return patchTab(state, id, { info: undefined, error: outcome.error, errorFrom: undefined });
 }
 
 export function tabById(state: TabsState, id: string): WorkbenchTab | null {
@@ -408,8 +480,10 @@ export function seedSqlForMeta(meta: EngineMeta | null): string {
   if (meta.demo) {
     return "SELECT * FROM demo LIMIT 100;";
   }
-  if (meta.tables.length > 0) {
-    return firstRowsSql(meta.kind, quoteIdent(meta.kind, meta.tables[0]));
+  // No SQL to seed for an engine without it (or one this page doesn't know).
+  const dialect = engineById(meta.kind)?.sql;
+  if (dialect !== undefined && meta.tables.length > 0) {
+    return firstRowsSql(dialect, quoteIdent(dialect, meta.tables[0]));
   }
   return "";
 }

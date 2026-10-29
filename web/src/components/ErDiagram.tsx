@@ -1027,7 +1027,7 @@ export function ErDiagram({ conn, refreshKey, storageKey, tabId, focus, focusSeq
         {tables === null && error === null ? <LoadingState variant="overlay" /> : null}
         {error !== null ? (
           <div className="er-overlay">
-            <ErrorNotice message={error} />
+            <ErrorNotice error={error} context="structure" />
           </div>
         ) : null}
         {empty ? <div className="panel-empty er-empty">{t("테이블이 없습니다")}</div> : null}

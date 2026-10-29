@@ -71,6 +71,9 @@ export function gridHeaderH(): number {
 const ACCESSORY_W = 16;
 // Room a header keeps beside its name for the sort arrow.
 const SORT_W = 14;
+// A cell tag's padding inside its pill, and the gap before the value.
+const BADGE_PAD = 5;
+const BADGE_GAP = 6;
 // The corner button's icon: columns pushed apart to fit.
 const FIT_ICON =
   '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" ' +
@@ -151,6 +154,9 @@ export interface GridEditHandlers {
   onCancel?(): void;
   canEdit?(row: number, col: number): boolean;
   choices?(row: number, col: number): CellChoices | null;
+  // The text the editor opens with, when it isn't the cell's text (a value
+  // shown in a short form, a missing value shown as a mark).
+  editText?(row: number, col: number): string;
 }
 
 interface EditState {
@@ -225,6 +231,10 @@ export class CanvasGrid {
     null;
   // A press on a cell's button acts once the pointer comes up on it.
   private pendingAccessory: (CellPos & { kind: CellAccessory }) | null = null;
+  // A plain click on a cell (no drag, no modifier) reports once the pointer
+  // comes up on it, for views where a cell opens something.
+  private pendingCellClick: CellPos | null = null;
+  private cellClick: ((row: number, col: number) => void) | null = null;
   private specs: (GridColumnSpec | null)[] | null = null;
   private accessoryHandler: AccessoryHandler | null = null;
   // Width of one ASCII character in the cell font, for a cheap fit check.
@@ -586,6 +596,11 @@ export class CanvasGrid {
 
   setHeaderClickHandler(handler: HeaderClickHandler | null): void {
     this.headerClick = handler;
+  }
+
+  setCellClickHandler(handler: ((row: number, col: number) => void) | null): void {
+    this.cellClick = handler;
+    this.pendingCellClick = null;
   }
 
   setSortColumns(sorts: SortIndicator[] | null): void {
@@ -986,6 +1001,30 @@ export class CanvasGrid {
     ctx.stroke();
   }
 
+  // A cell's tag as a pill at `left`, in the cell's ink on a faint wash of
+  // it; returns the width taken, gap included (0 when it doesn't fit).
+  private paintBadge(text: string, left: number, cy: number, room: number, ink: string): number {
+    const ctx = this.ctx;
+    ctx.font = FONT_HEADER;
+    const w = Math.ceil(ctx.measureText(text).width) + BADGE_PAD * 2;
+    if (w > room) {
+      ctx.font = FONT;
+      return 0;
+    }
+    const h = Math.max(12, ROW_H - 9);
+    const top = Math.round(cy - h / 2);
+    ctx.fillStyle = ink;
+    ctx.globalAlpha = STATE_ALPHA;
+    ctx.beginPath();
+    ctx.roundRect(left, top, w, h, 4);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+    ctx.fillText(text, left + BADGE_PAD, cy);
+    ctx.font = FONT;
+    return w + BADGE_GAP;
+  }
+
   private textInk(v: unknown, colorsEnabled: boolean, column: CellKind | undefined): string {
     if (v === null) {
       return palette.nullInk;
@@ -1129,6 +1168,8 @@ export class CanvasGrid {
     }
     const inkOf = src.cellInk ? (r: number, c: number) => src.cellInk!(r, c) : null;
     const exprOf = src.cellExpr ? (r: number, c: number) => src.cellExpr!(r, c) : null;
+    const badgeOf = src.cellBadge ? (r: number, c: number) => src.cellBadge!(r, c) : null;
+    const alignOf = src.cellAlign ? (r: number, c: number) => src.cellAlign!(r, c) : null;
     for (let c = startCol; c < endCol; c++) {
       const x = gutterW + this.offsets[c] - virtualX;
       const cw = this.widths[c];
@@ -1169,18 +1210,28 @@ export class CanvasGrid {
           ctx.fillText(this.fitText("NULL", room), x + CELL_PAD + room / 2, y);
         } else {
           let text = this.cellText(v);
-          const right = typeof v === "number";
-          if (text.length > maxChars) {
-            text = text.slice(0, maxChars);
-          }
-          text = this.fitText(text, room);
+          const align = alignOf === null ? null : alignOf(r, c);
+          const right = align === null ? typeof v === "number" : align === "right";
           const ink = inkOf === null ? null : inkOf(r, c);
-          ctx.fillStyle =
+          const fill =
             state === "deleted"
               ? palette.faint
               : (ink ?? (spec?.pk && colorsEnabled ? palette.error : this.textInk(v, colorsEnabled, spec?.kind)));
+          let left = x + CELL_PAD;
+          let textRoom = room;
+          const badge = badgeOf === null ? null : badgeOf(r, c);
+          if (badge !== null) {
+            const used = this.paintBadge(badge.text, left, y, textRoom, badge.ink);
+            left += used;
+            textRoom -= used;
+          }
+          if (text.length > maxChars) {
+            text = text.slice(0, maxChars);
+          }
+          text = this.fitText(text, textRoom);
+          ctx.fillStyle = fill;
           ctx.textAlign = right ? "right" : "left";
-          ctx.fillText(text, right ? x + CELL_PAD + room : x + CELL_PAD, y);
+          ctx.fillText(text, right ? left + textRoom : left, y);
         }
         if (accessory !== null) {
           const lit =
@@ -1297,7 +1348,10 @@ export class CanvasGrid {
       // the arrow's mirror room before it is cut short.
       const room = Math.max(0, cw - CELL_PAD * 2 - (sort ? SORT_W : 0));
       const name = src.columns[c];
-      const centred = !sort || ctx.measureText(name).width <= room - SORT_W;
+      const mark = src.headerMark?.(c) ?? null;
+      const markText = mark === null ? "" : ` ${mark}`;
+      const markW = mark === null ? 0 : ctx.measureText(markText).width;
+      const centred = !sort || ctx.measureText(name).width + markW <= room - SORT_W;
       const textLeft = x + CELL_PAD + (sort && centred ? SORT_W : 0);
       const textW = sort && centred ? room - SORT_W : room;
       ctx.save();
@@ -1305,7 +1359,20 @@ export class CanvasGrid {
       ctx.rect(textLeft, 0, textW, HEADER_H);
       ctx.clip();
       ctx.fillStyle = sort ? palette.accent : palette.ink;
-      ctx.fillText(this.fitText(name, textW), textLeft + textW / 2, HEADER_H / 2);
+      if (mark === null) {
+        ctx.fillText(this.fitText(name, textW), textLeft + textW / 2, HEADER_H / 2);
+      } else {
+        // The name and its mark stay together in the middle; the name gives
+        // way first when the column is narrow.
+        const shown = this.fitText(name, Math.max(0, textW - markW));
+        const shownW = ctx.measureText(shown).width;
+        const start = textLeft + Math.max(0, (textW - shownW - markW) / 2);
+        ctx.textAlign = "left";
+        ctx.fillText(shown, start, HEADER_H / 2);
+        ctx.fillStyle = palette.accent;
+        ctx.fillText(markText, start + shownW, HEADER_H / 2);
+        ctx.textAlign = "center";
+      }
       ctx.restore();
       if (sort) {
         const ax = x + cw - CELL_PAD - 7;
@@ -1598,7 +1665,7 @@ export class CanvasGrid {
     input.type = "text";
     input.className = "cell-editor";
     input.spellcheck = false;
-    input.value = raw === null || raw === undefined ? "" : this.cellText(raw);
+    input.value = this.editable.editText?.(row, col) ?? (raw === null || raw === undefined ? "" : this.cellText(raw));
     const initial = input.value;
     input.style.textAlign = typeof raw === "number" ? "right" : "left";
     input.style.left = `${this.gutterW + this.offsets[col] - this.virtualScrollX()}px`;
@@ -1942,7 +2009,8 @@ export class CanvasGrid {
     const ctx = this.ctx;
     ctx.font = FONT_HEADER;
     // The header keeps room for a sort arrow, so sorting never cuts it short.
-    let maxW = ctx.measureText(src.columns[col]).width + SORT_W;
+    const headerMark = src.headerMark?.(col) ?? null;
+    let maxW = ctx.measureText(headerMark === null ? src.columns[col] : `${src.columns[col]} ${headerMark}`).width + SORT_W;
     ctx.font = FONT;
     let mark = 0;
     let seen = 0;
@@ -1961,7 +2029,9 @@ export class CanvasGrid {
         continue;
       }
       const full = v === null ? "NULL" : this.cellText(v);
-      const tw = ctx.measureText(full.length > maxChars ? full.slice(0, maxChars) : full).width;
+      const badge = src.cellBadge?.(r, col) ?? null;
+      const badgeW = badge === null ? 0 : ctx.measureText(badge.text).width + BADGE_PAD * 2 + BADGE_GAP;
+      const tw = ctx.measureText(full.length > maxChars ? full.slice(0, maxChars) : full).width + badgeW;
       if (tw > maxW) {
         maxW = tw;
       }
@@ -2103,6 +2173,7 @@ export class CanvasGrid {
     this.canvas.setPointerCapture(e.pointerId);
     this.pendingHeaderClick = null;
     this.pendingAccessory = null;
+    this.pendingCellClick = null;
     if (p.y < HEADER_H) {
       const edge = this.colEdgeAt(p.x);
       if (edge !== null) {
@@ -2170,6 +2241,8 @@ export class CanvasGrid {
     this.drag = { kind: "select" };
     const accessory = !e.shiftKey && !e.altKey ? this.accessoryUnder(p.x, row, col) : null;
     this.pendingAccessory = accessory !== null ? { row, col, kind: accessory } : null;
+    const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey;
+    this.pendingCellClick = plain && this.cellClick !== null ? { row, col } : null;
     this.notifySelection();
     this.schedulePaint();
     if (e.altKey && this.contextMenuHandler) {
@@ -2347,6 +2420,21 @@ export class CanvasGrid {
       } else {
         this.accessoryHandler?.(pressed.kind, pressed.row, pressed.col);
       }
+    }
+    const clicked = this.pendingCellClick;
+    this.pendingCellClick = null;
+    if (
+      clicked !== null &&
+      pressed === null &&
+      this.cellClick !== null &&
+      a !== null &&
+      cur !== null &&
+      a.row === clicked.row &&
+      a.col === clicked.col &&
+      cur.row === clicked.row &&
+      cur.col === clicked.col
+    ) {
+      this.cellClick(clicked.row, clicked.col);
     }
   };
 

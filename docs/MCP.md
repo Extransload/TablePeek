@@ -38,6 +38,18 @@
 
 `tablepeek_query`는 `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `EXPLAIN`만 허용한다. 다중 문장, `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`INTO`/`DROP`/`ALTER`가 포함된 문장은 거부한다. 이 검사는 사고 방지용이며 권한 경계가 아니다. 쓰기 작업은 TablePeek UI에서 수행한다.
 
+MongoDB 연결이면 다음 도구를 대신 내보낸다. 모두 읽기 전용이다.
+
+| 도구 | 설명 |
+|---|---|
+| `mongo_list_collections` | 데이터베이스·컬렉션·뷰 목록 |
+| `mongo_find` | 필터·프로젝션·정렬로 `find`, 최대 100건 |
+| `mongo_aggregate` | 집계 파이프라인 실행, `$out`·`$merge`는 거부, 최대 100건 |
+| `mongo_schema` | 최대 200건 표본(`$sample`)으로 필드 경로·있는 비율·타입 요약 |
+| `mongo_indexes` | 컬렉션의 인덱스 목록 |
+
+도구 목록은 `--conn`(없으면 기본 연결)의 엔진에 따라 정해지고, 엔진을 알 수 없으면 두 묶음을 모두 내보낸다.
+
 ## 보안
 
 - MCP 서버는 `127.0.0.1`의 실행 중인 TablePeek에만 접속하는 구성을 전제로 한다.

@@ -11,6 +11,7 @@ import {
   type IndexDraft,
   type StructureDraft,
 } from "../ddl";
+import type { SqlDialect } from "../engines/sqlDialect";
 import { palette } from "../palette";
 import { getSettings } from "../settings";
 import { peekSchema } from "../schemaCache";
@@ -19,14 +20,14 @@ import type { RowSource } from "../grid/rowSource";
 import { store, type TableDetail, type TableSchema } from "../store";
 import { DdlPreview } from "./DraftEditors";
 import { t } from "../i18n";
-import { ErrorNotice } from "./ErrorNotice";
+import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { CopyIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
 import { LoadingState, Spinner } from "./Spinner";
 import { StructureGrid, type CellChoices, type GridColumn, type GridFocus } from "./StructureGrid";
 
 interface StructurePanelProps {
   conn: string;
-  kind: string;
+  dialect: SqlDialect;
   table: string;
   data: TableDetail | undefined;
   // The Data | Structure | Index switch, which leads the footer as in TablePlus.
@@ -51,34 +52,6 @@ function errorOf(error: unknown, fallback: string): string {
 // "ref_table(ref_column)"; a bare "ref_table" takes that table's primary key.
 const FK_TEXT = /^([^()]+?)\s*(?:\(\s*([^()]*?)\s*\))?$/;
 
-// Types offered in data_type's list, in each engine's usual spelling.
-const TYPE_CHOICES: Record<string, string[]> = {
-  sqlite: ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "BOOLEAN", "VARCHAR(255)", "DATE", "DATETIME", "JSON"],
-  mysql: [
-    "int", "bigint", "smallint", "tinyint(1)", "decimal(10,2)", "float", "double",
-    "varchar(255)", "char(32)", "text", "longtext", "json", "date", "datetime",
-    "datetime(6)", "timestamp", "time", "blob",
-  ],
-  postgres: [
-    "integer", "bigint", "smallint", "serial", "bigserial", "numeric(10,2)", "real",
-    "double precision", "boolean", "text", "varchar(255)", "char(32)", "uuid", "date",
-    "time", "timestamp", "timestamptz", "json", "jsonb", "bytea",
-  ],
-  mssql: [
-    "int", "bigint", "smallint", "bit", "decimal(18,2)", "float", "nvarchar(255)",
-    "varchar(255)", "nvarchar(max)", "char(32)", "date", "datetime2", "datetimeoffset",
-    "uniqueidentifier", "varbinary(max)",
-  ],
-};
-
-// Defaults offered in column_default's list; NULL means no default.
-const DEFAULT_CHOICES: Record<string, string[]> = {
-  sqlite: ["CURRENT_TIMESTAMP", "CURRENT_DATE"],
-  mysql: ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP(6)", "(UUID())"],
-  postgres: ["now()", "CURRENT_TIMESTAMP", "gen_random_uuid()", "true", "false"],
-  mssql: ["GETDATE()", "SYSDATETIME()", "NEWID()"],
-};
-
 const NO_TABLES: TableSchema[] = [];
 
 // Unsaved edits per table, so switching to Data and back keeps them.
@@ -88,10 +61,6 @@ interface UnsavedEdits {
   deleted: Set<string>;
 }
 const unsavedEdits = new Map<string, UnsavedEdits>();
-
-function dialect(kind: string): string {
-  return kind === "cockroach" ? "postgres" : kind;
-}
 
 function unique(items: string[]): string[] {
   return [...new Set(items.filter((item) => item !== ""))];
@@ -178,7 +147,7 @@ const PK_ROW_KEY = "\u0000primary";
 
 export function StructurePanel({
   conn,
-  kind,
+  dialect,
   table,
   data,
   viewTabs,
@@ -240,7 +209,9 @@ export function StructurePanel({
   }, [conn, table, nonce]);
 
   const detail = data ?? null;
-  const sqlite = kind === "sqlite";
+  // An engine that rebuilds the table on save (SQLite) drops every column
+  // and index the draft leaves out, not just new ones.
+  const rebuilds = dialect.rebuildsTable;
   const editsKey = `${conn}:${table}`;
   const origDraft = useMemo(() => (detail === null ? null : draftsFromDetail(detail)), [detail]);
   // The tables are always editable, as in TablePlus; edits stay here until saved.
@@ -285,7 +256,7 @@ export function StructurePanel({
     }
   }, [editsKey, detail, draft, origDraft, deleted]);
 
-  const owns = (orig: string | null): boolean => sqlite || orig === null;
+  const owns = (orig: string | null): boolean => rebuilds || orig === null;
 
   // What a save would write: the draft without the rows marked for deletion.
   const effective = useMemo(() => {
@@ -300,15 +271,15 @@ export function StructurePanel({
       columns: draft.columns.filter((column) => !deleted.has(column.key)),
       indexes: draft.indexes.filter((index) => !deleted.has(index.key)),
     };
-    return withoutColumns(kept, gone, (orig) => sqlite || orig === null);
-  }, [draft, deleted, sqlite]);
+    return withoutColumns(kept, gone, (orig) => rebuilds || orig === null);
+  }, [draft, deleted, rebuilds]);
 
   const diff = useMemo(
     () =>
       effective !== null && origDraft !== null && (draft !== origDraft || deleted.size > 0)
-        ? diffStructure(kind, table, origDraft, effective)
+        ? diffStructure(dialect, table, origDraft, effective)
         : null,
-    [effective, draft, deleted, origDraft, kind, table],
+    [effective, draft, deleted, origDraft, dialect, table],
   );
   const pending = diff !== null && (diff.statements.length > 0 || diff.errors.length > 0);
   const pendingRef = useRef(pending);
@@ -336,7 +307,7 @@ export function StructurePanel({
     if (origDraft === null || effective === null || busy) {
       return;
     }
-    const result = diffStructure(kind, table, origDraft, effective);
+    const result = diffStructure(dialect, table, origDraft, effective);
     if (result.errors.length > 0) {
       setSaveError(result.errors.join("\n"));
       setPreview(true);
@@ -387,7 +358,7 @@ export function StructurePanel({
   // left unchanged.
   async function undoRebuild(statements: string[], done: number): Promise<boolean> {
     const off = statements.indexOf("PRAGMA foreign_keys = OFF");
-    if (!sqlite || off < 0) {
+    if (!rebuilds || off < 0) {
       return done === 0;
     }
     const copy = /^DROP TABLE IF EXISTS ("(?:[^"]|"")*_tablepeek_tmp")$/.exec(
@@ -446,7 +417,7 @@ export function StructurePanel({
   }, []);
 
   function copyDdl(ddl: string): void {
-    void writeClipboard(ddl, (message) => store.setError(message));
+    void writeClipboard(ddl, (message) => notifyError(message));
   }
 
   function patchColumn(row: number, part: Partial<ColumnDraft>): void {
@@ -595,12 +566,12 @@ export function StructurePanel({
       foreignKeys = foreignKeys.filter((fk) => fk !== current);
     } else {
       if (column.name === "") {
-        store.setError(t("컬럼 이름을 먼저 입력하세요"));
+        notifyError(t("컬럼 이름을 먼저 입력하세요"));
         return;
       }
       const match = FK_TEXT.exec(value);
       if (match === null || (match[2] ?? "").includes(",")) {
-        store.setError(t("외래 키는 table(column) 형식으로 입력하세요"));
+        notifyError(t("외래 키는 table(column) 형식으로 입력하세요"));
         return;
       }
       const refTable = match[1].trim();
@@ -610,7 +581,7 @@ export function StructurePanel({
           .find((schema) => schema.name === refTable)
           ?.columns.filter((entry) => entry.pk);
         if (pk === undefined || pk.length !== 1) {
-          store.setError(t("참조할 컬럼을 table(column)으로 적어 주세요"));
+          notifyError(t("참조할 컬럼을 table(column)으로 적어 주세요"));
           return;
         }
         refColumns = pk[0].name;
@@ -670,9 +641,8 @@ export function StructurePanel({
     setIndexFocus({ row: pkRows + draft.indexes.length, col: 0, seq: Date.now() });
   }
 
-  const engine = dialect(kind);
-  const typeChoices = unique([...(TYPE_CHOICES[engine] ?? []), ...columns.map((column) => column.type)]);
-  const defaultChoices = ["NULL", "''", "0", "1", ...(DEFAULT_CHOICES[engine] ?? [])];
+  const typeChoices = unique([...dialect.columnTypes, ...columns.map((column) => column.type)]);
+  const defaultChoices = ["NULL", "''", "0", "1", ...dialect.columnDefaults];
   // Tables' primary keys, from the schema the sidebar already loaded.
   const fkChoices = useMemo(
     () => [
@@ -961,8 +931,8 @@ export function StructurePanel({
         </label>
       </div>
       <div className="panel-body structure-body">
-        {error ? <ErrorNotice message={error} /> : null}
-        {saveError ? <ErrorNotice message={saveError} onClose={() => setSaveError(null)} /> : null}
+        {error ? <ErrorNotice error={error} context="structure" /> : null}
+        {saveError ? <ErrorNotice error={saveError} context="structure" onClose={() => setSaveError(null)} /> : null}
         {detail === null || draft === null ? (
           error ? null : <LoadingState />
         ) : (

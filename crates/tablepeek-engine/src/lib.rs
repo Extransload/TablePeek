@@ -14,19 +14,25 @@ use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    MssqlConfig, MySqlConfig, ObjectDefinition, PkValue, PostgresConfig, QueryResult, Relation,
-    ServerInfo, TableDetail, TableSchema, TriggerInfo, ValueExpr,
+    Capabilities, ColumnSchema, ConnConfig, DbObjects, EditTarget, EngineMeta, ErrorFields,
+    ErrorPosition, ForeignKeyInfo, IndexInfo, InsertValue, ObjectDefinition, PkValue, QueryResult,
+    Relation, ServerInfo, TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 
+pub mod driver;
+pub mod engines;
 mod mssql;
 mod mysql;
 mod postgres;
+pub mod registry;
 mod source_cache;
 pub mod sql_log;
 mod sql_parse;
 pub use sql_parse::is_read_only;
 
+use driver::{CancelRequest, DocumentDriver, Driver, SqlDriver, TxOp};
+use engines::sqlite::SqliteDriver;
+use registry::{DriverFactory, NetRoute};
 use sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 
 pub const BATCH_CHUNK: usize = 65_536;
@@ -39,20 +45,25 @@ pub(crate) fn ensure_crypto_provider() {
     });
 }
 
+/// Errors carry the engine they came from; a database's own errors all
+/// share one form, `Driver`, whatever the engine.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("SQLite 오류: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("PostgreSQL 오류: {message}")]
-    Postgres {
-        #[source]
-        source: tokio_postgres::Error,
+    /// An error the database (or its client library) reported. `engine` is
+    /// the driver's id ("postgres" for CockroachDB too, which shares its
+    /// driver); `code` the database's own code where it gives one (SQLSTATE,
+    /// SQLite's result code, MySQL's and SQL Server's error numbers);
+    /// `message` the human first line, without codes or labels; `fields`
+    /// the rest the driver said (codes, position, details, its whole text).
+    /// `interrupted`: the statement stopped because it was cancelled.
+    #[error("{} 오류: {message}", registry::label(engine))]
+    Driver {
+        engine: &'static str,
+        code: Option<String>,
         message: String,
+        interrupted: bool,
+        fields: Box<ErrorFields>,
     },
-    #[error("MySQL 오류: {0}")]
-    MySql(String),
-    #[error("SQL Server 오류: {0}")]
-    Mssql(String),
     #[error("Arrow 오류: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
     #[error("파일을 찾을 수 없습니다: {0}")]
@@ -63,6 +74,12 @@ pub enum EngineError {
     NotEditable(String),
     #[error("{0}")]
     BadRequest(String),
+    /// The engine can't do this at all (a SQL operation on a document store).
+    #[error("{0}")]
+    Unsupported(String),
+    /// No registered engine has this id.
+    #[error("지원하지 않는 엔진: {0}")]
+    UnknownEngine(String),
     #[error("테이블을 찾을 수 없습니다")]
     TableNotFound,
     #[error("세션을 찾을 수 없습니다")]
@@ -114,37 +131,174 @@ pub(crate) fn postgres_message(err: &tokio_postgres::Error) -> String {
 
 impl From<tokio_postgres::Error> for EngineError {
     fn from(source: tokio_postgres::Error) -> Self {
-        let message = postgres_message(&source);
-        EngineError::Postgres { source, message }
+        let raw = postgres_message(&source);
+        let mut fields = ErrorFields::default();
+        let message = match source.as_db_error() {
+            Some(db) => {
+                fields.sqlstate = Some(db.code().code().to_string());
+                // Only a position in the statement sent; an internal one
+                // points into a query the server made up.
+                if let Some(tokio_postgres::error::ErrorPosition::Original(offset)) = db.position()
+                {
+                    fields.position = Some(ErrorPosition {
+                        offset: Some(*offset),
+                        ..ErrorPosition::default()
+                    });
+                }
+                let parts = [
+                    ("detail", db.detail()),
+                    ("hint", db.hint()),
+                    ("schema", db.schema()),
+                    ("table", db.table()),
+                    ("column", db.column()),
+                    ("constraint", db.constraint()),
+                    ("datatype", db.datatype()),
+                ];
+                let details: serde_json::Map<String, Value> = parts
+                    .into_iter()
+                    .filter_map(|(key, value)| {
+                        let value = value.filter(|value| !value.is_empty())?;
+                        Some((key.to_string(), Value::String(value.to_string())))
+                    })
+                    .collect();
+                if !details.is_empty() {
+                    fields.details = Some(Value::Object(details));
+                }
+                fields.raw = Some(raw);
+                db.message().to_owned()
+            }
+            None => raw,
+        };
+        EngineError::Driver {
+            engine: "postgres",
+            code: source.code().map(|state| state.code().to_string()),
+            message,
+            interrupted: source.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED),
+            fields: Box::new(fields),
+        }
     }
 }
 
-impl EngineError {
-    pub fn is_interrupted(&self) -> bool {
-        match self {
-            EngineError::Sqlite(rusqlite::Error::SqliteFailure(e, _)) => {
-                e.code == rusqlite::ErrorCode::OperationInterrupted
+impl From<rusqlite::Error> for EngineError {
+    fn from(source: rusqlite::Error) -> Self {
+        let mut fields = ErrorFields::default();
+        let (code, interrupted, message) = match &source {
+            rusqlite::Error::SqliteFailure(failure, text) => (
+                Some(failure.extended_code),
+                failure.code == rusqlite::ErrorCode::OperationInterrupted,
+                text.clone(),
+            ),
+            // sqlite3_error_offset: the byte where the bad token starts.
+            rusqlite::Error::SqlInputError {
+                error,
+                msg,
+                sql,
+                offset,
+            } => {
+                fields.position = usize::try_from(*offset)
+                    .ok()
+                    .and_then(|offset| char_offset(sql, offset))
+                    .map(|offset| ErrorPosition {
+                        offset: Some(offset),
+                        ..ErrorPosition::default()
+                    });
+                (Some(error.extended_code), false, Some(msg.clone()))
             }
-            EngineError::Postgres { source, .. } => {
-                source.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
-            }
-            EngineError::MySql(message) => {
-                let lower = message.to_lowercase();
-                lower.contains("interrupted")
-                    || lower.contains("killed")
-                    || lower.contains("connection closed")
-                    || lower.contains("connection reset")
-            }
-            EngineError::Mssql(message) => {
-                let lower = message.to_lowercase();
-                lower.contains("kill")
-                    || lower.contains("interrupted")
-                    || lower.contains("connection closed")
-                    || lower.contains("connection reset")
-                    || lower.contains("forcibly")
-            }
-            _ => false,
+            _ => (None, false, None),
+        };
+        let raw = source.to_string();
+        let message = message.unwrap_or_else(|| raw.clone());
+        fields.server_code = code.map(i64::from);
+        fields.raw = (raw != message).then_some(raw);
+        EngineError::Driver {
+            engine: "sqlite",
+            code: code.map(|code| code.to_string()),
+            message,
+            interrupted,
+            fields: Box::new(fields),
         }
+    }
+}
+
+/// The character, counted from 1, that starts at byte `offset` of `text`.
+pub(crate) fn char_offset(text: &str, offset: usize) -> Option<u32> {
+    let before = text.get(..offset)?;
+    u32::try_from(before.chars().count() + 1).ok()
+}
+
+/// Whether TLS is what failed: a rustls error somewhere down the chain,
+/// directly or inside the I/O error that carries it.
+pub(crate) fn caused_by_tls(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(err);
+    while let Some(cause) = current {
+        if cause.is::<rustls::Error>() {
+            return true;
+        }
+        if let Some(inner) = cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            if caused_by_tls(inner) {
+                return true;
+            }
+        }
+        current = cause.source();
+    }
+    false
+}
+
+impl EngineError {
+    /// A MySQL error; whether it means the statement was stopped (KILL
+    /// QUERY, a closed connection) is read from its text.
+    pub(crate) fn mysql(message: String, fields: ErrorFields) -> Self {
+        let lower = format!("{message} {}", fields.raw.as_deref().unwrap_or("")).to_lowercase();
+        let interrupted = lower.contains("interrupted")
+            || lower.contains("killed")
+            || lower.contains("connection closed")
+            || lower.contains("connection reset");
+        EngineError::Driver {
+            engine: "mysql",
+            code: fields.server_code.map(|code| code.to_string()),
+            message,
+            interrupted,
+            fields: Box::new(fields),
+        }
+    }
+
+    /// A SQL Server error; whether it means the statement was stopped (a
+    /// KILL, a closed connection) is read from its text.
+    pub(crate) fn mssql(message: String, fields: ErrorFields) -> Self {
+        let lower = format!("{message} {}", fields.raw.as_deref().unwrap_or("")).to_lowercase();
+        let interrupted = lower.contains("kill")
+            || lower.contains("interrupted")
+            || lower.contains("connection closed")
+            || lower.contains("connection reset")
+            || lower.contains("forcibly");
+        EngineError::Driver {
+            engine: "mssql",
+            code: fields.server_code.map(|code| code.to_string()),
+            message,
+            interrupted,
+            fields: Box::new(fields),
+        }
+    }
+
+    /// The same error with `prefix` before its first line ("TLS 연결 실패: ").
+    pub(crate) fn prefixed(mut self, prefix: &str) -> Self {
+        if let EngineError::Driver { message, .. } = &mut self {
+            *message = format!("{prefix}{message}");
+        }
+        self
+    }
+
+    pub fn is_interrupted(&self) -> bool {
+        matches!(
+            self,
+            EngineError::Driver {
+                interrupted: true,
+                ..
+            }
+        )
     }
 }
 
@@ -597,24 +751,8 @@ fn value_ref_param(value: ValueRef<'_>) -> LogParam {
     }
 }
 
-#[derive(Clone)]
-pub enum Backend {
-    Sqlite { inner: Arc<SqliteInner> },
-    Postgres { inner: Arc<postgres::PostgresInner> },
-    MySql { inner: Arc<mysql::MySqlInner> },
-    Mssql { inner: Arc<mssql::MssqlInner> },
-}
-
-#[derive(Clone)]
-enum ActiveTarget {
-    Sqlite(Arc<SqliteInner>),
-    Postgres(Arc<postgres::PostgresInner>),
-    MySql(Arc<mysql::MySqlInner>),
-    Mssql(Arc<mssql::MssqlInner>),
-}
-
-/// 엔진: SQLite/PostgreSQL 백엔드. 쿼리는 컬럼형(Arrow) 결과로 반환되며,
-/// 긴 쿼리는 취소를 지원한다.
+/// 엔진: 연결 하나를 맡은 드라이버를 들고, 데이터베이스 전환 때 드라이버를
+/// 바꿔 끼운다. 쿼리는 컬럼형(Arrow) 결과로 반환되며, 긴 쿼리는 취소를 지원한다.
 struct EpochBump<'a>(&'a AtomicU64);
 
 impl Drop for EpochBump<'_> {
@@ -635,30 +773,61 @@ struct CancelsInFlight {
 }
 
 pub struct Engine {
-    backend: RwLock<Backend>,
-    active: Mutex<Option<ActiveTarget>>,
+    driver: RwLock<Arc<dyn Driver>>,
+    // The driver a statement runs on now: a cancel goes there even if the
+    // driver was swapped meanwhile.
+    active: Mutex<Option<Arc<dyn Driver>>>,
     cancels: Arc<CancelsInFlight>,
-    // Bumped by every statement and backend swap: anything derived from the
+    // Bumped by every statement and driver swap: anything derived from the
     // schema (table counts, …) is only known current while this hasn't moved.
     epoch: AtomicU64,
-    // Every statement sent, across backend swaps (a database switch keeps it).
+    // Every statement sent, across driver swaps (a database switch keeps it).
     log: SqlLog,
+}
+
+/// The document side of the connection open now, held for one operation.
+/// Like a query, the operation moves the epoch before and after it runs:
+/// collections may come and go.
+pub struct DocumentSession<'a> {
+    driver: Arc<dyn Driver>,
+    _finished: EpochBump<'a>,
+}
+
+impl DocumentSession<'_> {
+    pub fn ops(&self) -> &dyn DocumentDriver {
+        self.driver
+            .document()
+            .expect("checked when the session was made")
+    }
+}
+
+/// The SQL side of `driver`, or the error a SQL operation meets on an engine
+/// of another paradigm.
+fn sql_of(driver: &Arc<dyn Driver>) -> Result<&dyn SqlDriver, EngineError> {
+    driver.sql().ok_or_else(|| {
+        EngineError::Unsupported(format!(
+            "{}에서는 SQL을 실행할 수 없습니다",
+            registry::label(driver.id())
+        ))
+    })
 }
 
 impl Engine {
     pub fn open_demo(rows: usize) -> Result<Self, EngineError> {
         let log = SqlLog::new();
-        Ok(Self::from_inner(build_demo_inner(rows, log.clone())?, log))
+        let inner = build_demo_inner(rows, log.clone())?;
+        Ok(Self::from_driver(SqliteDriver::open(inner), log))
     }
 
     pub fn open_file(path: &Path) -> Result<Self, EngineError> {
         let log = SqlLog::new();
-        Ok(Self::from_inner(open_file_inner(path, log.clone())?, log))
+        let inner = open_file_inner(path, log.clone())?;
+        Ok(Self::from_driver(SqliteDriver::open(inner), log))
     }
 
-    fn from_inner(inner: Arc<SqliteInner>, log: SqlLog) -> Self {
+    fn from_driver(driver: Arc<dyn Driver>, log: SqlLog) -> Self {
         Self {
-            backend: RwLock::new(Backend::Sqlite { inner }),
+            driver: RwLock::new(driver),
             active: Mutex::new(None),
             cancels: Arc::new(CancelsInFlight::default()),
             epoch: AtomicU64::new(0),
@@ -666,7 +835,7 @@ impl Engine {
         }
     }
 
-    /// Changes whenever a statement runs or the backend is replaced.
+    /// Changes whenever a statement runs or the driver is replaced.
     pub fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::SeqCst)
     }
@@ -683,39 +852,47 @@ impl Engine {
         self.log.changed(change, in_tx);
     }
 
-    fn replace_backend(&self, backend: Backend) -> Result<(), EngineError> {
-        let mut guard = self
-            .backend
-            .write()
-            .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
-        *guard = backend;
+    async fn replace_driver(&self, driver: Arc<dyn Driver>) -> Result<(), EngineError> {
+        let old = {
+            let mut guard = self
+                .driver
+                .write()
+                .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))?;
+            std::mem::replace(&mut *guard, driver)
+        };
         // The old connection's open transaction goes with it.
         self.log.settle(false);
         self.epoch.fetch_add(1, Ordering::SeqCst);
+        old.close().await;
         Ok(())
     }
 
-    fn backend_snapshot(&self) -> Result<Backend, EngineError> {
-        self.backend
+    fn driver(&self) -> Result<Arc<dyn Driver>, EngineError> {
+        self.driver
             .read()
             .map(|guard| guard.clone())
             .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))
     }
 
-    /// The file behind a SQLite engine; None for the in-memory demo and for
+    /// The id of the engine connected now ("postgres", "sqlite", …).
+    pub fn engine_id(&self) -> Result<&'static str, EngineError> {
+        Ok(self.driver()?.id())
+    }
+
+    /// What the connection open now can do.
+    pub fn capabilities(&self) -> Result<Capabilities, EngineError> {
+        Ok(self.driver()?.capabilities())
+    }
+
+    /// The file behind a file engine; None for the in-memory demo and for
     /// server databases.
-    pub fn sqlite_file(&self) -> Option<PathBuf> {
-        match self.backend_snapshot() {
-            Ok(Backend::Sqlite { inner }) => inner.path.clone(),
-            _ => None,
-        }
+    pub fn file(&self) -> Option<PathBuf> {
+        self.driver().ok().and_then(|driver| driver.file())
     }
 
     pub async fn swap_to_file(&self, path: &Path) -> Result<EngineMeta, EngineError> {
         let inner = open_file_inner(path, self.log.clone())?;
-        let meta = meta_sync(&inner, false)?;
-        self.replace_backend(Backend::Sqlite { inner })?;
-        Ok(meta)
+        self.swap(SqliteDriver::open(inner)).await
     }
 
     pub async fn swap_to_demo(&self, rows: usize) -> Result<EngineMeta, EngineError> {
@@ -723,106 +900,52 @@ impl Engine {
         let inner = tokio::task::spawn_blocking(move || build_demo_inner(rows, log))
             .await
             .map_err(|e| EngineError::Internal(e.to_string()))??;
-        let meta = meta_sync(&inner, false)?;
-        self.replace_backend(Backend::Sqlite { inner })?;
-        Ok(meta)
+        self.swap(SqliteDriver::open(inner)).await
     }
 
-    pub async fn swap_to_postgres(
+    /// Connects with `factory`'s engine and, once that worked, works on the
+    /// new connection instead of the current one.
+    pub async fn swap_to(
         &self,
-        config: &PostgresConfig,
+        factory: &dyn DriverFactory,
+        config: &ConnConfig,
+        net: &NetRoute,
     ) -> Result<EngineMeta, EngineError> {
-        let inner = postgres::connect(config, "postgres", self.log.clone()).await?;
-        let meta = postgres::meta(&inner, false).await?;
-        self.replace_backend(Backend::Postgres { inner })?;
-        Ok(meta)
+        let driver = factory.connect(config, net, self.log.clone()).await?;
+        self.swap(driver).await
     }
 
-    pub async fn swap_to_cockroach(
-        &self,
-        config: &PostgresConfig,
-    ) -> Result<EngineMeta, EngineError> {
-        let inner = postgres::connect(config, "cockroach", self.log.clone()).await?;
-        let meta = postgres::meta(&inner, false).await?;
-        self.replace_backend(Backend::Postgres { inner })?;
-        Ok(meta)
-    }
-
-    pub async fn swap_to_mysql(&self, config: &MySqlConfig) -> Result<EngineMeta, EngineError> {
-        let inner = mysql::connect(config, self.log.clone()).await?;
-        let meta = mysql::meta(&inner, false).await?;
-        self.replace_backend(Backend::MySql { inner })?;
-        Ok(meta)
-    }
-
-    pub async fn swap_to_mssql(&self, config: &MssqlConfig) -> Result<EngineMeta, EngineError> {
-        let inner = mssql::connect(config, self.log.clone()).await?;
-        let meta = mssql::meta(&inner, false).await?;
-        self.replace_backend(Backend::Mssql { inner })?;
+    async fn swap(&self, driver: Arc<dyn Driver>) -> Result<EngineMeta, EngineError> {
+        let meta = with_capabilities(&driver, driver.meta(false).await?);
+        self.replace_driver(driver).await?;
         Ok(meta)
     }
 
     pub async fn meta(&self, include_system: bool) -> Result<EngineMeta, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                tokio::task::spawn_blocking(move || meta_sync(&inner, include_system))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::meta(&inner, include_system).await,
-            Backend::MySql { inner } => mysql::meta(&inner, include_system).await,
-            Backend::Mssql { inner } => mssql::meta(&inner, include_system).await,
-        }
+        let driver = self.driver()?;
+        let meta = driver.meta(include_system).await?;
+        Ok(with_capabilities(&driver, meta))
     }
 
     pub async fn schema(&self, include_system: bool) -> Result<Vec<TableSchema>, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                tokio::task::spawn_blocking(move || schema_sync(&inner, include_system))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::schema(&inner, include_system).await,
-            Backend::MySql { inner } => mysql::schema(&inner, include_system).await,
-            Backend::Mssql { inner } => mssql::schema(&inner, include_system).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.schema(include_system).await
     }
 
     /// Every foreign key between the tables the schema list shows, in one call.
     pub async fn relations(&self, include_system: bool) -> Result<Vec<Relation>, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                tokio::task::spawn_blocking(move || relations_sync(&inner, include_system))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::relations(&inner, include_system).await,
-            Backend::MySql { inner } => mysql::relations(&inner, include_system).await,
-            Backend::Mssql { inner } => mssql::relations(&inner, include_system).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.relations(include_system).await
     }
 
     pub async fn table_count(&self, name: &str) -> Result<i64, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                let name = name.to_string();
-                tokio::task::spawn_blocking(move || table_count_sync(&inner, &name))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::table_count(&inner, name).await,
-            Backend::MySql { inner } => mysql::table_count(&inner, name).await,
-            Backend::Mssql { inner } => mssql::table_count(&inner, name).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.table_count(name).await
     }
 
     pub async fn databases(&self) -> Result<Vec<String>, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { .. } => Ok(Vec::new()),
-            Backend::Postgres { inner } => postgres::databases(&inner).await,
-            Backend::MySql { inner } => mysql::databases(&inner).await,
-            Backend::Mssql { inner } => mssql::databases(&inner).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.databases().await
     }
 
     pub async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
@@ -830,54 +953,33 @@ impl Engine {
         // it finishes, even if the query future is dropped midway.
         self.epoch.fetch_add(1, Ordering::SeqCst);
         let _finished = EpochBump(&self.epoch);
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                if let Ok(mut active) = self.active.lock() {
-                    *active = Some(ActiveTarget::Sqlite(inner.clone()));
-                }
-                let sql_owned = sql.to_string();
-                let inner_for_task = inner.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    run_query_sync(&inner_for_task, &sql_owned, max_rows)
-                })
-                .await
-                .map_err(|e| EngineError::Internal(e.to_string()));
-                if let Ok(mut active) = self.active.lock() {
-                    *active = None;
-                }
-                result?
-            }
-            Backend::Postgres { inner } => {
-                if let Ok(mut active) = self.active.lock() {
-                    *active = Some(ActiveTarget::Postgres(inner.clone()));
-                }
-                let result = postgres::query(&inner, sql, max_rows).await;
-                if let Ok(mut active) = self.active.lock() {
-                    *active = None;
-                }
-                result
-            }
-            Backend::MySql { inner } => {
-                if let Ok(mut active) = self.active.lock() {
-                    *active = Some(ActiveTarget::MySql(inner.clone()));
-                }
-                let result = mysql::query(&inner, sql, max_rows).await;
-                if let Ok(mut active) = self.active.lock() {
-                    *active = None;
-                }
-                result
-            }
-            Backend::Mssql { inner } => {
-                if let Ok(mut active) = self.active.lock() {
-                    *active = Some(ActiveTarget::Mssql(inner.clone()));
-                }
-                let result = mssql::query(&inner, sql, max_rows).await;
-                if let Ok(mut active) = self.active.lock() {
-                    *active = None;
-                }
-                result
-            }
+        let driver = self.driver()?;
+        let sql_driver = sql_of(&driver)?;
+        if let Ok(mut active) = self.active.lock() {
+            *active = Some(driver.clone());
         }
+        let result = sql_driver.query(sql, max_rows).await;
+        if let Ok(mut active) = self.active.lock() {
+            *active = None;
+        }
+        result
+    }
+
+    /// The document operations of the connection open now, or the error an
+    /// engine of another paradigm gives.
+    pub fn document(&self) -> Result<DocumentSession<'_>, EngineError> {
+        let driver = self.driver()?;
+        if driver.document().is_none() {
+            return Err(EngineError::Unsupported(format!(
+                "{}에서는 문서 작업을 할 수 없습니다",
+                registry::label(driver.id())
+            )));
+        }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        Ok(DocumentSession {
+            driver,
+            _finished: EpochBump(&self.epoch),
+        })
     }
 
     pub async fn execute(&self, sql: &str, max_rows: usize) -> Result<QueryResult, EngineError> {
@@ -892,53 +994,41 @@ impl Engine {
     }
 
     pub fn cancel(&self) {
-        // SQLite's interrupt takes effect at once; the others send a request
-        // (MySQL's KILL and SQL Server's have taken effect once they're done,
-        // PostgreSQL's lands after it is sent).
-        let (request, lands_later) =
-            if let Some(target) = self.active.lock().ok().and_then(|guard| guard.clone()) {
-                match target {
-                    ActiveTarget::Sqlite(inner) => {
-                        inner.interrupt.interrupt();
-                        (None, false)
-                    }
-                    ActiveTarget::Postgres(inner) => (Some(inner.cancel()), true),
-                    ActiveTarget::MySql(inner) => (Some(inner.cancel()), false),
-                    ActiveTarget::Mssql(inner) => (inner.cancel(), false),
-                }
-            } else if let Ok(guard) = self.backend.read() {
-                match &*guard {
-                    Backend::Sqlite { inner } => {
-                        inner.interrupt.interrupt();
-                        (None, false)
-                    }
-                    Backend::Postgres { inner } => (Some(inner.cancel()), true),
-                    Backend::MySql { inner } => (Some(inner.cancel()), false),
-                    Backend::Mssql { inner } => (inner.cancel(), false),
-                }
-            } else {
-                (None, false)
-            };
-        if let Some(request) = request {
-            let cancels = self.cancels.clone();
-            cancels.count.fetch_add(1, Ordering::SeqCst);
-            let sent = Instant::now();
-            tokio::spawn(async move {
-                let _ = request.await;
-                if lands_later {
-                    // As long again as sending took (a round trip or more), so
-                    // the server has had the time to act on it.
-                    let until = Instant::now() + sent.elapsed().max(Duration::from_millis(50));
-                    if let Ok(mut quiet) = cancels.quiet_until.lock() {
-                        if quiet.is_none_or(|at| at < until) {
-                            *quiet = Some(until);
-                        }
+        // The driver running a statement now, else the current one.
+        let target = self
+            .active
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .or_else(|| self.driver.read().ok().map(|guard| guard.clone()));
+        let Some(target) = target else {
+            return;
+        };
+        let CancelRequest::Sent {
+            request,
+            lands_later,
+        } = target.cancel()
+        else {
+            return;
+        };
+        let cancels = self.cancels.clone();
+        cancels.count.fetch_add(1, Ordering::SeqCst);
+        let sent = Instant::now();
+        tokio::spawn(async move {
+            let _ = request.await;
+            if lands_later {
+                // As long again as sending took (a round trip or more), so
+                // the server has had the time to act on it.
+                let until = Instant::now() + sent.elapsed().max(Duration::from_millis(50));
+                if let Ok(mut quiet) = cancels.quiet_until.lock() {
+                    if quiet.is_none_or(|at| at < until) {
+                        *quiet = Some(until);
                     }
                 }
-                cancels.count.fetch_sub(1, Ordering::SeqCst);
-                cancels.landed.notify_waiters();
-            });
-        }
+            }
+            cancels.count.fetch_sub(1, Ordering::SeqCst);
+            cancels.landed.notify_waiters();
+        });
     }
 
     /// Waits, at most `limit`, for cancel requests already sent to land: one
@@ -968,24 +1058,19 @@ impl Engine {
         let _ = tokio::time::timeout(limit, settled).await;
     }
 
-    /// PostgreSQL and CockroachDB: a statement that fails inside a
-    /// transaction aborts all of it until a ROLLBACK (TO SAVEPOINT).
+    /// A statement that fails inside a transaction aborts all of it until a
+    /// ROLLBACK (TO SAVEPOINT), as on PostgreSQL and CockroachDB.
     pub fn failure_aborts_transaction(&self) -> bool {
-        matches!(self.backend_snapshot(), Ok(Backend::Postgres { .. }))
+        self.driver().ok().is_some_and(|driver| {
+            driver
+                .sql()
+                .is_some_and(|sql| sql.failure_aborts_transaction())
+        })
     }
 
     pub async fn edit(&self, target: &EditTarget) -> Result<u64, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                let target = target.clone();
-                tokio::task::spawn_blocking(move || edit_sync(&inner, &target))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::edit(&inner, target).await,
-            Backend::MySql { inner } => mysql::edit(&inner, target).await,
-            Backend::Mssql { inner } => mssql::edit(&inner, target).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.edit(target).await
     }
 
     pub async fn insert_row(
@@ -1017,72 +1102,27 @@ impl Engine {
             .filter(|value| value.expr != Some(ValueExpr::Default))
             .cloned()
             .collect();
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                let table = table.to_string();
-                tokio::task::spawn_blocking(move || insert_sync(&inner, &table, &values))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::insert_row(&inner, table, &values).await,
-            Backend::MySql { inner } => mysql::insert_row(&inner, table, &values).await,
-            Backend::Mssql { inner } => mssql::insert_row(&inner, table, &values).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.insert_row(table, &values).await
     }
 
     pub async fn delete_row(&self, table: &str, pk: &[PkValue]) -> Result<u64, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                let table = table.to_string();
-                let pk = pk.to_vec();
-                tokio::task::spawn_blocking(move || delete_sync(&inner, &table, &pk))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::delete_row(&inner, table, pk).await,
-            Backend::MySql { inner } => mysql::delete_row(&inner, table, pk).await,
-            Backend::Mssql { inner } => mssql::delete_row(&inner, table, pk).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.delete_row(table, pk).await
     }
 
     pub async fn table_detail(&self, name: &str) -> Result<TableDetail, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                let name = name.to_string();
-                tokio::task::spawn_blocking(move || table_detail_sync(&inner, &name))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::table_detail(&inner, name).await,
-            Backend::MySql { inner } => mysql::table_detail(&inner, name).await,
-            Backend::Mssql { inner } => mssql::table_detail(&inner, name).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.table_detail(name).await
     }
 
     pub async fn server_info(&self) -> Result<ServerInfo, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                tokio::task::spawn_blocking(move || server_info_sync(&inner))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::server_info(&inner).await,
-            Backend::MySql { inner } => mysql::server_info(&inner).await,
-            Backend::Mssql { inner } => mssql::server_info(&inner).await,
-        }
+        self.driver()?.server_info().await
     }
 
     pub async fn objects(&self, include_system: bool) -> Result<DbObjects, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                tokio::task::spawn_blocking(move || objects_sync(&inner, include_system))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::objects(&inner, include_system).await,
-            Backend::MySql { inner } => mysql::objects(&inner, include_system).await,
-            Backend::Mssql { inner } => mssql::objects(&inner, include_system).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.objects(include_system).await
     }
 
     pub async fn object_definition(
@@ -1090,18 +1130,8 @@ impl Engine {
         kind: &str,
         name: &str,
     ) -> Result<Option<ObjectDefinition>, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => {
-                let kind = kind.to_string();
-                let name = name.to_string();
-                tokio::task::spawn_blocking(move || object_definition_sync(&inner, &kind, &name))
-                    .await
-                    .map_err(|e| EngineError::Internal(e.to_string()))?
-            }
-            Backend::Postgres { inner } => postgres::object_definition(&inner, kind, name).await,
-            Backend::MySql { inner } => mysql::object_definition(&inner, kind, name).await,
-            Backend::Mssql { inner } => mssql::object_definition(&inner, kind, name).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.object_definition(kind, name).await
     }
 
     pub async fn kill_session(&self, id: &str) -> Result<(), EngineError> {
@@ -1109,78 +1139,41 @@ impl Engine {
             .trim()
             .parse()
             .map_err(|_| EngineError::BadRequest("세션 ID가 올바르지 않습니다".into()))?;
-        match self.backend_snapshot()? {
-            Backend::Sqlite { .. } => Err(EngineError::BadRequest(
-                "이 엔진은 세션 종료를 지원하지 않습니다".into(),
-            )),
-            Backend::Postgres { inner } => postgres::kill_session(&inner, numeric).await,
-            Backend::MySql { inner } => mysql::kill_session(&inner, numeric).await,
-            Backend::Mssql { inner } => mssql::kill_session(&inner, numeric).await,
-        }
+        let driver = self.driver()?;
+        sql_of(&driver)?.kill_session(numeric).await
     }
 
     pub async fn begin_tx(&self) -> Result<(), EngineError> {
-        self.tx("BEGIN").await
+        self.tx(TxOp::Begin).await
     }
 
     pub async fn commit_tx(&self) -> Result<(), EngineError> {
-        self.tx("COMMIT").await
+        self.tx(TxOp::Commit).await
     }
 
     pub async fn rollback_tx(&self) -> Result<(), EngineError> {
-        self.tx("ROLLBACK").await
+        self.tx(TxOp::Rollback).await
     }
 
+    /// Whether a transaction is open; never on an engine without SQL.
     pub async fn in_tx(&self) -> Result<bool, EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => tokio::task::spawn_blocking(move || {
-                let conn = lock_conn(&inner)?;
-                Ok(!conn.is_autocommit())
-            })
-            .await
-            .map_err(|e| EngineError::Internal(e.to_string()))?,
-            Backend::Postgres { inner } => Ok(inner.in_tx()),
-            Backend::MySql { inner } => Ok(inner.in_tx()),
-            Backend::Mssql { inner } => Ok(inner.in_tx()),
+        let driver = self.driver()?;
+        match driver.sql() {
+            Some(sql) => sql.in_tx().await,
+            None => Ok(false),
         }
     }
 
-    async fn tx(&self, statement: &'static str) -> Result<(), EngineError> {
-        match self.backend_snapshot()? {
-            Backend::Sqlite { inner } => tokio::task::spawn_blocking(move || {
-                let conn = lock_conn(&inner)?;
-                match statement {
-                    "BEGIN" if !conn.is_autocommit() => {
-                        return Err(EngineError::Internal(
-                            "이미 트랜잭션이 진행 중입니다".into(),
-                        ));
-                    }
-                    "COMMIT" | "ROLLBACK" if conn.is_autocommit() => {
-                        // Gone already (an error rolled it back): so is its work.
-                        conn.log.settle(false);
-                        return Err(EngineError::Internal(
-                            "진행 중인 트랜잭션이 없습니다".into(),
-                        ));
-                    }
-                    "BEGIN" | "COMMIT" | "ROLLBACK" => {}
-                    _ => {}
-                }
-                conn.execute_batch(statement)?;
-                if statement == "BEGIN" {
-                    // Whatever an earlier, untracked transaction left.
-                    conn.log.settle(false);
-                } else {
-                    conn.log.ended(statement == "COMMIT");
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|e| EngineError::Internal(e.to_string()))?,
-            Backend::Postgres { inner } => postgres::tx(&inner, statement).await,
-            Backend::MySql { inner } => mysql::tx(&inner, statement).await,
-            Backend::Mssql { inner } => mssql::tx(&inner, statement).await,
-        }
+    async fn tx(&self, op: TxOp) -> Result<(), EngineError> {
+        let driver = self.driver()?;
+        sql_of(&driver)?.tx(op).await
     }
+}
+
+/// `meta` with what `driver` can do filled in.
+fn with_capabilities(driver: &Arc<dyn Driver>, mut meta: EngineMeta) -> EngineMeta {
+    meta.capabilities = Some(driver.capabilities());
+    meta
 }
 
 fn lock_conn(inner: &SqliteInner) -> Result<SqliteConn<'_>, EngineError> {
@@ -1267,6 +1260,7 @@ fn meta_sync(inner: &SqliteInner, include_system: bool) -> Result<EngineMeta, En
         path: inner.path.as_ref().map(|p| p.display().to_string()),
         demo: inner.demo,
         tables,
+        capabilities: None,
     })
 }
 
@@ -1959,6 +1953,44 @@ fn delete_sync(inner: &SqliteInner, table: &str, pk: &[PkValue]) -> Result<u64, 
     Ok(changed as u64)
 }
 
+/// A SQLite partial index's predicate: what follows `WHERE` after the
+/// column list's closing parenthesis in `CREATE INDEX … ON t (…) WHERE …`.
+/// Quotes and nested parentheses inside the column list are skipped.
+fn index_predicate(sql: &str) -> Option<String> {
+    let open = sql.find('(')?;
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut close = None;
+    for (at, ch) in sql[open..].char_indices() {
+        match quote {
+            Some(end) if ch == end => quote = None,
+            Some(_) => {}
+            None => match ch {
+                '\'' | '"' | '`' => quote = Some(ch),
+                '[' => quote = Some(']'),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + at + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    let rest = sql[close?..].trim_start();
+    let keyword = rest.get(..5)?;
+    if !keyword.eq_ignore_ascii_case("where")
+        || !rest[5..].starts_with(|c: char| c.is_whitespace() || c == '(')
+    {
+        return None;
+    }
+    let predicate = rest[5..].trim().trim_end_matches(';').trim();
+    (!predicate.is_empty()).then(|| predicate.to_string())
+}
+
 fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, EngineError> {
     let conn = lock_conn(inner)?;
     let name = name
@@ -2010,11 +2042,25 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
                 }
             }
         }
+        // The statement the index was made with; none for an automatic one
+        // (a UNIQUE or PRIMARY KEY constraint's).
+        let definition: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                &[&index_name],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        let predicate = definition.as_deref().and_then(index_predicate);
         indexes.push(IndexInfo {
             name: index_name,
             unique,
             primary: origin == "pk",
             columns: index_columns,
+            definition,
+            predicate,
+            ..IndexInfo::default()
         });
     }
     indexes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2170,6 +2216,8 @@ fn server_info_sync(inner: &SqliteInner) -> Result<ServerInfo, EngineError> {
         size_bytes: Some(page_count.saturating_mul(page_size)),
         sessions: None,
         can_kill: false,
+        topology: None,
+        host: None,
     })
 }
 
@@ -2397,6 +2445,68 @@ fn value_ref_to_json(v: ValueRef<'_>) -> Value {
 mod tests {
     use super::*;
     use tablepeek_types::PkValue;
+
+    /// The typed settings the docker-gated tests build, connected through the
+    /// registry as a client's config would be.
+    trait SwapTyped {
+        async fn swap_typed<T: serde::Serialize>(
+            &self,
+            engine: &str,
+            config: &T,
+            password: Option<&str>,
+        ) -> Result<EngineMeta, EngineError>;
+
+        async fn swap_to_postgres(
+            &self,
+            config: &tablepeek_types::PostgresConfig,
+        ) -> Result<EngineMeta, EngineError> {
+            self.swap_typed("postgres", config, config.password.as_deref())
+                .await
+        }
+
+        async fn swap_to_cockroach(
+            &self,
+            config: &tablepeek_types::PostgresConfig,
+        ) -> Result<EngineMeta, EngineError> {
+            self.swap_typed("cockroach", config, config.password.as_deref())
+                .await
+        }
+
+        async fn swap_to_mysql(
+            &self,
+            config: &tablepeek_types::MySqlConfig,
+        ) -> Result<EngineMeta, EngineError> {
+            self.swap_typed("mysql", config, config.password.as_deref())
+                .await
+        }
+
+        async fn swap_to_mssql(
+            &self,
+            config: &tablepeek_types::MssqlConfig,
+        ) -> Result<EngineMeta, EngineError> {
+            self.swap_typed("mssql", config, config.password.as_deref())
+                .await
+        }
+    }
+
+    impl SwapTyped for Engine {
+        async fn swap_typed<T: serde::Serialize>(
+            &self,
+            engine: &str,
+            config: &T,
+            password: Option<&str>,
+        ) -> Result<EngineMeta, EngineError> {
+            // Typed settings never serialize their password; it goes in by hand.
+            let Value::Object(mut map) = serde_json::to_value(config).unwrap() else {
+                unreachable!("settings serialize as an object");
+            };
+            if let Some(password) = password {
+                map.insert("password".into(), Value::String(password.into()));
+            }
+            self.swap_to(registry::require(engine)?, &map, &NetRoute::Direct)
+                .await
+        }
+    }
 
     fn temp_db(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -4581,21 +4691,33 @@ mod tests {
         assert!(err.is_interrupted(), "err = {err}");
     }
 
-    fn mssql_config() -> Option<tablepeek_types::MssqlConfig> {
+    // SQL Server's catalog views lock the same system rows that DDL in another
+    // session of the database takes, so a schema read running beside another
+    // test's CREATE or DROP TABLE is picked as a deadlock victim (error 1205),
+    // whatever the tables are called. The tests that use the server take turns;
+    // the guard is held until the test ends.
+    static MSSQL_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn mssql_config() -> Option<(
+        tablepeek_types::MssqlConfig,
+        tokio::sync::MutexGuard<'static, ()>,
+    )> {
         std::env::var("TABLEPEEK_TEST_MSSQL").ok()?;
-        Some(tablepeek_types::MssqlConfig {
+        let turn = MSSQL_TURN.lock().await;
+        let config = tablepeek_types::MssqlConfig {
             host: "127.0.0.1".into(),
             port: 14330,
             user: "sa".into(),
             password: Some("MsSql_test_pw1".into()),
             database: "tablepeek_test".into(),
             encrypt: false,
-        })
+        };
+        Some((config, turn))
     }
 
     #[tokio::test]
     async fn mssql_an_edit_checks_the_key_again() {
-        let Some(config) = mssql_config() else {
+        let Some((config, _turn)) = mssql_config().await else {
             return;
         };
         let engine = Engine::open_demo(1).unwrap();
@@ -4656,7 +4778,7 @@ mod tests {
 
     #[tokio::test]
     async fn mssql_query_edit_tx_roundtrip() {
-        let Some(config) = mssql_config() else {
+        let Some((config, _turn)) = mssql_config().await else {
             return;
         };
         let engine = Engine::open_demo(1).unwrap();
@@ -4802,7 +4924,7 @@ mod tests {
 
     #[tokio::test]
     async fn mssql_insert_delete_and_table_detail() {
-        let Some(config) = mssql_config() else {
+        let Some((config, _turn)) = mssql_config().await else {
             return;
         };
         let engine = Engine::open_demo(1).unwrap();
@@ -4848,7 +4970,7 @@ mod tests {
 
     #[tokio::test]
     async fn mssql_set_value_writes_default_and_the_time() {
-        let Some(config) = mssql_config() else {
+        let Some((config, _turn)) = mssql_config().await else {
             return;
         };
         let engine = Engine::open_demo(1).unwrap();
@@ -4944,7 +5066,7 @@ mod tests {
 
     #[tokio::test]
     async fn mssql_cancel_interrupts_running_query() {
-        let Some(config) = mssql_config() else {
+        let Some((config, _turn)) = mssql_config().await else {
             return;
         };
         let engine = Arc::new(Engine::open_demo(1).unwrap());
@@ -5390,7 +5512,7 @@ mod tests {
 
     #[tokio::test]
     async fn mssql_relations_list_every_foreign_key() {
-        let Some(config) = mssql_config() else {
+        let Some((config, _turn)) = mssql_config().await else {
             return;
         };
         let engine = Engine::open_demo(1).unwrap();
@@ -5414,5 +5536,467 @@ mod tests {
             ],
         )
         .await;
+    }
+
+    use tablepeek_types::IndexPart;
+
+    /// The index of `detail` named `name`.
+    fn index_named<'a>(detail: &'a TableDetail, name: &str) -> &'a IndexInfo {
+        detail
+            .indexes
+            .iter()
+            .find(|index| index.name == name)
+            .unwrap_or_else(|| panic!("{name}: {:?}", detail.indexes))
+    }
+
+    async fn run_all(engine: &Engine, statements: &[&str]) {
+        for sql in statements {
+            engine
+                .execute(sql, 1)
+                .await
+                .unwrap_or_else(|err| panic!("{sql}: {err}"));
+        }
+    }
+
+    #[test]
+    fn sqlite_partial_index_predicate_is_read_from_its_statement() {
+        let cases = [
+            ("CREATE INDEX i ON t (a) WHERE b > 1", Some("b > 1")),
+            (
+                "create index i on t(a) where(b is not null)",
+                Some("(b is not null)"),
+            ),
+            (
+                "CREATE INDEX i ON t (c COLLATE NOCASE, \"x)\") WHERE c <> ')'",
+                Some("c <> ')'"),
+            ),
+            ("CREATE INDEX i ON t (lower(c), [a)])", None),
+            ("CREATE INDEX i ON t (a) WHEREVER", None),
+        ];
+        for (sql, predicate) in cases {
+            assert_eq!(index_predicate(sql).as_deref(), predicate, "{sql}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_indexes_carry_definition_and_predicate() {
+        let engine = Engine::open_demo(1).unwrap();
+        run_all(
+            &engine,
+            &[
+                "CREATE TABLE tp_idx (id INTEGER PRIMARY KEY, a INT, b INT, c TEXT UNIQUE)",
+                "CREATE INDEX tp_idx_part ON tp_idx (a) WHERE b > 1",
+                "CREATE INDEX tp_idx_expr ON tp_idx (lower(c), a)",
+            ],
+        )
+        .await;
+        let detail = engine.table_detail("tp_idx").await.unwrap();
+        let partial = index_named(&detail, "tp_idx_part");
+        assert_eq!(
+            partial.definition.as_deref(),
+            Some("CREATE INDEX tp_idx_part ON tp_idx (a) WHERE b > 1")
+        );
+        assert_eq!(partial.predicate.as_deref(), Some("b > 1"));
+        let expression = index_named(&detail, "tp_idx_expr");
+        assert_eq!(
+            expression.definition.as_deref(),
+            Some("CREATE INDEX tp_idx_expr ON tp_idx (lower(c), a)")
+        );
+        assert_eq!(expression.predicate, None);
+        // The UNIQUE constraint's own index has no statement.
+        let automatic = detail
+            .indexes
+            .iter()
+            .find(|index| index.name.starts_with("sqlite_autoindex"))
+            .unwrap();
+        assert_eq!(automatic.definition, None);
+        // Left out of the JSON when absent; `where` when present.
+        let json = serde_json::to_value(&detail.indexes).unwrap();
+        let shown = json.as_array().unwrap();
+        assert!(shown.iter().any(|index| index["where"] == "b > 1"));
+        assert!(shown
+            .iter()
+            .any(|index| index.get("definition").is_none() && index.get("where").is_none()));
+    }
+
+    /// Partial, expression and INCLUDE indexes on a PostgreSQL-speaking server.
+    async fn check_pg_like_indexes(engine: &Engine, include: &str) {
+        run_all(
+            engine,
+            &[
+                "DROP TABLE IF EXISTS tp_idx",
+                "CREATE TABLE tp_idx (id INT PRIMARY KEY, a INT, b TEXT, c TEXT)",
+                "CREATE INDEX tp_idx_part ON tp_idx (a) WHERE a > 0",
+                "CREATE INDEX tp_idx_expr ON tp_idx (lower(b) DESC, a)",
+                &format!("CREATE INDEX tp_idx_incl ON tp_idx (a) {include} (c)"),
+            ],
+        )
+        .await;
+        let detail = engine.table_detail("tp_idx").await.unwrap();
+        let partial = index_named(&detail, "tp_idx_part");
+        assert!(
+            partial
+                .predicate
+                .as_deref()
+                .is_some_and(|p| p.contains("a > 0")),
+            "{partial:?}"
+        );
+        assert!(
+            partial
+                .definition
+                .as_deref()
+                .is_some_and(|d| d.contains("tp_idx_part") && d.contains("WHERE")),
+            "{partial:?}"
+        );
+        let expression = index_named(&detail, "tp_idx_expr");
+        let parts = expression.parts.as_ref().unwrap();
+        assert_eq!(parts.len(), 2, "{expression:?}");
+        assert!(
+            parts[0].column.is_none()
+                && parts[0]
+                    .expression
+                    .as_deref()
+                    .is_some_and(|e| e.contains("lower")),
+            "{expression:?}"
+        );
+        assert_eq!(parts[1].column.as_deref(), Some("a"));
+        assert_eq!(parts[1].expression, None);
+        assert_eq!((parts[0].descending, parts[1].descending), (true, false));
+        assert_eq!(expression.predicate, None);
+        let included = index_named(&detail, "tp_idx_incl");
+        assert_eq!(
+            included.included,
+            Some(vec!["c".to_string()]),
+            "{included:?}"
+        );
+        assert_eq!(included.parts.as_ref().unwrap().len(), 1);
+        // The columns field is as before.
+        assert_eq!(index_named(&detail, "tp_idx_part").columns, vec!["a"]);
+        run_all(engine, &["DROP TABLE tp_idx"]).await;
+    }
+
+    #[tokio::test]
+    async fn pg_indexes_carry_definition_predicate_parts_and_include() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        check_pg_like_indexes(&engine, "INCLUDE").await;
+    }
+
+    #[tokio::test]
+    async fn cockroach_indexes_carry_definition_predicate_parts_and_storing() {
+        let Some(config) = cockroach_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_cockroach(&config).await.unwrap();
+        check_pg_like_indexes(&engine, "STORING").await;
+    }
+
+    #[tokio::test]
+    async fn mysql_indexes_carry_prefix_lengths_and_expressions() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        run_all(
+            &engine,
+            &[
+                "DROP TABLE IF EXISTS tp_idx",
+                "CREATE TABLE tp_idx (id INT PRIMARY KEY, a INT, b VARCHAR(100), \
+                 INDEX tp_idx_prefix (b(10) DESC, a), INDEX tp_idx_expr ((lower(b))))",
+            ],
+        )
+        .await;
+        let detail = engine.table_detail("tp_idx").await.unwrap();
+        let prefix = index_named(&detail, "tp_idx_prefix");
+        assert_eq!(prefix.columns, vec!["b", "a"]);
+        assert_eq!(
+            prefix.parts.as_deref().unwrap(),
+            &[
+                IndexPart {
+                    column: Some("b".into()),
+                    expression: None,
+                    prefix_length: Some(10),
+                    descending: true,
+                },
+                IndexPart {
+                    column: Some("a".into()),
+                    expression: None,
+                    prefix_length: None,
+                    descending: false,
+                },
+            ]
+        );
+        let expression = index_named(&detail, "tp_idx_expr");
+        let parts = expression.parts.as_deref().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].column, None);
+        assert!(
+            parts[0]
+                .expression
+                .as_deref()
+                .is_some_and(|e| e.contains("lower")),
+            "{expression:?}"
+        );
+        assert_eq!(expression.definition, None);
+        run_all(&engine, &["DROP TABLE tp_idx"]).await;
+    }
+
+    #[tokio::test]
+    async fn mssql_filtered_indexes_carry_predicate_and_included_columns() {
+        let Some((config, _turn)) = mssql_config().await else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mssql(&config).await.unwrap();
+        run_all(
+            &engine,
+            &[
+                "DROP TABLE IF EXISTS tp_idx",
+                "CREATE TABLE tp_idx (id INT PRIMARY KEY, a INT, b NVARCHAR(50), c NVARCHAR(50))",
+                "CREATE INDEX tp_idx_part ON tp_idx (a DESC) INCLUDE (b, c) WHERE a > 0",
+                "CREATE INDEX tp_idx_plain ON tp_idx (b)",
+            ],
+        )
+        .await;
+        let detail = engine.table_detail("tp_idx").await.unwrap();
+        let partial = index_named(&detail, "tp_idx_part");
+        assert_eq!(partial.columns, vec!["a"]);
+        let parts = partial.parts.as_deref().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].descending && parts[0].column.as_deref() == Some("a"));
+        assert_eq!(partial.predicate.as_deref(), Some("([a]>(0))"));
+        assert_eq!(
+            partial.included,
+            Some(vec!["b".to_string(), "c".to_string()])
+        );
+        let plain = index_named(&detail, "tp_idx_plain");
+        assert_eq!((&plain.predicate, &plain.included), (&None, &None));
+        run_all(&engine, &["DROP TABLE tp_idx"]).await;
+    }
+
+    /// A database's error as the reply carries it: first line, code, fields.
+    fn driver_parts(err: &EngineError) -> (&str, Option<&str>, &ErrorFields) {
+        match err {
+            EngineError::Driver {
+                message,
+                code,
+                fields,
+                ..
+            } => (message.as_str(), code.as_deref(), fields),
+            other => panic!("not a driver error: {other:?}"),
+        }
+    }
+
+    fn failed<T>(outcome: Result<T, EngineError>) -> EngineError {
+        match outcome {
+            Ok(_) => panic!("succeeded"),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn sqlite_errors_carry_code_and_offset() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The offset counts characters, not the bytes of '한'.
+        let sql = "SELECT '한' FRO nope";
+        let err: EngineError = conn.prepare(sql).unwrap_err().into();
+        let (message, code, fields) = driver_parts(&err);
+        assert_eq!(message, "near \"nope\": syntax error");
+        assert_eq!(code, Some("1"));
+        assert_eq!(fields.server_code, Some(1));
+        let at = sql.chars().position(|c| c == 'n').unwrap() as u32 + 1;
+        assert_eq!(fields.position.and_then(|p| p.offset), Some(at));
+        assert!(
+            fields.raw.as_deref().unwrap().contains("at offset"),
+            "{fields:?}"
+        );
+        // A constraint: the extended code tells which kind.
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, n INT CHECK (n >= 0))")
+            .unwrap();
+        let err: EngineError = conn
+            .execute("INSERT INTO t VALUES (1, -5)", [])
+            .unwrap_err()
+            .into();
+        let (message, _, fields) = driver_parts(&err);
+        assert_eq!(message, "CHECK constraint failed: n >= 0");
+        assert_eq!(fields.server_code, Some(275)); // SQLITE_CONSTRAINT_CHECK
+        assert_eq!(fields.raw, None);
+        assert_eq!(
+            err.to_string(),
+            "SQLite 오류: CHECK constraint failed: n >= 0"
+        );
+    }
+
+    #[test]
+    fn char_offsets_count_from_one() {
+        assert_eq!(char_offset("abc", 0), Some(1));
+        assert_eq!(char_offset("한x", 3), Some(2));
+        // Inside a character or past the end: no position rather than a wrong one.
+        assert_eq!(char_offset("한x", 1), None);
+        assert_eq!(char_offset("abc", 9), None);
+    }
+
+    #[tokio::test]
+    async fn pg_errors_carry_sqlstate_position_and_details() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        let err = failed(engine.query("SELECT * FROM orderz", 10).await);
+        let (message, code, fields) = driver_parts(&err);
+        assert_eq!(message, "relation \"orderz\" does not exist");
+        assert_eq!(code, Some("42P01"));
+        assert_eq!(fields.sqlstate.as_deref(), Some("42P01"));
+        assert_eq!(fields.position.and_then(|p| p.offset), Some(15));
+        assert!(fields.raw.as_deref().unwrap().ends_with("[SQLSTATE 42P01]"));
+        let err = failed(engine.query("SELECT 1 FROMM tp", 10).await);
+        let (_, _, fields) = driver_parts(&err);
+        assert_eq!(fields.sqlstate.as_deref(), Some("42601"));
+        assert_eq!(fields.position.and_then(|p| p.offset), Some(16));
+
+        let table = format!("tp_err_check_{}", std::process::id());
+        engine
+            .execute(
+                &format!("CREATE TABLE {table} (id int PRIMARY KEY, qty int CHECK (qty >= 0))"),
+                1,
+            )
+            .await
+            .unwrap();
+        let err = engine
+            .execute(&format!("INSERT INTO {table} VALUES (1, -5)"), 1)
+            .await
+            .unwrap_err();
+        engine
+            .execute(&format!("DROP TABLE {table}"), 1)
+            .await
+            .unwrap();
+        let (message, _, fields) = driver_parts(&err);
+        assert!(
+            message.starts_with(&format!(
+                "new row for relation \"{table}\" violates check constraint"
+            )),
+            "{message}"
+        );
+        assert!(!message.contains("SQLSTATE"), "{message}");
+        assert_eq!(fields.sqlstate.as_deref(), Some("23514"));
+        let details = fields.details.as_ref().unwrap();
+        assert_eq!(details["table"], Value::from(table.clone()));
+        assert_eq!(
+            details["constraint"],
+            Value::from(format!("{table}_qty_check"))
+        );
+        assert!(
+            details["detail"].as_str().unwrap().contains("(1, -5)"),
+            "{details}"
+        );
+
+        // A wrong password is the server's refusal, not an internal or TLS
+        // failure, with or without TLS asked for.
+        for ssl_mode in [
+            tablepeek_types::SslMode::Disable,
+            tablepeek_types::SslMode::Prefer,
+        ] {
+            let wrong = tablepeek_types::PostgresConfig {
+                password: Some("wrong_pw".into()),
+                ssl_mode,
+                ..config.clone()
+            };
+            let err = Engine::open_demo(1)
+                .unwrap()
+                .swap_to_postgres(&wrong)
+                .await
+                .unwrap_err();
+            let (message, _, fields) = driver_parts(&err);
+            assert_eq!(
+                message,
+                "password authentication failed for user \"tablepeek\""
+            );
+            assert_eq!(fields.sqlstate.as_deref(), Some("28P01"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cockroach_errors_carry_sqlstate() {
+        let Some(config) = cockroach_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_cockroach(&config).await.unwrap();
+        let err = failed(engine.query("SELECT * FROM orderz", 10).await);
+        let (message, _, fields) = driver_parts(&err);
+        assert_eq!(message, "relation \"orderz\" does not exist");
+        assert_eq!(fields.sqlstate.as_deref(), Some("42P01"));
+    }
+
+    #[tokio::test]
+    async fn mysql_errors_carry_errno_sqlstate_and_line() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        let err = failed(engine.query("SELECT 1;\nSELEC 2", 10).await);
+        let (message, code, fields) = driver_parts(&err);
+        assert!(
+            message.starts_with("You have an error in your SQL syntax"),
+            "{message}"
+        );
+        assert_eq!(code, Some("1064"));
+        assert_eq!(fields.server_code, Some(1064));
+        assert_eq!(fields.sqlstate.as_deref(), Some("42000"));
+        assert!(fields.position.and_then(|p| p.line).is_some(), "{fields:?}");
+        let raw = fields.raw.as_deref().unwrap();
+        assert!(raw.contains("1064") && raw.contains("42000"), "{raw}");
+        let wrong = tablepeek_types::MySqlConfig {
+            password: Some("wrong_pw".into()),
+            ..config.clone()
+        };
+        let err = Engine::open_demo(1)
+            .unwrap()
+            .swap_to_mysql(&wrong)
+            .await
+            .unwrap_err();
+        let (message, _, fields) = driver_parts(&err);
+        assert!(
+            message.starts_with("Access denied for user 'root'"),
+            "{message}"
+        );
+        assert_eq!(fields.server_code, Some(1045));
+    }
+
+    #[tokio::test]
+    async fn mssql_errors_carry_number_and_line() {
+        let Some((config, _turn)) = mssql_config().await else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mssql(&config).await.unwrap();
+        let err = failed(engine.query("SELECT 1\nSELECT * FROM", 10).await);
+        let (message, code, fields) = driver_parts(&err);
+        assert_eq!(message, "Incorrect syntax near 'FROM'.");
+        assert_eq!(code, Some("102"));
+        assert_eq!(fields.server_code, Some(102));
+        assert_eq!(fields.position.and_then(|p| p.line), Some(2));
+        let wrong = tablepeek_types::MssqlConfig {
+            password: Some("Wrong_pw1".into()),
+            ..config.clone()
+        };
+        let err = Engine::open_demo(1)
+            .unwrap()
+            .swap_to_mssql(&wrong)
+            .await
+            .unwrap_err();
+        let (message, _, fields) = driver_parts(&err);
+        assert!(
+            message.starts_with("Login failed for user 'sa'"),
+            "{message}"
+        );
+        assert_eq!(fields.server_code, Some(18456));
     }
 }

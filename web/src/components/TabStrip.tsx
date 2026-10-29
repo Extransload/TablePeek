@@ -7,6 +7,7 @@ import {
   CodeIcon,
   DiagramIcon,
   FileIcon,
+  GaugeIcon,
   ListIcon,
   ServerIcon,
   StructureIcon,
@@ -32,6 +33,12 @@ function tabIcon(tab: WorkbenchTab): ReactElement {
       return <ListIcon {...props} />;
     case "diagram":
       return <DiagramIcon {...props} />;
+    case "collection":
+      return <TableIcon {...props} />;
+    case "mongosh":
+      return <CodeIcon {...props} />;
+    case "perf":
+      return <GaugeIcon {...props} />;
   }
 }
 
@@ -51,6 +58,12 @@ function tabKindLabel(tab: WorkbenchTab): string {
       return t("개요");
     case "diagram":
       return t("다이어그램");
+    case "collection":
+      return t("컬렉션");
+    case "mongosh":
+      return "mongosh";
+    case "perf":
+      return t("성능");
   }
 }
 

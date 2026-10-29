@@ -1,3 +1,4 @@
+import type { SqlDialect } from "./engines/sqlDialect";
 import { t } from "./i18n";
 
 export interface PlanNode {
@@ -221,7 +222,8 @@ function mysqlWalk(value: Record<string, unknown>, path: string): PlanNode[] {
   return nodes;
 }
 
-function parsePostgres(rows: unknown[][]): ParsedPlan | null {
+// EXPLAIN (FORMAT JSON), as PostgreSQL and CockroachDB return it.
+export function parsePostgresPlan(rows: unknown[][]): ParsedPlan | null {
   const raw = rows[0]?.[0];
   if (typeof raw !== "string") {
     return null;
@@ -254,7 +256,8 @@ function parsePostgres(rows: unknown[][]): ParsedPlan | null {
   };
 }
 
-function parseMysql(rows: unknown[][]): ParsedPlan | null {
+// EXPLAIN FORMAT=JSON, as MySQL returns it.
+export function parseMysqlPlan(rows: unknown[][]): ParsedPlan | null {
   const raw = rows[0]?.[0];
   if (typeof raw !== "string") {
     return null;
@@ -284,7 +287,8 @@ function parseMysql(rows: unknown[][]): ParsedPlan | null {
   };
 }
 
-function parseSqlite(columns: string[], rows: unknown[][]): ParsedPlan | null {
+// EXPLAIN QUERY PLAN's rows, as SQLite returns them.
+export function parseSqlitePlan(columns: string[], rows: unknown[][]): ParsedPlan | null {
   const lower = columns.map((column) => column.toLowerCase());
   const idIndex = lower.indexOf("id");
   const parentIndex = lower.indexOf("parent");
@@ -318,27 +322,12 @@ function parseSqlite(columns: string[], rows: unknown[][]): ParsedPlan | null {
 }
 
 export function parseExplainPlan(
-  kind: string,
+  dialect: SqlDialect | undefined,
   columns: string[],
   rows: unknown[][],
 ): ParsedPlan | null {
   if (rows.length === 0) {
     return null;
   }
-  const normalized = kind.toLowerCase();
-  if (normalized === "sqlite") {
-    return parseSqlite(columns, rows);
-  }
-  if (normalized === "mysql") {
-    return parseMysql(rows);
-  }
-  if (
-    normalized === "postgres" ||
-    normalized === "postgresql" ||
-    normalized === "cockroach" ||
-    normalized === "cockroachdb"
-  ) {
-    return parsePostgres(rows);
-  }
-  return null;
+  return dialect?.explain?.parse(columns, rows) ?? null;
 }

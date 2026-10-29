@@ -2,7 +2,7 @@
 
 **A fast, local-first database client that runs in your browser.**
 
-TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or connect to PostgreSQL, MySQL/MariaDB, CockroachDB, and SQL Server. Query, inspect, edit, and explore data without a cloud relay or a heavyweight desktop shell.
+TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or connect to PostgreSQL, MySQL/MariaDB, CockroachDB, SQL Server, and MongoDB. Query, inspect, edit, and explore data without a cloud relay or a heavyweight desktop shell.
 
 ![TablePeek data grid showing a PostgreSQL products table with type-colored numbers, text, arrays, JSON, bytes, and NULLs (Catppuccin Mocha theme)](docs/images/grid.png)
 
@@ -10,7 +10,7 @@ TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or conn
 
 | | |
 |---|---|
-| **Databases** | SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, SQL Server |
+| **Databases** | SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, SQL Server, MongoDB |
 | **Runtime** | Local Rust engine + browser UI |
 | **Transport** | HTTP + WebSocket, Arrow IPC streaming |
 | **Editing** | Primary-key cell edits, row insert/delete, transactions, `DEFAULT`/`NOW()` set on the server |
@@ -124,6 +124,7 @@ Create connections from the in-app connection screen. Profiles are saved in `~/.
 | **MySQL** | MySQL and MariaDB | TLS `prefer`/`require`, CA certificates, mTLS client certificates |
 | **CockroachDB** | CockroachDB clusters | PostgreSQL wire protocol; internal tables are excluded from schema browsing |
 | **SQL Server** | Microsoft SQL Server | TDS driver with an `encrypt` option |
+| **MongoDB** | MongoDB servers, replica sets and Atlas | `mongodb://` or `mongodb+srv://` connection string or host fields; SCRAM or X.509; TLS with CA and client certificates; tunnels for single-host connections only |
 
 Connection features:
 
@@ -185,6 +186,19 @@ The ER diagram tab (the diagram button in the top bar, between the connections a
 
 ![TablePeek ER diagram with the shop schema laid out and one table's relations highlighted](docs/images/er.png)
 
+### MongoDB workbench
+
+A MongoDB connection opens a document workspace: databases and collections in the sidebar, a collection tab per collection, and mongosh tabs. A collection tab has six sub-tabs:
+
+- **Documents.** A filter bar with completion (you can leave out the outer braces), options for projection, sort, skip and limit, and recent and favourite queries. Results show as cards, as JSON blocks, or as a table; switch between them with the ☰ {} ⊞ icons or `Ctrl+1–3`. Click any value to edit it, keeping its BSON type. In the table, nested objects and arrays open as their own tables (`orders › items`), and the detail panel (`Mod+I`) is available there only. Saving puts each changed path's original value in the update filter. If the document changed elsewhere in the meantime, the current value and your change are shown side by side.
+- **Aggregation.** A stack of stage cards, each with a preview of its output, an on/off toggle, and drag to reorder. There is also a text mode, saved pipelines, save as view, explain, and `$out`/`$merge` behind a confirmation.
+- **Schema.** Analyses a sample of up to 1,000 documents: field presence, the mix of types, histograms, and frequent values. Clicking a value filters the documents by it.
+- **Validation.** Edit a `$jsonSchema` or query rule, or draft one from the data. See how many sampled documents would pass or fail before applying it with `collMod`.
+- **Indexes.** Lists each index with its size and usage (`$indexStats`), and creates or drops indexes.
+- **Explain.** Runs `explain("executionStats")` and shows a stage tree, warnings, and a suggested index.
+
+The mongosh tab parses a subset of mongosh and never runs JavaScript. Import reads JSON, NDJSON, Extended JSON, and CSV/TSV with a type for each column. Export writes JSON, NDJSON, or CSV, streamed from the server. Databases, collections (capped, time series, clustered), and views can be created, renamed, and dropped. The performance tab charts operations, connections, network, and cache use, lists the operations running now (and can kill them), and shows time per collection and the slow-operation profiler.
+
 ### Connections
 
 The connection home groups saved connections; drag groups to reorder them. Start a new connection from the kind of database you want, or open one from the connection bar. A SQLite connection is saved like any other, with a name, colour, tags, and the database file; files are picked with the operating system's own open dialog, and the same file opened twice goes to the one connection already open. Connection tabs close on a single click and move focus to their neighbour. Saved connections export to a password-sealed `.tablepeek` file and import back on another machine.
@@ -227,6 +241,13 @@ Settings also cover accent color, font sizes, alternating row backgrounds, type 
 | `tablepeek_list_tables` | List tables and columns |
 | `tablepeek_describe_table` | Columns, indexes, foreign keys, and DDL |
 | `tablepeek_query` | Run read-only `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `EXPLAIN` |
+| `mongo_list_collections` | MongoDB: databases, collections, and views |
+| `mongo_find` | MongoDB: `find` with a filter, projection, and sort (at most 100 documents) |
+| `mongo_aggregate` | MongoDB: an aggregation pipeline without `$out`/`$merge` (at most 100 documents) |
+| `mongo_schema` | MongoDB: field paths, presence, and types from a sample of up to 200 documents |
+| `mongo_indexes` | MongoDB: a collection's indexes |
+
+The tool list follows the engine of the connection the MCP server is pointed at.
 
 `tablepeek_query` rejects multi-statement input and write statements. That guard is an accident-prevention filter, not a privilege boundary. Use a read-only database role if you need hard enforcement. Tokens and connection IDs change when the server restarts, so update the MCP configuration after a restart.
 
@@ -252,6 +273,7 @@ flowchart LR
   ENGINE --> MYSQL[("MySQL / MariaDB")]
   ENGINE --> CRDB[("CockroachDB")]
   ENGINE --> MSSQL[("SQL Server")]
+  ENGINE --> MONGO[("MongoDB")]
 ```
 
 The server owns the loopback listener, authentication, WebSocket streaming, SSH tunnels, connection profiles, and embedded web assets. The engine owns drivers, sessions, query execution, cancellation, Arrow serialization, and row operations.
@@ -280,10 +302,10 @@ make test-docker  # integration tests against Docker-backed databases
 
 ### Test databases
 
-`testdb/compose.yml` runs throwaway PostgreSQL, MySQL, CockroachDB, and SQL Server servers in Docker, seeded with the rows the engine's live tests read. Start every engine, or only the ones `ENGINE` names:
+`testdb/compose.yml` runs throwaway PostgreSQL, MySQL, CockroachDB, SQL Server, and MongoDB servers in Docker, seeded with the rows the engine's live tests read. Start every engine, or only the ones `ENGINE` names:
 
 ```sh
-make test-db ENGINE=postgres          # or ENGINE="mysql mssql"; all four when omitted
+make test-db ENGINE=postgres          # or ENGINE="mysql mssql"; all five when omitted
 make test-live ENGINE=postgres        # the engine's live tests against them
 make test-db-down ENGINE=postgres     # stop them and throw the data away
 ```

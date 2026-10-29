@@ -1,6 +1,7 @@
 import type { ColumnDraft, DiffResult, FkDraft, IndexDraft } from "../ddl";
 import { draftKey } from "../ddl";
 import { t } from "../i18n";
+import { FieldError } from "./ErrorNotice";
 import { UpIcon } from "./icons";
 
 interface ColumnsEditorProps {
@@ -269,9 +270,7 @@ export function DdlPreview({ result }: DdlPreviewProps) {
       <div className="panel-code-head">
         <span className="dim">{t("실행할 문장 {count}개", { count: result.statements.length })}</span>
       </div>
-      {result.errors.length > 0 ? (
-        <div className="panel-error">{result.errors.join("\n")}</div>
-      ) : null}
+      <FieldError id="ddl-preview-problems" error={result.errors.join("\n")} />
       <pre className="panel-pre">
         {result.statements.length === 0
           ? t("변경 사항이 없습니다")

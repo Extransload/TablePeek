@@ -15,11 +15,14 @@ use futures_util::{SinkExt, StreamExt};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tablepeek_engine::driver;
+use tablepeek_engine::registry::{self, NetRoute};
 use tablepeek_engine::sql_log::{Change, LogEntry};
 use tablepeek_engine::{Engine, EngineError, QueryData};
 use tablepeek_types::{
-    ApiError, ConnectRequest, DbObjects, EditTarget, EngineMeta, FsEntry, FsListing, InsertValue,
-    ObjectDefinition, PkValue, QueryResult, ServerInfo, TableDetail, TableSchema, ValueExpr,
+    ApiError, ConnConfig, ConnectRequest, DbObjects, EditTarget, EngineMeta, ErrorFields, FsEntry,
+    FsListing, InsertValue, ObjectDefinition, PkValue, QueryResult, ServerInfo, TableDetail,
+    TableSchema, ValueExpr,
 };
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
@@ -276,14 +279,14 @@ impl ConnSlot {
         }
     }
 
-    /// What this slot's history and safe mode are filed under: its SQLite
-    /// file (opened as a file or through a saved profile alike), its saved
+    /// What this slot's history and safe mode are filed under: its local
+    /// file (SQLite's) (opened as a file or through a saved profile alike), its saved
     /// profile, the demo, or, for a server connection that was never saved,
     /// this session alone.
     fn history_scope(&self) -> String {
         // One file, one scope, however its path was spelled (relative,
         // through a symlink, with ".."), and never two files under one.
-        if let Some(path) = self.engine.sqlite_file() {
+        if let Some(path) = self.engine.file() {
             let path = std::fs::canonicalize(&path).unwrap_or(path);
             return format!("file:{}", path.display());
         }
@@ -653,6 +656,7 @@ pub fn app(state: AppState) -> Router {
         .route("/", get(index))
         .route("/assets/{*path}", get(asset))
         .route("/api/ws", get(ws_upgrade))
+        .route("/api/engines", get(engines_route))
         .route("/api/meta", get(meta))
         .route("/api/open", post(open))
         .route("/api/connect", post(connect))
@@ -675,6 +679,27 @@ pub fn app(state: AppState) -> Router {
         .route("/api/objects", get(objects_route))
         .route("/api/definition", get(definition_route))
         .route("/api/kill", post(kill_route))
+        .route("/api/doc/databases", get(doc_databases))
+        .route("/api/doc/collections", get(doc_collections))
+        .route("/api/doc/stats", get(doc_stats))
+        .route("/api/doc/find", post(doc_find))
+        .route("/api/doc/count", post(doc_count))
+        .route("/api/doc/aggregate", post(doc_aggregate))
+        .route("/api/doc/distinct", post(doc_distinct))
+        .route("/api/doc/insert", post(doc_insert))
+        .route("/api/doc/update", post(doc_update))
+        .route("/api/doc/replace", post(doc_replace))
+        .route("/api/doc/delete", post(doc_delete))
+        .route(
+            "/api/doc/indexes",
+            get(doc_indexes)
+                .post(doc_create_index)
+                .delete(doc_drop_index),
+        )
+        .route("/api/doc/explain", post(doc_explain))
+        .route("/api/doc/command", post(doc_command))
+        .route("/api/doc/export", post(doc_export))
+        .route("/api/doc/perf", get(doc_perf))
         .route(
             "/api/connections",
             get(connections_list).post(connections_create),
@@ -701,6 +726,7 @@ pub fn app(state: AppState) -> Router {
             "/api/favorite-folders/{id}",
             put(folders_update).delete(folders_delete),
         )
+        .layer(middleware::from_fn_with_state(state.clone(), token_guard))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .with_state(state)
 }
@@ -728,6 +754,32 @@ async fn host_guard(State(state): State<AppState>, request: Request<Body>, next:
     }
 }
 
+/// Every API route wants the token, and checks it before the body or the
+/// WebSocket upgrade is read: a stale one (the server restarted) is always
+/// told as `invalid_token`, never as a malformed request. The WebSocket
+/// handshake can only carry it in the query.
+async fn token_guard(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    if path.starts_with("/api/") {
+        let query_token = (path == "/api/ws")
+            .then(|| request.uri().query())
+            .flatten()
+            .and_then(|query| {
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("token="))
+            });
+        if !authorized(&state, request.headers(), query_token) {
+            return unauthorized().into_response();
+        }
+    }
+    next.run(request).await
+}
+
 fn authorized(state: &AppState, headers: &HeaderMap, query_token: Option<&str>) -> bool {
     if let Some(t) = query_token {
         if t == &*state.token {
@@ -741,50 +793,79 @@ fn authorized(state: &AppState, headers: &HeaderMap, query_token: Option<&str>) 
         .unwrap_or(false)
 }
 
+/// A missing or stale token (the server restarted with a new one): the page
+/// tells that from an unreachable server by this code.
 fn unauthorized() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::UNAUTHORIZED,
-        Json(ApiError {
-            code: "unauthorized".into(),
-            message: "토큰이 유효하지 않습니다".into(),
-        }),
+        Json(ApiError::new("invalid_token", "토큰이 유효하지 않습니다")),
     )
 }
 
+/// The prefix an engine's coded errors carry instead of `{engine}_error`.
+fn error_code_prefix(engine: &str) -> Option<&'static str> {
+    registry::factory(engine)?
+        .descriptor()
+        .error_code_prefix
+        .as_deref()
+}
+
 fn engine_error(err: EngineError) -> (StatusCode, Json<ApiError>) {
-    if err.is_interrupted() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                code: "interrupted".into(),
-                message: err.to_string(),
-            }),
-        );
-    }
-    let (status, code) = match &err {
-        EngineError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
-        EngineError::NotAFile(_) => (StatusCode::BAD_REQUEST, "not_a_sqlite_file"),
-        EngineError::NotEditable(_) => (StatusCode::BAD_REQUEST, "not_editable"),
-        EngineError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
-        EngineError::TableNotFound => (StatusCode::NOT_FOUND, "not_found"),
-        EngineError::SessionNotFound => (StatusCode::NOT_FOUND, "not_found"),
-        EngineError::TxRolledBack(_) => (StatusCode::CONFLICT, "tx_rolled_back"),
-        EngineError::TxOutcomeUnknown(_) => (StatusCode::CONFLICT, "tx_outcome_unknown"),
-        EngineError::Sqlite(_) => (StatusCode::BAD_REQUEST, "sqlite_error"),
-        EngineError::Postgres { .. } => (StatusCode::BAD_REQUEST, "postgres_error"),
-        EngineError::MySql(_) => (StatusCode::BAD_REQUEST, "mysql_error"),
-        EngineError::Mssql(_) => (StatusCode::BAD_REQUEST, "mssql_error"),
+    let (status, code): (StatusCode, std::borrow::Cow<'static, str>) = match &err {
+        _ if err.is_interrupted() => (StatusCode::BAD_REQUEST, "interrupted".into()),
+        EngineError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found".into()),
+        EngineError::NotAFile(_) => (StatusCode::BAD_REQUEST, "not_a_sqlite_file".into()),
+        EngineError::NotEditable(_) => (StatusCode::BAD_REQUEST, "not_editable".into()),
+        EngineError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request".into()),
+        EngineError::Unsupported(_) => (StatusCode::BAD_REQUEST, "unsupported_capability".into()),
+        EngineError::UnknownEngine(_) => (StatusCode::BAD_REQUEST, "unsupported_driver".into()),
+        EngineError::TableNotFound => (StatusCode::NOT_FOUND, "not_found".into()),
+        EngineError::SessionNotFound => (StatusCode::NOT_FOUND, "not_found".into()),
+        EngineError::TxRolledBack(_) => (StatusCode::CONFLICT, "tx_rolled_back".into()),
+        EngineError::TxOutcomeUnknown(_) => (StatusCode::CONFLICT, "tx_outcome_unknown".into()),
+        // The database's own code: `mongo_11000`.
+        EngineError::Driver {
+            engine,
+            code: Some(code),
+            ..
+        } if error_code_prefix(engine).is_some() => {
+            let prefix = error_code_prefix(engine).unwrap_or(engine);
+            (StatusCode::BAD_REQUEST, format!("{prefix}_{code}").into())
+        }
+        // "postgres_error", "sqlite_error", …: the driver's id names it.
+        EngineError::Driver { engine, .. } => {
+            (StatusCode::BAD_REQUEST, format!("{engine}_error").into())
+        }
         EngineError::Arrow(_) | EngineError::Internal(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal")
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal".into())
         }
     };
-    (
-        status,
-        Json(ApiError {
-            code: code.into(),
-            message: err.to_string(),
-        }),
-    )
+    (status, Json(api_error(code.into_owned(), err)))
+}
+
+/// The reply for an engine error under `code`: a database's first line and
+/// the rest it said (docs/ERRORS.md §2), any other error's own words.
+fn api_error(code: String, err: EngineError) -> ApiError {
+    let (message, fields) = match err {
+        EngineError::Driver {
+            message, fields, ..
+        } => (message, fields),
+        other => (other.to_string(), Box::default()),
+    };
+    redacted(ApiError {
+        code,
+        message,
+        fields,
+    })
+}
+
+/// The error with every password a connection string in it carries masked.
+fn redacted(mut error: ApiError) -> ApiError {
+    error.message = registry::redact_uri_passwords(&error.message);
+    if let Some(raw) = error.fields.raw.as_mut() {
+        *raw = registry::redact_uri_passwords(raw);
+    }
+    error
 }
 
 async fn index() -> Response {
@@ -991,18 +1072,22 @@ async fn exec_route(
     };
     // The page's own (a count, a structure change): while a job's
     // transaction is open, a read runs beside it and a write is refused.
+    // A statement that returns rows (a user list, a session snapshot) gets
+    // them up to EXEC_MAX_ROWS, with `truncated` set past that.
     let result = slot
         .gated(holder, req.job, async {
             if req.job {
-                slot.engine.execute(sql, 1).await
+                slot.engine.execute(sql, EXEC_MAX_ROWS).await
             } else {
-                slot.foreground_query(sql, 1).await.map(|data| QueryResult {
-                    columns: data.columns.clone(),
-                    row_count: data.row_count,
-                    rows: data.rows_json(),
-                    elapsed_ms: data.elapsed_ms,
-                    truncated: data.truncated,
-                })
+                slot.foreground_query(sql, EXEC_MAX_ROWS)
+                    .await
+                    .map(|data| QueryResult {
+                        columns: data.columns.clone(),
+                        row_count: data.row_count,
+                        rows: data.rows_json(),
+                        elapsed_ms: data.elapsed_ms,
+                        truncated: data.truncated,
+                    })
             }
         })
         .await;
@@ -1018,11 +1103,15 @@ async fn exec_route(
     Ok(Json(json!({
         "ok": true,
         "columns": result.columns,
-        "rows": result.rows.iter().take(1000).collect::<Vec<_>>(),
+        "rows": result.rows,
         "row_count": result.row_count,
+        "truncated": result.truncated,
         "elapsed_ms": result.elapsed_ms,
     })))
 }
+
+/// The most rows /api/exec returns from one statement.
+const EXEC_MAX_ROWS: usize = 10_000;
 
 async fn databases_route(
     State(state): State<AppState>,
@@ -1065,87 +1154,30 @@ async fn switch_db_route(
             "이 연결은 데이터베이스 전환을 지원하지 않습니다",
         ));
     };
-    let mut next = origin.clone();
-    match next.driver.as_str() {
-        "postgres" => {
-            if let Some(config) = next.postgres.as_mut() {
-                config.database = database.clone();
-            } else {
-                return Err(bad_request(
-                    "missing_config",
-                    "PostgreSQL 접속 정보가 없습니다",
-                ));
-            }
-        }
-        "cockroach" => {
-            if let Some(config) = next.cockroach.as_mut() {
-                config.database = database.clone();
-            } else {
-                return Err(bad_request(
-                    "missing_config",
-                    "CockroachDB 접속 정보가 없습니다",
-                ));
-            }
-        }
-        "mysql" => {
-            if let Some(config) = next.mysql.as_mut() {
-                config.database = database.clone();
-            } else {
-                return Err(bad_request("missing_config", "MySQL 접속 정보가 없습니다"));
-            }
-        }
-        "mssql" => {
-            if let Some(config) = next.mssql.as_mut() {
-                config.database = database.clone();
-            } else {
-                return Err(bad_request(
-                    "missing_config",
-                    "SQL Server 접속 정보가 없습니다",
-                ));
-            }
-        }
-        _ => {
-            return Err(bad_request(
-                "unsupported_driver",
-                "이 드라이버는 데이터베이스 전환을 지원하지 않습니다",
-            ));
-        }
+    let factory = registry::require(&origin.driver).map_err(engine_error)?;
+    let switchable = slot
+        .engine
+        .capabilities()
+        .is_ok_and(|capabilities| capabilities.databases == "switch");
+    if !switchable {
+        return Err(bad_request(
+            "unsupported_driver",
+            "이 드라이버는 데이터베이스 전환을 지원하지 않습니다",
+        ));
     }
-    if next.ssh.is_some() {
-        let guard = slot.tunnel.lock().await;
-        let Some(tunnel) = guard.as_ref() else {
+    let mut config = origin.config.clone();
+    config.insert("database".into(), Value::String(database));
+    // Through the tunnel the connection opened, when it went through one.
+    let net = match slot.tunnel.lock().await.as_ref() {
+        Some(tunnel) => NetRoute::Via {
+            host: "127.0.0.1".into(),
+            port: tunnel.local_port,
+        },
+        None if origin.ssh.is_some() || origin.http_tunnel.is_some() => {
             return Err(internal_error("SSH 터널이 닫혀 있습니다"));
-        };
-        let local_port = tunnel.local_port;
-        let host = "127.0.0.1".to_string();
-        match next.driver.as_str() {
-            "postgres" => {
-                if let Some(config) = next.postgres.as_mut() {
-                    config.host = host;
-                    config.port = local_port;
-                }
-            }
-            "cockroach" => {
-                if let Some(config) = next.cockroach.as_mut() {
-                    config.host = host;
-                    config.port = local_port;
-                }
-            }
-            "mysql" => {
-                if let Some(config) = next.mysql.as_mut() {
-                    config.host = host;
-                    config.port = local_port;
-                }
-            }
-            "mssql" => {
-                if let Some(config) = next.mssql.as_mut() {
-                    config.host = host;
-                    config.port = local_port;
-                }
-            }
-            _ => {}
         }
-    }
+        None => NetRoute::Direct,
+    };
     slot.cancel_if_inflight();
     slot.engine.cancel();
     // The session (and any job's transaction in it) goes with the switch.
@@ -1154,30 +1186,11 @@ async fn switch_db_route(
         let mut sessions = slot.sessions.lock().await;
         sessions.clear();
     }
-    let meta = match next.driver.as_str() {
-        "postgres" => {
-            slot.engine
-                .swap_to_postgres(next.postgres.as_ref().expect("checked above"))
-                .await
-        }
-        "cockroach" => {
-            slot.engine
-                .swap_to_cockroach(next.cockroach.as_ref().expect("checked above"))
-                .await
-        }
-        "mysql" => {
-            slot.engine
-                .swap_to_mysql(next.mysql.as_ref().expect("checked above"))
-                .await
-        }
-        "mssql" => {
-            slot.engine
-                .swap_to_mssql(next.mssql.as_ref().expect("checked above"))
-                .await
-        }
-        _ => unreachable!(),
-    }
-    .map_err(engine_error)?;
+    let meta = slot
+        .engine
+        .swap_to(factory, &config, &net)
+        .await
+        .map_err(engine_error)?;
     slot.remember(slot.engine.epoch(), &meta);
     Ok(Json(json!({ "conn": &slot.id, "meta": meta })))
 }
@@ -1227,66 +1240,59 @@ async fn open_file_slot(state: &AppState, path: &str) -> Option<Arc<ConnSlot>> {
     let slots = state.registry.lock().await.list();
     slots.into_iter().find(|slot| {
         slot.engine
-            .sqlite_file()
+            .file()
             .and_then(|file| std::fs::canonicalize(file).ok())
             .is_some_and(|file| file == wanted)
     })
 }
 
 fn bad_request(code: &str, message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            code: code.into(),
-            message: message.into(),
-        }),
-    )
+    (StatusCode::BAD_REQUEST, Json(ApiError::new(code, message)))
 }
 
 fn internal_error(message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            code: "internal".into(),
-            message: message.into(),
-        }),
+        Json(ApiError::new("internal", message)),
     )
 }
 
 fn not_found(message: &str) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ApiError {
-            code: "not_found".into(),
-            message: message.into(),
-        }),
+        Json(ApiError::new("not_found", message)),
     )
 }
 
 fn store_error(message: String) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            code: "store_error".into(),
-            message,
-        }),
+        Json(ApiError::new("store_error", message)),
     )
 }
 
 fn keyring_error(message: String) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            code: "keyring_error".into(),
-            message,
-        }),
+        Json(ApiError::new("keyring_error", message)),
     )
+}
+
+/// Runs keychain work on the blocking pool. A macOS `security` call can sit
+/// on an unanswered unlock prompt (until its deadline); it must not hold an
+/// async worker, and so the requests queued behind it, while it waits.
+async fn keychain<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(err) => std::panic::resume_unwind(err.into_panic()),
+    }
 }
 
 struct ConnectError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    fields: Box<ErrorFields>,
 }
 
 impl ConnectError {
@@ -1295,16 +1301,36 @@ impl ConnectError {
             status,
             code,
             message: message.into(),
+            fields: Box::default(),
+        }
+    }
+
+    /// A connection the engine could not open: a missing or foreign file by
+    /// its own code, anything else `connect_failed` with the database's
+    /// first line and the rest it said (SQLSTATE, MongoDB's topology, …).
+    fn from_engine(err: EngineError) -> Self {
+        let (status, code) = match &err {
+            EngineError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+            EngineError::NotAFile(_) => (StatusCode::BAD_REQUEST, "not_a_sqlite_file"),
+            _ => (StatusCode::BAD_REQUEST, "connect_failed"),
+        };
+        let error = api_error(String::new(), err);
+        Self {
+            status,
+            code,
+            message: error.message,
+            fields: error.fields,
         }
     }
 
     fn into_response(self) -> (StatusCode, Json<ApiError>) {
         (
             self.status,
-            Json(ApiError {
+            Json(redacted(ApiError {
                 code: self.code.into(),
                 message: self.message,
-            }),
+                fields: self.fields,
+            })),
         )
     }
 }
@@ -1361,226 +1387,59 @@ async fn connect_with(
     req: ConnectRequest,
     origin: SlotOrigin,
 ) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
-    let outcome = match req.driver.as_str() {
-        "postgres" => connect_postgres(state, req, origin).await,
-        "cockroach" => connect_cockroach(state, req, origin).await,
-        "mysql" => connect_mysql(state, req, origin).await,
-        "mssql" => connect_mssql(state, req, origin).await,
-        "sqlite" => connect_sqlite(state, req, origin).await,
-        _ => Err(ConnectError::new(
+    let factory = registry::factory(&req.driver).ok_or_else(|| {
+        ConnectError::new(
             StatusCode::BAD_REQUEST,
             "unsupported_driver",
-            "지원하지 않는 드라이버입니다",
-        )),
-    };
-    if let Ok((slot, meta)) = &outcome {
-        slot.remember(slot.engine.epoch(), meta);
-    }
-    outcome
-}
-
-async fn connect_sqlite(
-    state: &AppState,
-    req: ConnectRequest,
-    origin: SlotOrigin,
-) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
-    let path = req
-        .sqlite
-        .as_ref()
-        .map(|config| config.path.trim())
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| {
-            ConnectError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "SQLite 파일 경로를 입력하세요",
-            )
-        })?;
-    // Same status and code as /api/open for a missing file or one that is not SQLite.
-    let engine = Engine::open_file(std::path::Path::new(path)).map_err(|err| match &err {
-        EngineError::NotFound(_) => {
-            ConnectError::new(StatusCode::NOT_FOUND, "not_found", err.to_string())
-        }
-        EngineError::NotAFile(_) => ConnectError::new(
-            StatusCode::BAD_REQUEST,
-            "not_a_sqlite_file",
-            err.to_string(),
-        ),
-        _ => connect_failed(err.to_string()),
+            EngineError::UnknownEngine(req.driver.clone()).to_string(),
+        )
     })?;
-    let label = origin.label.unwrap_or_else(|| path.to_string());
-    // No origin: a saved profile files history under its id, an unsaved one
-    // under the file like /api/open, and neither offers a database switch.
-    let slot = register_slot(state, label, origin.saved_id, None, engine).await;
-    let meta = slot
-        .refresh_summary(false)
+    factory.validate(&req.config).map_err(|problem| {
+        ConnectError::new(StatusCode::BAD_REQUEST, problem.code, problem.message)
+    })?;
+    // Through the tunnel the request asks for, to the address the engine
+    // names; the address the user gave stays the one shown.
+    let tunnel = if req.ssh.is_some() || req.http_tunnel.is_some() {
+        let (host, port) = factory.tunnel_target(&req.config).map_err(|problem| {
+            ConnectError::new(StatusCode::BAD_REQUEST, problem.code, problem.message)
+        })?;
+        open_external_tunnel(&req, &host, port)
+            .await
+            .map_err(connect_failed)?
+    } else {
+        None
+    };
+    let net = match tunnel.as_ref() {
+        Some(opened) => NetRoute::Via {
+            host: "127.0.0.1".into(),
+            port: opened.local_port,
+        },
+        None => NetRoute::Direct,
+    };
+    let address = factory.address(&req.config);
+    let label = origin.label.unwrap_or_else(|| address.clone());
+    let engine = Engine::open_demo(0).map_err(|err| connect_failed(err.to_string()))?;
+    // Same status and code as /api/open for a missing file or one that is not SQLite.
+    let mut meta = engine
+        .swap_to(factory, &req.config, &net)
         .await
-        .map_err(|err| connect_failed(err.to_string()))?;
+        .map_err(ConnectError::from_engine)?;
+    if tunnel.is_some() {
+        meta.path = Some(address);
+    }
+    let slot = register_slot(state, label, origin.saved_id, Some(req), engine).await;
+    *slot.tunnel.lock().await = tunnel;
+    slot.remember(slot.engine.epoch(), &meta);
     Ok((slot, meta))
 }
 
-async fn connect_postgres(
-    state: &AppState,
-    req: ConnectRequest,
-    origin: SlotOrigin,
-) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
-    let Some(mut config) = req.postgres.clone() else {
-        return Err(connect_failed("PostgreSQL 접속 정보가 없습니다"));
-    };
-    let original_host = config.host.clone();
-    let original_port = config.port;
-    let tunnel = open_external_tunnel(&req, &config.host, config.port)
-        .await
-        .map_err(connect_failed)?;
-    if let Some(opened) = tunnel.as_ref() {
-        config.host = "127.0.0.1".into();
-        config.port = opened.local_port;
-    }
-    let label = origin.label.unwrap_or_else(|| {
-        format!(
-            "{}@{}:{}/{}",
-            config.user, original_host, original_port, config.database
-        )
-    });
-    let engine = Engine::open_demo(0).map_err(|err| connect_failed(err.to_string()))?;
-    match engine.swap_to_postgres(&config).await {
-        Ok(mut meta) => {
-            if req.ssh.is_some() || req.http_tunnel.is_some() {
-                meta.path = Some(format!(
-                    "{}@{}:{}/{}",
-                    config.user, original_host, original_port, config.database
-                ));
-            }
-            let slot =
-                register_slot(state, label, origin.saved_id, Some(req.clone()), engine).await;
-            *slot.tunnel.lock().await = tunnel;
-            Ok((slot, meta))
-        }
-        Err(err) => Err(connect_failed(err.to_string())),
-    }
-}
-
-async fn connect_mysql(
-    state: &AppState,
-    req: ConnectRequest,
-    origin: SlotOrigin,
-) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
-    let Some(mut config) = req.mysql.clone() else {
-        return Err(connect_failed("MySQL 접속 정보가 없습니다"));
-    };
-    let original_host = config.host.clone();
-    let original_port = config.port;
-    let tunnel = open_external_tunnel(&req, &config.host, config.port)
-        .await
-        .map_err(connect_failed)?;
-    if let Some(opened) = tunnel.as_ref() {
-        config.host = "127.0.0.1".into();
-        config.port = opened.local_port;
-    }
-    let label = origin.label.unwrap_or_else(|| {
-        format!(
-            "{}@{}:{}/{}",
-            config.user, original_host, original_port, config.database
-        )
-    });
-    let engine = Engine::open_demo(0).map_err(|err| connect_failed(err.to_string()))?;
-    match engine.swap_to_mysql(&config).await {
-        Ok(mut meta) => {
-            if req.ssh.is_some() || req.http_tunnel.is_some() {
-                meta.path = Some(format!(
-                    "{}@{}:{}/{}",
-                    config.user, original_host, original_port, config.database
-                ));
-            }
-            let slot =
-                register_slot(state, label, origin.saved_id, Some(req.clone()), engine).await;
-            *slot.tunnel.lock().await = tunnel;
-            Ok((slot, meta))
-        }
-        Err(err) => Err(connect_failed(err.to_string())),
-    }
-}
-
-async fn connect_cockroach(
-    state: &AppState,
-    req: ConnectRequest,
-    origin: SlotOrigin,
-) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
-    let Some(mut config) = req.cockroach.clone() else {
-        return Err(connect_failed("CockroachDB 접속 정보가 없습니다"));
-    };
-    let original_host = config.host.clone();
-    let original_port = config.port;
-    let tunnel = open_external_tunnel(&req, &config.host, config.port)
-        .await
-        .map_err(connect_failed)?;
-    if let Some(opened) = tunnel.as_ref() {
-        config.host = "127.0.0.1".into();
-        config.port = opened.local_port;
-    }
-    let label = origin.label.unwrap_or_else(|| {
-        format!(
-            "{}@{}:{}/{}",
-            config.user, original_host, original_port, config.database
-        )
-    });
-    let engine = Engine::open_demo(0).map_err(|err| connect_failed(err.to_string()))?;
-    match engine.swap_to_cockroach(&config).await {
-        Ok(mut meta) => {
-            if req.ssh.is_some() || req.http_tunnel.is_some() {
-                meta.path = Some(format!(
-                    "{}@{}:{}/{}",
-                    config.user, original_host, original_port, config.database
-                ));
-            }
-            let slot =
-                register_slot(state, label, origin.saved_id, Some(req.clone()), engine).await;
-            *slot.tunnel.lock().await = tunnel;
-            Ok((slot, meta))
-        }
-        Err(err) => Err(connect_failed(err.to_string())),
-    }
-}
-
-async fn connect_mssql(
-    state: &AppState,
-    req: ConnectRequest,
-    origin: SlotOrigin,
-) -> Result<(Arc<ConnSlot>, EngineMeta), ConnectError> {
-    let Some(mut config) = req.mssql.clone() else {
-        return Err(connect_failed("SQL Server 접속 정보가 없습니다"));
-    };
-    let original_host = config.host.clone();
-    let original_port = config.port;
-    let tunnel = open_external_tunnel(&req, &config.host, config.port)
-        .await
-        .map_err(connect_failed)?;
-    if let Some(opened) = tunnel.as_ref() {
-        config.host = "127.0.0.1".into();
-        config.port = opened.local_port;
-    }
-    let label = origin.label.unwrap_or_else(|| {
-        format!(
-            "{}@{}:{}/{}",
-            config.user, original_host, original_port, config.database
-        )
-    });
-    let engine = Engine::open_demo(0).map_err(|err| connect_failed(err.to_string()))?;
-    match engine.swap_to_mssql(&config).await {
-        Ok(mut meta) => {
-            if req.ssh.is_some() || req.http_tunnel.is_some() {
-                meta.path = Some(format!(
-                    "{}@{}:{}/{}",
-                    config.user, original_host, original_port, config.database
-                ));
-            }
-            let slot =
-                register_slot(state, label, origin.saved_id, Some(req.clone()), engine).await;
-            *slot.tunnel.lock().await = tunnel;
-            Ok((slot, meta))
-        }
-        Err(err) => Err(connect_failed(err.to_string())),
-    }
+/// The file a file engine's settings name (its `path`): opening it again
+/// enters the connection already open on it.
+fn config_file<'a>(driver: &str, config: &'a ConnConfig) -> Option<&'a str> {
+    registry::factory(driver)
+        .filter(|factory| factory.descriptor().transport == "file")
+        .and(config.get("path"))
+        .and_then(Value::as_str)
 }
 
 async fn connect(
@@ -1592,8 +1451,8 @@ async fn connect(
         return Err(unauthorized());
     }
     // A file already open is entered, not opened twice.
-    if let Some(path) = req.sqlite.as_ref().filter(|_| req.driver == "sqlite") {
-        if let Some(slot) = open_file_slot(&state, &path.path).await {
+    if let Some(path) = config_file(&req.driver, &req.config) {
+        if let Some(slot) = open_file_slot(&state, path).await {
             let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
             return Ok(Json(json!({ "conn": slot.id, "meta": meta })));
         }
@@ -1616,15 +1475,46 @@ struct NewConnectionRequest {
     persist_password: bool,
 }
 
+/// A saved profile as the page sees it. A connection string saved with its
+/// password (before passwords were taken out of them) shows without it.
+/// `has_password` only for a profile that keeps secrets at all: one saved
+/// with the keychain choice and no authentication says it has none.
 fn connection_json(connection: &store::SavedConnection) -> Value {
     let mut value = serde_json::to_value(connection).unwrap_or(Value::Null);
     if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "has_password".into(),
-            Value::Bool(connection.persist_password),
-        );
+        if let Some(factory) = registry::factory(&connection.driver) {
+            let config = factory
+                .descriptor()
+                .without_uri_passwords(&connection.config);
+            object.insert("config".into(), Value::Object(config));
+        }
+        let tunnelled = connection.ssh.is_some() || connection.http_tunnel.is_some();
+        let keeps = connection.persist_password
+            && keeps_secrets(&connection.driver, &connection.config, tunnelled);
+        object.insert("persist_password".into(), Value::Bool(keeps));
+        object.insert("has_password".into(), Value::Bool(keeps));
     }
     value
+}
+
+/// Whether a profile keeps secrets in the keychain at all: its engine takes
+/// a password with these settings, or it goes through a tunnel.
+fn keeps_secrets(driver: &str, config: &ConnConfig, tunnelled: bool) -> bool {
+    tunnelled || registry::factory(driver).is_some_and(|factory| factory.needs_password(config))
+}
+
+async fn engines_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let engines: Vec<&registry::EngineDescriptor> = registry::factories()
+        .iter()
+        .map(|factory| factory.descriptor())
+        .collect();
+    Ok(Json(json!({ "engines": engines })))
 }
 
 async fn connections_list(
@@ -1654,111 +1544,87 @@ fn validate_connect_request(connect: &ConnectRequest) -> Result<(), (StatusCode,
 }
 
 // What keeps a connect request from being saved or opened: (error code, message).
-fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, &'static str)> {
-    let missing = match connect.driver.as_str() {
-        "postgres" => connect
-            .postgres
-            .is_none()
-            .then_some("PostgreSQL 접속 정보가 없습니다"),
-        "cockroach" => connect
-            .cockroach
-            .is_none()
-            .then_some("CockroachDB 접속 정보가 없습니다"),
-        "mysql" => connect
-            .mysql
-            .is_none()
-            .then_some("MySQL 접속 정보가 없습니다"),
-        "mssql" => connect
-            .mssql
-            .is_none()
-            .then_some("SQL Server 접속 정보가 없습니다"),
-        "sqlite" => connect
-            .sqlite
-            .as_ref()
-            .is_none_or(|c| c.path.trim().is_empty())
-            .then_some("SQLite 파일 경로를 입력하세요"),
-        _ => return Some(("unsupported_driver", "지원하지 않는 드라이버입니다")),
+fn connect_problem(connect: &ConnectRequest) -> Option<(&'static str, String)> {
+    let Some(factory) = registry::factory(&connect.driver) else {
+        return Some((
+            "unsupported_driver",
+            EngineError::UnknownEngine(connect.driver.clone()).to_string(),
+        ));
     };
-    if let Some(message) = missing {
-        return Some(("invalid_request", message));
+    if let Err(problem) = factory.validate(&connect.config) {
+        return Some((problem.code, problem.message));
     }
-    if connect.driver == "sqlite" {
+    let descriptor = factory.descriptor();
+    let tunnels = &descriptor.connection.tunnels;
+    let unsupported = (connect.ssh.is_some() && !tunnels.iter().any(|kind| kind == "ssh"))
+        || (connect.http_tunnel.is_some() && !tunnels.iter().any(|kind| kind == "http"));
+    if unsupported {
         // A local file needs no host, and there is nothing to tunnel to.
-        if connect.ssh.is_some() || connect.http_tunnel.is_some() {
-            return Some((
-                "invalid_request",
-                "SQLite 연결에는 SSH·HTTP 터널을 쓸 수 없습니다",
-            ));
-        }
-        return None;
-    }
-    let host = match connect.driver.as_str() {
-        "mysql" => connect.mysql.as_ref().map(|c| c.host.as_str()),
-        "cockroach" => connect.cockroach.as_ref().map(|c| c.host.as_str()),
-        "mssql" => connect.mssql.as_ref().map(|c| c.host.as_str()),
-        _ => connect.postgres.as_ref().map(|c| c.host.as_str()),
-    }
-    .unwrap_or("");
-    // A pasted URL in the host field would otherwise be stored verbatim, password included.
-    if host.contains("://")
-        || host
-            .chars()
-            .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '@' | '?'))
-    {
         return Some((
             "invalid_request",
-            "호스트에는 주소만 입력하세요 (URL·계정 정보 제외)",
+            format!(
+                "{} 연결에는 SSH·HTTP 터널을 쓸 수 없습니다",
+                descriptor.label
+            ),
         ));
+    }
+    if connect.ssh.is_some() || connect.http_tunnel.is_some() {
+        // One address to lead to: not a replica set or an SRV name.
+        if let Err(problem) = factory.tunnel_target(&connect.config) {
+            return Some((problem.code, problem.message));
+        }
     }
     None
 }
 
-fn request_db_password(connect: &ConnectRequest) -> Option<&str> {
-    match connect.driver.as_str() {
-        "sqlite" => None,
-        "mysql" => connect.mysql.as_ref().and_then(|c| c.password.as_deref()),
-        "cockroach" => connect
-            .cockroach
-            .as_ref()
-            .and_then(|c| c.password.as_deref()),
-        "mssql" => connect.mssql.as_ref().and_then(|c| c.password.as_deref()),
-        _ => connect
-            .postgres
-            .as_ref()
-            .and_then(|c| c.password.as_deref()),
-    }
-    .filter(|password| !password.is_empty())
+/// An engine's secret fields with the keychain kind each is stored under:
+/// the first under the engine's id (`conn:{id}:postgres`), any others under
+/// `{engine}:{key}`.
+fn secret_kinds(descriptor: &registry::EngineDescriptor) -> Vec<(String, String)> {
+    descriptor
+        .secret_keys()
+        .enumerate()
+        .map(|(index, key)| {
+            let kind = if index == 0 {
+                descriptor.id.clone()
+            } else {
+                format!("{}:{key}", descriptor.id)
+            };
+            (key.to_string(), kind)
+        })
+        .collect()
 }
 
-fn set_request_db_password(connect: &mut ConnectRequest, password: String) {
-    match connect.driver.as_str() {
-        "sqlite" => {}
-        "mysql" => {
-            if let Some(config) = connect.mysql.as_mut() {
-                config.password = Some(password);
-            }
-        }
-        "cockroach" => {
-            if let Some(config) = connect.cockroach.as_mut() {
-                config.password = Some(password);
-            }
-        }
-        "mssql" => {
-            if let Some(config) = connect.mssql.as_mut() {
-                config.password = Some(password);
-            }
-        }
-        _ => {
-            if let Some(config) = connect.postgres.as_mut() {
-                config.password = Some(password);
-            }
-        }
-    }
+/// The secret kinds of the engine `driver` names; none for one unknown.
+fn driver_secret_kinds(driver: &str) -> Vec<(String, String)> {
+    registry::factory(driver)
+        .map(|factory| secret_kinds(factory.descriptor()))
+        .unwrap_or_default()
+}
+
+/// A secret typed into the request, if it isn't blank.
+fn request_secret<'a>(connect: &'a ConnectRequest, key: &str) -> Option<&'a str> {
+    connect
+        .config
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|secret| !secret.is_empty())
+}
+
+/// Whether the request carries the engine's first secret (its password).
+fn request_db_password(connect: &ConnectRequest) -> Option<&str> {
+    let kinds = driver_secret_kinds(&connect.driver);
+    let (key, _) = kinds.first()?;
+    request_secret(connect, key)
 }
 
 fn delete_connection_passwords(id: &str) {
-    for kind in ["postgres", "cockroach", "mysql", "mssql", "ssh", "http"] {
-        store::delete_password(&store::connection_account(id, kind));
+    let engine_kinds = registry::factories()
+        .iter()
+        .flat_map(|factory| secret_kinds(factory.descriptor()))
+        .map(|(_, kind)| kind);
+    for kind in engine_kinds.chain(["ssh".to_string(), "http".to_string()]) {
+        store::delete_password(&store::connection_account(id, &kind));
     }
 }
 
@@ -1767,7 +1633,7 @@ fn delete_connection_passwords(id: &str) {
 async fn save_connection(
     state: &AppState,
     id: &str,
-    req: NewConnectionRequest,
+    mut req: NewConnectionRequest,
     previous: Option<&store::SavedConnection>,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
     let name = req.name.trim().to_string();
@@ -1775,22 +1641,54 @@ async fn save_connection(
         return Err(bad_request("invalid_request", "이름이 필요합니다"));
     }
     validate_connect_request(&req.connect)?;
+    let factory = registry::require(&req.connect.driver).map_err(engine_error)?;
+    let descriptor = factory.descriptor();
+    // Saved under the engine's own id, whichever alias the request used.
+    let driver = descriptor.id.clone();
+    let secrets = secret_kinds(descriptor);
+    // A password typed into a connection string becomes the engine's
+    // password, so it is kept like one (keychain or asked for), never in the
+    // saved string.
+    descriptor.secure_config(&mut req.connect.config);
+    // An import or an older client may leave out settings this version has.
+    factory.upgrade_config(&mut req.connect.config);
 
-    // A SQLite profile has no secrets, so it never keeps any in the keychain.
-    let persist_password = req.persist_password && req.connect.driver != "sqlite";
-    let password_account = store::connection_account(id, &req.connect.driver);
+    // Only a profile that takes a password (its engine's, with these
+    // settings) or goes through a tunnel keeps any in the keychain: not a
+    // SQLite file, nor a MongoDB profile without authentication or with X.509.
+    let takes_password = factory.needs_password(&req.connect.config);
+    let persist_password = req.persist_password
+        && keeps_secrets(
+            &driver,
+            &req.connect.config,
+            req.connect.ssh.is_some() || req.connect.http_tunnel.is_some(),
+        );
     let ssh_account = store::connection_account(id, "ssh");
     let http_account = store::connection_account(id, "http");
     let fresh = previous.is_none();
+    // The previous engine's secret kinds, when the profile changes engine:
+    // its secrets move to the new engine's accounts.
+    let moved_from: Vec<(String, String)> = previous
+        .filter(|old| old.persist_password && old.driver != driver)
+        .map(|old| driver_secret_kinds(&old.driver))
+        .unwrap_or_default();
     // Every keychain write remembers what it replaced so a later failure can undo it.
     let mut written: Vec<(String, Option<String>)> = Vec::new();
     if persist_password {
-        let carried = previous
-            .filter(|old| old.persist_password && old.driver != req.connect.driver)
-            .and_then(|old| store::get_password(&store::connection_account(id, &old.driver)));
-        let db_password = request_db_password(&req.connect)
-            .map(str::to_string)
-            .or(carried);
+        // Each account with the secret typed for it, or the old engine's
+        // account to carry the secret over from.
+        let mut pending: Vec<(String, Option<String>, Option<String>)> = secrets
+            .iter()
+            .filter(|_| takes_password)
+            .map(|(key, kind)| {
+                let carried = moved_from
+                    .iter()
+                    .find(|(old_key, _)| old_key == key)
+                    .map(|(_, old_kind)| store::connection_account(id, old_kind));
+                let typed = request_secret(&req.connect, key).map(str::to_string);
+                (store::connection_account(id, kind), typed, carried)
+            })
+            .collect();
         let ssh_password = req
             .connect
             .ssh
@@ -1803,52 +1701,43 @@ async fn save_connection(
             .as_ref()
             .and_then(|tunnel| tunnel.password.clone())
             .filter(|password| !password.is_empty());
-        for (account, secret) in [
-            (&password_account, db_password),
-            (&ssh_account, ssh_password),
-            (&http_account, http_password),
-        ] {
-            let Some(secret) = secret else {
-                continue;
-            };
-            let replaced = if fresh {
-                None
-            } else {
-                store::get_password(account)
-            };
-            if let Err(message) = store::set_password(account, &secret) {
-                restore_secrets(&written);
-                return Err(keyring_error(message));
+        pending.push((ssh_account.clone(), ssh_password, None));
+        pending.push((http_account.clone(), http_password, None));
+        written = keychain(move || {
+            let mut written = Vec::new();
+            for (account, typed, carried) in pending {
+                let Some(secret) =
+                    typed.or_else(|| carried.and_then(|old| store::get_password(&old)))
+                else {
+                    continue;
+                };
+                let replaced = if fresh {
+                    None
+                } else {
+                    store::get_password(&account)
+                };
+                if let Err(message) = store::set_password(&account, &secret) {
+                    restore_secrets(&written);
+                    return Err(message);
+                }
+                written.push((account, replaced));
             }
-            written.push((account.clone(), replaced));
-        }
+            Ok(written)
+        })
+        .await
+        .map_err(keyring_error)?;
     }
 
-    let mut postgres = req.connect.postgres.clone();
-    let mut cockroach = req.connect.cockroach.clone();
-    let mut mysql = req.connect.mysql.clone();
-    let mut mssql = req.connect.mssql.clone();
-    if let Some(config) = postgres.as_mut() {
-        config.password = None;
-    }
-    if let Some(config) = cockroach.as_mut() {
-        config.password = None;
-    }
-    if let Some(config) = mysql.as_mut() {
-        config.password = None;
-    }
-    if let Some(config) = mssql.as_mut() {
-        config.password = None;
+    // Secrets stay out of the store file.
+    let mut config = req.connect.config.clone();
+    for (key, _) in &secrets {
+        config.remove(key);
     }
     let connection = store::SavedConnection {
         id: id.to_string(),
         name,
-        driver: req.connect.driver.clone(),
-        postgres,
-        cockroach,
-        mysql,
-        mssql,
-        sqlite: req.connect.sqlite.clone(),
+        driver: driver.clone(),
+        config,
         ssh: req.connect.ssh.as_ref().map(store::SavedSsh::from_config),
         http_tunnel: req
             .connect
@@ -1866,40 +1755,60 @@ async fn save_connection(
             store.update_connection(connection)
         }
     };
-    match outcome {
-        Ok(true) => {}
-        Ok(false) => {
-            restore_secrets(&written);
-            return Err(not_found("연결을 찾을 수 없습니다"));
-        }
-        Err(message) => {
-            restore_secrets(&written);
-            return Err(store_error(message));
-        }
+    let failure = match outcome {
+        Ok(true) => None,
+        Ok(false) => Some(not_found("연결을 찾을 수 없습니다")),
+        Err(message) => Some(store_error(message)),
+    };
+    if let Some(failure) = failure {
+        keychain(move || restore_secrets(&written)).await;
+        return Err(failure);
     }
 
-    // Drop secrets the saved profile no longer refers to. The old driver's
-    // account goes only once its password has been moved to the new account.
+    // Drop secrets the saved profile no longer refers to. The old engine's
+    // accounts go only once their secrets have been moved to the new ones.
     let had_secrets = previous.is_some_and(|old| old.persist_password);
+    let mut stale: Vec<String> = Vec::new();
     if !persist_password {
         if had_secrets {
-            delete_connection_passwords(id);
+            let id = id.to_string();
+            keychain(move || delete_connection_passwords(&id)).await;
         }
     } else if had_secrets {
-        let moved = written
-            .iter()
-            .any(|(account, _)| account == &password_account);
-        if let Some(old) = previous.filter(|old| old.driver != req.connect.driver) {
+        for (old_key, old_kind) in &moved_from {
+            let moved = secrets.iter().any(|(key, kind)| {
+                key == old_key
+                    && written
+                        .iter()
+                        .any(|(account, _)| *account == store::connection_account(id, kind))
+            });
             if moved {
-                store::delete_password(&store::connection_account(id, &old.driver));
+                stale.push(store::connection_account(id, old_kind));
             }
         }
+        // A password the settings no longer take (a tunnelled profile
+        // switched to no authentication) goes too.
+        if !takes_password {
+            stale.extend(
+                secrets
+                    .iter()
+                    .map(|(_, kind)| store::connection_account(id, kind)),
+            );
+        }
         if req.connect.ssh.is_none() {
-            store::delete_password(&ssh_account);
+            stale.push(ssh_account);
         }
         if req.connect.http_tunnel.is_none() {
-            store::delete_password(&http_account);
+            stale.push(http_account);
         }
+    }
+    if !stale.is_empty() {
+        keychain(move || {
+            stale
+                .iter()
+                .for_each(|account| store::delete_password(account))
+        })
+        .await;
     }
     Ok(())
 }
@@ -2136,18 +2045,24 @@ async fn connections_import(
                     let _ = store.remove_connection(id);
                 }
             }
-            for (id, persisted) in &saved {
-                if *persisted {
-                    delete_connection_passwords(id);
-                }
-            }
+            let persisted: Vec<String> = saved
+                .iter()
+                .filter(|(_, persisted)| *persisted)
+                .map(|(id, _)| id.clone())
+                .collect();
+            keychain(move || {
+                persisted
+                    .iter()
+                    .for_each(|id| delete_connection_passwords(id))
+            })
+            .await;
             if err.1.code == "keyring_error" {
                 return Err((
                     err.0,
-                    Json(ApiError {
-                        code: "import_keyring_error".into(),
-                        message: "파일에 든 비밀번호를 이 컴퓨터의 키체인에 저장하지 못해 아무것도 가져오지 않았습니다. 비밀번호를 빼고 내보낸 파일로 다시 가져오세요.".into(),
-                    }),
+                    Json(ApiError::new(
+                        "import_keyring_error",
+                        "파일에 든 비밀번호를 이 컴퓨터의 키체인에 저장하지 못해 아무것도 가져오지 않았습니다. 비밀번호를 빼고 내보낸 파일로 다시 가져오세요.",
+                    )),
                 ));
             }
             return Err(err);
@@ -2201,23 +2116,39 @@ async fn connections_test(
             store.find_connection(id).cloned()
         };
         if let Some(saved) = saved.filter(|saved| saved.persist_password) {
-            if request_db_password(&connect).is_none() {
-                if let Some(password) =
-                    store::get_password(&store::connection_account(id, &saved.driver))
-                {
-                    set_request_db_password(&mut connect, password);
+            let id = id.to_string();
+            connect = keychain(move || {
+                // Blank secrets of the request's engine, from the saved engine's
+                // accounts for the same fields.
+                let saved_kinds = driver_secret_kinds(&saved.driver);
+                for (key, _) in driver_secret_kinds(&connect.driver) {
+                    if request_secret(&connect, &key).is_some() {
+                        continue;
+                    }
+                    let stored = saved_kinds
+                        .iter()
+                        .find(|(saved_key, _)| *saved_key == key)
+                        .and_then(|(_, kind)| {
+                            store::get_password(&store::connection_account(&id, kind))
+                        });
+                    if let Some(secret) = stored {
+                        connect.config.insert(key, Value::String(secret));
+                    }
                 }
-            }
-            if let Some(ssh) = connect.ssh.as_mut() {
-                if ssh.password.as_deref().map_or(true, str::is_empty) {
-                    ssh.password = store::get_password(&store::connection_account(id, "ssh"));
+                if let Some(ssh) = connect.ssh.as_mut() {
+                    if ssh.password.as_deref().is_none_or(str::is_empty) {
+                        ssh.password = store::get_password(&store::connection_account(&id, "ssh"));
+                    }
                 }
-            }
-            if let Some(tunnel) = connect.http_tunnel.as_mut() {
-                if tunnel.password.as_deref().map_or(true, str::is_empty) {
-                    tunnel.password = store::get_password(&store::connection_account(id, "http"));
+                if let Some(tunnel) = connect.http_tunnel.as_mut() {
+                    if tunnel.password.as_deref().is_none_or(str::is_empty) {
+                        tunnel.password =
+                            store::get_password(&store::connection_account(&id, "http"));
+                    }
                 }
-            }
+                connect
+            })
+            .await;
         }
     }
     // Spawned so the probe slot is always removed, even if the client goes away mid-test.
@@ -2260,7 +2191,7 @@ async fn connections_delete(
     if !removed {
         return Err(not_found("연결을 찾을 수 없습니다"));
     }
-    delete_connection_passwords(&id);
+    keychain(move || delete_connection_passwords(&id)).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -2372,7 +2303,7 @@ async fn connection_connect(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    let secrets: ConnectSecrets = if body.is_empty() {
+    let secrets_body: ConnectSecrets = if body.is_empty() {
         ConnectSecrets::default()
     } else {
         serde_json::from_slice(&body)
@@ -2385,21 +2316,16 @@ async fn connection_connect(
     let Some(saved) = saved else {
         return Err(not_found("연결을 찾을 수 없습니다"));
     };
-    if saved.driver != "postgres"
-        && saved.driver != "cockroach"
-        && saved.driver != "mysql"
-        && saved.driver != "mssql"
-        && saved.driver != "sqlite"
-    {
+    let Some(factory) = registry::factory(&saved.driver) else {
         return Err(bad_request(
             "unsupported_driver",
-            "지원하지 않는 드라이버입니다",
+            EngineError::UnknownEngine(saved.driver.clone()).to_string(),
         ));
-    }
+    };
     // A file already open (as a file, or through this or another profile) is
     // entered, not opened twice.
-    if let Some(sqlite) = saved.sqlite.as_ref().filter(|_| saved.driver == "sqlite") {
-        if let Some(slot) = open_file_slot(&state, &sqlite.path).await {
+    if let Some(path) = config_file(&saved.driver, &saved.config) {
+        if let Some(slot) = open_file_slot(&state, path).await {
             let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
             let _ = state.store.lock().await.touch_connection(&id, unix_now());
             return Ok(Json(json!({ "conn": slot.id, "meta": meta })));
@@ -2408,62 +2334,71 @@ async fn connection_connect(
 
     let mut request = ConnectRequest {
         driver: saved.driver.clone(),
-        postgres: saved.postgres.clone(),
-        cockroach: saved.cockroach.clone(),
-        mysql: saved.mysql.clone(),
-        mssql: saved.mssql.clone(),
-        sqlite: saved.sqlite.clone(),
+        config: saved.config.clone(),
         ssh: None,
         http_tunnel: None,
     };
-    let db_password = non_empty(secrets.password).or_else(|| {
-        if saved.persist_password {
-            store::get_password(&store::connection_account(&id, &saved.driver))
-        } else {
-            None
-        }
-    });
-    if let Some(password) = db_password {
-        set_request_db_password(&mut request, password);
-    }
-    let supplied_password = request_db_password(&request).is_some();
-
+    // The first secret (the password) may be typed for this connect; the
+    // rest come from the keychain, read off the async workers in one go.
+    // A profile whose authentication takes no password reads none.
+    let secrets = if factory.needs_password(&saved.config) {
+        secret_kinds(factory.descriptor())
+    } else {
+        Vec::new()
+    };
     let mut ssh = saved.ssh.as_ref().map(store::SavedSsh::to_config);
-    if let Some(ssh_config) = ssh.as_mut() {
-        let has_key = ssh_config
+    let ssh_needs_password = ssh.as_ref().is_some_and(|ssh_config| {
+        ssh_config
             .private_key_path
             .as_deref()
-            .map(|path| !path.trim().is_empty())
-            .unwrap_or(false);
-        if !has_key {
-            let password = non_empty(secrets.ssh_password).or_else(|| {
-                if saved.persist_password {
-                    store::get_password(&store::connection_account(&id, "ssh"))
-                } else {
-                    None
-                }
-            });
-            match password {
-                Some(password) => ssh_config.password = Some(password),
-                None => return Err(stored_password_missing("ssh").into_response()),
-            }
-        }
-    }
-
+            .is_none_or(|path| path.trim().is_empty())
+    });
     let mut http_tunnel = saved
         .http_tunnel
         .as_ref()
         .map(store::SavedHttpTunnel::to_config);
-    if let Some(tunnel_config) = http_tunnel.as_mut() {
-        let password = non_empty(secrets.http_password).or_else(|| {
-            if saved.persist_password {
-                store::get_password(&store::connection_account(&id, "http"))
-            } else {
-                None
+    let mut typed = non_empty(secrets_body.password);
+    let typed_ssh = non_empty(secrets_body.ssh_password);
+    let typed_http = non_empty(secrets_body.http_password);
+    let persist = saved.persist_password;
+    let (config, ssh_password, http_password) = {
+        let mut config = request.config;
+        let secrets = secrets.clone();
+        let id = id.clone();
+        let has_http = http_tunnel.is_some();
+        let stored = move |kind: &str| {
+            persist
+                .then(|| store::get_password(&store::connection_account(&id, kind)))
+                .flatten()
+        };
+        keychain(move || {
+            for (key, kind) in &secrets {
+                if let Some(secret) = typed.take().or_else(|| stored(kind)) {
+                    config.insert(key.clone(), Value::String(secret));
+                }
             }
-        });
-        if password.is_some() {
-            tunnel_config.password = password;
+            let ssh_password = ssh_needs_password
+                .then(|| typed_ssh.or_else(|| stored("ssh")))
+                .flatten();
+            let http_password = has_http
+                .then(|| typed_http.or_else(|| stored("http")))
+                .flatten();
+            (config, ssh_password, http_password)
+        })
+        .await
+    };
+    request.config = config;
+    let supplied_password = request_db_password(&request).is_some();
+
+    if let Some(ssh_config) = ssh.as_mut().filter(|_| ssh_needs_password) {
+        match ssh_password {
+            Some(password) => ssh_config.password = Some(password),
+            None => return Err(stored_password_missing("ssh").into_response()),
+        }
+    }
+    if let Some(tunnel_config) = http_tunnel.as_mut() {
+        if http_password.is_some() {
+            tunnel_config.password = http_password;
         } else if tunnel_config.username.is_some() {
             return Err(stored_password_missing("http").into_response());
         }
@@ -2483,12 +2418,13 @@ async fn connection_connect(
         Err(err) => {
             // Tunnel failures (SSH/HTTP) are reported as they are, not as a DB password prompt.
             let tunnel_error = err.message.starts_with("SSH") || err.message.starts_with("HTTP");
-            // A SQLite file has no password, so its errors are never a password prompt.
+            // An engine without secrets (a SQLite file) never prompts for a password.
             let needs_password = !supplied_password
                 && !tunnel_error
-                && saved.driver != "sqlite"
+                && !secrets.is_empty()
                 && (err.message.contains("password")
                     || err.message.contains("비밀번호")
+                    || err.message.contains("Authentication failed")
                     || err.message.contains("invalid configuration"));
             Err(if needs_password {
                 stored_password_missing("db")
@@ -2860,10 +2796,7 @@ async fn fs_list(
         .map_err(|err| {
             (
                 StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    code: "fs_error".into(),
-                    message: err.to_string(),
-                }),
+                Json(ApiError::new("fs_error", err.to_string())),
             )
         })
 }
@@ -3289,6 +3222,311 @@ async fn definition_route(
     }
 }
 
+// Document stores (/api/doc/*, docs/MONGODB.md §6). Bodies and replies are
+// canonical Extended JSON. Reads run as the page's statement (a newer one
+// or a cancel stops them); writes are never cancelled, and wait for a job's
+// transaction like the grid's edits.
+
+#[derive(Deserialize)]
+struct DocParams {
+    conn: Option<String>,
+    #[serde(default)]
+    db: String,
+    #[serde(default)]
+    coll: String,
+}
+
+/// Runs `$body` with the slot's document operations as `$ops`, gated like
+/// any statement of the slot.
+macro_rules! doc_call {
+    ($slot:expr, $holder:expr, |$ops:ident| $body:expr) => {{
+        let slot = &$slot;
+        let _inflight = InflightGuard::new(slot.inflight.clone());
+        slot.gated($holder, false, async {
+            if $holder == Holder::Protected {
+                slot.refused_while_job()?;
+            }
+            let session = slot.engine.document()?;
+            let $ops = session.ops();
+            $body.await
+        })
+        .await
+        .map_err(engine_error)
+    }};
+}
+
+/// Runs `$body` with the slot's document operations beside whatever holds
+/// the connection, outside its gate. For reads that tag nothing a cancel
+/// looks for (status, an export's cursor): a document store's client is a
+/// pool of connections, not one session.
+macro_rules! doc_beside {
+    ($slot:expr, |$ops:ident| $body:expr) => {{
+        let slot = &$slot;
+        let _inflight = InflightGuard::new(slot.inflight.clone());
+        async {
+            let session = slot.engine.document()?;
+            let $ops = session.ops();
+            $body.await
+        }
+        .await
+        .map_err(engine_error)
+    }};
+}
+
+async fn doc_slot(
+    state: &AppState,
+    headers: &HeaderMap,
+    conn: Option<&str>,
+) -> Result<Arc<ConnSlot>, (StatusCode, Json<ApiError>)> {
+    if !authorized(state, headers, None) {
+        return Err(unauthorized());
+    }
+    slot_for(state, conn).await
+}
+
+async fn doc_databases(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<DocParams>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let databases = doc_call!(slot, Holder::Foreground, |ops| ops.databases())?;
+    Ok(Json(json!(databases)))
+}
+
+async fn doc_collections(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<DocParams>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let collections = doc_call!(slot, Holder::Foreground, |ops| ops.collections(&params.db))?;
+    Ok(Json(json!(collections)))
+}
+
+async fn doc_stats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<DocParams>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let stats = doc_call!(slot, Holder::Foreground, |ops| ops
+        .stats(&params.db, &params.coll))?;
+    Ok(Json(stats))
+}
+
+async fn doc_find(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::FindRequest>,
+) -> Result<Json<driver::DocBatch>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    doc_call!(slot, Holder::Foreground, |ops| ops.find(&req)).map(Json)
+}
+
+async fn doc_count(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::CountRequest>,
+) -> Result<Json<driver::CountResult>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    doc_call!(slot, Holder::Foreground, |ops| ops.count(&req)).map(Json)
+}
+
+async fn doc_aggregate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::AggregateRequest>,
+) -> Result<Json<driver::DocBatch>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let writes = driver::check_aggregate(&req).map_err(engine_error)?;
+    // A pipeline that writes is never cancelled, like any other write.
+    let holder = if writes {
+        Holder::Protected
+    } else {
+        Holder::Foreground
+    };
+    doc_call!(slot, holder, |ops| ops.aggregate(&req)).map(Json)
+}
+
+async fn doc_distinct(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::DistinctRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let values = doc_call!(slot, Holder::Foreground, |ops| ops.distinct(&req))?;
+    Ok(Json(json!({ "values": values })))
+}
+
+async fn doc_insert(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::InsertRequest>,
+) -> Result<Json<driver::InsertOutcome>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    doc_call!(slot, Holder::Protected, |ops| ops.insert(&req)).map(Json)
+}
+
+async fn doc_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::UpdateRequest>,
+) -> Result<Json<driver::UpdateOutcome>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    driver::check_write(&req.filter, req.confirmed).map_err(engine_error)?;
+    doc_call!(slot, Holder::Protected, |ops| ops.update(&req)).map(Json)
+}
+
+async fn doc_replace(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::ReplaceRequest>,
+) -> Result<Json<driver::UpdateOutcome>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    driver::check_write(&req.filter, req.confirmed).map_err(engine_error)?;
+    doc_call!(slot, Holder::Protected, |ops| ops.replace(&req)).map(Json)
+}
+
+async fn doc_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::DeleteRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    driver::check_write(&req.filter, req.confirmed).map_err(engine_error)?;
+    let deleted = doc_call!(slot, Holder::Protected, |ops| ops.delete(&req))?;
+    Ok(Json(json!({ "deleted": deleted })))
+}
+
+async fn doc_indexes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<DocParams>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let indexes = doc_call!(slot, Holder::Foreground, |ops| ops
+        .indexes(&params.db, &params.coll))?;
+    Ok(Json(json!(indexes)))
+}
+
+async fn doc_create_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::CreateIndexRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    let name = doc_call!(slot, Holder::Protected, |ops| ops.create_index(&req))?;
+    Ok(Json(json!({ "name": name })))
+}
+
+async fn doc_drop_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::DropIndexRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    doc_call!(slot, Holder::Protected, |ops| ops.drop_index(&req))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn doc_explain(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::ExplainRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    doc_call!(slot, Holder::Foreground, |ops| ops.explain(&req)).map(Json)
+}
+
+/// Status reads and `killOp`, which run beside whatever holds the
+/// connection: the client is a pool, and the performance tab must see (and
+/// stop) the long query a tab is waiting on.
+const DOC_MONITOR_COMMANDS: [&str; 6] = [
+    "currentOp",
+    "killOp",
+    "top",
+    "serverStatus",
+    "hostInfo",
+    "replSetGetStatus",
+];
+
+async fn doc_command(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::CommandRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    driver::check_command(&req).map_err(engine_error)?;
+    let monitor = req
+        .command
+        .as_object()
+        .and_then(|command| command.keys().next())
+        .is_some_and(|name| DOC_MONITOR_COMMANDS.contains(&name.as_str()));
+    if monitor {
+        return doc_beside!(slot, |ops| ops.command(&req)).map(Json);
+    }
+    doc_call!(slot, Holder::Protected, |ops| ops.command(&req)).map(Json)
+}
+
+/// Streams a find or an aggregation as NDJSON: one canonical EJSON document
+/// a line, then `{"$end": {"count": n}}`. A failure midway ends it with
+/// `{"$error": {"code", "message"}}` instead. The client cancels by going
+/// away: the stream is dropped, and the server's cursor with it.
+async fn doc_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<driver::ExportRequest>,
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    // Read beside the page's statements: an export neither waits behind
+    // them nor holds them up while the file downloads.
+    let docs = doc_beside!(slot, |ops| ops.export(&req))?;
+    let line = |value: Value| Bytes::from(format!("{value}\n"));
+    let lines = futures_util::stream::unfold(Some((docs, 0u64)), move |state| async move {
+        let (mut docs, count) = state?;
+        Some(match docs.next().await {
+            Some(Ok(doc)) => (line(doc), Some((docs, count + 1))),
+            Some(Err(err)) => {
+                let (_, Json(error)) = engine_error(err);
+                let error = json!({ "$error": error });
+                (line(error), None)
+            }
+            None => (line(json!({ "$end": { "count": count } })), None),
+        })
+    })
+    .map(Ok::<_, std::convert::Infallible>);
+    Ok((
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(lines),
+    )
+        .into_response())
+}
+
+/// The server status the performance tab polls; read beside whatever holds
+/// the connection, so the charts go on while a long query runs.
+async fn doc_perf(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let slot = doc_slot(&state, &headers, params.conn.as_deref()).await?;
+    doc_beside!(slot, |ops| ops.perf()).map(Json)
+}
+
 #[derive(Deserialize)]
 struct KillRequest {
     session_id: String,
@@ -3366,7 +3604,7 @@ async fn ws_upgrade(
     ws: WebSocketUpgrade,
 ) -> Response {
     if !authorized(&state, &headers, params.token.as_deref()) {
-        return (StatusCode::UNAUTHORIZED, "토큰이 유효하지 않습니다").into_response();
+        return unauthorized().into_response();
     }
     let bound = params
         .conn
@@ -3425,7 +3663,7 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
                             .json(error_json(
                                 None,
                                 bound.as_deref(),
-                                "잘못된 JSON 메시지",
+                                ApiError::new("bad_request", "잘못된 JSON 메시지"),
                                 false,
                             ))
                             .await;
@@ -3503,7 +3741,7 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
                             .json(error_json(
                                 None,
                                 Some(&conn),
-                                "알 수 없는 메시지 타입",
+                                ApiError::new("bad_request", "알 수 없는 메시지 타입"),
                                 false,
                             ))
                             .await
@@ -3543,9 +3781,7 @@ async fn handle_console(
     let slot = match slot_for(state, Some(conn)).await {
         Ok(slot) => slot,
         Err((_, Json(err))) => {
-            sender
-                .json(error_json(None, Some(conn), &err.message, false))
-                .await;
+            sender.json(error_json(None, Some(conn), err, false)).await;
             return;
         }
     };
@@ -3686,7 +3922,7 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
             .json(error_json(
                 None,
                 Some(conn),
-                "query 메시지에 id/sql이 필요합니다",
+                ApiError::new("bad_request", "query 메시지에 id/sql이 필요합니다"),
                 false,
             ))
             .await;
@@ -3697,7 +3933,7 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
         Ok(slot) => slot,
         Err((_, Json(err))) => {
             sender
-                .json(error_json(Some(&id), Some(conn), &err.message, false))
+                .json(error_json(Some(&id), Some(conn), err, false))
                 .await;
             return;
         }
@@ -3761,7 +3997,7 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                 .json(error_json(
                     Some(&id),
                     Some(&conn),
-                    "쿼리가 취소되었습니다",
+                    ApiError::new("interrupted", "쿼리가 취소되었습니다"),
                     true,
                 ))
                 .await;
@@ -3828,18 +4064,23 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                 }
                 if let Err(err) = send_window(&slot, &sender, &conn, &id, 0, window).await {
                     sender
-                        .json(error_json(Some(&id), Some(&conn), &err.to_string(), false))
+                        .json(error_json(
+                            Some(&id),
+                            Some(&conn),
+                            engine_error(err).1 .0,
+                            false,
+                        ))
                         .await;
                 }
             }
             Err(err) => {
                 let cancelled = err.is_interrupted();
-                let message = if cancelled {
-                    "쿼리가 취소되었습니다".to_string()
+                let error = if cancelled {
+                    ApiError::new("interrupted", "쿼리가 취소되었습니다")
                 } else {
-                    err.to_string()
+                    engine_error(err).1 .0
                 };
-                let mut body = error_json(Some(&id), Some(&conn), &message, cancelled);
+                let mut body = error_json(Some(&id), Some(&conn), error, cancelled);
                 body["in_tx"] = json!(in_tx);
                 if let Some(state) = tx_state {
                     body["tx"] = json!(state);
@@ -3861,19 +4102,19 @@ async fn handle_fetch(state: &AppState, sender: &Sender, value: &Value, conn: &s
         Ok(slot) => slot,
         Err((_, Json(err))) => {
             sender
-                .json(error_json(
-                    value["id"].as_str(),
-                    Some(conn),
-                    &err.message,
-                    false,
-                ))
+                .json(error_json(value["id"].as_str(), Some(conn), err, false))
                 .await;
             return;
         }
     };
     if let Err(err) = send_window(&slot, sender, conn, id, offset, limit).await {
         sender
-            .json(error_json(Some(id), Some(conn), &err.to_string(), false))
+            .json(error_json(
+                Some(id),
+                Some(conn),
+                engine_error(err).1 .0,
+                false,
+            ))
             .await;
     }
 }
@@ -3932,7 +4173,7 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
                 .json(error_json(
                     None,
                     Some(conn),
-                    &format!("edit 메시지 형식 오류: {err}"),
+                    ApiError::new("bad_request", format!("edit 메시지 형식 오류: {err}")),
                     false,
                 ))
                 .await;
@@ -3943,9 +4184,7 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
     let slot = match slot_for(state, Some(conn)).await {
         Ok(slot) => slot,
         Err((_, Json(err))) => {
-            sender
-                .json(error_json(None, Some(conn), &err.message, false))
-                .await;
+            sender.json(error_json(None, Some(conn), err, false)).await;
             return;
         }
     };
@@ -3962,7 +4201,7 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
                 .json(error_json(
                     None,
                     Some(conn),
-                    "이 결과는 편집할 수 없습니다",
+                    ApiError::new("not_editable", "이 결과는 편집할 수 없습니다"),
                     false,
                 ))
                 .await;
@@ -4058,7 +4297,7 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
         }
         Err(err) => {
             sender
-                .json(error_json(None, Some(conn), &err.to_string(), false))
+                .json(error_json(None, Some(conn), engine_error(err).1 .0, false))
                 .await;
         }
     }
@@ -4094,7 +4333,7 @@ async fn handle_row_change(
             .json(error_json(
                 Some(&id),
                 Some(conn),
-                "table 값이 필요합니다",
+                ApiError::new("bad_request", "table 값이 필요합니다"),
                 false,
             ))
             .await;
@@ -4105,7 +4344,7 @@ async fn handle_row_change(
         Ok(slot) => slot,
         Err((_, Json(err))) => {
             sender
-                .json(error_json(Some(&id), Some(conn), &err.message, false))
+                .json(error_json(Some(&id), Some(conn), err, false))
                 .await;
             return;
         }
@@ -4122,7 +4361,12 @@ async fn handle_row_change(
             }
             Err(message) => {
                 sender
-                    .json(error_json(Some(&id), Some(conn), &message, false))
+                    .json(error_json(
+                        Some(&id),
+                        Some(conn),
+                        ApiError::new("bad_request", message),
+                        false,
+                    ))
                     .await;
                 return;
             }
@@ -4137,7 +4381,12 @@ async fn handle_row_change(
             }
             Err(message) => {
                 sender
-                    .json(error_json(Some(&id), Some(conn), &message, false))
+                    .json(error_json(
+                        Some(&id),
+                        Some(conn),
+                        ApiError::new("bad_request", message),
+                        false,
+                    ))
                     .await;
                 return;
             }
@@ -4171,7 +4420,12 @@ async fn handle_row_change(
         }
         Err(err) => {
             sender
-                .json(error_json(Some(&id), Some(conn), &err.to_string(), false))
+                .json(error_json(
+                    Some(&id),
+                    Some(conn),
+                    engine_error(err).1 .0,
+                    false,
+                ))
                 .await;
         }
     }
@@ -4243,9 +4497,7 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
     let slot = match slot_for(state, Some(conn)).await {
         Ok(slot) => slot,
         Err((_, Json(err))) => {
-            sender
-                .json(error_json(None, Some(conn), &err.message, false))
-                .await;
+            sender.json(error_json(None, Some(conn), err, false)).await;
             return;
         }
     };
@@ -4255,7 +4507,12 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
     let job = value["job"].as_bool().unwrap_or(false);
     if !matches!(action, "begin" | "commit" | "rollback") {
         sender
-            .json(error_json(None, Some(conn), "알 수 없는 tx action", false))
+            .json(error_json(
+                None,
+                Some(conn),
+                ApiError::new("bad_request", "알 수 없는 tx action"),
+                false,
+            ))
             .await;
         return;
     }
@@ -4303,13 +4560,25 @@ async fn handle_tx(state: &AppState, sender: &Sender, value: &Value, conn: &str)
             sender.json(body).await;
             if let Some((reason, _)) = closed {
                 sender
-                    .json(error_json(None, Some(conn), &reason, false))
+                    .json(error_json(
+                        None,
+                        Some(conn),
+                        ApiError::new(
+                            if reload {
+                                "tx_outcome_unknown"
+                            } else {
+                                "tx_rolled_back"
+                            },
+                            reason,
+                        ),
+                        false,
+                    ))
                     .await;
             }
         }
         Err(err) => {
             sender
-                .json(error_json(None, Some(conn), &err.to_string(), false))
+                .json(error_json(None, Some(conn), engine_error(err).1 .0, false))
                 .await;
         }
     }
@@ -4383,13 +4652,13 @@ async fn apply_journal(slot: &ConnSlot, action: &str) {
     }
 }
 
-fn error_json(id: Option<&str>, conn: Option<&str>, message: &str, cancelled: bool) -> Value {
-    let mut body = json!({
-        "type": "error",
-        "id": id,
-        "message": message,
-        "cancelled": cancelled,
-    });
+/// A WebSocket error: the REST reply's fields (`code`, `message`, and what
+/// else the database said) with the message's `id` and `conn`.
+fn error_json(id: Option<&str>, conn: Option<&str>, error: ApiError, cancelled: bool) -> Value {
+    let mut body = json!(redacted(error));
+    body["type"] = json!("error");
+    body["id"] = json!(id);
+    body["cancelled"] = json!(cancelled);
     if let Some(conn) = conn {
         body["conn"] = json!(conn);
     }
@@ -4559,93 +4828,48 @@ mod tests {
         headers
     }
 
+    fn connect_request(value: Value) -> ConnectRequest {
+        serde_json::from_value(value).unwrap()
+    }
+
     fn test_connect_request(driver: &str) -> ConnectRequest {
-        ConnectRequest {
-            driver: driver.into(),
-            postgres: Some(tablepeek_types::PostgresConfig {
-                host: "127.0.0.1".into(),
-                port: 5433,
-                user: "tablepeek".into(),
-                password: Some("tablepeek_test_pw".into()),
-                database: "tablepeek_test".into(),
-                ssl_mode: tablepeek_types::SslMode::Disable,
-                ssl_root_cert: None,
-                ssl_client_cert: None,
-                ssl_client_key: None,
-            }),
-            cockroach: None,
-            mysql: None,
-            mssql: None,
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-        }
+        connect_request(json!({
+            "driver": driver,
+            "config": {
+                "host": "127.0.0.1", "port": 5433, "user": "tablepeek",
+                "password": "tablepeek_test_pw", "database": "tablepeek_test", "ssl_mode": "disable"
+            }
+        }))
     }
 
     fn test_mysql_connect_request() -> ConnectRequest {
-        ConnectRequest {
-            driver: "mysql".into(),
-            postgres: None,
-            cockroach: None,
-            mysql: Some(tablepeek_types::MySqlConfig {
-                host: "127.0.0.1".into(),
-                port: 3307,
-                user: "root".into(),
-                password: Some("root_pw".into()),
-                database: "tablepeek_test".into(),
-                ssl_mode: tablepeek_types::SslMode::Disable,
-                ssl_root_cert: None,
-                ssl_client_cert: None,
-                ssl_client_key: None,
-            }),
-            mssql: None,
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-        }
+        connect_request(json!({
+            "driver": "mysql",
+            "config": {
+                "host": "127.0.0.1", "port": 3307, "user": "root",
+                "password": "root_pw", "database": "tablepeek_test", "ssl_mode": "disable"
+            }
+        }))
     }
 
     fn test_cockroach_connect_request() -> ConnectRequest {
-        ConnectRequest {
-            driver: "cockroach".into(),
-            postgres: None,
-            cockroach: Some(tablepeek_types::PostgresConfig {
-                host: "127.0.0.1".into(),
-                port: 26258,
-                user: "root".into(),
-                password: None,
-                database: "defaultdb".into(),
-                ssl_mode: tablepeek_types::SslMode::Disable,
-                ssl_root_cert: None,
-                ssl_client_cert: None,
-                ssl_client_key: None,
-            }),
-            mysql: None,
-            mssql: None,
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-        }
+        connect_request(json!({
+            "driver": "cockroach",
+            "config": {
+                "host": "127.0.0.1", "port": 26258, "user": "root",
+                "database": "defaultdb", "ssl_mode": "disable"
+            }
+        }))
     }
 
     fn test_mssql_connect_request() -> ConnectRequest {
-        ConnectRequest {
-            driver: "mssql".into(),
-            postgres: None,
-            cockroach: None,
-            mysql: None,
-            mssql: Some(tablepeek_types::MssqlConfig {
-                host: "127.0.0.1".into(),
-                port: 14330,
-                user: "sa".into(),
-                password: Some("MsSql_test_pw1".into()),
-                database: "tablepeek_test".into(),
-                encrypt: false,
-            }),
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-        }
+        connect_request(json!({
+            "driver": "mssql",
+            "config": {
+                "host": "127.0.0.1", "port": 14330, "user": "sa",
+                "password": "MsSql_test_pw1", "database": "tablepeek_test", "encrypt": false
+            }
+        }))
     }
 
     async fn connect_for_test(state: &AppState, req: ConnectRequest) -> Result<(), ConnectError> {
@@ -4657,6 +4881,988 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engines_route_lists_every_descriptor() {
+        let dir = temp_dir("engines-route");
+        let state = test_state(&dir);
+        let err = engines_route(State(state.clone()), HeaderMap::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        let listed = engines_route(State(state), test_headers()).await.unwrap().0;
+        let engines = listed["engines"].as_array().unwrap();
+        let ids: Vec<&str> = engines.iter().map(|e| e["id"].as_str().unwrap()).collect();
+        assert_eq!(
+            ids,
+            [
+                "postgres",
+                "mysql",
+                "mssql",
+                "cockroach",
+                "sqlite",
+                "mongodb"
+            ]
+        );
+        let postgres = &engines[0];
+        for key in [
+            "aliases",
+            "label",
+            "paradigm",
+            "family",
+            "transport",
+            "default_port",
+            "url_schemes",
+            "capabilities",
+            "connection",
+        ] {
+            assert!(postgres.get(key).is_some(), "{key}");
+        }
+        assert_eq!(postgres["paradigm"], json!("sql"));
+        assert_eq!(postgres["default_port"], json!(5432));
+        assert_eq!(postgres["capabilities"]["explain"], json!("pg-json"));
+        assert_eq!(postgres["capabilities"]["sessions"]["kill"], json!(true));
+        let fields = postgres["connection"]["fields"].as_array().unwrap();
+        let password = fields.iter().find(|f| f["key"] == "password").unwrap();
+        assert_eq!(password["type"], json!("secret"));
+        assert_eq!(password["label"], json!("비밀번호"));
+        assert_eq!(
+            postgres["connection"]["detail"],
+            json!("{user}@{host}:{port}/{database}")
+        );
+        let cockroach = &engines[3];
+        assert_eq!(cockroach["family"], json!("postgres"));
+        let sqlite = &engines[4];
+        assert_eq!(sqlite["transport"], json!("file"));
+        assert!(sqlite.get("default_port").is_none());
+        assert_eq!(sqlite["connection"]["tunnels"], json!([]));
+        assert_eq!(sqlite["capabilities"]["databases"], json!("none"));
+        let mongodb = &engines[5];
+        assert_eq!(mongodb["paradigm"], json!("document"));
+        assert_eq!(mongodb["capabilities"]["language"], json!("mongo"));
+        assert_eq!(mongodb["error_code_prefix"], json!("mongo"));
+        assert_eq!(mongodb["url_schemes"], json!(["mongodb", "mongodb+srv"]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn meta_carries_capabilities() {
+        let dir = temp_dir("meta-capabilities");
+        let state = test_state(&dir);
+        let meta = meta(
+            State(state),
+            test_headers(),
+            Query(ConnQuery {
+                conn: None,
+                system: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(meta.kind, "sqlite");
+        let capabilities = meta.capabilities.expect("meta has capabilities");
+        assert_eq!(capabilities.language, "sql");
+        assert_eq!(capabilities.explain.as_deref(), Some("sqlite"));
+        assert!(!capabilities.users);
+        let body = serde_json::to_value(
+            registry::factory("sqlite")
+                .unwrap()
+                .descriptor()
+                .capabilities
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&capabilities).unwrap(), body);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn saving_an_unknown_engine_fails_loudly() {
+        let dir = temp_dir("save-unknown");
+        let state = test_state(&dir);
+        let err = connections_create(
+            State(state.clone()),
+            test_headers(),
+            Json(NewConnectionRequest {
+                name: "x".into(),
+                connect: connect_request(json!({ "driver": "oracle", "config": { "host": "h" } })),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1.code, "unsupported_driver");
+        assert_eq!(err.1.message, "지원하지 않는 엔진: oracle");
+        assert!(state.store.lock().await.data().connections.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn connection_string_passwords_are_never_saved_or_shown() {
+        let dir = temp_dir("uri-passwords");
+        let state = test_state(&dir);
+        // Typed, not pasted: the string still carries user:password@.
+        let created = connections_create(
+            State(state.clone()),
+            test_headers(),
+            Json(NewConnectionRequest {
+                name: "몽고".into(),
+                connect: connect_request(json!({
+                    "driver": "mongodb",
+                    "config": { "uri": "mongodb://app:s3cret%21@db.internal:27017/shop?authSource=admin" }
+                })),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap();
+        let id = created.0["id"].as_str().unwrap().to_string();
+        let raw = std::fs::read_to_string(dir.join("store.json")).unwrap();
+        assert!(!raw.contains("s3cret"), "{raw}");
+        let listed = connections_list(State(state.clone()), test_headers())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            listed["connections"][0]["config"]["uri"],
+            json!("mongodb://app@db.internal:27017/shop?authSource=admin")
+        );
+        assert!(!listed.to_string().contains("s3cret"));
+
+        // A profile saved before passwords were taken out shows and exports without it.
+        let mut legacy = state
+            .store
+            .lock()
+            .await
+            .find_connection(&id)
+            .cloned()
+            .unwrap();
+        legacy
+            .config
+            .insert("uri".into(), json!("mongodb://app:old-pw@db.internal/shop"));
+        state
+            .store
+            .lock()
+            .await
+            .update_connection(legacy.clone())
+            .unwrap();
+        let listed = connections_list(State(state.clone()), test_headers())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            listed["connections"][0]["config"]["uri"],
+            json!("mongodb://app@db.internal/shop")
+        );
+        let exported = transfer::export_connect(&legacy, |_| None);
+        assert_eq!(
+            exported["config"]["uri"],
+            json!("mongodb://app@db.internal/shop")
+        );
+        assert!(!exported.to_string().contains("old-pw"));
+        let with_secret = transfer::export_connect(&legacy, |kind| {
+            (kind == "mongodb").then(|| "kept".to_string())
+        });
+        assert_eq!(with_secret["config"]["password"], json!("kept"));
+        assert!(!with_secret.to_string().contains("old-pw"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn error_messages_hide_url_passwords() {
+        let err = engine_error(EngineError::Driver {
+            engine: "mongodb",
+            code: None,
+            message: "bad uri mongodb://app:s3cret@db/shop".into(),
+            interrupted: false,
+            fields: Box::new(ErrorFields {
+                raw: Some("Kind: bad uri mongodb://app:s3cret@db/shop, labels: {}".into()),
+                ..ErrorFields::default()
+            }),
+        });
+        assert_eq!(err.1.message, "bad uri mongodb://app:****@db/shop");
+        assert_eq!(
+            err.1.fields.raw.as_deref(),
+            Some("Kind: bad uri mongodb://app:****@db/shop, labels: {}")
+        );
+        let err = connect_failed("SSH via postgres://u:pw@h/d").into_response();
+        assert_eq!(err.1.message, "SSH via postgres://u:****@h/d");
+        let body = error_json(
+            None,
+            None,
+            ApiError::new("bad_request", "x mysql://root:pw@h:3306/d"),
+            false,
+        );
+        assert_eq!(body["message"], json!("x mysql://root:****@h:3306/d"));
+    }
+
+    #[tokio::test]
+    async fn saved_profiles_list_in_the_new_shape_without_secrets() {
+        let dir = temp_dir("list-new-shape");
+        let state = test_state(&dir);
+        // An alias saves under the engine's own id; the password stays out.
+        let created = connections_create(
+            State(state.clone()),
+            test_headers(),
+            Json(NewConnectionRequest {
+                name: "마리아".into(),
+                connect: connect_request(json!({
+                    "driver": "mariadb",
+                    "config": { "host": "db", "port": 3306, "user": "u", "password": "pw", "database": "d" }
+                })),
+                persist_password: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(created.0["id"].is_string());
+        let listed = connections_list(State(state), test_headers())
+            .await
+            .unwrap()
+            .0;
+        let item = &listed["connections"][0];
+        assert_eq!(item["driver"], json!("mysql"));
+        assert_eq!(item["config"]["host"], json!("db"));
+        assert!(item["config"].get("password").is_none());
+        assert!(item.get("mysql").is_none());
+        assert_eq!(item["has_password"], json!(false));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn doc_params(conn: Option<&str>, db: &str, coll: &str) -> Query<DocParams> {
+        Query(DocParams {
+            conn: conn.map(str::to_string),
+            db: db.into(),
+            coll: coll.into(),
+        })
+    }
+
+    fn conn_query(conn: Option<&str>) -> Query<ConnQuery> {
+        Query(ConnQuery {
+            conn: conn.map(str::to_string),
+            system: None,
+        })
+    }
+
+    fn body<T: serde::de::DeserializeOwned>(value: Value) -> Json<T> {
+        Json(serde_json::from_value(value).unwrap())
+    }
+
+    #[tokio::test]
+    async fn doc_routes_refuse_sql_engines_and_unsafe_writes() {
+        let dir = temp_dir("doc-routes");
+        let state = test_state(&dir);
+        let err = doc_databases(
+            State(state.clone()),
+            HeaderMap::new(),
+            doc_params(None, "", ""),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        // The default slot is SQLite: no document operations.
+        let err = doc_find(
+            State(state.clone()),
+            test_headers(),
+            conn_query(None),
+            body(json!({ "db": "d", "coll": "c", "filter": {}, "limit": 20 })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1.code, "unsupported_capability");
+        // A write with an empty filter needs confirming, one document or many.
+        for (route, request) in [
+            (
+                "update",
+                json!({ "db": "d", "coll": "c", "filter": {}, "update": { "$set": { "a": 1 } }, "many": true }),
+            ),
+            (
+                "update",
+                json!({ "db": "d", "coll": "c", "filter": {}, "update": { "$set": { "a": 2 } }, "many": false }),
+            ),
+            (
+                "delete",
+                json!({ "db": "d", "coll": "c", "filter": {}, "many": true }),
+            ),
+            (
+                "delete",
+                json!({ "db": "d", "coll": "c", "filter": null, "many": false }),
+            ),
+            (
+                "replace",
+                json!({ "db": "d", "coll": "c", "filter": {}, "replacement": {} }),
+            ),
+            (
+                "command",
+                json!({ "db": "d", "command": { "shutdown": 1 } }),
+            ),
+            ("command", json!({ "db": "d", "command": { "drop": "c" } })),
+            (
+                "command",
+                json!({ "db": "d", "command": { "dropDatabase": 1 } }),
+            ),
+            (
+                "command",
+                json!({ "db": "d", "command": { "collMod": "c", "validationLevel": "off" } }),
+            ),
+            (
+                "command",
+                json!({ "db": "admin", "command": { "killOp": 1, "op": 7 } }),
+            ),
+            ("command", json!({ "db": "d", "command": { "profile": 2 } })),
+            (
+                "command",
+                json!({ "db": "d", "command": { "renameCollection": "d.a", "to": "d.b" }, "confirmed": true }),
+            ),
+            (
+                "aggregate",
+                json!({ "db": "d", "coll": "c", "pipeline": [{ "$out": "copy" }] }),
+            ),
+            (
+                "aggregate",
+                json!({ "db": "d", "coll": "c", "pipeline": [{ "$merge": { "into": "copy" } }] }),
+            ),
+        ] {
+            let err = match route {
+                "update" => doc_update(
+                    State(state.clone()),
+                    test_headers(),
+                    conn_query(None),
+                    body(request),
+                )
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+                "delete" => doc_delete(
+                    State(state.clone()),
+                    test_headers(),
+                    conn_query(None),
+                    body(request),
+                )
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+                "replace" => doc_replace(
+                    State(state.clone()),
+                    test_headers(),
+                    conn_query(None),
+                    body(request),
+                )
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+                "aggregate" => doc_aggregate(
+                    State(state.clone()),
+                    test_headers(),
+                    conn_query(None),
+                    body(request),
+                )
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+                _ => doc_command(
+                    State(state.clone()),
+                    test_headers(),
+                    conn_query(None),
+                    body(request),
+                )
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+            };
+            assert_eq!(
+                (err.0, err.1.code.as_str()),
+                (StatusCode::BAD_REQUEST, "bad_request"),
+                "{route}"
+            );
+        }
+        // Any other filter passes the rule, `_id` or not, as does a confirmed
+        // empty one: on this SQLite slot they then meet the missing
+        // document operations.
+        for request in [
+            json!({ "db": "d", "coll": "c", "filter": { "status": "x" }, "update": { "$set": { "a": 1 } } }),
+            json!({ "db": "d", "coll": "c", "filter": {}, "update": { "$set": { "a": 1 } }, "many": true, "confirmed": true }),
+        ] {
+            let err = doc_update(
+                State(state.clone()),
+                test_headers(),
+                conn_query(None),
+                body(request),
+            )
+            .await
+            .map(|_| ())
+            .unwrap_err();
+            assert_eq!(err.1.code, "unsupported_capability");
+        }
+        let err = doc_replace(
+            State(state.clone()),
+            test_headers(),
+            conn_query(None),
+            body(json!({ "db": "d", "coll": "c", "filter": { "sku": "A-1" }, "replacement": { "sku": "A-1" } })),
+        )
+        .await
+        .map(|_| ())
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        // Allowed requests of the new routes meet the SQLite slot's missing
+        // document operations, the read commands with no confirmation.
+        for command in [
+            json!({ "db": "d", "command": { "create": "c", "capped": true, "size": 4096 } }),
+            json!({ "db": "admin", "command": { "currentOp": 1 } }),
+            json!({ "db": "d", "command": { "profile": -1 } }),
+            json!({ "db": "admin", "command": { "renameCollection": "d.a", "to": "d.b" }, "confirmed": true }),
+        ] {
+            let err = doc_command(
+                State(state.clone()),
+                test_headers(),
+                conn_query(None),
+                body(command.clone()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.1.code, "unsupported_capability", "{command}");
+        }
+        let err = doc_aggregate(
+            State(state.clone()),
+            test_headers(),
+            conn_query(None),
+            body(json!({ "db": "d", "coll": "c", "pipeline": [{ "$out": "copy" }], "confirmed": true })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        let err = doc_export(
+            State(state.clone()),
+            test_headers(),
+            conn_query(None),
+            body(json!({ "db": "d", "coll": "c" })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        let err = doc_perf(State(state.clone()), test_headers(), conn_query(None))
+            .await
+            .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mongo_errors_keep_their_code_and_words() {
+        let err = engine_error(EngineError::Driver {
+            engine: "mongodb",
+            code: Some("11000".into()),
+            message: "E11000 duplicate key error".into(),
+            interrupted: false,
+            fields: Box::new(ErrorFields {
+                server_code: Some(11000),
+                code_name: Some("DuplicateKey".into()),
+                ..ErrorFields::default()
+            }),
+        });
+        assert_eq!(err.1.code, "mongo_11000");
+        assert_eq!(err.1.message, "E11000 duplicate key error");
+        // Without a code (a network error), the engine's usual one.
+        let err = engine_error(EngineError::Driver {
+            engine: "mongodb",
+            code: None,
+            message: "connection refused".into(),
+            interrupted: false,
+            fields: Box::default(),
+        });
+        assert_eq!(err.1.code, "mongodb_error");
+        let err = engine_error(EngineError::Driver {
+            engine: "postgres",
+            code: Some("42P01".into()),
+            message: "relation missing".into(),
+            interrupted: false,
+            fields: Box::new(ErrorFields {
+                sqlstate: Some("42P01".into()),
+                position: Some(tablepeek_types::ErrorPosition {
+                    offset: Some(15),
+                    ..Default::default()
+                }),
+                ..ErrorFields::default()
+            }),
+        });
+        assert_eq!(err.1.code, "postgres_error");
+        // The fields sit beside code and message, the unknown ones left out.
+        let body = serde_json::to_value(&err.1 .0).unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "code": "postgres_error",
+                "message": "relation missing",
+                "sqlstate": "42P01",
+                "position": { "offset": 15 },
+            })
+        );
+        // A WebSocket error carries the same fields.
+        let frame = error_json(Some("q1"), Some("c1"), err.1 .0, false);
+        assert_eq!(frame["type"], json!("error"));
+        assert_eq!(frame["code"], json!("postgres_error"));
+        assert_eq!(frame["sqlstate"], json!("42P01"));
+        assert_eq!(frame["position"], json!({ "offset": 15 }));
+    }
+
+    #[tokio::test]
+    async fn wrong_token_is_invalid_token_everywhere() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = temp_dir("invalid-token");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let state = AppState {
+            allowed_hosts: Arc::new(vec![host.clone()]),
+            ..test_state(&dir)
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app(state)).await });
+        // A body the route can't read and a WebSocket handshake: the stale
+        // token is still what the reply names.
+        let ws = "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n\
+                  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
+        for (method, path, extra) in [
+            ("GET", "/api/meta", ""),
+            ("GET", "/api/connections", ""),
+            ("POST", "/api/doc/aggregate", ""),
+            ("POST", "/api/doc/command", ""),
+            ("GET", "/api/ws?token=old-token", ws),
+        ] {
+            let mut stream = tokio::net::TcpStream::connect(&host).await.unwrap();
+            let request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: {host}\r\nx-tablepeek-token: old-token\r\n\
+                 Content-Type: application/json\r\nContent-Length: 2\r\n{extra}\
+                 Connection: close\r\n\r\n{{}}"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).await.unwrap();
+            assert!(reply.starts_with("HTTP/1.1 401"), "{path}: {reply}");
+            let body = reply.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(body["code"], json!("invalid_token"), "{path}");
+        }
+        server.abort();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn doc_routes_against_mongodb() {
+        if std::env::var("TABLEPEEK_TEST_MONGODB").is_err() {
+            return;
+        }
+        let dir = temp_dir("doc-mongo");
+        let state = test_state(&dir);
+        let request = connect_request(json!({
+            "driver": "mongodb",
+            "config": { "host": "127.0.0.1", "port": 27018, "user": "tablepeek",
+                        "password": "tablepeek_test_pw", "direct_connection": true }
+        }));
+        let (slot, meta) = connect_with(
+            &state,
+            request,
+            SlotOrigin {
+                label: None,
+                saved_id: None,
+            },
+        )
+        .await
+        .map_err(|err| err.message)
+        .unwrap();
+        assert_eq!(meta.kind, "mongodb");
+        assert_eq!(slot.label, "tablepeek@127.0.0.1:27018/");
+        assert_eq!(
+            meta.capabilities.as_ref().unwrap().transactions,
+            "replica_set"
+        );
+        assert!(slot.history_scope().starts_with(store::SESSION_PREFIX));
+        let conn = Some(slot.id.as_str());
+        let databases = doc_databases(
+            State(state.clone()),
+            test_headers(),
+            doc_params(conn, "", ""),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(databases
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|db| db["name"] == "shop"));
+        assert!(databases[0].get("sizeOnDisk").is_some());
+        let collections = doc_collections(
+            State(state.clone()),
+            test_headers(),
+            doc_params(conn, "shop", ""),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(collections
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "orders" && c["type"] == "collection"));
+        let found = doc_find(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "shop", "coll": "orders", "filter": {}, "limit": 3, "maxTimeMS": 5000 })),
+        )
+        .await
+        .unwrap()
+        .0;
+        let found = serde_json::to_value(found).unwrap();
+        assert_eq!(found["docs"].as_array().unwrap().len(), 3);
+        assert!(found["elapsedMs"].is_number());
+        let counted = doc_count(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "shop", "coll": "orders", "filter": {} })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(
+            serde_json::to_value(counted).unwrap(),
+            json!({ "count": 2000, "exact": false })
+        );
+        // SQL routes say what this engine can't do.
+        let err = schema_route(State(state.clone()), test_headers(), conn_query(conn))
+            .await
+            .unwrap_err();
+        assert_eq!(err.1.code, "unsupported_capability");
+
+        let coll = format!("tp_route_{}", uuid::Uuid::new_v4().simple());
+        let inserted = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "docs": [{ "_id": 1 }] })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(
+            serde_json::to_value(inserted).unwrap(),
+            json!({ "insertedIds": [{ "$numberInt": "1" }], "errors": [] })
+        );
+        // Unordered (an import): the failures are listed and the rest go in.
+        let unordered = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "ordered": false,
+                         "docs": [{ "_id": 1 }, { "_id": 2 }, { "_id": 3 }] }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        let unordered = serde_json::to_value(unordered).unwrap();
+        assert_eq!(
+            unordered["insertedIds"],
+            json!([{ "$numberInt": "2" }, { "$numberInt": "3" }])
+        );
+        assert_eq!(unordered["errors"][0]["index"], json!(0));
+        assert_eq!(unordered["errors"][0]["code"], json!("mongo_11000"));
+        assert_eq!(unordered["errors"].as_array().unwrap().len(), 1);
+        // Ordered, asked explicitly (an import that stops at the first
+        // failure): 200 with what went in before it and the failure.
+        let stopped = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(
+                json!({ "db": "tablepeek_test", "coll": coll, "ordered": true,
+                         "docs": [{ "_id": 4 }, { "_id": 2 }, { "_id": 5 }] }),
+            ),
+        )
+        .await
+        .unwrap()
+        .0;
+        let stopped = serde_json::to_value(stopped).unwrap();
+        assert_eq!(stopped["insertedIds"], json!([{ "$numberInt": "4" }]));
+        assert_eq!(stopped["errors"][0]["index"], json!(1));
+        assert_eq!(stopped["errors"].as_array().unwrap().len(), 1);
+        let err = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "docs": [{ "_id": 1 }] })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "mongo_11000");
+        let changed = doc_update(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "filter": { "_id": 1 }, "update": { "$set": { "a": 1 } } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(
+            serde_json::to_value(changed).unwrap(),
+            json!({ "matched": 1, "modified": 1 })
+        );
+        let deleted = doc_delete(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "filter": {}, "many": true, "confirmed": true })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(deleted, json!({ "deleted": 4 }));
+        // The console saw it in shell notation.
+        let (entries, _) = slot.engine.sql_log().since(None);
+        assert!(entries.iter().any(|entry| entry
+            .sql
+            .contains(".updateOne({ _id: 1 }, { $set: { a: 1 } })")));
+
+        // Export: one document a line, then the count.
+        let export = |req: Value| {
+            doc_export(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(req),
+            )
+        };
+        let lines = |bytes: Bytes| -> Vec<Value> {
+            String::from_utf8(bytes.to_vec())
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        };
+        let read_all = |response: Response| async move {
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+        };
+        let response = export(
+            json!({ "db": "shop", "coll": "orders", "filter": { "status": "paid" },
+                                     "sort": { "_id": 1 }, "limit": 7 }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/x-ndjson"
+        );
+        let exported = lines(read_all(response).await);
+        assert_eq!(exported.len(), 8);
+        assert!(exported[..7].iter().all(|doc| doc["status"] == "paid"));
+        assert_eq!(exported[7], json!({ "$end": { "count": 7 } }));
+        let grouped = lines(
+            read_all(
+                export(json!({ "db": "shop", "coll": "orders",
+                               "pipeline": [{ "$group": { "_id": "$status" } }] }))
+                .await
+                .unwrap(),
+            )
+            .await,
+        );
+        let statuses = grouped.len() - 1;
+        assert_eq!(grouped[statuses], json!({ "$end": { "count": statuses } }));
+        let err = export(json!({ "db": "shop", "coll": "orders", "pipeline": [{ "$out": "x" }] }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.1.code, "bad_request");
+        // A failure midway (past the first batch of 101) ends the stream
+        // with $error and no $end.
+        let pivot = doc_find(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "shop", "coll": "orders", "sort": { "_id": 1 }, "skip": 150, "limit": 1 })),
+        )
+        .await
+        .unwrap()
+        .0
+        .docs[0]["_id"]
+            .clone();
+        let failed = lines(
+            read_all(
+                export(json!({ "db": "shop", "coll": "orders", "pipeline": [
+                    { "$sort": { "_id": 1 } },
+                    { "$project": { "x": { "$cond": [{ "$gte": ["$_id", pivot] }, { "$toInt": "$status" }, 1] } } }
+                ] }))
+                .await
+                .unwrap(),
+            )
+            .await,
+        );
+        let (last, docs) = failed.split_last().unwrap();
+        // The batch holding the failure is lost whole; the ones before it arrived.
+        assert!((101..150).contains(&docs.len()), "{} {last}", docs.len());
+        assert!(
+            last["$error"]["code"]
+                .as_str()
+                .unwrap()
+                .starts_with("mongo_"),
+            "{last}"
+        );
+
+        // Going away closes the server's cursor.
+        let open_cursors = || async {
+            let status = doc_command(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(json!({ "db": "admin", "command": { "serverStatus": 1 } })),
+            )
+            .await
+            .unwrap()
+            .0;
+            let open = &status["metrics"]["cursor"]["open"]["total"];
+            open.as_u64()
+                .or_else(|| open["$numberLong"].as_str()?.parse().ok())
+                .or_else(|| open["$numberInt"].as_str()?.parse().ok())
+                .unwrap()
+        };
+        let before = open_cursors().await;
+        let response = export(json!({ "db": "shop", "coll": "orders" }))
+            .await
+            .unwrap();
+        let mut frames = response.into_body().into_data_stream();
+        assert!(frames.next().await.unwrap().is_ok());
+        assert_eq!(open_cursors().await, before + 1);
+        drop(frames);
+        let mut closed = false;
+        for _ in 0..50 {
+            if open_cursors().await == before {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(closed, "the export's cursor stayed open");
+
+        let perf = doc_perf(State(state.clone()), test_headers(), conn_query(conn))
+            .await
+            .unwrap()
+            .0;
+        assert!(perf["opcounters"].get("insert").is_some(), "{perf}");
+        assert!(perf["wiredTiger"].get("cacheMax").is_some(), "{perf}");
+        let current = doc_command(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "admin", "command": { "currentOp": 1, "$all": true } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(current["inprog"].is_array(), "{current}");
+        // The performance tab's polls leave the console alone; the same
+        // command without `poll` and a write with it are logged.
+        let console = || slot.engine.sql_log().since(None).0.len();
+        let before = console();
+        let _ = doc_perf(State(state.clone()), test_headers(), conn_query(conn))
+            .await
+            .unwrap();
+        for command in [
+            json!({ "db": "admin", "command": { "currentOp": 1, "$all": true }, "poll": true }),
+            json!({ "db": "admin", "command": { "top": 1 }, "poll": true }),
+            json!({ "db": "shop", "command": { "profile": -1 }, "poll": true }),
+        ] {
+            let _ = doc_command(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(command),
+            )
+            .await
+            .unwrap();
+        }
+        let _ = doc_find(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "shop", "coll": "system.profile", "limit": 50, "poll": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(console(), before);
+        let _ = doc_command(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "admin", "command": { "top": 1 } })),
+        )
+        .await
+        .unwrap();
+        let _ = doc_command(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "admin", "command": { "killOp": 1, "op": 999999 }, "confirmed": true, "poll": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(console(), before + 2);
+        // $out writes only once confirmed.
+        let out = |confirmed: bool| {
+            doc_aggregate(
+                State(state.clone()),
+                test_headers(),
+                conn_query(conn),
+                body(
+                    json!({ "db": "tablepeek_test", "coll": coll, "confirmed": confirmed,
+                             "pipeline": [{ "$match": {} }, { "$out": format!("{coll}_copy") }] }),
+                ),
+            )
+        };
+        assert_eq!(out(false).await.unwrap_err().1.code, "bad_request");
+        let _ = doc_insert(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": coll, "docs": [{ "_id": 9 }] })),
+        )
+        .await
+        .unwrap();
+        let _ = out(true).await.unwrap();
+        let copied = doc_count(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "coll": format!("{coll}_copy"), "filter": { "_id": { "$exists": true } } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(copied.count, Some(1));
+        let _ = doc_command(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "command": { "drop": format!("{coll}_copy") }, "confirmed": true })),
+        )
+        .await
+        .unwrap();
+        let dropped = doc_command(
+            State(state.clone()),
+            test_headers(),
+            conn_query(conn),
+            body(json!({ "db": "tablepeek_test", "command": { "drop": coll }, "confirmed": true })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(dropped["ok"], json!({ "$numberDouble": "1.0" }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn connect_rejects_unsupported_driver() {
         let dir = temp_dir("connect-driver");
         let state = test_state(&dir);
@@ -4665,7 +5871,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert_eq!(err.code, "unsupported_driver");
-        assert_eq!(err.message, "지원하지 않는 드라이버입니다");
+        assert_eq!(err.message, "지원하지 않는 엔진: oracle");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -4673,19 +5879,10 @@ mod tests {
     async fn connect_rejects_missing_mysql_config() {
         let dir = temp_dir("connect-missing-mysql");
         let state = test_state(&dir);
-        let request = ConnectRequest {
-            driver: "mysql".into(),
-            postgres: None,
-            cockroach: None,
-            mysql: None,
-            mssql: None,
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-        };
+        let request = connect_request(json!({ "driver": "mysql" }));
         let err = connect_for_test(&state, request).await.unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
-        assert_eq!(err.code, "connect_failed");
+        assert_eq!(err.code, "invalid_request");
         assert_eq!(err.message, "MySQL 접속 정보가 없습니다");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -4694,19 +5891,10 @@ mod tests {
     async fn connect_rejects_missing_cockroach_config() {
         let dir = temp_dir("connect-missing-cockroach");
         let state = test_state(&dir);
-        let request = ConnectRequest {
-            driver: "cockroach".into(),
-            postgres: None,
-            cockroach: None,
-            mysql: None,
-            mssql: None,
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-        };
+        let request = connect_request(json!({ "driver": "cockroach" }));
         let err = connect_for_test(&state, request).await.unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
-        assert_eq!(err.code, "connect_failed");
+        assert_eq!(err.code, "invalid_request");
         assert_eq!(err.message, "CockroachDB 접속 정보가 없습니다");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -4715,19 +5903,10 @@ mod tests {
     async fn connect_rejects_missing_mssql_config() {
         let dir = temp_dir("connect-missing-mssql");
         let state = test_state(&dir);
-        let request = ConnectRequest {
-            driver: "mssql".into(),
-            postgres: None,
-            cockroach: None,
-            mysql: None,
-            mssql: None,
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-        };
+        let request = connect_request(json!({ "driver": "mssql" }));
         let err = connect_for_test(&state, request).await.unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
-        assert_eq!(err.code, "connect_failed");
+        assert_eq!(err.code, "invalid_request");
         assert_eq!(err.message, "SQL Server 접속 정보가 없습니다");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -4751,7 +5930,7 @@ mod tests {
             .unwrap();
         let item = &listed.0["connections"][0];
         assert_eq!(item["driver"], json!("sqlite"));
-        assert_eq!(item["sqlite"]["path"], json!(path));
+        assert_eq!(item["config"]["path"], json!(path));
         assert_eq!(item["has_password"], json!(false));
 
         let opened = connection_connect(
@@ -4909,7 +6088,7 @@ mod tests {
             .find_connection(created[0]["id"].as_str().unwrap())
             .unwrap();
         assert_eq!(saved.driver, "sqlite");
-        assert_eq!(saved.sqlite.as_ref().unwrap().path, "/data/app.db");
+        assert_eq!(saved.config["path"], json!("/data/app.db"));
         assert!(!saved.persist_password);
     }
 
@@ -5031,7 +6210,7 @@ mod tests {
         let saved = store
             .find_connection(created[1]["id"].as_str().unwrap())
             .unwrap();
-        assert_eq!(saved.mysql.as_ref().unwrap().host, "db.internal");
+        assert_eq!(saved.config["host"], json!("db.internal"));
         assert_eq!(
             saved.ssh.as_ref().unwrap().private_key_path.as_deref(),
             Some("/k/id")
@@ -5187,7 +6366,7 @@ mod tests {
         assert_eq!(connections[0]["driver"], json!("postgres"));
         assert_eq!(connections[0]["persist_password"], json!(false));
         assert_eq!(connections[0]["has_password"], json!(false));
-        assert!(connections[0]["postgres"].get("password").is_none());
+        assert!(connections[0]["config"].get("password").is_none());
         assert!(!listed.0.to_string().contains("tablepeek_test_pw"));
 
         let missing = connection_connect(
@@ -5245,9 +6424,9 @@ mod tests {
             .unwrap();
 
         let mut edited = test_mysql_connect_request();
-        if let Some(config) = edited.mysql.as_mut() {
-            config.host = "db.example.internal".into();
-        }
+        edited
+            .config
+            .insert("host".into(), json!("db.example.internal"));
         let updated = connections_update(
             State(state.clone()),
             AxumPath(id.clone()),
@@ -5271,11 +6450,11 @@ mod tests {
         assert_eq!(connections[0]["name"], json!("바뀐 이름"));
         assert_eq!(connections[0]["driver"], json!("mysql"));
         assert_eq!(
-            connections[0]["mysql"]["host"],
+            connections[0]["config"]["host"],
             json!("db.example.internal")
         );
         assert!(connections[0].get("postgres").is_none());
-        assert!(connections[0]["mysql"].get("password").is_none());
+        assert!(connections[0]["config"].get("password").is_none());
         assert_eq!(connections[0]["last_used"], json!(1234));
 
         let missing = connections_update(
@@ -5365,9 +6544,9 @@ mod tests {
         assert_eq!(err.1.code, "unsupported_driver");
 
         let mut pasted = test_connect_request("postgres");
-        if let Some(config) = pasted.postgres.as_mut() {
-            config.host = "postgres://u:secret@db.example/app".into();
-        }
+        pasted
+            .config
+            .insert("host".into(), json!("postgres://u:secret@db.example/app"));
         let err = connections_create(
             State(state.clone()),
             test_headers(),
@@ -5461,10 +6640,13 @@ mod tests {
         assert_eq!(connections.len(), 1);
         assert_eq!(connections[0]["name"], json!("테스트 MySQL"));
         assert_eq!(connections[0]["driver"], json!("mysql"));
-        assert_eq!(connections[0]["mysql"]["host"], json!("127.0.0.1"));
-        assert_eq!(connections[0]["mysql"]["port"], json!(3307));
-        assert_eq!(connections[0]["mysql"]["database"], json!("tablepeek_test"));
-        assert!(connections[0]["mysql"].get("password").is_none());
+        assert_eq!(connections[0]["config"]["host"], json!("127.0.0.1"));
+        assert_eq!(connections[0]["config"]["port"], json!(3307));
+        assert_eq!(
+            connections[0]["config"]["database"],
+            json!("tablepeek_test")
+        );
+        assert!(connections[0]["config"].get("password").is_none());
         assert!(connections[0].get("postgres").is_none());
         assert!(!listed.0.to_string().contains("root_pw"));
 
@@ -5519,9 +6701,9 @@ mod tests {
         assert_eq!(connections.len(), 1);
         assert_eq!(connections[0]["name"], json!("테스트 CockroachDB"));
         assert_eq!(connections[0]["driver"], json!("cockroach"));
-        assert_eq!(connections[0]["cockroach"]["host"], json!("127.0.0.1"));
-        assert_eq!(connections[0]["cockroach"]["port"], json!(26258));
-        assert_eq!(connections[0]["cockroach"]["database"], json!("defaultdb"));
+        assert_eq!(connections[0]["config"]["host"], json!("127.0.0.1"));
+        assert_eq!(connections[0]["config"]["port"], json!(26258));
+        assert_eq!(connections[0]["config"]["database"], json!("defaultdb"));
         assert!(connections[0].get("postgres").is_none());
         assert!(connections[0].get("mysql").is_none());
         assert!(connections[0].get("mssql").is_none());
@@ -5566,11 +6748,14 @@ mod tests {
         assert_eq!(connections.len(), 1);
         assert_eq!(connections[0]["name"], json!("테스트 SQL Server"));
         assert_eq!(connections[0]["driver"], json!("mssql"));
-        assert_eq!(connections[0]["mssql"]["host"], json!("127.0.0.1"));
-        assert_eq!(connections[0]["mssql"]["port"], json!(14330));
-        assert_eq!(connections[0]["mssql"]["database"], json!("tablepeek_test"));
-        assert_eq!(connections[0]["mssql"]["encrypt"], json!(false));
-        assert!(connections[0]["mssql"].get("password").is_none());
+        assert_eq!(connections[0]["config"]["host"], json!("127.0.0.1"));
+        assert_eq!(connections[0]["config"]["port"], json!(14330));
+        assert_eq!(
+            connections[0]["config"]["database"],
+            json!("tablepeek_test")
+        );
+        assert_eq!(connections[0]["config"]["encrypt"], json!(false));
+        assert!(connections[0]["config"].get("password").is_none());
         assert!(connections[0].get("postgres").is_none());
         assert!(connections[0].get("cockroach").is_none());
         assert!(!listed.0.to_string().contains("MsSql_test_pw1"));
@@ -5598,7 +6783,7 @@ mod tests {
         let headers = test_headers();
 
         let mut request = test_connect_request("postgres");
-        request.postgres.as_mut().unwrap().password = None;
+        request.config.remove("password");
         let created = connections_create(
             State(state.clone()),
             headers.clone(),
@@ -5622,6 +6807,150 @@ mod tests {
             "저장된 비밀번호가 없습니다 — 비밀번호를 입력해 연결하세요"
         );
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A MongoDB profile without a password to keep (no authentication,
+    /// X.509) is never saved or listed as keeping one, whatever the hidden
+    /// storage choice said.
+    #[tokio::test]
+    async fn profiles_without_a_password_never_keep_one() {
+        let dir = temp_dir("mongo-auth-persist");
+        let state = test_state(&dir);
+        let headers = test_headers();
+        for (name, config) in [
+            ("없음", json!({ "host": "127.0.0.1", "auth": "none" })),
+            (
+                "인증서",
+                json!({ "host": "db", "auth": "x509", "tls": true }),
+            ),
+            // Saved before the choice, no user: no authentication.
+            (
+                "예전",
+                json!({ "host": "127.0.0.1", "port": 27017, "database": "shop" }),
+            ),
+        ] {
+            let created = connections_create(
+                State(state.clone()),
+                headers.clone(),
+                Json(NewConnectionRequest {
+                    name: name.into(),
+                    connect: connect_request(json!({ "driver": "mongodb", "config": config })),
+                    persist_password: true,
+                }),
+            )
+            .await
+            .unwrap();
+            let id = created.0["id"].as_str().unwrap().to_string();
+            let saved = state
+                .store
+                .lock()
+                .await
+                .find_connection(&id)
+                .cloned()
+                .unwrap();
+            assert!(!saved.persist_password, "{name}");
+        }
+        // One already stored that way still lists without a password.
+        let mut legacy = state.store.lock().await.data().connections[0].clone();
+        legacy.persist_password = true;
+        state.store.lock().await.update_connection(legacy).unwrap();
+        let listed = connections_list(State(state.clone()), headers)
+            .await
+            .unwrap()
+            .0;
+        for connection in listed["connections"].as_array().unwrap() {
+            assert_eq!(connection["has_password"], json!(false), "{connection}");
+            assert_eq!(connection["persist_password"], json!(false), "{connection}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// MongoDB asks for a password only when the profile signs in with one,
+    /// and a profile saved before the choice existed connects as it did.
+    #[tokio::test]
+    async fn mongodb_asks_for_a_password_only_for_password_auth() {
+        if std::env::var("TABLEPEEK_TEST_MONGODB").is_err() {
+            return;
+        }
+        let dir = temp_dir("mongo-auth-connect");
+        let state = test_state(&dir);
+        let headers = test_headers();
+        let save = |config: Value| {
+            let state = state.clone();
+            let headers = headers.clone();
+            async move {
+                let created = connections_create(
+                    State(state),
+                    headers,
+                    Json(NewConnectionRequest {
+                        name: "몽고".into(),
+                        connect: connect_request(json!({ "driver": "mongodb", "config": config })),
+                        persist_password: false,
+                    }),
+                )
+                .await
+                .unwrap();
+                created.0["id"].as_str().unwrap().to_string()
+            }
+        };
+        // No auth choice, no user: saved as none, connects without asking.
+        let open =
+            save(json!({ "host": "127.0.0.1", "port": 27018, "direct_connection": true })).await;
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .await
+                .find_connection(&open)
+                .unwrap()
+                .config["auth"],
+            json!("none")
+        );
+        let connected = connection_connect(
+            State(state.clone()),
+            AxumPath(open),
+            headers.clone(),
+            Bytes::new(),
+        )
+        .await
+        .unwrap();
+        assert!(connected.0["conn"].is_string());
+        // A user and password with nothing stored: asked for.
+        let login = save(json!({
+            "host": "127.0.0.1", "port": 27018, "direct_connection": true,
+            "auth": "password", "user": "tablepeek", "auth_source": "admin"
+        }))
+        .await;
+        let err = connection_connect(
+            State(state.clone()),
+            AxumPath(login.clone()),
+            headers.clone(),
+            Bytes::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.1.code, "password_required");
+        let typed = Bytes::from(json!({ "password": "tablepeek_test_pw" }).to_string());
+        assert!(connection_connect(
+            State(state.clone()),
+            AxumPath(login),
+            headers.clone(),
+            typed
+        )
+        .await
+        .is_ok());
+        // No authentication: the same user is never sent, nothing is asked.
+        let none = save(json!({
+            "host": "127.0.0.1", "port": 27018, "direct_connection": true,
+            "auth": "none", "user": "tablepeek"
+        }))
+        .await;
+        assert!(
+            connection_connect(State(state.clone()), AxumPath(none), headers, Bytes::new())
+                .await
+                .is_ok()
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -6163,8 +7492,102 @@ mod tests {
         assert!(history
             .iter()
             .all(|entry| entry.ok && entry.error.is_none()));
-        assert_eq!((history[0].rows, history[1].rows), (1, 0));
+        // The run's rows are all it returned (one deleted, two left).
+        assert_eq!((history[0].rows, history[1].rows), (2, 0));
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exec_route_returns_the_rows_of_a_statement() {
+        let dir = temp_dir("exec-rows");
+        let state = test_state(&dir);
+        let exec = |sql: &str, job: bool| {
+            exec_route(
+                State(state.clone()),
+                test_headers(),
+                Query(ConnQuery {
+                    conn: None,
+                    system: None,
+                }),
+                Json(ExecRequest {
+                    sql: sql.into(),
+                    history: false,
+                    job,
+                }),
+            )
+        };
+        // A list (the user manager's) arrives whole, from the page or a job.
+        for job in [false, true] {
+            let listed = exec("SELECT id, name FROM demo ORDER BY id", job)
+                .await
+                .unwrap()
+                .0;
+            assert_eq!(listed["rows"].as_array().unwrap().len(), 3, "{listed}");
+            assert_eq!(listed["row_count"], json!(3));
+            assert_eq!(listed["truncated"], json!(false));
+        }
+        // Past the cap the rows stop there and say so.
+        let many = exec(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 10005) SELECT x FROM n",
+            false,
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(many["rows"].as_array().unwrap().len(), EXEC_MAX_ROWS);
+        assert_eq!(many["truncated"], json!(true));
+        // A statement without rows answers as before.
+        let changed = exec("UPDATE demo SET name = name WHERE id = 1", false)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(changed["ok"], json!(true));
+        assert_eq!(changed["rows"], json!([]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A `security` call that never answers (an unlock prompt nobody sees)
+    /// fails the save after its deadline, and other requests go on meanwhile,
+    /// even on a runtime with a single worker.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn stuck_keychain_fails_the_save_without_stalling_other_requests() {
+        let dir = temp_dir("keychain-stuck");
+        let state = test_state(&dir);
+        let mut connect = test_connect_request("postgres");
+        // The stand-in `security` (store::security_bin) sleeps on this word.
+        connect
+            .config
+            .insert("password".into(), json!("hang-keychain"));
+        let save = tokio::spawn(connections_create(
+            State(state.clone()),
+            test_headers(),
+            Json(NewConnectionRequest {
+                name: "stuck".into(),
+                connect,
+                persist_password: true,
+            }),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let started = std::time::Instant::now();
+        let listed = connections_list(State(state.clone()), test_headers())
+            .await
+            .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        assert!(listed.0["connections"].as_array().unwrap().is_empty());
+        assert!(
+            !save.is_finished(),
+            "the stuck keychain call returned early"
+        );
+        let err = save.await.unwrap().unwrap_err();
+        assert_eq!(err.1.code, "keyring_error");
+        assert_eq!(
+            err.1.message,
+            "키체인 응답이 없습니다 — 잠금 해제 창을 확인하세요"
+        );
+        // Nothing was saved.
+        assert!(state.store.lock().await.data().connections.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

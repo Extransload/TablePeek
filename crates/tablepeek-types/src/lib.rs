@@ -11,11 +11,66 @@ pub struct QueryResult {
     pub truncated: bool,
 }
 
-/// API 오류 응답
+/// API 오류 응답: `code`와 사람에게 보일 첫 줄 `message`, 그리고 데이터베이스가
+/// 알려 준 만큼의 구조화된 정보 (docs/ERRORS.md §2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiError {
     pub code: String,
     pub message: String,
+    /// Boxed: most errors have none, and an error reply stays small.
+    #[serde(flatten)]
+    pub fields: Box<ErrorFields>,
+}
+
+impl ApiError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            fields: Box::default(),
+        }
+    }
+}
+
+/// What a database said about an error beyond its first line. Every part is
+/// optional and left out of the JSON when unknown.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ErrorFields {
+    /// The SQL engines' SQLSTATE (PostgreSQL, CockroachDB, MySQL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlstate: Option<String>,
+    /// Where in the statement sent the error points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<ErrorPosition>,
+    /// The engine's own number: MongoDB's code, MySQL's errno, SQL Server's
+    /// error number, SQLite's extended result code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_code: Option<i64>,
+    /// MongoDB's codeName ("DuplicateKey").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_name: Option<String>,
+    /// Structured extras: PostgreSQL's detail, hint and the constraint,
+    /// table and column it names; MongoDB's errInfo and writeErrors
+    /// (canonical Extended JSON); for a MongoDB connection, the topology.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+    /// The driver's whole text, credentials masked, when it says more than
+    /// `message`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+}
+
+/// `offset` counts characters of the statement from 1 (PostgreSQL's and
+/// SQLite's); `line` and `column` count from 1 (MySQL and SQL Server give a
+/// line only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorPosition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
 }
 
 /// 엔진 접속 상태
@@ -25,6 +80,57 @@ pub struct EngineMeta {
     pub path: Option<String>,
     pub demo: bool,
     pub tables: Vec<String>,
+    /// What this connection can do, as the engine reports it once connected.
+    /// Drivers leave it empty; the engine fills it in from its driver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Capabilities>,
+}
+
+/// What an engine can do; the page turns features on from these values
+/// rather than from the engine's name. Names are only ever added: a change
+/// of meaning gets a new name. Keys an engine leaves out read as "can't".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Capabilities {
+    /// Query language: "sql", "mongo", …
+    pub language: String,
+    /// Object kinds the sidebar lists: "table", "view", "collection", …
+    pub objects: Vec<String>,
+    /// Where column information comes from: "declared" or "sampled".
+    pub schema: String,
+    /// Cells, rows and documents can be edited, added and deleted by key.
+    pub edit_by_key: bool,
+    /// "always", "replica_set" or "none".
+    pub transactions: String,
+    pub foreign_keys: bool,
+    pub ddl: bool,
+    /// "switch", "list" or "none".
+    pub databases: String,
+    pub users: bool,
+    /// The plan format: "pg-json", "mysql-json", "sqlite", "mongo"; null for none.
+    pub explain: Option<String>,
+    pub exact_count: bool,
+    /// Backup and restore format: "sql", "ejson"; null for none.
+    pub dump: Option<String>,
+    pub import_formats: Vec<String>,
+    pub export_formats: Vec<String>,
+    pub sessions: SessionCapabilities,
+    pub validation: bool,
+    pub aggregation: bool,
+    pub indexes: IndexCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionCapabilities {
+    pub kill: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IndexCapabilities {
+    pub create: bool,
+    pub drop: bool,
 }
 
 /// 파일 탐색기 항목
@@ -117,12 +223,55 @@ pub struct Relation {
 }
 
 /// 인덱스 정보 (/api/table)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `columns` lists the plain columns of the index, as before. The optional
+/// fields say what those can't (a dump needs them to recreate partial,
+/// expression and prefix indexes); each is left out where the engine has no
+/// such thing to report.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexInfo {
     pub name: String,
     pub unique: bool,
     pub primary: bool,
     pub columns: Vec<String>,
+    /// The engine's own complete statement for the index, ready to run:
+    /// PostgreSQL/CockroachDB `pg_get_indexdef`, SQLite `sqlite_master.sql`.
+    /// None for MySQL and SQL Server, and for indexes the engine made itself
+    /// (SQLite's `sqlite_autoindex_*`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition: Option<String>,
+    /// A partial index's predicate, without the `WHERE` (PostgreSQL,
+    /// CockroachDB, SQLite, SQL Server's filtered index `filter_definition`).
+    #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<String>,
+    /// The key parts in key order, where the engine reports them one by one
+    /// (PostgreSQL, CockroachDB, MySQL, SQL Server): each a column (with
+    /// MySQL's prefix length) or an expression, and its sort direction.
+    /// Included (non-key) columns are not parts. None for SQLite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<IndexPart>>,
+    /// Non-key columns carried in the index (SQL Server `INCLUDE`,
+    /// PostgreSQL `INCLUDE`, CockroachDB `STORING`); None when there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub included: Option<Vec<String>>,
+}
+
+/// One key part of an index: exactly one of `column` and `expression`, and
+/// whether the key sorts descending (left out when ascending).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IndexPart {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    /// The expression as the engine prints it (PostgreSQL
+    /// `pg_get_indexdef(index, n, true)`, MySQL 8 `EXPRESSION`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    /// MySQL: how many leading characters (bytes for binary types) of the
+    /// column are indexed (`SUB_PART`); None for the whole column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_length: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub descending: bool,
 }
 
 /// 외래 키 정보 (/api/table)
@@ -197,6 +346,14 @@ pub struct ServerInfo {
     pub size_bytes: Option<i64>,
     pub sessions: Option<Vec<ServerSession>>,
     pub can_kill: bool,
+    /// How the server is deployed ("standalone", "replica_set", "sharded"),
+    /// where the engine has such a notion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<String>,
+    /// The server answering, as host:port, where it isn't the address the
+    /// connection names (a replica set member).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// 뷰/함수/프로시저/트리거/시퀀스 목록 (/api/objects)
@@ -307,22 +464,112 @@ pub struct SqliteConfig {
     pub path: String,
 }
 
+/// An engine's connection settings as the client sends them: the keys its
+/// descriptor's form fields name (host, port, path, …). The engine parses
+/// them into its own typed settings.
+pub type ConnConfig = serde_json::Map<String, Value>;
+
 /// 원격 접속 요청 (/api/connect)
+///
+/// Written as `{ driver, config, ssh?, http_tunnel? }`. The older shape, the
+/// settings under a key named after the driver (`{ driver: "postgres",
+/// postgres: {…} }`), is still read: saved profiles and exported files from
+/// earlier versions use it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "ConnectRequestWire")]
 pub struct ConnectRequest {
     pub driver: String,
+    pub config: ConnConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub postgres: Option<PostgresConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cockroach: Option<PostgresConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mysql: Option<MySqlConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mssql: Option<MssqlConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sqlite: Option<SqliteConfig>,
-    #[serde(default, skip_serializing)]
     pub ssh: Option<SshConfig>,
-    #[serde(default, skip_serializing)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_tunnel: Option<HttpTunnelConfig>,
+}
+
+#[derive(Deserialize)]
+struct ConnectRequestWire {
+    driver: String,
+    #[serde(default)]
+    config: Option<ConnConfig>,
+    #[serde(default)]
+    ssh: Option<SshConfig>,
+    #[serde(default)]
+    http_tunnel: Option<HttpTunnelConfig>,
+    #[serde(flatten)]
+    rest: ConnConfig,
+}
+
+impl From<ConnectRequestWire> for ConnectRequest {
+    fn from(wire: ConnectRequestWire) -> Self {
+        let config = wire
+            .config
+            .unwrap_or_else(|| legacy_config(&wire.driver, wire.rest));
+        Self {
+            driver: wire.driver,
+            config,
+            ssh: wire.ssh,
+            http_tunnel: wire.http_tunnel,
+        }
+    }
+}
+
+/// The settings of the older shape: the object under the driver's own key
+/// among `rest`, the keys besides `driver`, `ssh` and `http_tunnel`. Empty
+/// when there is none, which the engine then reports as missing settings.
+pub fn legacy_config(driver: &str, mut rest: ConnConfig) -> ConnConfig {
+    match rest.remove(driver) {
+        Some(Value::Object(config)) => config,
+        _ => ConnConfig::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn connect_request_reads_both_shapes() {
+        let new: ConnectRequest = serde_json::from_value(json!({
+            "driver": "postgres",
+            "config": { "host": "h", "port": 5432 },
+            "ssh": { "host": "b", "port": 22, "user": "u" }
+        }))
+        .unwrap();
+        assert_eq!(new.config["host"], json!("h"));
+        assert_eq!(new.ssh.unwrap().host, "b");
+
+        let legacy: ConnectRequest = serde_json::from_value(json!({
+            "driver": "mysql",
+            "postgres": { "host": "other" },
+            "mysql": { "host": "h", "port": 3306, "password": "pw" },
+            "http_tunnel": { "host": "p", "port": 8080 }
+        }))
+        .unwrap();
+        assert_eq!(legacy.config["host"], json!("h"));
+        assert_eq!(legacy.config["password"], json!("pw"));
+        assert_eq!(legacy.http_tunnel.unwrap().host, "p");
+
+        let missing: ConnectRequest =
+            serde_json::from_value(json!({ "driver": "sqlite" })).unwrap();
+        assert!(missing.config.is_empty());
+
+        // Written in the new shape.
+        let written = serde_json::to_value(&missing).unwrap();
+        assert_eq!(written, json!({ "driver": "sqlite", "config": {} }));
+    }
+
+    #[test]
+    fn capabilities_left_out_read_as_cannot() {
+        let caps: Capabilities = serde_json::from_value(json!({ "language": "sql" })).unwrap();
+        assert_eq!(caps.language, "sql");
+        assert!(!caps.ddl);
+        assert_eq!(caps.explain, None);
+        let written = serde_json::to_value(&caps).unwrap();
+        assert_eq!(written["explain"], Value::Null);
+        assert_eq!(
+            written["indexes"],
+            json!({ "create": false, "drop": false })
+        );
+    }
 }

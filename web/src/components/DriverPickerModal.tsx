@@ -1,28 +1,22 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { engines } from "../engines";
 import { t } from "../i18n";
-import type { Driver } from "../store";
 import { DriverIcon } from "./DriverIcon";
 
 // Arrow keys walk the tiles in reading order.
 const STEPS: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
 
-const CHOICES: { kind: Driver; label: string }[] = [
-  { kind: "postgres", label: "PostgreSQL" },
-  { kind: "mysql", label: "MySQL" },
-  { kind: "mssql", label: "SQL Server" },
-  { kind: "cockroach", label: "CockroachDB" },
-  { kind: "sqlite", label: "SQLite" },
-];
-
 interface DriverPickerModalProps {
-  onPick(kind: Driver): void;
+  // The picked engine's id.
+  onPick(kind: string): void;
   onClose(): void;
 }
 
 // A new connection starts, as in TablePlus, by picking the kind of database:
 // nothing is picked until the user picks it. Double-click or Enter creates.
 export function DriverPickerModal({ onPick, onClose }: DriverPickerModalProps) {
-  const [picked, setPicked] = useState<Driver | null>(null);
+  const choices = engines();
+  const [picked, setPicked] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const tileId = useId();
 
@@ -41,12 +35,12 @@ export function DriverPickerModal({ onPick, onClose }: DriverPickerModalProps) {
   }, [onClose]);
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    const at = picked === null ? -1 : CHOICES.findIndex((choice) => choice.kind === picked);
+    const at = picked === null ? -1 : choices.findIndex((choice) => choice.id === picked);
     const step = STEPS[event.key];
     if (step !== undefined) {
       event.preventDefault();
-      const next = at < 0 ? 0 : Math.min(CHOICES.length - 1, Math.max(0, at + step));
-      setPicked(CHOICES[next].kind);
+      const next = at < 0 ? 0 : Math.min(choices.length - 1, Math.max(0, at + step));
+      setPicked(choices[next].id);
     } else if (event.key === "Enter" && picked !== null) {
       event.preventDefault();
       // A held Enter mustn't run on into the form that opens next.
@@ -78,23 +72,23 @@ export function DriverPickerModal({ onPick, onClose }: DriverPickerModalProps) {
             tabIndex={0}
             onKeyDown={onKeyDown}
           >
-            {CHOICES.map((choice) => (
+            {choices.map((choice) => (
               <button
                 type="button"
-                key={choice.kind}
-                id={`${tileId}-${choice.kind}`}
+                key={choice.id}
+                id={`${tileId}-${choice.id}`}
                 role="option"
-                aria-selected={picked === choice.kind}
+                aria-selected={picked === choice.id}
                 tabIndex={-1}
-                className={`driver-tile${picked === choice.kind ? " selected" : ""}`}
+                className={`driver-tile${picked === choice.id ? " selected" : ""}`}
                 onClick={() => {
-                  setPicked(choice.kind);
+                  setPicked(choice.id);
                   // The list keeps the focus, and with it the keys and the ring.
                   gridRef.current?.focus();
                 }}
-                onDoubleClick={() => onPick(choice.kind)}
+                onDoubleClick={() => onPick(choice.id)}
               >
-                <DriverIcon kind={choice.kind} size={40} />
+                <DriverIcon kind={choice.id} size={40} />
                 <span className="driver-tile-name">{choice.label}</span>
               </button>
             ))}

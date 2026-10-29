@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
-use tablepeek_types::{
-    HttpTunnelConfig, MssqlConfig, MySqlConfig, PostgresConfig, SqliteConfig, SshConfig,
-};
+use serde_json::Value;
+use tablepeek_types::{legacy_config, ConnConfig, HttpTunnelConfig, SshConfig};
 
 /// Runs kept per connection; the oldest fall off first.
 pub const HISTORY_CAP: usize = 1_000;
@@ -77,21 +76,18 @@ impl SavedSsh {
     }
 }
 
+/// A saved connection profile. Written as `{ id, name, driver, config, ssh?,
+/// http_tunnel?, … }`; profiles from earlier versions kept their settings
+/// under a key named after the driver (`postgres: {…}`) and still read, and
+/// settings they lack are filled in as they meant (`upgrade_config`).
+/// Secrets are never in `config`: they live in the keychain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "SavedConnectionWire")]
 pub struct SavedConnection {
     pub id: String,
     pub name: String,
     pub driver: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub postgres: Option<PostgresConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cockroach: Option<PostgresConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mysql: Option<MySqlConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mssql: Option<MssqlConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sqlite: Option<SqliteConfig>,
+    pub config: ConnConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SavedSsh>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +96,46 @@ pub struct SavedConnection {
     pub persist_password: bool,
     #[serde(default)]
     pub last_used: u64,
+}
+
+#[derive(Deserialize)]
+struct SavedConnectionWire {
+    id: String,
+    name: String,
+    driver: String,
+    #[serde(default)]
+    config: Option<ConnConfig>,
+    #[serde(default)]
+    ssh: Option<SavedSsh>,
+    #[serde(default)]
+    http_tunnel: Option<SavedHttpTunnel>,
+    #[serde(default)]
+    persist_password: bool,
+    #[serde(default)]
+    last_used: u64,
+    #[serde(flatten)]
+    rest: ConnConfig,
+}
+
+impl From<SavedConnectionWire> for SavedConnection {
+    fn from(wire: SavedConnectionWire) -> Self {
+        let mut config = wire
+            .config
+            .unwrap_or_else(|| legacy_config(&wire.driver, wire.rest));
+        if let Some(factory) = tablepeek_engine::registry::factory(&wire.driver) {
+            factory.upgrade_config(&mut config);
+        }
+        Self {
+            id: wire.id,
+            name: wire.name,
+            driver: wire.driver,
+            config,
+            ssh: wire.ssh,
+            http_tunnel: wire.http_tunnel,
+            persist_password: wire.persist_password,
+            last_used: wire.last_used,
+        }
+    }
 }
 
 /// One statement run from the editor, or a data change committed from the
@@ -169,16 +205,67 @@ pub struct FavoriteFolder {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "StoreDataWire", into = "StoreDataWire")]
 pub struct StoreData {
-    #[serde(default)]
     pub connections: Vec<SavedConnection>,
-    #[serde(default)]
+    /// Profiles this version can't read (damaged, or written by a newer
+    /// one), kept exactly as they were and written back after the others,
+    /// so one bad entry never costs the rest.
+    pub unreadable_connections: Vec<Value>,
     pub favorites: Vec<FavoriteEntry>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub favorite_folders: Vec<FavoriteFolder>,
     /// Safe mode (0 off, 1 risky only, 2 every change) chosen per connection scope.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub safe_modes: BTreeMap<String, u8>,
+}
+
+/// store.json as written: connections are read one by one.
+#[derive(Serialize, Deserialize)]
+struct StoreDataWire {
+    #[serde(default)]
+    connections: Vec<Value>,
+    #[serde(default)]
+    favorites: Vec<FavoriteEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    favorite_folders: Vec<FavoriteFolder>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    safe_modes: BTreeMap<String, u8>,
+}
+
+impl From<StoreDataWire> for StoreData {
+    fn from(wire: StoreDataWire) -> Self {
+        let mut connections = Vec::with_capacity(wire.connections.len());
+        let mut unreadable_connections = Vec::new();
+        for raw in wire.connections {
+            match serde_json::from_value::<SavedConnection>(raw.clone()) {
+                Ok(connection) => connections.push(connection),
+                Err(_) => unreadable_connections.push(raw),
+            }
+        }
+        Self {
+            connections,
+            unreadable_connections,
+            favorites: wire.favorites,
+            favorite_folders: wire.favorite_folders,
+            safe_modes: wire.safe_modes,
+        }
+    }
+}
+
+impl From<StoreData> for StoreDataWire {
+    fn from(data: StoreData) -> Self {
+        let connections = data
+            .connections
+            .iter()
+            .filter_map(|connection| serde_json::to_value(connection).ok())
+            .chain(data.unreadable_connections)
+            .collect();
+        Self {
+            connections,
+            favorites: data.favorites,
+            favorite_folders: data.favorite_folders,
+            safe_modes: data.safe_modes,
+        }
+    }
 }
 
 pub struct StoreFile {
@@ -636,11 +723,47 @@ fn security_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// How long one `security` call may take. It only runs long when macOS shows
+/// a keychain prompt nobody answers; past this the call fails instead of
+/// holding its request (and a blocking thread) forever.
+#[cfg(all(target_os = "macos", not(test)))]
+const SECURITY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+#[cfg(all(target_os = "macos", test))]
+const SECURITY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn security_bin() -> PathBuf {
+    PathBuf::from("/usr/bin/security")
+}
+
+/// Tests never reach the real keychain: a stand-in script answers "not
+/// found" (exit 44) to everything, and sleeps first when the command carries
+/// "hang-keychain", the way `security` waits on an unanswered prompt.
+#[cfg(all(target_os = "macos", test))]
+fn security_bin() -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    static BIN: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+        let dir =
+            std::env::temp_dir().join(format!("tablepeek-fake-security-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("security");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nread -r line\ncase \"$line\" in *hang-keychain*) exec sleep 30;; esac\nexit 44\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    });
+    BIN.clone()
+}
+
+/// Runs one command through `security -i`, killing it once SECURITY_DEADLINE passes.
 #[cfg(target_os = "macos")]
 fn security_run(command: &str) -> Result<std::process::Output, String> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::{Command, Stdio};
-    let mut child = Command::new("/usr/bin/security")
+    let mut child = Command::new(security_bin())
         .arg("-i")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -648,14 +771,40 @@ fn security_run(command: &str) -> Result<std::process::Output, String> {
         .spawn()
         .map_err(|err| format!("키체인을 열 수 없습니다: {err}"))?;
     if let Some(mut stdin) = child.stdin.take() {
+        // Dropping stdin afterwards ends the interactive session.
         stdin
             .write_all(command.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
             .map_err(|err| format!("키체인 요청을 전달할 수 없습니다: {err}"))?;
     }
-    child
-        .wait_with_output()
-        .map_err(|err| format!("키체인 응답을 읽을 수 없습니다: {err}"))
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= SECURITY_DEADLINE => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("키체인 응답이 없습니다 — 잠금 해제 창을 확인하세요".into());
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(err) => return Err(format!("키체인 응답을 읽을 수 없습니다: {err}")),
+        }
+    };
+    // The replies are a line or two, well inside the pipe buffers, so reading
+    // them after the exit can't stall the process.
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_end(&mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_end(&mut stderr);
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -725,12 +874,12 @@ pub fn set_password(account: &str, password: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 pub fn delete_password(account: &str) {
     for service in std::iter::once(KEYRING_SERVICE).chain(LEGACY_KEYRING_SERVICES) {
-        let _ = std::process::Command::new("/usr/bin/security")
-            .args(["delete-generic-password", "-s", service, "-a", account])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output();
+        let command = format!(
+            "delete-generic-password -s {} -a {}",
+            security_quote(service),
+            security_quote(account)
+        );
+        let _ = security_run(&command);
     }
 }
 
@@ -773,7 +922,6 @@ pub fn delete_password(account: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tablepeek_types::SslMode;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -788,6 +936,13 @@ mod tests {
         dir
     }
 
+    fn config(value: serde_json::Value) -> ConnConfig {
+        match value {
+            Value::Object(map) => map,
+            _ => unreachable!(),
+        }
+    }
+
     fn sample_connection(id: &str) -> SavedConnection {
         let ssh = SshConfig {
             host: "bastion.internal".into(),
@@ -800,76 +955,11 @@ mod tests {
             id: id.into(),
             name: "운영 DB".into(),
             driver: "postgres".into(),
-            postgres: Some(PostgresConfig {
-                host: "db.internal".into(),
-                port: 5432,
-                user: "app".into(),
-                password: Some("pg-secret".into()),
-                database: "app".into(),
-                ssl_mode: SslMode::Disable,
-                ssl_root_cert: None,
-                ssl_client_cert: None,
-                ssl_client_key: None,
-            }),
-            cockroach: None,
-            mysql: None,
-            mssql: None,
-            sqlite: None,
+            config: config(serde_json::json!({
+                "host": "db.internal", "port": 5432, "user": "app", "database": "app",
+                "ssl_mode": "disable"
+            })),
             ssh: Some(SavedSsh::from_config(&ssh)),
-            http_tunnel: None,
-            persist_password: true,
-            last_used: 0,
-        }
-    }
-
-    fn sample_mysql_connection(id: &str) -> SavedConnection {
-        SavedConnection {
-            id: id.into(),
-            name: "운영 MySQL".into(),
-            driver: "mysql".into(),
-            postgres: None,
-            cockroach: None,
-            mysql: Some(MySqlConfig {
-                host: "mysql.internal".into(),
-                port: 3306,
-                user: "app".into(),
-                password: Some("my-secret".into()),
-                database: "app".into(),
-                ssl_mode: SslMode::Disable,
-                ssl_root_cert: None,
-                ssl_client_cert: None,
-                ssl_client_key: None,
-            }),
-            mssql: None,
-            sqlite: None,
-            ssh: None,
-            http_tunnel: None,
-            persist_password: true,
-            last_used: 0,
-        }
-    }
-
-    fn sample_cockroach_connection(id: &str) -> SavedConnection {
-        SavedConnection {
-            id: id.into(),
-            name: "운영 CockroachDB".into(),
-            driver: "cockroach".into(),
-            postgres: None,
-            cockroach: Some(PostgresConfig {
-                host: "crdb.internal".into(),
-                port: 26257,
-                user: "root".into(),
-                password: Some("crdb-secret".into()),
-                database: "defaultdb".into(),
-                ssl_mode: SslMode::Disable,
-                ssl_root_cert: None,
-                ssl_client_cert: None,
-                ssl_client_key: None,
-            }),
-            mysql: None,
-            mssql: None,
-            sqlite: None,
-            ssh: None,
             http_tunnel: None,
             persist_password: true,
             last_used: 0,
@@ -881,18 +971,10 @@ mod tests {
             id: id.into(),
             name: "운영 SQL Server".into(),
             driver: "mssql".into(),
-            postgres: None,
-            cockroach: None,
-            mysql: None,
-            mssql: Some(MssqlConfig {
-                host: "mssql.internal".into(),
-                port: 1433,
-                user: "sa".into(),
-                password: Some("ms-secret".into()),
-                database: "app".into(),
-                encrypt: false,
-            }),
-            sqlite: None,
+            config: config(serde_json::json!({
+                "host": "mssql.internal", "port": 1433, "user": "sa", "database": "app",
+                "encrypt": false
+            })),
             ssh: None,
             http_tunnel: None,
             persist_password: true,
@@ -938,16 +1020,10 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_keeps_non_secrets_only() {
+    fn roundtrip_writes_the_new_shape() {
         let dir = temp_dir("roundtrip");
         let mut store = StoreFile::load(&dir);
         store.add_connection(sample_connection("abc")).unwrap();
-        store
-            .add_connection(sample_mysql_connection("my-1"))
-            .unwrap();
-        store
-            .add_connection(sample_cockroach_connection("cr-1"))
-            .unwrap();
         store
             .add_connection(sample_mssql_connection("ms-1"))
             .unwrap();
@@ -975,22 +1051,6 @@ mod tests {
 
         let raw = std::fs::read_to_string(dir.join(STORE_FILE)).unwrap();
         assert!(
-            !raw.contains("pg-secret"),
-            "store.json에 PG 비밀번호가 남았습니다"
-        );
-        assert!(
-            !raw.contains("my-secret"),
-            "store.json에 MySQL 비밀번호가 남았습니다"
-        );
-        assert!(
-            !raw.contains("crdb-secret"),
-            "store.json에 CockroachDB 비밀번호가 남았습니다"
-        );
-        assert!(
-            !raw.contains("ms-secret"),
-            "store.json에 SQL Server 비밀번호가 남았습니다"
-        );
-        assert!(
             !raw.contains("ssh-secret"),
             "store.json에 SSH 비밀번호가 남았습니다"
         );
@@ -1004,44 +1064,21 @@ mod tests {
         );
 
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert!(value["connections"][0].get("mysql").is_none());
-        assert!(value["connections"][1].get("postgres").is_none());
-        assert!(value["connections"][2].get("postgres").is_none());
-        assert!(value["connections"][3].get("postgres").is_none());
-        assert!(value["connections"][3].get("mysql").is_none());
+        assert_eq!(value["connections"][0]["config"]["host"], "db.internal");
+        assert!(value["connections"][0].get("postgres").is_none());
+        assert_eq!(value["connections"][1]["config"]["encrypt"], false);
+        assert!(value["connections"][1].get("mssql").is_none());
 
         let reloaded = StoreFile::load(&dir);
         let connection = &reloaded.data().connections[0];
         assert_eq!(connection.name, "운영 DB");
-        let postgres = connection.postgres.as_ref().unwrap();
-        assert_eq!(postgres.host, "db.internal");
-        assert!(postgres.password.is_none());
-        assert!(connection.mysql.is_none());
+        assert_eq!(connection.config["host"], "db.internal");
         assert_eq!(
             connection.ssh.as_ref().unwrap().private_key_path.as_deref(),
             Some("/tmp/tablepeek-test-key")
         );
         assert!(connection.persist_password);
-
-        let mysql = reloaded.data().connections[1].mysql.as_ref().unwrap();
-        assert_eq!(mysql.host, "mysql.internal");
-        assert_eq!(mysql.database, "app");
-        assert!(mysql.password.is_none());
-        assert!(reloaded.data().connections[1].postgres.is_none());
-
-        let cockroach = reloaded.data().connections[2].cockroach.as_ref().unwrap();
-        assert_eq!(cockroach.host, "crdb.internal");
-        assert_eq!(cockroach.port, 26257);
-        assert_eq!(cockroach.user, "root");
-        assert!(cockroach.password.is_none());
-        assert!(reloaded.data().connections[2].postgres.is_none());
-
-        let mssql = reloaded.data().connections[3].mssql.as_ref().unwrap();
-        assert_eq!(mssql.host, "mssql.internal");
-        assert_eq!(mssql.database, "app");
-        assert!(mssql.password.is_none());
-        assert!(!mssql.encrypt);
-        assert!(reloaded.data().connections[3].mysql.is_none());
+        assert_eq!(reloaded.data().connections[1].config["port"], 1433);
 
         assert_eq!(reloaded.history("saved:abc", 10).len(), 2);
         assert_eq!(
@@ -1050,6 +1087,112 @@ mod tests {
         );
         assert_eq!(reloaded.favorites().len(), 1);
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_profiles_read_and_broken_ones_survive() {
+        let dir = temp_dir("legacy-store");
+        let broken =
+            serde_json::json!({ "id": 7, "name": ["not", "a", "name"], "driver": "postgres" });
+        let legacy = serde_json::json!({
+            "connections": [
+                {
+                    "id": "pg-1", "name": "운영 DB", "driver": "postgres",
+                    "postgres": { "host": "db.internal", "port": 5432, "user": "app", "database": "app", "ssl_mode": "require" },
+                    "ssh": { "host": "bastion", "port": 22, "user": "ops", "private_key_path": "/k/id" },
+                    "persist_password": true, "last_used": 42
+                },
+                broken.clone(),
+                {
+                    "id": "lite", "name": "로컬", "driver": "sqlite",
+                    "sqlite": { "path": "/tmp/app.db" }
+                },
+                {
+                    "id": "my-1", "name": "MySQL", "driver": "mysql",
+                    "mysql": { "host": "mysql.internal", "port": 3306, "user": "root", "database": "mc" },
+                    "http_tunnel": { "host": "proxy", "port": 8080, "username": "me" }
+                }
+            ],
+            "favorites": [],
+            "safe_modes": { "saved:pg-1": 2 }
+        });
+        std::fs::write(dir.join(STORE_FILE), legacy.to_string()).unwrap();
+
+        let mut store = StoreFile::load(&dir);
+        let names: Vec<&str> = store
+            .data()
+            .connections
+            .iter()
+            .map(|connection| connection.name.as_str())
+            .collect();
+        assert_eq!(names, ["운영 DB", "로컬", "MySQL"]);
+        let pg = store.find_connection("pg-1").unwrap();
+        assert_eq!(pg.config["host"], "db.internal");
+        assert_eq!(pg.config["ssl_mode"], "require");
+        assert_eq!(pg.last_used, 42);
+        assert_eq!(pg.ssh.as_ref().unwrap().host, "bastion");
+        assert_eq!(
+            store.find_connection("lite").unwrap().config["path"],
+            "/tmp/app.db"
+        );
+        let my = store.find_connection("my-1").unwrap();
+        assert_eq!(
+            my.http_tunnel.as_ref().unwrap().username.as_deref(),
+            Some("me")
+        );
+        assert_eq!(store.data().unreadable_connections, vec![broken.clone()]);
+
+        // The next write uses the new shape and keeps the broken entry as it was.
+        store.touch_connection("pg-1", 100).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(STORE_FILE)).unwrap()).unwrap();
+        let connections = written["connections"].as_array().unwrap();
+        assert_eq!(connections.len(), 4);
+        assert_eq!(connections[0]["config"]["host"], "db.internal");
+        assert!(connections[0].get("postgres").is_none());
+        assert_eq!(connections[1]["config"]["path"], "/tmp/app.db");
+        assert_eq!(connections[3], broken);
+        assert_eq!(written["safe_modes"]["saved:pg-1"], 2);
+
+        // And reads back the same.
+        let reloaded = StoreFile::load(&dir);
+        assert_eq!(reloaded.data().connections.len(), 3);
+        assert_eq!(reloaded.find_connection("pg-1").unwrap().last_used, 100);
+        assert_eq!(reloaded.data().unreadable_connections, vec![broken]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mongodb_profiles_saved_before_the_auth_choice_get_one() {
+        let dir = temp_dir("mongo-auth");
+        let saved = serde_json::json!({
+            "connections": [
+                { "id": "open", "name": "로컬", "driver": "mongodb",
+                  "config": { "host": "127.0.0.1", "port": 27017, "database": "shop" } },
+                { "id": "login", "name": "인증", "driver": "mongodb",
+                  "config": { "host": "127.0.0.1", "port": 27018, "user": "app", "auth_source": "admin" },
+                  "persist_password": false },
+                { "id": "cert", "name": "인증서", "driver": "mongodb",
+                  "config": { "host": "db", "auth_mechanism": "MONGODB-X509", "tls": true } },
+                { "id": "chosen", "name": "고른 것", "driver": "mongodb",
+                  "config": { "host": "db", "user": "app", "auth": "none" } }
+            ]
+        });
+        std::fs::write(dir.join(STORE_FILE), saved.to_string()).unwrap();
+        let store = StoreFile::load(&dir);
+        for (id, auth) in [
+            ("open", "none"),
+            ("login", "password"),
+            ("cert", "x509"),
+            ("chosen", "none"),
+        ] {
+            assert_eq!(
+                store.find_connection(id).unwrap().config["auth"],
+                auth,
+                "{id}"
+            );
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

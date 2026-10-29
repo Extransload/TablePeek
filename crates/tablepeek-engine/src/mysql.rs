@@ -12,17 +12,17 @@ use mysql_async::{
 };
 use serde_json::Value;
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    MySqlConfig, ObjectDefinition, PkValue, Relation, ServerInfo, ServerSession, SslMode,
-    TableDetail, TableSchema, TriggerInfo, ValueExpr,
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ErrorFields, ErrorPosition, ForeignKeyInfo,
+    IndexInfo, IndexPart, InsertValue, MySqlConfig, ObjectDefinition, PkValue, Relation,
+    ServerInfo, ServerSession, SslMode, TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 
 use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
 use crate::{
-    build_arrow, hex_bytes, hex_cell, humanize_uptime_ko, not_hex, real_json, shown_hex_bytes,
-    EngineError, QueryData,
+    build_arrow, caused_by_tls, hex_bytes, hex_cell, humanize_uptime_ko, not_hex, real_json,
+    shown_hex_bytes, EngineError, QueryData,
 };
 
 /// A SELECT's table as information_schema names it (schema, table) and its
@@ -258,7 +258,7 @@ fn build_opts(config: &MySqlConfig, tls: bool) -> Result<Opts, EngineError> {
             }
             (None, None) => {}
             _ => {
-                return Err(EngineError::Internal(
+                return Err(EngineError::BadRequest(
                     "TLS 클라이언트 인증서와 키는 함께 지정해야 합니다".into(),
                 ));
             }
@@ -269,28 +269,36 @@ fn build_opts(config: &MySqlConfig, tls: bool) -> Result<Opts, EngineError> {
 }
 
 fn mysql_err(err: mysql_async::Error) -> EngineError {
-    EngineError::MySql(err.to_string())
+    let raw = err.to_string();
+    let mut fields = ErrorFields::default();
+    let message = match &err {
+        // "ERROR 1064 (42000): …": the words alone lead; codes go apart.
+        mysql_async::Error::Server(server) => {
+            fields.server_code = Some(i64::from(server.code));
+            fields.sqlstate = Some(server.state.clone()).filter(|state| !state.is_empty());
+            fields.position = error_line(&server.message).map(|line| ErrorPosition {
+                line: Some(line),
+                ..ErrorPosition::default()
+            });
+            fields.raw = Some(raw);
+            server.message.clone()
+        }
+        _ => raw,
+    };
+    EngineError::mysql(message, fields)
 }
 
-// rustls failures (an untrusted certificate, say) reach mysql_async as plain
-// I/O errors that wrap the rustls::Error.
-fn is_tls_io_error(err: &std::io::Error) -> bool {
-    let mut current = err
-        .get_ref()
-        .map(|inner| inner as &(dyn std::error::Error + 'static));
-    while let Some(inner) = current {
-        if inner.is::<rustls::Error>() {
-            return true;
-        }
-        current = inner.source();
-    }
-    false
+/// The line a MySQL syntax error names ("… near 'x' at line 3").
+fn error_line(message: &str) -> Option<u32> {
+    let (_, rest) = message.rsplit_once(" at line ")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 fn tls_fallback_allowed(err: &MyError) -> bool {
     match err {
         MyError::Io(mysql_async::IoError::Tls(_)) => true,
-        MyError::Io(mysql_async::IoError::Io(io)) => is_tls_io_error(io),
+        MyError::Io(mysql_async::IoError::Io(io)) => caused_by_tls(io),
         MyError::Driver(DriverError::NoClientSslFlagFromServer) => true,
         MyError::Server(server) => matches!(server.code, 2026 | 3159),
         MyError::Other(source) => {
@@ -310,20 +318,29 @@ pub(crate) async fn connect(
         Ok(conn) => (conn, opts),
         Err(err) if config.ssl_mode == SslMode::Prefer && tls_fallback_allowed(&err) => {
             let fallback = build_opts(config, false)?;
+            // The plain retry's failure is the one to fix (a wrong password,
+            // say); the TLS one stays in the full text.
             let conn = Conn::new(fallback.clone()).await.map_err(|fallback_err| {
-                EngineError::MySql(format!(
-                    "MySQL TLS 연결 실패: {err}; 평문 재시도 실패: {fallback_err}"
-                ))
+                let mut error = mysql_err(fallback_err);
+                if let EngineError::Driver {
+                    message, fields, ..
+                } = &mut error
+                {
+                    let retried = fields.raw.take().unwrap_or_else(|| message.clone());
+                    fields.raw = Some(format!("TLS 연결 실패: {err}; 평문 재시도 실패: {retried}"));
+                }
+                error
             })?;
             (conn, fallback)
         }
         Err(err) => {
-            let label = if config.ssl_mode != SslMode::Disable && tls_fallback_allowed(&err) {
-                "MySQL TLS 연결 실패"
+            let tls = config.ssl_mode != SslMode::Disable && tls_fallback_allowed(&err);
+            let error = mysql_err(err);
+            return Err(if tls {
+                error.prefixed("TLS 연결 실패: ")
             } else {
-                "MySQL 연결 실패"
-            };
-            return Err(EngineError::MySql(format!("{label}: {err}")));
+                error
+            });
         }
     };
     // Not yet behind MyConn: logged by hand.
@@ -451,6 +468,7 @@ pub(crate) async fn meta(
         path: Some(inner.label.clone()),
         demo: false,
         tables,
+        capabilities: None,
     })
 }
 
@@ -975,29 +993,69 @@ pub(crate) async fn table_detail(
         .collect::<Vec<_>>();
 
     let mut indexes: Vec<IndexInfo> = Vec::new();
-    let index_rows: Vec<(String, i64, Option<String>)> = conn
+    let target = || {
+        vec![
+            MyValue::from(canonical_schema.clone()),
+            MyValue::from(canonical_table.clone()),
+        ]
+    };
+    // MySQL 8.0.13+ reports a functional key part's EXPRESSION; MariaDB and
+    // older servers have no such column, and read the rest without it.
+    // COLLATION is 'D' for a descending key part.
+    type IndexRow = (
+        String,
+        i64,
+        Option<String>,
+        Option<u32>,
+        Option<String>,
+        Option<String>,
+    );
+    let index_rows: Vec<IndexRow> = match conn
         .exec(
-            "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM information_schema.STATISTICS \
+            "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, SUB_PART, COLLATION, EXPRESSION \
+             FROM information_schema.STATISTICS \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX",
-            vec![
-                MyValue::from(canonical_schema.clone()),
-                MyValue::from(canonical_table.clone()),
-            ],
+            target(),
         )
         .await
-        .unwrap_or_default();
-    for (index_name, non_unique, column) in index_rows {
+    {
+        Ok(rows) => rows,
+        Err(_) => conn
+            .exec::<(String, i64, Option<String>, Option<u32>, Option<String>), _>(
+                "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, SUB_PART, COLLATION \
+                 FROM information_schema.STATISTICS \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+                target(),
+            )
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, non_unique, column, prefix, order)| {
+                (name, non_unique, column, prefix, order, None)
+            })
+            .collect(),
+    };
+    for (index_name, non_unique, column, prefix_length, order, expression) in index_rows {
+        let part = IndexPart {
+            column: column.clone(),
+            expression,
+            prefix_length,
+            descending: order.as_deref() == Some("D"),
+        };
         match indexes.last_mut() {
             Some(existing) if existing.name == index_name => {
                 if let Some(column) = column {
                     existing.columns.push(column);
                 }
+                existing.parts.get_or_insert_with(Vec::new).push(part);
             }
             _ => indexes.push(IndexInfo {
                 name: index_name.clone(),
                 unique: non_unique == 0,
                 primary: index_name == "PRIMARY",
                 columns: column.into_iter().collect(),
+                parts: Some(vec![part]),
+                ..IndexInfo::default()
             }),
         }
     }
@@ -1174,6 +1232,8 @@ pub(crate) async fn server_info(inner: &MySqlInner) -> Result<ServerInfo, Engine
         size_bytes,
         sessions: Some(sessions),
         can_kill: true,
+        topology: None,
+        host: None,
     })
 }
 
@@ -1376,7 +1436,7 @@ pub(crate) async fn tx(inner: &MySqlInner, statement: &str) -> Result<(), Engine
     let active = inner.in_tx();
     match statement {
         "BEGIN" if active => {
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "이미 트랜잭션이 진행 중입니다".into(),
             ));
         }
@@ -1388,7 +1448,7 @@ pub(crate) async fn tx(inner: &MySqlInner, statement: &str) -> Result<(), Engine
                     _ => Ok(()),
                 };
             }
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "진행 중인 트랜잭션이 없습니다".into(),
             ));
         }
@@ -1440,7 +1500,7 @@ async fn ask_database(inner: &MySqlInner, conn: &mut MyConn<'_>) -> Result<Strin
         .query_first::<String, _>("SELECT DATABASE()")
         .await
         .map_err(mysql_err)?
-        .ok_or_else(|| EngineError::Internal("데이터베이스가 선택되지 않았습니다".into()))?;
+        .ok_or_else(|| EngineError::BadRequest("데이터베이스가 선택되지 않았습니다".into()))?;
     *inner.database() = Some(database.clone());
     Ok(database)
 }
@@ -1958,6 +2018,15 @@ fn value_text(value: &MyValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn syntax_errors_name_their_line() {
+        assert_eq!(
+            error_line("You have an error in your SQL syntax; … near 'SELEC 2' at line 2"),
+            Some(2)
+        );
+        assert_eq!(error_line("Unknown column 'x' in 'field list'"), None);
+    }
 
     #[test]
     fn set_value_expressions_are_written_by_the_server() {

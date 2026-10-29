@@ -1,3 +1,5 @@
+import type { SqlDialect } from "./engines/sqlDialect";
+import { FUNCTIONS_WITHOUT_ENGINE } from "./engines/sqlFunctions";
 import { escapeString, lexingFor, splitSqlRanges } from "./sqlSplit";
 
 // What the SQL editor offers at the cursor, as in TablePlus, and a little
@@ -90,8 +92,9 @@ export interface SqlCompletionConfig {
   words: readonly SqlWord[];
   // How often an option (by its usageKey) was picked before.
   usage?: (key: string) => number;
-  // The engine kind (sqlite, postgres, mysql, …): how the SQL is read.
-  dialect?: string;
+  // The connection's SQL dialect, which decides how the SQL is read; none
+  // without a connection.
+  dialect?: SqlDialect;
   // The characters that quote names; the first quotes an inserted name that needs it.
   identifierQuotes: string;
   caseInsensitiveIdentifiers?: boolean;
@@ -170,7 +173,7 @@ function isName(token: Token | undefined): token is Token {
 
 // The statement the cursor is in: from just past the ";" before it to the
 // end of the one it is in. Text after the cursor counts (SELECT na| FROM t).
-function statementBounds(input: string, pos: number, dialect?: string): [number, number] {
+function statementBounds(input: string, pos: number, dialect?: SqlDialect): [number, number] {
   let start = 0;
   for (const range of splitSqlRanges(input, dialect)) {
     if (range.to <= pos && input[range.to - 1] === ";") {
@@ -184,7 +187,7 @@ function statementBounds(input: string, pos: number, dialect?: string): [number,
 
 // A quoted name still being typed, its closing quote not there yet, ends at
 // the cursor (`pos`) rather than taking the rest of the statement with it.
-function tokenize(input: string, from: number, to: number, pos: number, dialect: string | undefined, quotes: string): Token[] {
+function tokenize(input: string, from: number, to: number, pos: number, dialect: SqlDialect | undefined, quotes: string): Token[] {
   const lex = lexingFor(dialect);
   const nameQuote = (ch: string): boolean => quotes.includes(ch) || (ch === "[" && lex.bracketNames);
   const tokens: Token[] = [];
@@ -363,76 +366,6 @@ function wantsTable(before: Token[]): boolean {
   }
   return false;
 }
-
-function defaultSchemaOf(dialect: string | undefined): string | null {
-  return dialect === "postgres" || dialect === "cockroach" ? "public" : dialect === "mssql" ? "dbo" : null;
-}
-
-// The engine family a dialect's functions come from.
-function familyOf(dialect: string | undefined): "postgres" | "mysql" | "mssql" | "sqlite" {
-  if (dialect === "postgres" || dialect === "cockroach") {
-    return "postgres";
-  }
-  if (dialect === "mysql" || dialect === "mariadb") {
-    return "mysql";
-  }
-  return dialect === "mssql" ? "mssql" : "sqlite";
-}
-
-// Functions people reach for, with their arguments and what they do; `only`
-// the engines that have them (all when absent).
-interface SqlFunction {
-  name: string;
-  args: string;
-  about: string;
-  only?: ("postgres" | "mysql" | "mssql" | "sqlite")[];
-  // Called with OVER (…): a window function.
-  window?: boolean;
-}
-
-const FUNCTIONS: SqlFunction[] = [
-  { name: "COUNT", args: "expr | *", about: "행 수 (NULL이 아닌 값의 수)" },
-  { name: "SUM", args: "expr", about: "합계" },
-  { name: "AVG", args: "expr", about: "평균" },
-  { name: "MIN", args: "expr", about: "최솟값" },
-  { name: "MAX", args: "expr", about: "최댓값" },
-  { name: "COALESCE", args: "value, fallback, …", about: "NULL이 아닌 첫 값" },
-  { name: "NULLIF", args: "a, b", about: "a와 b가 같으면 NULL, 아니면 a" },
-  { name: "CAST", args: "expr AS type", about: "다른 타입으로 변환" },
-  { name: "LOWER", args: "text", about: "소문자로" },
-  { name: "UPPER", args: "text", about: "대문자로" },
-  { name: "LENGTH", args: "text", about: "문자열 길이", only: ["postgres", "mysql", "sqlite"] },
-  { name: "LEN", args: "text", about: "문자열 길이 (끝 공백 제외)", only: ["mssql"] },
-  { name: "SUBSTRING", args: "text, start, length", about: "부분 문자열", only: ["postgres", "mysql", "mssql", "sqlite"] },
-  { name: "SUBSTR", args: "text, start, length", about: "부분 문자열", only: ["sqlite", "mysql", "postgres"] },
-  { name: "TRIM", args: "text", about: "앞뒤 공백 제거" },
-  { name: "REPLACE", args: "text, from, to", about: "문자열 바꾸기" },
-  { name: "CONCAT", args: "a, b, …", about: "문자열 잇기" },
-  { name: "ROUND", args: "number, digits", about: "반올림" },
-  { name: "ABS", args: "number", about: "절댓값" },
-  { name: "NOW", args: "", about: "현재 시각", only: ["postgres", "mysql"] },
-  { name: "DATE_TRUNC", args: "'day', timestamp", about: "단위로 자른 시각", only: ["postgres"] },
-  { name: "EXTRACT", args: "field FROM timestamp", about: "시각에서 연·월·일 등을 꺼냄", only: ["postgres", "mysql"] },
-  { name: "TO_CHAR", args: "value, format", about: "서식에 맞춘 문자열", only: ["postgres"] },
-  { name: "DATE_FORMAT", args: "date, format", about: "서식에 맞춘 문자열", only: ["mysql"] },
-  { name: "STRFTIME", args: "format, time", about: "서식에 맞춘 시각 문자열", only: ["sqlite"] },
-  { name: "DATE", args: "time", about: "날짜 부분", only: ["sqlite", "mysql"] },
-  { name: "DATEDIFF", args: "a, b", about: "두 날짜의 차이", only: ["mysql", "mssql"] },
-  { name: "DATEADD", args: "part, amount, date", about: "날짜에 더하기", only: ["mssql"] },
-  { name: "GETDATE", args: "", about: "현재 시각", only: ["mssql"] },
-  { name: "IFNULL", args: "value, fallback", about: "NULL이면 fallback", only: ["mysql", "sqlite"] },
-  { name: "ISNULL", args: "value, fallback", about: "NULL이면 fallback", only: ["mssql"] },
-  { name: "STRING_AGG", args: "expr, separator", about: "값을 구분자로 이어 붙임", only: ["postgres", "mssql"] },
-  { name: "GROUP_CONCAT", args: "expr", about: "값을 쉼표로 이어 붙임", only: ["mysql", "sqlite"] },
-  { name: "ARRAY_AGG", args: "expr", about: "값을 배열로 모음", only: ["postgres"] },
-  { name: "JSON_EXTRACT", args: "json, path", about: "JSON에서 값 꺼내기", only: ["mysql", "sqlite"] },
-  { name: "JSONB_EXTRACT_PATH", args: "jsonb, key, …", about: "JSONB에서 값 꺼내기", only: ["postgres"] },
-  { name: "ROW_NUMBER", args: "", about: "창 안에서의 행 번호", window: true },
-  { name: "RANK", args: "", about: "창 안에서의 순위 (같으면 건너뜀)", window: true },
-  { name: "DENSE_RANK", args: "", about: "창 안에서의 순위 (건너뛰지 않음)", window: true },
-  { name: "LAG", args: "expr, offset", about: "앞 행의 값", window: true },
-  { name: "LEAD", args: "expr, offset", about: "뒤 행의 값", window: true },
-];
 
 // Whole statements offered at the start of one; ${…} are fields Tab moves through.
 const STATEMENTS: { label: string; template: string }[] = [
@@ -705,7 +638,7 @@ export function completeSql(input: string, pos: number, config: SqlCompletionCon
       // schema. offers that schema's tables (PostgreSQL's public. the ones listed bare).
       const prefix = `${parents.join(".").toLowerCase()}.`;
       const inSchema = keys.filter((name) => name.toLowerCase().startsWith(prefix));
-      const bare = parents.length === 1 && parents[0].toLowerCase() === defaultSchemaOf(config.dialect)
+      const bare = parents.length === 1 && parents[0].toLowerCase() === (config.dialect?.defaultSchema ?? null)
         ? keys.filter((name) => !name.includes("."))
         : [];
       addNames(
@@ -811,9 +744,8 @@ export function completeSql(input: string, pos: number, config: SqlCompletionCon
         );
         addNames([...keys.map((key) => tableOf(key)), ...aliases]);
         if (quote === null) {
-          const family = familyOf(config.dialect);
           addNames(
-            FUNCTIONS.filter((fn) => fn.only === undefined || fn.only.includes(family)).map((fn) => {
+            (config.dialect?.functions ?? FUNCTIONS_WITHOUT_ENGINE).map((fn) => {
               const name = caseLike(fn.name, typed);
               return {
                 name,

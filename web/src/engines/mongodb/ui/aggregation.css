@@ -1,0 +1,331 @@
+/* ---- 집계: stage cards, previews, text mode, results ---- */
+
+.mg-agg-list {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 14px 30px;
+  overflow: auto;
+}
+button.mg-add-stage {
+  display: flex;
+  width: 100%;
+  height: 18px;
+  margin: 2px 0;
+  padding: 0;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  font-size: 11px;
+}
+button.mg-add-stage:hover,
+button.mg-add-stage:focus-visible {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: none;
+}
+button.mg-add-stage:hover::before,
+button.mg-add-stage:hover::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin: 0 8px;
+  align-self: center;
+  background: var(--accent-line);
+}
+button.mg-add-stage.last {
+  height: 34px;
+  margin-top: 6px;
+  gap: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+}
+button.mg-add-stage.last:hover {
+  border-color: var(--accent-line);
+}
+button.mg-add-stage.last:hover::before,
+button.mg-add-stage.last:hover::after {
+  display: none;
+}
+
+.mg-stage {
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+.mg-stage.off {
+  opacity: 0.6;
+}
+.mg-stage.err {
+  border-color: color-mix(in srgb, var(--error) 50%, var(--line-soft));
+}
+.mg-stage.dragging {
+  opacity: 0.4;
+}
+.mg-stage.drop-before {
+  box-shadow: 0 -3px 0 var(--accent);
+}
+.mg-stage.drop-after {
+  box-shadow: 0 3px 0 var(--accent);
+}
+.mg-stage-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 8px 0 6px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.mg-stage-head .spacer {
+  flex: 1;
+}
+button.mg-grip {
+  display: inline-flex;
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: grab;
+}
+button.mg-grip:hover {
+  background: var(--hover-fill);
+  box-shadow: none;
+  color: var(--muted);
+}
+.mg-stage-no {
+  min-width: 18px;
+  color: var(--faint);
+  font: 600 11px var(--mono);
+  text-align: center;
+}
+button.mg-stage-op {
+  height: 26px;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font: 600 12px var(--mono);
+}
+.mg-stage-desc {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-stage-n {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ok);
+  font: 12px var(--mono);
+  white-space: nowrap;
+}
+.mg-stage-err {
+  max-width: 50%;
+  overflow: hidden;
+  color: var(--error);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-stage-write {
+  color: var(--warn);
+  font: 12px var(--mono);
+  white-space: nowrap;
+}
+.mg-stage-body {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.4fr);
+}
+.mg-stage-editor {
+  position: relative;
+  min-width: 0;
+  border-right: 1px solid var(--line-soft);
+}
+/* The editor grows with its text between these bounds. */
+.mg-stage-editor .mg-cm .cm-editor {
+  height: auto;
+  min-height: 64px;
+  max-height: 260px;
+  border-radius: 0 0 0 12px;
+}
+.mg-stage-editor .mg-cm .cm-scroller {
+  overflow: auto;
+}
+.mg-stage-preview {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  max-height: 260px;
+  padding: 8px;
+  overflow: auto;
+}
+.mg-stage-preview.stale {
+  opacity: 0.55;
+}
+pre.mg-mini {
+  flex: none;
+  width: 300px;
+  max-height: 240px;
+  margin: 0;
+  padding: 7px 9px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg);
+  font: 11px/1.5 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mg-stage-msg {
+  padding: 8px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.mg-stage-msg.err {
+  color: var(--error);
+  white-space: pre-wrap;
+}
+button.mg-switch {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 17px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+}
+button.mg-switch span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--faint);
+  transition: transform 0.12s ease;
+}
+button.mg-switch.on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+button.mg-switch.on span {
+  background: var(--accent-contrast, #fff);
+  transform: translateX(13px);
+}
+
+.mg-agg-text {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 10px);
+  min-height: 300px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.mg-agg-text > .mg-cm {
+  flex: 1;
+  min-height: 0;
+}
+
+.mg-agg-results {
+  position: relative;
+  flex: 0 0 45%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+.mg-agg-results-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+  font-size: 12px;
+}
+.mg-agg-results-head .spacer {
+  flex: 1;
+}
+.mg-agg-results-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px 20px;
+  overflow: auto;
+}
+
+/* Saved pipelines: the name and save button above the list. */
+.mg-agg-saverow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.mg-agg-saverow input.mg-pop-search {
+  flex: 1;
+  width: auto;
+  margin: 2px 0;
+}
+.mg-hist-item button.mg-agg-forget {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* The stage picker: operator, what it does, its reference example. */
+.menu-panel.mg-stagepick {
+  width: 430px;
+  z-index: 80;
+}
+.mg-stagepick-list {
+  max-height: 380px;
+  overflow: auto;
+}
+.mg-stagepick-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  column-gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--r-xs);
+  cursor: pointer;
+}
+.mg-stagepick-row.active {
+  background: var(--accent-soft);
+}
+.mg-stagepick-row.current .mg-stagepick-op {
+  color: var(--accent);
+}
+.mg-stagepick-op {
+  font-size: 12px;
+  font-weight: 600;
+}
+.mg-stagepick-desc {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-stagepick-example {
+  grid-column: 2;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -247,25 +247,24 @@ pub fn open(file: &str, passphrase: &str) -> Result<Vec<u8>, OpenError> {
         .map_err(|_| OpenError::WrongPassphraseOrDamaged)
 }
 
-/// The `connect` value for a saved profile. `secret(kind)` is asked for the
-/// database password (kind = driver), "ssh" and "http"; None leaves it out.
+/// The `connect` value for a saved profile, in the new shape (`{ driver,
+/// config, ssh?, http_tunnel? }`). `secret(kind)` is asked for each of the
+/// engine's secrets by its keychain kind (the driver's id for the password),
+/// "ssh" and "http"; None leaves it out.
 pub fn export_connect(saved: &SavedConnection, secret: impl Fn(&str) -> Option<String>) -> Value {
     let secret = |kind: &str| secret(kind).filter(|value| !value.is_empty());
-    let mut connect = json!({ "driver": saved.driver });
-    let db = match saved.driver.as_str() {
-        "postgres" => saved.postgres.as_ref().map(serde_json::to_value),
-        "cockroach" => saved.cockroach.as_ref().map(serde_json::to_value),
-        "mysql" => saved.mysql.as_ref().map(serde_json::to_value),
-        "mssql" => saved.mssql.as_ref().map(serde_json::to_value),
-        "sqlite" => saved.sqlite.as_ref().map(serde_json::to_value),
-        _ => None,
+    // A connection string never carries its password into a file: the
+    // engine's password field does, when asked for.
+    let mut config = match tablepeek_engine::registry::factory(&saved.driver) {
+        Some(factory) => factory.descriptor().without_uri_passwords(&saved.config),
+        None => saved.config.clone(),
     };
-    if let Some(Ok(mut db)) = db {
-        if let Some(password) = secret(&saved.driver) {
-            db["password"] = json!(password);
+    for (key, kind) in crate::driver_secret_kinds(&saved.driver) {
+        if let Some(value) = secret(&kind) {
+            config.insert(key, json!(value));
         }
-        connect[saved.driver.as_str()] = db;
     }
+    let mut connect = json!({ "driver": saved.driver, "config": config });
     if let Some(Ok(mut ssh)) = saved.ssh.as_ref().map(serde_json::to_value) {
         if let Some(password) = secret("ssh") {
             ssh["password"] = json!(password);
@@ -320,9 +319,11 @@ pub fn prepare_import(
         let connect: ConnectRequest = serde_json::from_value(entry.connect)
             .map_err(|err| problem(&format!("접속 정보가 올바르지 않습니다 ({err})")))?;
         if let Some((_, message)) = crate::connect_problem(&connect) {
-            return Err(problem(message));
+            return Err(problem(&message));
         }
-        let carries_secret = crate::request_db_password(&connect).is_some()
+        let carries_secret = crate::driver_secret_kinds(&connect.driver)
+            .iter()
+            .any(|(key, _)| crate::request_secret(&connect, key).is_some())
             || connect
                 .ssh
                 .as_ref()
@@ -503,8 +504,9 @@ mod tests {
         let connect = export_connect(&saved_mysql(), |_| None);
         assert!(!connect.to_string().contains("password\""), "{connect}");
         assert_eq!(connect["driver"], json!("mysql"));
-        assert_eq!(connect["mysql"]["host"], json!("db.internal"));
-        assert_eq!(connect["mysql"]["ssl_root_cert"], json!("/k/ca.pem"));
+        assert_eq!(connect["config"]["host"], json!("db.internal"));
+        assert_eq!(connect["config"]["ssl_root_cert"], json!("/k/ca.pem"));
+        assert!(connect.get("mysql").is_none(), "written in the new shape");
         assert_eq!(connect["ssh"]["private_key_path"], json!("/k/id"));
         assert_eq!(connect["http_tunnel"]["username"], json!("me"));
     }
@@ -517,12 +519,12 @@ mod tests {
             "http" => Some("proxy-pw".into()),
             _ => None,
         });
-        assert_eq!(connect["mysql"]["password"], json!("db-pw"));
+        assert_eq!(connect["config"]["password"], json!("db-pw"));
         assert_eq!(connect["ssh"]["password"], json!("ssh-pw"));
         assert_eq!(connect["http_tunnel"]["password"], json!("proxy-pw"));
         // And it is a connect request the server accepts as-is.
         let request: ConnectRequest = serde_json::from_value(connect).unwrap();
-        assert_eq!(request.mysql.unwrap().password.as_deref(), Some("db-pw"));
+        assert_eq!(request.config["password"], json!("db-pw"));
         assert_eq!(request.ssh.unwrap().password.as_deref(), Some("ssh-pw"));
     }
 
@@ -611,6 +613,27 @@ mod tests {
             .unwrap_err();
             assert!(error.starts_with("2번째 연결"), "case {index}: {error}");
         }
+    }
+
+    #[test]
+    fn prepare_import_reads_old_and_new_bundles() {
+        // A version-1 file from before engine configs: settings under the driver's key.
+        let legacy = json!({ "driver": "postgres", "postgres": { "host": "old", "port": 5432, "user": "u", "password": "pw", "database": "d" } });
+        let current = json!({ "driver": "mariadb", "config": { "host": "new", "port": 3306, "user": "u", "database": "d" }, "ssh": { "host": "b", "port": 22, "user": "o", "password": "ssh-pw" } });
+        let items = prepare_import(
+            vec![entry("old", legacy), entry("new", current)],
+            &HashSet::new(),
+            "가져옴",
+        )
+        .unwrap();
+        assert_eq!(items[0].connect.driver, "postgres");
+        assert_eq!(items[0].connect.config["host"], json!("old"));
+        assert!(
+            items[0].persist_password,
+            "its password goes to the keychain"
+        );
+        assert_eq!(items[1].connect.config["host"], json!("new"));
+        assert!(items[1].persist_password, "so does the SSH password");
     }
 
     #[test]

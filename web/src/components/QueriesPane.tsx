@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from "react";
 import { writeClipboard } from "../clipboard";
 import { t } from "../i18n";
+import { confirmDialog } from "./ConfirmDialog";
 import {
   loadAutoSave,
   loadQuerySort,
@@ -68,12 +69,14 @@ export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
     }
   }, []);
 
+  // Read again when the server comes back (the app banner said it was gone).
+  const serverEpoch = useSyncExternalStore(store.subscribe, () => store.getState().server.epoch);
   useEffect(() => {
     void load();
     const reload = (): void => void load();
     window.addEventListener("tablepeek:favorites-changed", reload);
     return () => window.removeEventListener("tablepeek:favorites-changed", reload);
-  }, [load]);
+  }, [load, serverEpoch]);
 
   const needle = filter.trim().toLowerCase();
   const groups = useMemo((): Group[] => {
@@ -120,7 +123,13 @@ export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
   }
 
   async function removeQuery(query: Favorite): Promise<void> {
-    if (!window.confirm(t("'{name}' 쿼리를 삭제할까요?", { name: query.name }))) {
+    const ok = await confirmDialog({
+      title: t("쿼리 삭제"),
+      message: t("'{name}' 쿼리를 삭제할까요?", { name: query.name }),
+      confirmLabel: t("삭제"),
+      danger: true,
+    });
+    if (!ok) {
       return;
     }
     try {
@@ -137,7 +146,7 @@ export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
       count === 0
         ? t("'{name}' 폴더를 삭제할까요?", { name: folder.name })
         : t("'{name}' 폴더와 그 안의 쿼리 {count}개를 삭제할까요?", { name: folder.name, count });
-    if (!window.confirm(question)) {
+    if (!(await confirmDialog({ title: t("폴더 삭제"), message: question, confirmLabel: t("삭제"), danger: true }))) {
       return;
     }
     try {
@@ -306,7 +315,7 @@ export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
       >
         {error !== null ? (
           <div className="schema-error-slot">
-            <ErrorNotice message={error} variant="compact" />
+            <ErrorNotice error={error} variant="compact" />
           </div>
         ) : null}
         {favorites === null ? (

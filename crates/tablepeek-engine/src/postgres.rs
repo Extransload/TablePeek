@@ -11,9 +11,9 @@ use postgres_protocol::types::ArrayDimension;
 use rustls::RootCertStore;
 use serde_json::Value;
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    ObjectDefinition, PkValue, PostgresConfig, Relation, ServerInfo, ServerSession, SslMode,
-    TableDetail, TableSchema, TriggerInfo, ValueExpr,
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, IndexPart,
+    InsertValue, ObjectDefinition, PkValue, PostgresConfig, Relation, ServerInfo, ServerSession,
+    SslMode, TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 use tokio_postgres::config::SslMode as PgSslMode;
 use tokio_postgres::types::{FromSql, Kind, ToSql, Type};
@@ -24,8 +24,8 @@ use crate::source_cache::{key_unchanged, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{tx_controls, TxControl};
 use crate::{
-    build_arrow, double_json, float_text, hex_bytes, hex_cell, hex_text, humanize_uptime_ko,
-    not_hex, postgres_message, real_json, EngineError, QueryData,
+    build_arrow, caused_by_tls, double_json, float_text, hex_bytes, hex_cell, hex_text,
+    humanize_uptime_ko, not_hex, postgres_message, real_json, EngineError, QueryData,
 };
 
 pub struct PostgresInner {
@@ -312,25 +312,25 @@ fn tls_connector(config: &PostgresConfig) -> Result<MakeRustlsConnect, EngineErr
         .filter(|path| !path.is_empty())
     {
         let mut reader = BufReader::new(File::open(path).map_err(|err| {
-            EngineError::Internal(format!("TLS CA 인증서를 열 수 없습니다({path}): {err}"))
+            EngineError::BadRequest(format!("TLS CA 인증서를 열 수 없습니다({path}): {err}"))
         })?);
         let certs = rustls_pemfile::certs(&mut reader)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| EngineError::Internal(format!("TLS CA 인증서 형식 오류: {err}")))?;
+            .map_err(|err| EngineError::BadRequest(format!("TLS CA 인증서 형식 오류: {err}")))?;
         if certs.is_empty() {
-            return Err(EngineError::Internal(format!(
+            return Err(EngineError::BadRequest(format!(
                 "TLS CA 인증서에 인증서가 없습니다: {path}"
             )));
         }
         for cert in certs {
             roots
                 .add(cert)
-                .map_err(|err| EngineError::Internal(format!("TLS CA 인증서 오류: {err}")))?;
+                .map_err(|err| EngineError::BadRequest(format!("TLS CA 인증서 오류: {err}")))?;
         }
     } else {
         let native = rustls_native_certs::load_native_certs();
         if native.certs.is_empty() {
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "시스템 루트 인증서를 불러오지 못했습니다. CA 인증서 경로를 지정하세요".into(),
             ));
         }
@@ -354,41 +354,41 @@ fn tls_connector(config: &PostgresConfig) -> Result<MakeRustlsConnect, EngineErr
     ) {
         (Some(cert_path), Some(key_path)) => {
             let mut cert_reader = BufReader::new(File::open(cert_path).map_err(|err| {
-                EngineError::Internal(format!(
+                EngineError::BadRequest(format!(
                     "TLS 클라이언트 인증서를 열 수 없습니다({cert_path}): {err}"
                 ))
             })?);
             let chain = rustls_pemfile::certs(&mut cert_reader)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|err| {
-                    EngineError::Internal(format!("TLS 클라이언트 인증서 형식 오류: {err}"))
+                    EngineError::BadRequest(format!("TLS 클라이언트 인증서 형식 오류: {err}"))
                 })?;
             if chain.is_empty() {
-                return Err(EngineError::Internal(format!(
+                return Err(EngineError::BadRequest(format!(
                     "TLS 클라이언트 인증서에 인증서가 없습니다: {cert_path}"
                 )));
             }
             let mut key_reader = BufReader::new(File::open(key_path).map_err(|err| {
-                EngineError::Internal(format!(
+                EngineError::BadRequest(format!(
                     "TLS 클라이언트 키를 열 수 없습니다({key_path}): {err}"
                 ))
             })?);
             let key = rustls_pemfile::private_key(&mut key_reader)
                 .map_err(|err| {
-                    EngineError::Internal(format!("TLS 클라이언트 키 형식 오류: {err}"))
+                    EngineError::BadRequest(format!("TLS 클라이언트 키 형식 오류: {err}"))
                 })?
                 .ok_or_else(|| {
-                    EngineError::Internal(format!(
+                    EngineError::BadRequest(format!(
                         "TLS 클라이언트 키에 private key가 없습니다: {key_path}"
                     ))
                 })?;
             builder.with_client_auth_cert(chain, key).map_err(|err| {
-                EngineError::Internal(format!("TLS 클라이언트 인증서 오류: {err}"))
+                EngineError::BadRequest(format!("TLS 클라이언트 인증서 오류: {err}"))
             })?
         }
         (None, None) => builder.with_no_client_auth(),
         _ => {
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "TLS 클라이언트 인증서와 키는 함께 지정해야 합니다".into(),
             ));
         }
@@ -413,9 +413,7 @@ pub(crate) async fn connect(
     let (client, cancel, tls) = match config.ssl_mode {
         SslMode::Disable => {
             pg.ssl_mode(PgSslMode::Disable);
-            let (client, connection) = pg.connect(NoTls).await.map_err(|err| {
-                EngineError::Internal(format!("PostgreSQL 연결 실패: {}", postgres_message(&err)))
-            })?;
+            let (client, connection) = pg.connect(NoTls).await.map_err(EngineError::from)?;
             tokio::spawn(async move {
                 let _ = connection.await;
             });
@@ -430,10 +428,15 @@ pub(crate) async fn connect(
             });
             let connector = tls_connector(config)?;
             let (client, connection) = pg.connect(connector.clone()).await.map_err(|err| {
-                EngineError::Internal(format!(
-                    "PostgreSQL TLS 연결 실패: {}",
-                    postgres_message(&err)
-                ))
+                // "TLS 연결 실패" only when the handshake is what failed, not
+                // a wrong password over TLS.
+                let tls = caused_by_tls(&err) || err.to_string().contains("TLS");
+                let error = EngineError::from(err);
+                if tls {
+                    error.prefixed("TLS 연결 실패: ")
+                } else {
+                    error
+                }
             })?;
             tokio::spawn(async move {
                 let _ = connection.await;
@@ -482,6 +485,7 @@ pub(crate) async fn meta(
         path: Some(inner.label.clone()),
         demo: false,
         tables,
+        capabilities: None,
     })
 }
 
@@ -978,10 +982,67 @@ async fn table_detail_in(
                 unique: row.get(1),
                 primary: row.get(2),
                 columns: row.get::<_, Option<Vec<String>>>(3).unwrap_or_default(),
+                ..IndexInfo::default()
             });
         }
     } else {
         recover(client, fenced).await;
+    }
+    // What recreating an index takes beyond its columns: the server's own
+    // statement, a partial index's predicate, the key parts (expressions
+    // among them) and INCLUDE columns. A server lacking any of it (an older
+    // CockroachDB) just leaves these out.
+    let details = client
+        .query(
+            "SELECT c2.relname, pg_get_indexdef(i.indexrelid), pg_get_expr(i.indpred, i.indrelid),
+                    ARRAY(SELECT a.attname::text
+                          FROM generate_series(1, i.indnkeyatts) k
+                          LEFT JOIN pg_attribute a
+                            ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] AND i.indkey[k - 1] <> 0
+                          ORDER BY k),
+                    ARRAY(SELECT CASE WHEN i.indkey[k - 1] = 0
+                                      THEN pg_get_indexdef(i.indexrelid, k, true) END
+                          FROM generate_series(1, i.indnkeyatts) k ORDER BY k),
+                    ARRAY(SELECT a.attname::text
+                          FROM generate_series(i.indnkeyatts + 1, i.indnatts) k
+                          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1]
+                          ORDER BY k),
+                    ARRAY(SELECT (i.indoption[k - 1] & 1) = 1
+                          FROM generate_series(1, i.indnkeyatts) k ORDER BY k)
+             FROM pg_index i
+             JOIN pg_class c2 ON c2.oid = i.indexrelid
+             WHERE i.indrelid = $1",
+            &[&oid],
+        )
+        .await;
+    for row in ok_or_recover(client, fenced, details)
+        .await
+        .unwrap_or_default()
+    {
+        let name: String = row.get(0);
+        let Some(index) = indexes.iter_mut().find(|index| index.name == name) else {
+            continue;
+        };
+        index.definition = row.get(1);
+        index.predicate = row.get(2);
+        let columns: Vec<Option<String>> = row.get(3);
+        let expressions: Vec<Option<String>> = row.get(4);
+        let descending: Vec<bool> = row.get(6);
+        index.parts = Some(
+            columns
+                .into_iter()
+                .zip(expressions)
+                .zip(descending)
+                .map(|((column, expression), descending)| IndexPart {
+                    column: if expression.is_some() { None } else { column },
+                    expression,
+                    prefix_length: None,
+                    descending,
+                })
+                .collect(),
+        );
+        let included: Vec<String> = row.get(5);
+        index.included = (!included.is_empty()).then_some(included);
     }
     indexes.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -1200,6 +1261,8 @@ pub(crate) async fn server_info(inner: &PostgresInner) -> Result<ServerInfo, Eng
         size_bytes,
         sessions,
         can_kill: true,
+        topology: None,
+        host: None,
     })
 }
 
@@ -1593,12 +1656,12 @@ pub(crate) async fn tx(inner: &PostgresInner, statement: &str) -> Result<(), Eng
     let active = inner.in_tx();
     match statement {
         "BEGIN" if active => {
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "이미 트랜잭션이 진행 중입니다".into(),
             ));
         }
         "COMMIT" | "ROLLBACK" if !active => {
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "진행 중인 트랜잭션이 없습니다".into(),
             ));
         }

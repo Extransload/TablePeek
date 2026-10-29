@@ -12,9 +12,9 @@ import { cellMenuItems, deleteRowsLabel } from "../grid/cellMenu";
 import { formatCopy, type CopyFormat } from "../copyFormats";
 import type { CellState, RowSource, RowState } from "../grid/rowSource";
 import { t } from "../i18n";
-import { store } from "../store";
 import { CellInspector, type CellAnchor } from "./CellInspector";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { notifyError } from "./ErrorNotice";
 import { TableGrid, type TableGridHandle } from "./TableGrid";
 
 export type { CellChoices };
@@ -137,7 +137,7 @@ async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    store.setError(t("클립보드에 복사하지 못했습니다"));
+    notifyError(t("클립보드에 복사하지 못했습니다"));
   }
 }
 

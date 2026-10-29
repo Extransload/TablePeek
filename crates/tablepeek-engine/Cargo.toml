@@ -4,6 +4,7 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1"
 arrow = { version = "60.0.0", features = ["ipc"] }
 chrono = "0.4.45"
 futures-util = "=0.3.32"
@@ -24,3 +25,4 @@ tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid
 tokio-postgres-rustls = { version = "0.14", features = ["native-certs", "ring"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 uuid.workspace = true
+mongodb = "3"

@@ -4,6 +4,7 @@ import {
   createTableSql,
   dependencyOrder,
   draftsFromDetail,
+  dumpIndexSql,
   dropForeignKeySql,
   dropIfExistsSql,
   foreignKeySql,
@@ -27,6 +28,7 @@ import {
   type CsvOptions,
   type ExportFormat,
 } from "../export";
+import type { SqlDialect } from "../engines/sqlDialect";
 import { declaredAs } from "../grid/columns";
 import type { WindowedRowSource } from "../grid/windowSource";
 import { t } from "../i18n";
@@ -37,7 +39,7 @@ import { store, type EngineMeta, type GridResult, type TableDetail, type TableDe
 import { countFor, type DataTab } from "../tabs";
 import { XlsxWriter } from "../xlsx";
 import { ZipWriter } from "../zip";
-import { ErrorNotice } from "./ErrorNotice";
+import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { SearchIcon } from "./icons";
 import { Select } from "./Select";
 
@@ -68,7 +70,10 @@ export type ExportTarget =
 interface ExportModalProps {
   target: ExportTarget;
   meta: EngineMeta;
+  dialect: SqlDialect;
   onClose(): void;
+  // Reads the schema again (the error's "스키마 새로고침"); the list follows `meta`.
+  onRefreshSchema(): void;
 }
 
 type ItemKind = "table" | "view";
@@ -136,8 +141,8 @@ function keyColumns(detail: TableDetail): string[] {
 }
 
 // A result is run again only if running it can't change anything.
-function rerunnable(sql: string, kind: string): boolean {
-  return classifyStatement(sql, kind) === null;
+function rerunnable(sql: string, dialect: SqlDialect): boolean {
+  return classifyStatement(sql, dialect) === null;
 }
 
 // ── Reading rows ─────────────────────────────────────────────────────────
@@ -187,12 +192,12 @@ async function singlePassFeed(conn: string, sql: string, pick: number[] | null, 
 
 async function fetchPage(
   conn: string,
-  kind: string,
+  dialect: SqlDialect,
   base: string,
   order: string,
   offset: number,
 ): Promise<{ columns: string[]; rows: unknown[][] }> {
-  const sql = `${base} ${rowWindowSql(kind, order, PAGE_SIZE, offset)}`;
+  const sql = `${base} ${rowWindowSql(dialect, order, PAGE_SIZE, offset)}`;
   const detached = await store.runDetached(conn, sql, PAGE_SIZE);
   try {
     return { columns: detached.meta.columns, rows: await readRows(detached.source, 0, PAGE_SIZE) };
@@ -203,8 +208,8 @@ async function fetchPage(
 
 // A page at a time in key order, so no row is read twice or missed and the
 // table's size has no limit.
-async function pagedFeed(conn: string, kind: string, base: string, order: string, signal: AbortSignal): Promise<Feed> {
-  const first = await fetchPage(conn, kind, base, order, 0);
+async function pagedFeed(conn: string, dialect: SqlDialect, base: string, order: string, signal: AbortSignal): Promise<Feed> {
+  const first = await fetchPage(conn, dialect, base, order, 0);
   let pending: unknown[][] | null = first.rows;
   let offset = first.rows.length;
   return {
@@ -221,7 +226,7 @@ async function pagedFeed(conn: string, kind: string, base: string, order: string
         return rows.length > 0 ? rows : null;
       }
       signal.throwIfAborted();
-      const page = await fetchPage(conn, kind, base, order, offset);
+      const page = await fetchPage(conn, dialect, base, order, offset);
       offset += page.rows.length;
       pending = page.rows;
       return rows;
@@ -232,50 +237,50 @@ async function pagedFeed(conn: string, kind: string, base: string, order: string
 
 function tableFeed(
   conn: string,
-  kind: string,
+  dialect: SqlDialect,
   item: Item,
   detail: TableDetail | null,
   columns: string[] | null,
   signal: AbortSignal,
 ): Promise<Feed> {
-  const list = columns === null ? "*" : columns.map((name) => escapeSqlIdentifier(name, kind)).join(", ");
-  const base = `SELECT ${list} FROM ${quoteIdentifier(item.name, kind)}`;
+  const list = columns === null ? "*" : columns.map((name) => escapeSqlIdentifier(name, dialect)).join(", ");
+  const base = `SELECT ${list} FROM ${quoteIdentifier(item.name, dialect)}`;
   const pk = detail === null ? [] : keyColumns(detail);
-  // A SQLite table without a declared key still has its rowid.
+  // A table without a declared key may still have an order of its own (SQLite's rowid).
   const order =
     pk.length > 0
-      ? pk.map((name) => escapeSqlIdentifier(name, kind)).join(", ")
-      : kind === "sqlite" && detail !== null
-        ? "rowid"
+      ? pk.map((name) => escapeSqlIdentifier(name, dialect)).join(", ")
+      : detail !== null
+        ? dialect.implicitRowOrder
         : null;
-  return order !== null ? pagedFeed(conn, kind, base, order, signal) : singlePassFeed(conn, base, null, signal);
+  return order !== null ? pagedFeed(conn, dialect, base, order, signal) : singlePassFeed(conn, base, null, signal);
 }
 
 // Every row of a data tab under its filter and sort; the key breaks ties so
 // pages don't overlap.
 function dataTabFeed(
   conn: string,
-  kind: string,
+  dialect: SqlDialect,
   tab: DataTab,
   result: GridResult,
   names: string[],
   signal: AbortSignal,
 ): Promise<Feed> {
-  const where = buildWhere(tab.filter ?? null, kind);
-  const base = `SELECT ${names.map((name) => escapeSqlIdentifier(name, kind)).join(", ")} FROM ${quoteIdentifier(tab.table, kind)}${
+  const where = buildWhere(tab.filter ?? null, dialect);
+  const base = `SELECT ${names.map((name) => escapeSqlIdentifier(name, dialect)).join(", ")} FROM ${quoteIdentifier(tab.table, dialect)}${
     where === null ? "" : ` WHERE ${where}`
   }`;
   const sorts = tab.sorts ?? [];
   const pk = tab.pkColumns ?? tab.meta?.pk ?? result.meta.pk ?? [];
   const sorted = new Set(sorts.map((sort) => sort.column));
   const order = [
-    buildOrderBy(sorts, kind),
-    ...pk.filter((name) => !sorted.has(name)).map((name) => escapeSqlIdentifier(name, kind)),
+    buildOrderBy(sorts, dialect),
+    ...pk.filter((name) => !sorted.has(name)).map((name) => escapeSqlIdentifier(name, dialect)),
   ]
     .filter((part): part is string => part !== null && part !== "")
     .join(", ");
   if (pk.length > 0) {
-    return pagedFeed(conn, kind, base, order, signal);
+    return pagedFeed(conn, dialect, base, order, signal);
   }
   return singlePassFeed(conn, order === "" ? base : `${base} ORDER BY ${order}`, null, signal);
 }
@@ -338,6 +343,8 @@ interface Section {
   unlink: string[];
   structure: (() => Promise<string[]>) | null;
   data: boolean;
+  // CREATE INDEX, written after the section's rows.
+  indexes: string[];
   // ALTER TABLE … ADD CONSTRAINT, written once every table holds its rows.
   foreignKeys: string[];
   open(signal: AbortSignal): Promise<Feed>;
@@ -345,7 +352,9 @@ interface Section {
 
 interface ExportPlan {
   format: ExportFormat;
+  // The engine's name, for the file's header, and its SQL.
   kind: string;
+  dialect: SqlDialect;
   csv: CsvOptions;
   gzip: boolean;
   base: string;
@@ -404,13 +413,8 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
     // The file reads the same whatever the UI language, so exports compare.
     const out = new TextBlobBuilder();
     out.push(`-- TablePeek SQL export\n-- Engine: ${plan.kind}\n-- Created: ${new Date().toISOString()}\n\n`);
-    const relaxKeys = plan.dump && plan.kind === "mysql";
-    if (relaxKeys) {
-      out.push("SET FOREIGN_KEY_CHECKS = 0;\n\n");
-    }
-    // As SQLite's own .dump starts: its keys can't be added after the rows.
-    if (plan.dump && plan.kind === "sqlite") {
-      out.push("PRAGMA foreign_keys = OFF;\n\n");
+    if (plan.dump && plan.dialect.dumpBefore !== undefined) {
+      out.push(`${plan.dialect.dumpBefore}\n\n`);
     }
     // Sections come parents first, so children (and views) are dropped before
     // the tables they depend on.
@@ -439,7 +443,7 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
           const binary = section.binary(feed.columns);
           await pump(index, feed, (rows) => {
             if (rows.length > 0) {
-              out.push(`${toSqlInserts(section.table, feed.columns, rows, plan.kind, binary)}\n`);
+              out.push(`${toSqlInserts(section.table, feed.columns, rows, plan.dialect, binary)}\n`);
             }
           });
           if (feed.truncated) {
@@ -449,14 +453,17 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
           feed.close();
         }
       }
+      for (const statement of section.indexes) {
+        out.push(`${statement};\n`);
+      }
       out.push("\n");
     }
     const keys = sections.flatMap((section) => section.foreignKeys);
     if (keys.length > 0) {
       out.push(`-- Foreign keys\n${keys.map((statement) => `${statement};\n`).join("")}\n`);
     }
-    if (relaxKeys) {
-      out.push("SET FOREIGN_KEY_CHECKS = 1;\n");
+    if (plan.dump && plan.dialect.dumpAfter !== undefined) {
+      out.push(`${plan.dialect.dumpAfter}\n`);
     }
     const blob = out.blob(EXPORT_MIME.sql);
     signal.throwIfAborted();
@@ -494,7 +501,7 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
     : { name: `${plan.base}.zip`, blob: zip.finish(), cut };
 }
 
-async function structureSql(conn: string, kind: string, item: Item, detail: TableDetail | null): Promise<string[]> {
+async function structureSql(conn: string, dialect: SqlDialect, item: Item, detail: TableDetail | null): Promise<string[]> {
   const unavailable = (reason: string): string[] => [`-- ${oneLine(item.name)}: structure skipped (${oneLine(reason)})`];
   if (item.kind === "view") {
     try {
@@ -504,7 +511,7 @@ async function structureSql(conn: string, kind: string, item: Item, detail: Tabl
         return unavailable("no definition");
       }
       // PostgreSQL gives the SELECT alone.
-      const create = /^create\b/i.test(ddl) ? ddl : `CREATE VIEW ${quoteIdentifier(item.name, kind)} AS\n${ddl}`;
+      const create = /^create\b/i.test(ddl) ? ddl : `CREATE VIEW ${quoteIdentifier(item.name, dialect)} AS\n${ddl}`;
       return [create.replace(/;?\s*$/, ";")];
     } catch (err) {
       return unavailable(errorOf(err, "could not read the definition"));
@@ -516,9 +523,14 @@ async function structureSql(conn: string, kind: string, item: Item, detail: Tabl
   if (detail.ddl !== null) {
     return [detail.ddl.trim().replace(/;?$/, ";")];
   }
-  // Foreign keys follow the data (see tableSections); SQLite keeps them inline.
+  // Indexes follow the data and foreign keys all of it (see tableSections)
+  // unless CREATE TABLE carries them (SQLite).
   const drafts = draftsFromDetail(detail);
-  const created = createTableSql(kind, item.name, kind === "sqlite" ? drafts : { ...drafts, foreignKeys: [] });
+  const created = createTableSql(
+    dialect,
+    item.name,
+    dialect.keysInCreate ? drafts : { ...drafts, indexes: [], foreignKeys: [] },
+  );
   return created.statements.length > 0
     ? created.statements.map((statement) => `${statement};`)
     : unavailable(created.errors.join("; "));
@@ -535,12 +547,12 @@ async function detailOrNull(conn: string, table: string): Promise<TableDetail | 
 
 // The tables' sections; each one's structure (key, types, DDL) is read once
 // the job runs. For SQL, tables come parents first and views after them, and
-// a created table's foreign keys are added after all the rows: the servers'
-// CREATE TABLE text carries none, and this way self-references and cycles
-// load too.
+// a created table's indexes follow its rows and its foreign keys all the
+// rows: the servers' CREATE TABLE text carries neither, and this way
+// self-references and cycles load too.
 function tableSections(
   conn: string,
-  kind: string,
+  dialect: SqlDialect,
   format: ExportFormat,
   items: Item[],
   flags: ItemFlags[],
@@ -560,15 +572,16 @@ function tableSections(
         name: item.name,
         table: item.name,
         expected: detail?.row_count_estimate ?? 0,
-        numeric: (names) => declaredAs("number", names, detail, kind),
-        binary: (names) => declaredAs("binary", names, detail, kind),
-        drop: sql && flag.drop ? dropIfExistsSql(kind, item.name, item.kind) : null,
+        numeric: (names) => declaredAs("number", names, detail, dialect),
+        binary: (names) => declaredAs("binary", names, detail, dialect),
+        drop: sql && flag.drop ? dropIfExistsSql(dialect, item.name, item.kind) : null,
         unlink: [],
-        structure: sql && flag.structure ? () => structureSql(conn, kind, item, detail) : null,
+        structure: sql && flag.structure ? () => structureSql(conn, dialect, item, detail) : null,
         data: !sql || flag.data,
+        indexes: sql && flag.structure && detail !== null ? dumpIndexSql(dialect, item.name, detail) : [],
         foreignKeys:
-          sql && flag.structure && kind !== "sqlite" ? keys.map((fk) => foreignKeySql(kind, item.name, fk)) : [],
-        open: (sig) => tableFeed(conn, kind, item, detail, columns, sig),
+          sql && flag.structure && !dialect.keysInCreate ? keys.map((fk) => foreignKeySql(dialect, item.name, fk)) : [],
+        open: (sig) => tableFeed(conn, dialect, item, detail, columns, sig),
       });
     }
     if (!sql) {
@@ -591,7 +604,7 @@ function tableSections(
       }
       section.unlink = (foreign.get(section.name) ?? []).flatMap((fk) => {
         const closes = fk.ref_table !== section.name && dropped.has(fk.ref_table) && reaches(fk.ref_table, section.name);
-        const statement = closes ? dropForeignKeySql(kind, section.name, fk) : null;
+        const statement = closes ? dropForeignKeySql(dialect, section.name, fk) : null;
         return statement === null ? [] : [statement];
       });
     }
@@ -611,7 +624,7 @@ interface ResultPick {
 
 function resultSections(
   conn: string,
-  kind: string,
+  dialect: SqlDialect,
   entries: ResultPick[],
   tab: DataTab | null,
   wantAll: boolean,
@@ -627,9 +640,9 @@ function resultSections(
       let open: (sig: AbortSignal) => Promise<Feed>;
       let expected = entry.result.source.baseRowCount;
       if (wantAll && tab !== null) {
-        open = (sig) => dataTabFeed(conn, kind, tab, entry.result, names, sig);
-        expected = countFor(tab, kind) ?? expected;
-      } else if (wantAll && entry.result.meta.truncated && rerunnable(entry.result.sql, kind)) {
+        open = (sig) => dataTabFeed(conn, dialect, tab, entry.result, names, sig);
+        expected = countFor(tab, dialect) ?? expected;
+      } else if (wantAll && entry.result.meta.truncated && rerunnable(entry.result.sql, dialect)) {
         open = (sig) => singlePassFeed(conn, entry.result.sql, entry.pick, sig);
       } else {
         // Every row already came back, or the statement changes data and isn't run again.
@@ -639,12 +652,13 @@ function resultSections(
         name: entry.label,
         table: entry.table,
         expected,
-        numeric: (columns) => declaredAs("number", columns, detail, kind),
-        binary: (columns) => declaredAs("binary", columns, detail, kind),
+        numeric: (columns) => declaredAs("number", columns, detail, dialect),
+        binary: (columns) => declaredAs("binary", columns, detail, dialect),
         drop: null,
         unlink: [],
         structure: null,
         data: true,
+        indexes: [],
         foreignKeys: [],
         open,
       });
@@ -655,7 +669,7 @@ function resultSections(
 
 // ── The window ───────────────────────────────────────────────────────────
 
-export function ExportModal({ target, meta, onClose }: ExportModalProps) {
+export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }: ExportModalProps) {
   const kind = meta.kind;
   const [opened] = useState(() => new Date());
   const [format, setFormat] = useState<ExportFormat>("csv");
@@ -814,7 +828,7 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
 
   const dataTab = target.mode === "results" ? target.dataTab : null;
   const current = target.mode === "results" ? target.result : null;
-  const currentRerun = current !== null && rerunnable(current.sql, kind);
+  const currentRerun = current !== null && rerunnable(current.sql, dialect);
   // A statement that changes data isn't run again, so rows past those loaded are out of reach.
   const allDisabled = current !== null && dataTab === null && current.meta.truncated && !currentRerun;
 
@@ -887,6 +901,7 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
     const plan: ExportPlan = {
       format,
       kind,
+      dialect,
       csv,
       gzip: format === "sql" && gzip,
       base: name,
@@ -895,13 +910,13 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
         target.mode === "tables"
           ? tableSections(
               conn,
-              kind,
+              dialect,
               format,
               chosen,
               chosen.map(flagsOf),
               columnPick && fields !== null && pick !== null ? pick.map((index) => fields[index]) : null,
             )
-          : resultSections(conn, kind, resultPicks(), every ? null : dataTab, scope === "all"),
+          : resultSections(conn, dialect, resultPicks(), every ? null : dataTab, scope === "all"),
     };
     const handle = startJob(t("내보내기"), `${name}${extension}`, 0, {
       cancellable: true,
@@ -941,7 +956,7 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
           setError(message);
           setJobId(null);
         } else {
-          store.setError(message);
+          notifyError(message);
         }
       }
     })();
@@ -1385,7 +1400,19 @@ export function ExportModal({ target, meta, onClose }: ExportModalProps) {
               </span>
             </div>
           ) : null}
-          {error ? <ErrorNotice message={error} /> : null}
+          {error ? (
+            <ErrorNotice
+              error={error}
+              context="export"
+              onFix={{
+                "refresh-schema": () => {
+                  // The failure was about the old list; the new one replaces it.
+                  setError(null);
+                  onRefreshSchema();
+                },
+              }}
+            />
+          ) : null}
           {problem !== null && !running ? <p className="helper">{problem}</p> : null}
         </div>
         <div className="modal-foot">

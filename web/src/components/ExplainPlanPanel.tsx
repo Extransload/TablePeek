@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import type { SqlDialect } from "../engines/sqlDialect";
 import { parseExplainPlan, type PlanNode } from "../explainPlan";
 import { t } from "../i18n";
 import type { GridResult } from "../store";
 
 interface ExplainPlanPanelProps {
   result: GridResult;
-  kind: string;
+  // The connection's SQL, whose EXPLAIN result it reads; none: no plan.
+  dialect: SqlDialect | undefined;
 }
 
 function flatten(nodes: PlanNode[]): PlanNode[] {
@@ -77,7 +79,7 @@ function PlanNodeView({
   );
 }
 
-export function ExplainPlanPanel({ result, kind }: ExplainPlanPanelProps) {
+export function ExplainPlanPanel({ result, dialect }: ExplainPlanPanelProps) {
   const [rows, setRows] = useState<unknown[][] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
@@ -117,8 +119,8 @@ export function ExplainPlanPanel({ result, kind }: ExplainPlanPanelProps) {
     () =>
       rows === null
         ? null
-        : parseExplainPlan(kind, result.source.columns, rows),
-    [kind, result.source.columns, rows],
+        : parseExplainPlan(dialect, result.source.columns, rows),
+    [dialect, result.source.columns, rows],
   );
   const maxCost = useMemo(
     () =>

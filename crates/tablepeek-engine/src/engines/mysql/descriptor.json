@@ -1,0 +1,153 @@
+{
+  "id": "mysql",
+  "aliases": [
+    "mariadb"
+  ],
+  "label": "MySQL",
+  "paradigm": "sql",
+  "family": "mysql",
+  "transport": "server",
+  "default_port": 3306,
+  "url_schemes": [
+    "mysql",
+    "mariadb"
+  ],
+  "capabilities": {
+    "language": "sql",
+    "objects": [
+      "table",
+      "view",
+      "function",
+      "procedure",
+      "trigger"
+    ],
+    "schema": "declared",
+    "edit_by_key": true,
+    "transactions": "always",
+    "foreign_keys": true,
+    "ddl": true,
+    "databases": "switch",
+    "users": true,
+    "explain": "mysql-json",
+    "exact_count": false,
+    "dump": "sql",
+    "import_formats": [
+      "csv",
+      "json",
+      "sql"
+    ],
+    "export_formats": [
+      "csv",
+      "json",
+      "sql",
+      "xlsx"
+    ],
+    "sessions": {
+      "kill": true
+    },
+    "validation": false,
+    "aggregation": false,
+    "indexes": {
+      "create": true,
+      "drop": true
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "required": true,
+        "placeholder": "호스트 또는 연결 URL 붙여넣기",
+        "default": "127.0.0.1"
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "required": true,
+        "default": 3306
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자",
+        "required_to_connect": true
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호"
+      },
+      {
+        "key": "database",
+        "type": "text",
+        "label": "데이터베이스",
+        "required_to_connect": true
+      },
+      {
+        "key": "ssl_mode",
+        "type": "select",
+        "label": "SSL 모드",
+        "options": [
+          {
+            "value": "disable",
+            "label": "사용 안 함"
+          },
+          {
+            "value": "prefer",
+            "label": "가능하면 (Prefer)"
+          },
+          {
+            "value": "require",
+            "label": "필수 (Require)"
+          }
+        ],
+        "default": "prefer"
+      },
+      {
+        "key": "ssl_client_key",
+        "type": "file",
+        "label": "클라이언트 키",
+        "group": "SSL 키",
+        "visible_when": {
+          "ssl_mode": [
+            "prefer",
+            "require"
+          ]
+        }
+      },
+      {
+        "key": "ssl_client_cert",
+        "type": "file",
+        "label": "클라이언트 인증서",
+        "group": "SSL 키",
+        "visible_when": {
+          "ssl_mode": [
+            "prefer",
+            "require"
+          ]
+        }
+      },
+      {
+        "key": "ssl_root_cert",
+        "type": "file",
+        "label": "CA 인증서",
+        "group": "SSL 키",
+        "visible_when": {
+          "ssl_mode": [
+            "prefer",
+            "require"
+          ]
+        }
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {database}",
+    "detail": "{user}@{host}:{port}/{database}"
+  }
+}

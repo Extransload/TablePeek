@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
+import { confirmDialog } from "./ConfirmDialog";
+import { ErrorNotice } from "./ErrorNotice";
 import { store, type Favorite } from "../store";
 import type { CompletionColumn } from "../sqlComplete";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
@@ -53,14 +55,22 @@ export function SavedQueryModal({ query, folder = null, onClose }: SavedQueryMod
   }
 
   // Asks before throwing away what was typed.
-  function close(): void {
+  async function close(): Promise<void> {
     if (busy) {
       return;
     }
     const sql = editorRef.current?.getDoc() ?? query?.sql ?? "";
     const dirty =
       name !== (query?.name ?? t("제목 없음")) || keyword !== (query?.keyword ?? "") || sql !== (query?.sql ?? "");
-    if (dirty && !window.confirm(t("저장하지 않은 변경 사항을 버릴까요?"))) {
+    if (
+      dirty &&
+      !(await confirmDialog({
+        title: t("변경사항 버리기"),
+        message: t("저장하지 않은 변경 사항을 버릴까요?"),
+        confirmLabel: t("버리기"),
+        danger: true,
+      }))
+    ) {
       return;
     }
     onClose();
@@ -77,7 +87,7 @@ export function SavedQueryModal({ query, folder = null, onClose }: SavedQueryMod
         if (target?.closest(".cm-editor") != null && editorPopup !== null) {
           return;
         }
-        close();
+        void close();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         // The app's own ⌘S (apply grid changes) must not run under the dialog.
         event.preventDefault();
@@ -138,9 +148,9 @@ export function SavedQueryModal({ query, folder = null, onClose }: SavedQueryMod
           />
         </div>
         {failure !== null ? (
-          <p className="saved-query-problem" role="alert">
-            {failure}
-          </p>
+          <div className="saved-query-error-slot">
+            <ErrorNotice error={failure} variant="compact" />
+          </div>
         ) : null}
         <div className="modal-foot">
           <span className="spacer" />

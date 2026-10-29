@@ -9,6 +9,7 @@ import {
   type PivotSettings,
 } from "../chartData";
 import { buildDataSqlUnlimited, buildWhere, type FilterState, type SortState } from "../dataQuery";
+import type { SqlDialect } from "../engines/sqlDialect";
 import type { WindowedRowSource } from "../grid/windowSource";
 import { t } from "../i18n";
 import { store, type GridResult } from "../store";
@@ -20,7 +21,7 @@ import { LoadingState } from "./Spinner";
 // page the grid shows.
 export interface AnalysisTable {
   conn: string;
-  kind: string;
+  dialect: SqlDialect;
   table: string;
   filter: FilterState | null;
   sorts: SortState[] | null;
@@ -98,7 +99,7 @@ function useAnalysisRows(result: GridResult | null, table: AnalysisTable | null)
     table === null
       ? null
       : buildDataSqlUnlimited({
-          kind: table.kind,
+          dialect: table.dialect,
           table: table.table,
           filter: table.filter,
           sorts: table.sorts,
@@ -254,7 +255,7 @@ export function AnalysisPane({ view, state, result, table, awaiting, themeKey, o
   const count = data.rows.length.toLocaleString();
   const scope = !data.wholeTable
     ? t("{count}행", { count })
-    : table !== null && buildWhere(table.filter, table.kind) !== null
+    : table !== null && buildWhere(table.filter, table.dialect) !== null
       ? t("필터를 적용한 테이블 전체 {count}행", { count })
       : t("테이블 전체 {count}행", { count });
   const warn = data.capped

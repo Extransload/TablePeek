@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { t } from "../i18n";
+import { FieldError, fieldErrorProps } from "./ErrorNotice";
+import { EyeIcon, EyeOffIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
 interface PromptModalProps {
@@ -31,6 +33,8 @@ export function PromptModal({
   onClose,
 }: PromptModalProps) {
   const [value, setValue] = useState(initial);
+  const [reveal, setReveal] = useState(false);
+  const fieldId = useId();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const problem = value.trim() === "" ? null : (validate?.(value.trim()) ?? null);
@@ -57,14 +61,16 @@ export function PromptModal({
     }
   }
 
+  // Esc closes this dialog only, not the one under it.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
+        event.stopPropagation();
         close();
       }
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   });
 
   async function submit(): Promise<void> {
@@ -98,28 +104,40 @@ export function PromptModal({
         <div className="modal-head">
           <span className="modal-title">{title}</span>
         </div>
-        <label className="modal-body prompt-body">
-          <span className="prompt-label">{label}</span>
-          <input
-            ref={inputRef}
-            type={secret ? "password" : "text"}
-            autoComplete={secret ? "off" : undefined}
-            value={value}
-            placeholder={placeholder}
-            spellCheck={false}
-            disabled={busy}
-            aria-invalid={shown !== null}
-            onChange={(event) => {
-              setValue(event.target.value);
-              setFailure(null);
-            }}
-          />
-          {shown !== null ? (
-            <span className="prompt-problem" role="alert">
-              {shown}
-            </span>
-          ) : null}
-        </label>
+        <div className="modal-body prompt-body">
+          <label className="prompt-label" htmlFor={`${fieldId}-input`}>
+            {label}
+          </label>
+          <span className="cm-input-wrap">
+            <input
+              id={`${fieldId}-input`}
+              ref={inputRef}
+              type={secret && !reveal ? "password" : "text"}
+              autoComplete={secret ? "new-password" : undefined}
+              value={value}
+              placeholder={placeholder}
+              spellCheck={false}
+              disabled={busy}
+              {...fieldErrorProps(fieldId, shown)}
+              onChange={(event) => {
+                setValue(event.target.value);
+                setFailure(null);
+              }}
+            />
+            {secret ? (
+              <button
+                type="button"
+                className="cm-eye"
+                onClick={() => setReveal((now) => !now)}
+                title={reveal ? t("비밀번호 숨기기") : t("비밀번호 보기")}
+                aria-label={reveal ? t("비밀번호 숨기기") : t("비밀번호 보기")}
+              >
+                {reveal ? <EyeOffIcon size={11} /> : <EyeIcon size={11} />}
+              </button>
+            ) : null}
+          </span>
+          <FieldError id={fieldId} error={shown} />
+        </div>
         <div className="modal-foot">
           <span className="spacer" />
           <button type="button" onClick={close} disabled={busy}>

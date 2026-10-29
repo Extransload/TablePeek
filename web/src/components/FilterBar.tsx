@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   FILTER_OPS,
   inEffect,
@@ -7,9 +7,11 @@ import {
   type FilterRow,
   type FilterState,
 } from "../dataQuery";
+import type { AppError } from "../errorHelp";
 import { t } from "../i18n";
 import { formatBinding } from "../shortcuts";
 import { ContextMenu } from "./ContextMenu";
+import { ErrorNotice } from "./ErrorNotice";
 import { ChevronDownIcon, MinusIcon, PlusIcon } from "./icons";
 import { Select } from "./Select";
 
@@ -17,6 +19,9 @@ interface FilterBarProps {
   columns: string[];
   filter: FilterState;
   running: boolean;
+  // Why the filter in effect failed to read the rows: shown under the
+  // conditions, whose Apply buttons then say it failed.
+  error?: AppError | null;
   // Bumped to put the keyboard in the first value, after adding a condition
   // on `defaultColumn` when there is none; the owner clears it once handled.
   focusRequest?: number | null;
@@ -102,6 +107,7 @@ export function FilterBar({
   columns,
   filter,
   running,
+  error = null,
   focusRequest,
   defaultColumn,
   onFocusHandled,
@@ -112,6 +118,7 @@ export function FilterBar({
   const rowsRef = useRef<HTMLDivElement | null>(null);
   const [focusTick, setFocusTick] = useState(0);
   const [menu, setMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
+  const errorId = useId();
 
   useEffect(() => {
     setDraft(cloneFilter(filter));
@@ -230,6 +237,7 @@ export function FilterBar({
       <div className="filter-rows" ref={rowsRef}>
         {draft.rows.map((row) => {
           const applied = isApplied(row);
+          const failed = applied && error !== null;
           return (
             <div className={`filter-row${row.enabled ? "" : " off"}`} key={row.id}>
               <input
@@ -280,6 +288,8 @@ export function FilterBar({
                   placeholder={valuePlaceholder(row)}
                   spellCheck={false}
                   value={row.value}
+                  aria-invalid={failed || undefined}
+                  aria-describedby={failed ? errorId : undefined}
                   onChange={(event) => patchRow(row.id, { value: event.target.value })}
                   onKeyDown={(event) => {
                     // Return applies this condition, as TablePlus does.
@@ -300,12 +310,12 @@ export function FilterBar({
               )}
               <button
                 type="button"
-                className={`filter-apply${applied ? " applied" : ""}`}
+                className={`filter-apply${failed ? " failed" : applied ? " applied" : ""}`}
                 disabled={running}
-                title={t("이 조건만 적용합니다")}
+                title={failed ? t("이 조건으로 불러오지 못했습니다. 고친 뒤 다시 적용하세요") : t("이 조건만 적용합니다")}
                 onClick={() => applyRow(row.id)}
               >
-                {applied ? t("적용됨") : t("적용")}
+                {failed ? t("실패") : applied ? t("적용됨") : t("적용")}
               </button>
               <button
                 type="button"
@@ -330,6 +340,11 @@ export function FilterBar({
           );
         })}
       </div>
+      {error !== null ? (
+        <div className="filter-error" id={errorId}>
+          <ErrorNotice error={error} context="data" variant="compact" />
+        </div>
+      ) : null}
       <div className="filter-actions">
         <button type="button" disabled={running} onClick={clear}>
           {t("필터 해제")}

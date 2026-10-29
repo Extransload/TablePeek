@@ -1,12 +1,48 @@
+import { engineById, engines, type EngineErrorHelp, type ErrorHint } from "./engines";
 import { t } from "./i18n";
 
 // Turns raw driver and server errors into an explanation a person can act
 // on: what happened, the likely cause, and what to try. Rules match the
 // English driver text and, where the server is localized, the error codes
 // (MySQL "ERROR 1045", PostgreSQL "[SQLSTATE 28P01]", SQL Server "code: 18456").
+// Rules for one engine's own errors live in engines/<id>/ (errorHelp.rules).
 
-// A fix the UI can apply for the user, e.g. in the connection dialog.
-export type ErrorAction = "ssl-off" | "ssl-on";
+// An error as the TablePeek server reports it (docs/ERRORS.md §2). The field
+// names are the server's JSON, so a reply body passes through unchanged.
+export interface AppError {
+  code: string;
+  message: string;
+  sqlstate?: string;
+  // 1-based character offset in the statement (PostgreSQL), or line and column.
+  position?: { offset?: number; line?: number; column?: number };
+  // The engine's own number: MySQL errno, SQL Server number, MongoDB code.
+  server_code?: number;
+  // MongoDB's codeName ("DuplicateKey").
+  code_name?: string;
+  // MongoDB errInfo and write errors, PostgreSQL detail/constraint/column.
+  details?: unknown;
+  // The driver's full original text.
+  raw?: string;
+}
+
+// Where the error is shown; a rule offers only the fixes that make sense there
+// (no "edit the connection" inside the connection dialog).
+export type ErrorContext =
+  | "connect"
+  | "editor"
+  | "data"
+  | "import"
+  | "export"
+  | "structure"
+  | "document"
+  | "shell"
+  | "aggregation"
+  | "admin"
+  | "general";
+
+// A fix the UI can apply for the user with one click. The screen showing the
+// error decides whether it can (ErrorNotice's onFix).
+export type ErrorAction = "ssl-off" | "ssl-on" | "direct-connection" | "open-validation" | "refresh-schema";
 
 export interface ErrorHelp {
   title: string;
@@ -15,15 +51,20 @@ export interface ErrorHelp {
   action?: ErrorAction;
 }
 
-type Driver = "mysql" | "postgres" | "mssql" | "sqlite" | null;
-
-interface Context {
+// What a rule knows about the error it explains.
+export interface ErrorSituation {
+  // The text the rules read: the message and the driver's original text,
+  // plus the codes as the drivers print them.
   raw: string;
   code: string;
-  driver: Driver;
+  error: AppError;
+  where: ErrorContext;
+  // The engine whose error this is, when it can be told.
+  engineId: string | null;
+  engine: EngineErrorHelp | null;
 }
 
-interface Rule {
+export interface ErrorRule {
   // The driver's message; its groups pick out names for the explanation.
   match?: RegExp;
   // Error codes that mean the same thing when the message is localized. Codes
@@ -31,18 +72,18 @@ interface Rule {
   // 23503: either side of a foreign key) are left to the message.
   code?: RegExp;
   // For a rule that needs more than one pattern to hold.
-  when?(raw: string): boolean;
+  when?(raw: string, situation: ErrorSituation): boolean;
   // Generic network wording. A database error can echo it from user data (a
   // constraint named "timed out"), so these rules skip messages with a code.
   network?: boolean;
-  help(found: RegExpExecArray, context: Context): ErrorHelp;
+  help(found: RegExpExecArray, situation: ErrorSituation): ErrorHelp;
 }
 
 const UNTRUSTED_CERT = /UnknownIssuer|unknown issuer|self[- ]signed/i;
 const TLS_REQUIRED = /insecure transport|ERROR 3159\b/;
 const DATABASE_CODE = /ERROR \d{4}\b|\[SQLSTATE \w{5}\]|\(code: \d+, state:/;
 // Classifying looks at the start only; the full message is still shown.
-const SCAN_LIMIT = 2000;
+const SCAN_LIMIT = 4000;
 
 function codeOnly(raw: string): RegExpExecArray {
   return Object.assign([""], { index: 0, input: raw }) as unknown as RegExpExecArray;
@@ -52,22 +93,33 @@ function codeOnly(raw: string): RegExpExecArray {
 // message may arrive translated, so it is matched in both languages.
 const APP_SERVER_DOWN = "서버에 연결할 수 없습니다";
 
-const DEFAULT_PORTS = "MySQL 3306 · PostgreSQL 5432 · SQL Server 1433 · CockroachDB 26257";
+// "PostgreSQL 5432", or every server engine's port when the engine isn't known.
+function defaultPorts(situation: ErrorSituation): string {
+  const one = situation.engineId !== null ? engineById(situation.engineId) : undefined;
+  return (one?.default_port !== undefined ? [one] : engines())
+    .filter((engine) => engine.default_port !== undefined)
+    .map((engine) => `${engine.label} ${engine.default_port}`)
+    .join(" · ");
+}
 
-function driverOf(raw: string): Driver {
-  if (/MySQL/.test(raw)) {
-    return "mysql";
+// The engine's own advice for a situation, translated.
+function hints(situation: ErrorSituation, hint: ErrorHint): string[] {
+  return (situation.engine?.hints[hint] ?? []).map((key) => t(key));
+}
+
+// A string field of the server's details (PostgreSQL detail, constraint, …).
+function detailOf(error: AppError, key: string): string {
+  const details = error.details;
+  if (details === null || typeof details !== "object") {
+    return "";
   }
-  if (/PostgreSQL|SQLSTATE/.test(raw)) {
-    return "postgres";
-  }
-  if (/SQL Server|code: \d+, state:/.test(raw)) {
-    return "mssql";
-  }
-  if (/SQLite/.test(raw)) {
-    return "sqlite";
-  }
-  return null;
+  const value = (details as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+// Where a statement runs: the fixes about SQL text (quoting, ⌘K) belong there.
+function writingSql(situation: ErrorSituation): boolean {
+  return situation.where === "editor" || situation.where === "general";
 }
 
 function unquote(name: string): string {
@@ -91,14 +143,9 @@ function quoted(name: string): string {
 
 function tokenHelp(): ErrorHelp {
   return {
-    title: t("접속 토큰이 맞지 않습니다"),
-    cause: t(
-      "TablePeek 서버가 다시 시작되면 보안을 위해 접속 주소의 토큰이 새로 만들어집니다. 이 창은 이전 토큰을 쓰고 있습니다.",
-    ),
-    fixes: [
-      t("서버를 실행한 터미널에 표시된 새 주소(…/?token=…)로 다시 여세요."),
-      t("make run으로 실행했다면 자동으로 새로 열린 브라우저 탭을 사용하세요."),
-    ],
+    title: t("TablePeek이 다시 시작되어 이 창의 접속 주소가 더 이상 맞지 않습니다"),
+    cause: t("TablePeek은 시작할 때마다 보안을 위해 새 접속 주소를 만듭니다. 이 창은 이전 주소로 열려 있습니다."),
+    fixes: [t("TablePeek을 실행한 곳(터미널이나 앱)에 표시된 새 주소로 이 페이지를 다시 여세요.")],
   };
 }
 
@@ -107,8 +154,8 @@ function appServerDownHelp(): ErrorHelp {
     title: t("TablePeek 서버에 연결할 수 없습니다"),
     cause: t("브라우저와 TablePeek 서버 사이의 연결이 끊겼습니다. 서버가 종료되었거나 다시 시작되는 중입니다."),
     fixes: [
-      t("서버를 실행한 터미널이 아직 켜져 있는지 확인하세요."),
-      t("꺼졌다면 make run으로 다시 실행한 뒤, 새로 표시된 주소로 여세요."),
+      t("TablePeek이 아직 실행 중인지 확인하세요."),
+      t("종료되었다면 TablePeek을 다시 실행한 뒤, 새로 표시된 주소로 여세요."),
     ],
   };
 }
@@ -116,7 +163,7 @@ function appServerDownHelp(): ErrorHelp {
 const ASK_ADMIN_FOR_GRANT = "DB 관리자에게 이 작업에 필요한 권한을 요청하세요.";
 const USE_OTHER_ACCOUNT = "권한이 있는 다른 계정으로 연결해서 실행하세요.";
 
-const RULES: Rule[] = [
+const RULES: ErrorRule[] = [
   // ── TablePeek itself ──────────────────────────────────────────────
   { match: /토큰이 유효하지 않습니다/, help: tokenHelp },
   {
@@ -323,17 +370,14 @@ const RULES: Rule[] = [
   {
     match: /Access denied for user '([^']*)'@'([^']*)' \(using password|password authentication failed for user "([^"]+)"|Login failed for user '([^']*)'/,
     code: /ERROR 1045\b|\[SQLSTATE 28P01\]|code: 18456\b/,
-    help: (found, context) => {
+    help: (found, situation) => {
       const user = pick(found, 1, 3, 4);
-      const fixes = [
-        t("사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다."),
-        t("저장된 비밀번호가 바뀌었다면 연결을 편집해 새 비밀번호를 입력하세요."),
-      ];
-      if (context.driver === "mysql") {
-        fixes.push(
-          t("MySQL 계정은 ‘사용자@접속 위치’ 단위입니다. 다른 곳에서는 되던 비밀번호도 이 위치(또는 SSH 서버)에서는 다른 계정으로 취급될 수 있습니다."),
-        );
+      const fixes = [t("사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다.")];
+      // Inside the connection dialog the fields are right there.
+      if (situation.where !== "connect") {
+        fixes.push(t("저장된 비밀번호가 바뀌었다면 연결을 편집해 새 비밀번호를 입력하세요."));
       }
+      fixes.push(...hints(situation, "login_failed"));
       return {
         title: t("로그인에 실패했습니다"),
         cause:
@@ -354,14 +398,10 @@ const RULES: Rule[] = [
   {
     match: /Unknown database '([^']+)'|database "([^"]+)" does not exist|Cannot open database "([^"]+)"/,
     code: /ERROR 1049\b|\[SQLSTATE 3D000\]|code: 4060\b/,
-    help: (found, context) => {
+    help: (found, situation) => {
       const name = pick(found, 1, 2, 3);
       const fixes = [t("데이터베이스 이름의 철자와 대소문자를 확인하세요.")];
-      if (context.driver === "mysql") {
-        fixes.push(t("데이터베이스 칸을 비워 두고 연결한 뒤 ⌘K로 고를 수 있습니다."));
-      } else if (context.driver === "postgres") {
-        fixes.push(t("기본 데이터베이스 ‘postgres’로 먼저 연결한 뒤 ⌘K로 바꿀 수 있습니다."));
-      }
+      fixes.push(...hints(situation, "unknown_database"));
       return { title: t("{name}데이터베이스를 찾을 수 없습니다", { name: quoted(name) }), fixes };
     },
   },
@@ -504,22 +544,18 @@ const RULES: Rule[] = [
   {
     match: /You have an error in your SQL syntax[\s\S]*?near '([\s\S]*?)' at line (\d+)|syntax error at or near "([^"]*)"|Incorrect syntax near (?:the keyword )?'([^']*)'|near "([^"]*)": syntax error/,
     code: /ERROR 1064\b|\[SQLSTATE 42601\]|code: (?:102|156)\b/,
-    help: (found, context) => {
+    help: (found, situation) => {
       const near = pick(found, 1, 3, 4, 5).trim().split("\n")[0].slice(0, 60);
       const fixes = [t("쉼표, 괄호, 따옴표의 짝이 맞는지 확인하세요.")];
-      if (context.driver === "mysql") {
-        fixes.push(t("MySQL에서 이름은 `백틱`으로, 문자열은 '작은따옴표'로 감쌉니다."));
-      } else if (context.driver === "postgres") {
-        fixes.push(t("PostgreSQL에서 이름은 \"큰따옴표\"로, 문자열은 '작은따옴표'로 감쌉니다."));
-      } else if (context.driver === "mssql") {
-        fixes.push(t("SQL Server는 LIMIT 대신 TOP이나 OFFSET … FETCH를 씁니다."));
-      }
+      fixes.push(...hints(situation, "syntax"));
       fixes.push(t("order, user, group 같은 예약어를 이름으로 쓰려면 따옴표로 감싸세요."));
       return {
         title: t("SQL 문법 오류"),
+        // MySQL counts lines from the statement's start; the editor marks the
+        // place and names its own line, so the cause leaves the count out there.
         cause:
           near !== ""
-            ? found[2]
+            ? found[2] && situation.where !== "editor"
               ? t("{line}번째 줄 ‘{near}’ 근처를 해석하지 못했습니다.", { line: found[2], near })
               : t("‘{near}’ 근처를 해석하지 못했습니다.", { near })
             : t("문장을 해석하지 못했습니다."),
@@ -528,34 +564,60 @@ const RULES: Rule[] = [
     },
   },
   {
-    match: /Table '([^']+)' doesn't exist|relation "([^"]+)" does not exist|no such table: (\S+)|Invalid object name '([^']+)'/,
+    match: /Table '([^']+)' doesn't exist|(?:relation|table) "([^"]+)" does not exist|no such table: (\S+)|Invalid object name '([^']+)'/,
     code: /ERROR 1146\b|\[SQLSTATE 42P01\]|code: 208\b/,
-    help: (found, context) => {
-      const fixes = [
-        t("테이블 이름의 철자를 확인하세요."),
-        t("지금 선택된 데이터베이스·스키마가 맞는지 확인하세요 (⌘K로 전환)."),
-      ];
-      if (context.driver === "postgres") {
-        fixes.push(t("PostgreSQL은 따옴표 없는 이름을 소문자로 바꿉니다. 대문자가 섞인 이름은 \"MyTable\"처럼 큰따옴표로 감싸세요."));
+    help: (found, situation) => {
+      const fixes: string[] = [];
+      if (writingSql(situation)) {
+        fixes.push(
+          t("테이블 이름의 철자를 확인하세요."),
+          t("지금 선택된 데이터베이스·스키마가 맞는지 확인하세요 (⌘K로 전환)."),
+          ...hints(situation, "unknown_table"),
+          t("방금 만든 테이블이라면 스키마를 새로고침하세요."),
+        );
+      } else {
+        // Export, a data tab, a structure panel: the table was there when it opened.
+        fixes.push(
+          t("다른 곳에서 테이블이 지워졌거나 이름이 바뀌었을 수 있습니다."),
+          t("스키마를 새로고침해 테이블 목록을 최신으로 맞춘 뒤 다시 여세요."),
+        );
       }
-      fixes.push(t("방금 만든 테이블이라면 스키마를 새로고침하세요."));
       return {
         title: t("{name}테이블을 찾을 수 없습니다", { name: quoted(pick(found, 1, 2, 3, 4)) }),
         fixes,
+        action: "refresh-schema",
       };
     },
   },
   {
     match: /Unknown column '([^']+)'|column "([^"]+)" (?:of relation "[^"]+" )?does not exist|no such column: (\S+)|Invalid column name '([^']+)'/,
     code: /ERROR 1054\b|\[SQLSTATE 42703\]|code: 207\b/,
-    help: (found, context) => {
+    help: (found, situation) => {
       const fixes = [t("컬럼 이름의 철자를 확인하세요.")];
-      if (context.driver === "postgres") {
-        fixes.push(t("PostgreSQL에서 큰따옴표(\"…\")는 이름을 뜻합니다. 문자열 값은 작은따옴표('…')로 감싸세요."));
+      if (writingSql(situation)) {
+        fixes.push(...hints(situation, "unknown_column"));
+        fixes.push(t("다른 테이블의 컬럼이라면 테이블 이름이나 별칭을 앞에 붙이세요 (예: u.name)."));
+      } else {
+        fixes.push(t("다른 곳에서 컬럼이 지워졌거나 이름이 바뀌었다면 스키마를 새로고침하세요."));
       }
-      fixes.push(t("다른 테이블의 컬럼이라면 테이블 이름이나 별칭을 앞에 붙이세요 (예: u.name)."));
       return {
         title: t("{name}컬럼을 찾을 수 없습니다", { name: quoted(pick(found, 1, 2, 3, 4)) }),
+        fixes,
+        action: writingSql(situation) ? undefined : "refresh-schema",
+      };
+    },
+  },
+  {
+    match: /(?:database|relation|schema|role|type|function|index|view) "([^"]+)" already exists|Can't create database '([^']+)'; database exists|Table '([^']+)' already exists|There is already an object named '([^']+)'|Database '([^']+)' already exists|table (\S+) already exists/,
+    code: /\[SQLSTATE 42(?:P04|P06|P07|710|723)\]|ERROR (?:1007|1050)\b|code: (?:1801|2714)\b/,
+    help: (found, situation) => {
+      const name = unquote(pick(found, 1, 2, 3, 4, 5, 6));
+      const fixes = [t("다른 이름을 쓰거나, 이미 있는 것을 그대로 쓰세요.")];
+      if (writingSql(situation)) {
+        fixes.push(t("없을 때만 만들려면 CREATE … IF NOT EXISTS를 쓰세요."));
+      }
+      return {
+        title: name !== "" ? t("‘{name}’이(가) 이미 있습니다", { name }) : t("같은 이름이 이미 있습니다"),
         fixes,
       };
     },
@@ -563,57 +625,135 @@ const RULES: Rule[] = [
   {
     match: /Duplicate entry '([^']*)' for key '([^']+)'|duplicate key value violates unique constraint "([^"]+)"|UNIQUE constraint failed: (\S+)|Violation of (?:PRIMARY KEY|UNIQUE KEY) constraint '([^']+)'|Cannot insert duplicate key/,
     code: /ERROR 1062\b|\[SQLSTATE 23505\]|code: (?:2601|2627)\b/,
-    help: (found) => {
-      const key = pick(found, 2, 3, 4, 5);
+    help: (found, situation) => {
+      // PostgreSQL's detail names the value: Key (email)=(a@b.c) already exists.
+      const pgKey = /Key \((.*?)\)=\((.*?)\) already exists/.exec(situation.raw);
+      // SQL Server's message ends with it: The duplicate key value is (a@b.c).
+      const mssqlValue = /duplicate key value is \((.*?)\)\.?/.exec(situation.raw)?.[1];
+      const key = pick(found, 2, 3, 4, 5) || detailOf(situation.error, "constraint");
+      const value = found[1] ?? pgKey?.[2] ?? mssqlValue;
+      const fixes = [t("다른 값을 넣거나, 기존 행을 수정하세요.")];
+      // Only a statement or an import inserts rows with an id it chose itself.
+      if (writingSql(situation) || situation.where === "import") {
+        fixes.push(t("자동 증가하는 id라면 값을 직접 넣지 말고 비워 두세요."));
+      }
+      if (situation.where === "import") {
+        fixes.push(t("가져올 파일 안에 같은 값이 두 번 들어 있지 않은지도 확인하세요."));
+      }
       return {
         title: t("이미 같은 값이 있어 저장할 수 없습니다"),
         cause:
-          found[1] !== undefined
-            ? t("값 ‘{value}’이(가) 고유해야 하는 ‘{key}’에 이미 있습니다.", { value: found[1], key })
-            : key !== ""
-              ? t("고유해야 하는 ‘{key}’에 같은 값이 이미 있습니다.", { key })
-              : undefined,
-        fixes: [
-          t("다른 값을 넣거나, 기존 행을 수정하세요."),
-          t("자동 증가하는 id라면 값을 직접 넣지 말고 비워 두세요."),
-        ],
+          value !== undefined && pgKey !== null
+            ? t("‘{column}’ 값 ‘{value}’이(가) 이미 있습니다. 이 컬럼은 고유해야 합니다 (‘{key}’).", {
+                column: pgKey[1],
+                value,
+                key,
+              })
+            : value !== undefined
+              ? t("값 ‘{value}’이(가) 고유해야 하는 ‘{key}’에 이미 있습니다.", { value, key })
+              : key !== ""
+                ? t("고유해야 하는 ‘{key}’에 같은 값이 이미 있습니다.", { key })
+                : undefined,
+        fixes,
+      };
+    },
+  },
+  {
+    match: /new row for relation "[^"]+" violates check constraint "([^"]+)"|check constraint "([^"]+)" (?:of relation "[^"]+" )?is violated by some row|Check constraint '([^']+)' is violated|conflicted with the CHECK constraint "([^"]+)"|CHECK constraint failed: (\S+)/,
+    code: /\[SQLSTATE 23514\]|ERROR 3819\b/,
+    help: (found, situation) => {
+      const name = pick(found, 1, 2, 3, 4, 5) || detailOf(situation.error, "constraint");
+      // PostgreSQL's detail ends "contains (…)." and the message wraps it in
+      // parentheses, so the row ends at the last ")." (values may hold parentheses).
+      const row = /Failing row contains (\(.*\))\./.exec(situation.raw)?.[1];
+      const fixes =
+        situation.where === "structure"
+          ? [t("이 조건에 맞지 않는 기존 행을 먼저 고친 뒤 다시 적용하세요.")]
+          : [t("조건에 맞는 값으로 바꾸세요."), t("조건 내용은 테이블 구조의 제약 조건 목록에서 볼 수 있습니다.")];
+      return {
+        title: t("{name}검사 조건(CHECK)에 맞지 않는 값입니다", { name: quoted(name) }),
+        cause:
+          row !== undefined
+            ? t("저장하려던 행 {row}이(가) 테이블의 CHECK 제약을 만족하지 않습니다.", { row })
+            : t("저장하려던 값이 테이블의 CHECK 제약을 만족하지 않습니다."),
+        fixes,
       };
     },
   },
   {
     match: /Cannot delete or update a parent row|update or delete on table "([^"]+)" violates foreign key constraint|conflicted with the REFERENCE constraint/,
     code: /ERROR 1451\b/,
-    help: () => ({
-      title: t("다른 테이블이 참조하고 있어 지우거나 바꿀 수 없습니다"),
-      fixes: [
-        t("이 행을 참조하는 다른 테이블의 행을 먼저 지우거나 수정하세요."),
-        t("외래 키에 ON DELETE CASCADE가 없으면 참조하는 행이 함께 지워지지 않습니다."),
-      ],
-    }),
+    help: (_found, situation) => {
+      const text = situation.raw;
+      // PostgreSQL: Key (id)=(1) is still referenced from table "orders".
+      const pg = /Key \((.*?)\)=\((.*?)\) is still referenced from table "([^"]+)"/.exec(text);
+      // MySQL: (`db`.`orders`, CONSTRAINT …); SQL Server: table "dbo.orders", column 'user_id'.
+      const table = pg?.[3] ?? /constraint fails \(`[^`]+`\.`([^`]+)`/.exec(text)?.[1] ?? /table "([^"]+)"/.exec(text)?.[1];
+      return {
+        title: t("다른 테이블이 참조하고 있어 지우거나 바꿀 수 없습니다"),
+        cause:
+          pg !== null
+            ? t("‘{table}’ 테이블의 행이 아직 이 행({key} = {value})을 참조하고 있습니다.", {
+                table: pg[3],
+                key: pg[1],
+                value: pg[2],
+              })
+            : table !== undefined
+              ? t("‘{table}’ 테이블의 행이 아직 이 행을 참조하고 있습니다.", { table })
+              : undefined,
+        fixes: [
+          t("이 행을 참조하는 다른 테이블의 행을 먼저 지우거나 수정하세요."),
+          t("외래 키에 ON DELETE CASCADE가 없으면 참조하는 행이 함께 지워지지 않습니다."),
+        ],
+      };
+    },
   },
   {
     match: /Cannot add or update a child row|violates foreign key constraint|FOREIGN KEY constraint failed|conflicted with the FOREIGN KEY constraint/,
     code: /ERROR 1452\b|code: 547\b/,
-    help: () => ({
-      title: t("참조하는 값이 상대 테이블에 없습니다"),
-      cause: t("외래 키 컬럼에 넣은 값과 같은 행이 참조 대상 테이블에 없습니다."),
-      fixes: [
-        t("값이 참조 대상 테이블에 실제로 있는지 확인하세요."),
-        t("참조 대상 행을 먼저 만든 뒤 다시 저장하세요."),
-      ],
-    }),
+    help: (_found, situation) => {
+      const text = situation.raw;
+      // PostgreSQL: Key (user_id)=(99) is not present in table "users".
+      const pg = /Key \((.*?)\)=\((.*?)\) is not present in table "([^"]+)"/.exec(text);
+      // MySQL: FOREIGN KEY (`user_id`) REFERENCES `users` (`id`).
+      const mysql = /FOREIGN KEY \(`([^`]+)`\) REFERENCES `([^`]+)`/.exec(text);
+      // SQL Server: table "dbo.users", column 'id'.
+      const table = /table "([^"]+)"/.exec(text)?.[1];
+      return {
+        title: t("참조하는 값이 상대 테이블에 없습니다"),
+        cause:
+          pg !== null
+            ? t("‘{column}’ 값 ‘{value}’이(가) ‘{table}’ 테이블에 없습니다.", { column: pg[1], value: pg[2], table: pg[3] })
+            : mysql !== null
+              ? t("‘{column}’에 넣은 값이 ‘{table}’ 테이블에 없습니다.", { column: mysql[1], table: mysql[2] })
+              : table !== undefined
+                ? t("외래 키 컬럼에 넣은 값이 ‘{table}’ 테이블에 없습니다.", { table })
+                : t("외래 키 컬럼에 넣은 값과 같은 행이 참조 대상 테이블에 없습니다."),
+        fixes: [
+          t("값이 참조 대상 테이블에 실제로 있는지 확인하세요."),
+          t("참조 대상 행을 먼저 만든 뒤 다시 저장하세요."),
+        ],
+      };
+    },
   },
   {
     match: /Column '([^']+)' cannot be null|Field '([^']+)' doesn't have a default value|null value in column "([^"]+)"[^\n]*violates not-null constraint|NOT NULL constraint failed: (\S+)|Cannot insert the value NULL into column '([^']+)'/,
     code: /ERROR (?:1048|1364)\b|\[SQLSTATE 23502\]|code: 515\b/,
-    help: (found) => ({
-      title: t("{name}필수 값이 비어 있습니다", { name: quoted(pick(found, 1, 2, 3, 4, 5)) }),
-      cause: t("이 컬럼은 비워 둘 수 없고(NOT NULL), 기본값도 없습니다."),
-      fixes: [
-        t("값을 채워 넣으세요."),
-        t("비워 두는 일이 잦다면 컬럼에 기본값을 지정하세요."),
-      ],
-    }),
+    help: (found, situation) => {
+      const fixes = [t("값을 채워 넣으세요.")];
+      if (situation.where === "import") {
+        fixes.push(t("가져올 파일에 이 컬럼이 빈 줄이 있는지, 컬럼 연결이 맞는지 확인하세요."));
+      } else {
+        fixes.push(t("비워 두는 일이 잦다면 컬럼에 기본값을 지정하세요."));
+      }
+      return {
+        title: t("{name}필수 값이 비어 있습니다", {
+          name: quoted(pick(found, 1, 2, 3, 4, 5) || detailOf(situation.error, "column")),
+        }),
+        cause: t("이 컬럼은 비워 둘 수 없고(NOT NULL), 기본값도 없습니다."),
+        fixes,
+      };
+    },
   },
   {
     match: /Data too long for column '([^']+)'|value too long for type|String or binary data would be truncated/,
@@ -625,18 +765,25 @@ const RULES: Rule[] = [
     }),
   },
   {
-    match: /Incorrect (\w+) value: '([^']*)' for column '([^']+)'|invalid input syntax for type (\w+): "([^"]*)"|Conversion failed when converting/,
-    code: /ERROR 1366\b|\[SQLSTATE 22P02\]/,
-    help: (found) => {
-      const value = pick(found, 2, 5);
-      const type = pick(found, 1, 4);
+    match: /Incorrect (\w+) value: '([^']*)' for column '([^']+)'|invalid input (?:syntax for type|value for enum) (\w+): "([^"]*)"|Conversion failed when converting (?:the )?(?:[\w ]+? )?value '([^']*)' to data type (\w+)|Truncated incorrect (\w+) value: '([^']*)'|Conversion failed when converting|datatype mismatch/,
+    code: /ERROR (?:1366|1292)\b|\[SQLSTATE 22P02\]|code: (?:245|8114)\b/,
+    help: (found, situation) => {
+      const value = pick(found, 2, 5, 6, 9);
+      const type = pick(found, 1, 4, 7, 8);
+      const column = pick(found, 3) || detailOf(situation.error, "column");
+      const fixes = [t("숫자·날짜 컬럼에는 형식에 맞는 값을 넣으세요 (날짜 예: 2026-10-21 14:30:00).")];
+      if (situation.where === "import") {
+        fixes.push(t("가져올 파일에서 이 컬럼의 값 형식과 컬럼 연결이 맞는지 확인하세요."));
+      }
       return {
         title: t("값이 컬럼 형식과 맞지 않습니다"),
         cause:
           value !== "" && type !== ""
-            ? t("‘{value}’은(는) {type} 형식으로 바꿀 수 없습니다.", { value, type })
+            ? column !== ""
+              ? t("‘{value}’은(는) ‘{column}’ 컬럼의 {type} 형식으로 바꿀 수 없습니다.", { value, column, type })
+              : t("‘{value}’은(는) {type} 형식으로 바꿀 수 없습니다.", { value, type })
             : undefined,
-        fixes: [t("숫자·날짜 컬럼에는 형식에 맞는 값을 넣으세요 (날짜 예: 2026-10-21 14:30:00).")],
+        fixes,
       };
     },
   },
@@ -658,20 +805,21 @@ const RULES: Rule[] = [
   // ── Network ───────────────────────────────────────────────────────
   {
     network: true,
-    match: /Connection refused|actively refused|ECONNREFUSED|os error (?:61|111|10061)\b/i,
-    help: () => ({
+    match: /Connection refused|actively refused|ECONNREFUSED|os error (?:61|111|10061)\b|\(연결 거부\)/i,
+    help: (_found, situation) => ({
       title: t("DB 서버에 연결할 수 없습니다 (연결 거부)"),
       cause: t("그 주소와 포트에서 기다리는 DB 서버가 없습니다."),
       fixes: [
         t("DB 서버가 실행 중인지 확인하세요."),
-        t("포트 번호를 확인하세요 ({ports}).", { ports: DEFAULT_PORTS }),
-        t("SSH 터널이나 Cloud SQL 프록시처럼 로컬 포트(예: 127.0.0.1:3307)로 접속한다면, 그 터널이 켜져 있는지 확인하세요."),
+        t("포트 번호를 확인하세요 ({ports}).", { ports: defaultPorts(situation) }),
+        t("SSH 터널로 로컬 포트에 접속한다면, 그 터널이 켜져 있는지 확인하세요."),
+        ...hints(situation, "connection_refused"),
       ],
     }),
   },
   {
     network: true,
-    match: /failed to lookup address|Name or service not known|nodename nor servname|No such host is known|getaddrinfo|dns error|Temporary failure in name resolution/i,
+    match: /failed to lookup address|Name or service not known|nodename nor servname|No such host is known|getaddrinfo|dns error|Temporary failure in name resolution|호스트를 찾을 수 없습니다/i,
     help: () => ({
       title: t("호스트 이름을 찾을 수 없습니다"),
       fixes: [
@@ -682,7 +830,7 @@ const RULES: Rule[] = [
   },
   {
     network: true,
-    match: /timed out|deadline has elapsed|os error (?:60|110|10060)\b/i,
+    match: /timed out|deadline has elapsed|os error (?:60|110|10060)\b|응답하지 않습니다 \(시간 초과\)/i,
     help: () => ({
       title: t("서버가 응답하지 않습니다 (시간 초과)"),
       cause: t("요청이 서버에 닿지 않거나 답이 오지 않았습니다. 방화벽·보안 그룹이 막고 있거나 VPN이 필요할 때 흔합니다."),
@@ -712,48 +860,164 @@ const RULES: Rule[] = [
   },
 ];
 
-function matchRule(rule: Rule, raw: string): RegExpExecArray | null {
+function matchRule(rule: ErrorRule, situation: ErrorSituation): RegExpExecArray | null {
+  const raw = situation.raw;
   if (rule.network === true && DATABASE_CODE.test(raw)) {
     return null;
   }
-  if (rule.when !== undefined) {
-    return rule.when(raw) ? codeOnly(raw) : null;
+  if (rule.when !== undefined && !rule.when(raw, situation)) {
+    return null;
+  }
+  if (rule.match === undefined && rule.code === undefined) {
+    return codeOnly(raw);
   }
   return rule.match?.exec(raw) ?? (rule.code?.test(raw) ? codeOnly(raw) : null);
 }
 
-function explainWith(raw: string, code: string, driver: Driver): ErrorHelp | null {
-  if (code === "unauthorized") {
-    return tokenHelp();
-  }
-  const trimmed = raw.trim();
-  if (trimmed === APP_SERVER_DOWN || trimmed === t(APP_SERVER_DOWN)) {
-    return appServerDownHelp();
-  }
-  const context: Context = { raw, code, driver };
-  for (const rule of RULES) {
-    const found = matchRule(rule, raw);
+function explainWith(situation: ErrorSituation): ErrorHelp | null {
+  // An engine's own rules come first: they know its errors best.
+  for (const rule of [...(situation.engine?.rules ?? []), ...RULES]) {
+    const found = matchRule(rule, situation);
     if (found !== null) {
-      return rule.help(found, context);
+      return rule.help(found, situation);
     }
   }
   return null;
 }
 
-// An explanation for `raw`, or null when there is nothing more helpful to say
-// than the message itself.
-export function explainError(raw: string, code = ""): ErrorHelp | null {
-  const text = raw.slice(0, SCAN_LIMIT);
-  const driver = driverOf(text);
+const UNKNOWN_ERROR = "알 수 없는 오류가 발생했습니다";
+
+// Any thrown value or server reply as an AppError. Error objects keep the
+// server's fields when they carry them as properties (ApiRequestError,
+// MongoError, TablePeekSocketError).
+export function toAppError(error: unknown, fallback?: string): AppError {
+  if (typeof error === "string") {
+    return { code: "", message: error };
+  }
+  if (error === null || typeof error !== "object") {
+    return { code: "", message: fallback ?? t(UNKNOWN_ERROR) };
+  }
+  const fields = error as Record<string, unknown>;
+  const result: AppError = {
+    code: typeof fields.code === "string" ? fields.code : "",
+    message: typeof fields.message === "string" && fields.message !== "" ? fields.message : (fallback ?? t(UNKNOWN_ERROR)),
+  };
+  if (typeof fields.sqlstate === "string" && fields.sqlstate !== "") {
+    result.sqlstate = fields.sqlstate;
+  }
+  const position = fields.position;
+  if (position !== null && typeof position === "object") {
+    const { offset, line, column } = position as Record<string, unknown>;
+    result.position = {
+      offset: typeof offset === "number" ? offset : undefined,
+      line: typeof line === "number" ? line : undefined,
+      column: typeof column === "number" ? column : undefined,
+    };
+  }
+  if (typeof fields.server_code === "number") {
+    result.server_code = fields.server_code;
+  }
+  if (typeof fields.code_name === "string" && fields.code_name !== "") {
+    result.code_name = fields.code_name;
+  }
+  if (fields.details !== undefined && fields.details !== null) {
+    result.details = fields.details;
+  }
+  if (typeof fields.raw === "string" && fields.raw !== "") {
+    result.raw = fields.raw;
+  }
+  return result;
+}
+
+// The error of a failed reply: `{ code, message, … }`, or the same nested
+// under `error`.
+export function appErrorFromBody(body: unknown, status: number): AppError {
+  const outer = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const inner = outer.error !== null && typeof outer.error === "object" ? (outer.error as Record<string, unknown>) : outer;
+  return toAppError({
+    ...inner,
+    code: typeof inner.code === "string" ? inner.code : `http_${status}`,
+    message: typeof inner.message === "string" && inner.message !== "" ? inner.message : `HTTP ${status}`,
+  });
+}
+
+// Whether the TablePeek server itself is out of reach (or restarted with a new
+// token). The app's connection banner reports that once; panels don't repeat it.
+export function isAppServerDown(error: unknown): boolean {
+  const { code, message } = toAppError(error);
+  if (code === "network" || code === "invalid_token" || code === "unauthorized") {
+    return true;
+  }
+  const trimmed = message.trim();
+  return trimmed === APP_SERVER_DOWN || trimmed === t(APP_SERVER_DOWN);
+}
+
+// The engine an error code belongs to: "postgres_error", "mongo_11000".
+function engineOfCode(error: AppError): string | null {
+  const prefix = /^([a-z]+)_(?:error|\d+)$/.exec(error.code)?.[1];
+  const engine = prefix !== undefined ? (engineById(prefix) ?? engineById(`${prefix}db`)) : undefined;
+  if (engine !== undefined) {
+    return engine.id;
+  }
+  // Only MongoDB names its codes.
+  return error.code_name !== undefined ? "mongodb" : null;
+}
+
+// The codes as the drivers print them, so rules written against the driver
+// text also match a localized message.
+function codeTags(error: AppError, engineId: string | null): string {
+  const tags = [error.code];
+  if (error.sqlstate !== undefined) {
+    tags.push(`[SQLSTATE ${error.sqlstate}]`);
+  }
+  const number = error.server_code;
+  if (number !== undefined) {
+    if (engineId === "mysql") {
+      tags.push(`ERROR ${number}`);
+    } else if (engineId === "mssql") {
+      tags.push(`(code: ${number}, state:)`);
+    } else if (engineId === "mongodb") {
+      tags.push(`mongo_${number}`);
+    }
+  }
+  if (error.code_name !== undefined) {
+    tags.push(error.code_name);
+  }
+  return tags.join(" ");
+}
+
+// An explanation of `error` for the screen it shows on, or null when there is
+// nothing more helpful to say than the message itself. `engineId` names the
+// engine when the caller knows it and the error may not say (a connect attempt).
+export function explainError(error: unknown, where: ErrorContext = "general", engineId?: string): ErrorHelp | null {
+  const appError = toAppError(error);
+  if (appError.code === "invalid_token" || appError.code === "unauthorized") {
+    return tokenHelp();
+  }
+  if (isAppServerDown(appError)) {
+    return appServerDownHelp();
+  }
+  const known = engineId ?? engineOfCode(appError);
+  const original =
+    appError.raw !== undefined && !appError.raw.includes(appError.message)
+      ? `${appError.message}\n${appError.raw}`
+      : (appError.raw ?? appError.message);
+  // PostgreSQL's detail ("Key (id)=(1) already exists.") is read with the text.
+  const detail = detailOf(appError, "detail");
+  const text = `${codeTags(appError, known)}\n${original}${detail !== "" ? `\n${detail}` : ""}`.slice(0, SCAN_LIMIT);
+  // The engine whose error this is: named, or told by the engines' own patterns.
+  const named = known !== null ? engineById(known)?.errorHelp : undefined;
+  const engine = named ?? engines().find((candidate) => candidate.errorHelp?.detect.test(text))?.errorHelp ?? null;
+  const situation: ErrorSituation = { raw: text, code: appError.code, error: appError, where, engineId: known, engine };
   // With "prefer", MySQL retries without TLS after a TLS failure; when that
   // retry fails too, its error is the one that matters, unless the server
   // insists on TLS (handled by the combined rule above).
   const retry = /평문 재시도 실패: ([\s\S]*)$/.exec(text);
   if (retry !== null && !TLS_REQUIRED.test(text)) {
-    const help = explainWith(retry[1], code, driver);
+    const help = explainWith({ ...situation, raw: retry[1] });
     if (help !== null) {
       return help;
     }
   }
-  return explainWith(text, code, driver);
+  return explainWith(situation);
 }

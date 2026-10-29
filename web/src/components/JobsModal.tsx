@@ -97,7 +97,7 @@ export function JobsModal({ onClose }: JobsModalProps) {
                       ? t("진행 중…")
                       : ""}
                 </div>
-                {job.error ? <ErrorNotice message={job.error} variant="compact" /> : null}
+                {job.error ? <ErrorNotice error={job.error} variant="compact" /> : null}
               </div>
             ))
           )}

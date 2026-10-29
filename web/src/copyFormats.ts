@@ -1,3 +1,4 @@
+import type { SqlDialect } from "./engines/sqlDialect";
 import { SqlExpression, toCsv, toJson, toSqlInserts } from "./export";
 import type { WindowedRowSource } from "./grid/windowSource";
 import { cellToString } from "./rowOps";
@@ -16,7 +17,7 @@ export interface CopyTable {
 // The table an INSERT copy writes into, and which copied columns hold bytes.
 export interface InsertTarget {
   table: string;
-  dialect: string;
+  dialect: SqlDialect;
   binary?: boolean[];
 }
 

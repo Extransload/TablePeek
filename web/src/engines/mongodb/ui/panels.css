@@ -1,0 +1,502 @@
+/* The table view with its detail panel, the 인덱스 and 실행 계획 sub-tabs
+   of a MongoDB collection tab. Built on the app's variables and classes
+   (row-detail, field-search, panel-table, info-cards, modal). */
+
+/* ---- ⊞ table view ---- */
+
+.mg-tablewrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.mg-tablemain {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.mg-crumbs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg);
+  font-size: 12px;
+}
+.mg-crumb-icon {
+  display: inline-flex;
+  margin-right: 4px;
+  color: var(--faint);
+}
+.mg-crumb-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.mg-crumb-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+button.mg-crumb {
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: 12px var(--mono);
+}
+button.mg-crumb:hover:not(:disabled) {
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+button.mg-crumb.current,
+button.mg-crumb:disabled {
+  opacity: 1;
+  color: var(--ink);
+  font-weight: 600;
+  cursor: default;
+}
+.mg-crumb-sep {
+  color: var(--faint);
+}
+.mg-crumb-hint {
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-crumbs button.mg-panel-toggle {
+  flex: none;
+  margin-left: 6px;
+}
+.mg-crumbs button.mg-panel-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.mg-gridbox {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.mg-grid-empty {
+  position: absolute;
+  inset: 28px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  pointer-events: none;
+}
+/* A rejected cell edit's notice, under its cell (client coordinates). */
+.mg-edit-error {
+  position: fixed;
+  z-index: 60;
+  width: max-content;
+  max-width: 420px;
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+  cursor: default;
+}
+
+/* ---- detail panel (table view only) ---- */
+
+.mg-detail {
+  min-height: 0;
+}
+.mg-detail-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.mg-detail-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 4px 10px 14px;
+}
+.mg-detail .mg-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.mg-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px 2px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.mg-detail-path {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.mg-detail-head .mg-doc-id {
+  overflow: hidden;
+  font: 11px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-detail .mg-card-body {
+  gap: 10px;
+  padding: 10px 2px;
+}
+/* Field-box look: name and type above the value box. */
+.mg-detail .mg-f.top {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "key type acts" "box box box";
+  gap: 4px;
+}
+.mg-detail .mg-f.top > .mg-f-key {
+  grid-area: key;
+  padding-top: 0;
+}
+.mg-detail .mg-f.top > .mg-f-box {
+  grid-area: box;
+}
+.mg-detail .mg-f.top > .mg-f-type {
+  grid-area: type;
+  margin-top: 0;
+}
+.mg-detail .mg-f.top > .mg-f-acts {
+  grid-area: acts;
+  margin-top: 0;
+}
+.mg-detail button.mg-add-field {
+  margin-left: 0;
+}
+.mg-detail .mg-card-foot {
+  position: sticky;
+  bottom: -14px;
+  border-radius: 8px;
+}
+.mg-detail-other {
+  position: absolute;
+  inset: 0;
+}
+.mg-detail-title {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.mg-detail-empty {
+  flex: none;
+  height: auto;
+  padding: 18px 0 6px;
+  font-size: 13px;
+}
+
+/* ---- shared bar of the 인덱스 and 실행 계획 tabs ---- */
+
+.mg-agg-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+.mg-agg-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.mg-ix-body,
+.mg-explain-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px 20px;
+  overflow: auto;
+}
+
+/* ---- 인덱스 ---- */
+
+.mg-struct-table {
+  font-size: 12px;
+}
+.mg-struct-table th {
+  padding: 7px 12px;
+  background: color-mix(in srgb, var(--head) 40%, var(--panel));
+  text-align: left;
+}
+.mg-struct-table td {
+  max-width: none;
+  padding: 7px 12px;
+  vertical-align: middle;
+}
+.mg-struct-table .num {
+  text-align: right;
+}
+.mg-keychips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mg-keychip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-size: 11.5px;
+}
+.mg-keydir {
+  color: var(--accent);
+  font-weight: 700;
+}
+.mg-flag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+  font: 700 10px/18px var(--mono);
+  white-space: nowrap;
+}
+.mg-flag.unique {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
+}
+.mg-flag.ttl {
+  background: color-mix(in srgb, var(--syntax-number) 16%, transparent);
+  color: var(--syntax-number);
+}
+.mg-flag.dim {
+  background: var(--hover-fill);
+  color: var(--muted);
+  font-family: var(--ui);
+  font-weight: 600;
+}
+.mg-ix-hint {
+  margin-top: 10px;
+  font-size: 11.5px;
+}
+.mg-ix-modal {
+  width: min(680px, 94vw);
+}
+.mg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mg-form > button {
+  align-self: flex-start;
+}
+.mg-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mg-form-label {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.mg-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+input.mg-input,
+select.mg-input {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+input.mg-num {
+  width: 90px;
+}
+.mg-ix-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mg-ix-row {
+  display: grid;
+  grid-template-columns: 1fr 150px 28px;
+  gap: 6px;
+}
+.mg-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: 12px;
+}
+.mg-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mg-ix-preview {
+  max-height: 46vh;
+  margin: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg);
+  white-space: pre-wrap;
+}
+
+/* ---- 실행 계획 ---- */
+
+/* The query bar no longer matches the plan on show. */
+.mg-explain-stale {
+  flex: none;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line-soft));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: 11.5px;
+  line-height: 20px;
+}
+button.mg-explain-stale:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 20%, transparent);
+}
+.mg-explain-cmd {
+  overflow: hidden;
+  min-width: 0;
+  max-width: 60%;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-explain-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr);
+  gap: 18px;
+}
+.mg-ptree-title {
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.mg-pchildren {
+  display: flex;
+  flex-direction: column;
+  padding-left: 28px;
+}
+.mg-parrow {
+  margin: 2px 0 2px 22px;
+  color: var(--faint);
+  font-size: 10px;
+}
+.mg-pstage {
+  max-width: 560px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.mg-pstage.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line-soft));
+}
+.mg-pstage.warn {
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--line-soft));
+}
+.mg-pstage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.mg-pstage.ok .mg-pstage-head {
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+}
+.mg-pstage.warn .mg-pstage-head {
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.mg-pstage-name {
+  font-weight: 700;
+}
+.mg-pfacts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 12px;
+  padding: 7px 12px 9px;
+  font-size: 12px;
+}
+.mg-pfact {
+  display: contents;
+}
+.mg-pfact-k {
+  color: var(--faint);
+}
+.mg-pfact-v {
+  overflow-wrap: anywhere;
+}
+.mg-pfact.warn .mg-pfact-v {
+  color: var(--warn);
+}
+.mg-psummary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mg-verdict {
+  padding: 8px 12px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+.mg-verdict.ok {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+}
+.mg-verdict.warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+}
+.mg-pcards {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.mg-pcards .info-card {
+  padding: 8px 10px;
+  border-color: var(--line-soft);
+  border-radius: 8px;
+}
+.mg-pcards .info-card-value {
+  font-size: 13px;
+}
+.mg-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+}
+.mg-suggest-head {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.mg-suggest-code {
+  margin: 0;
+  font: 12px var(--mono);
+  white-space: pre-wrap;
+}
+.mg-suggest button {
+  align-self: flex-start;
+  gap: 5px;
+}
+.mg-explain-raw {
+  max-height: none;
+  margin: 0;
+}

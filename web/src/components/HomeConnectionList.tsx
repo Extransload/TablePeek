@@ -2,6 +2,8 @@ import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardE
 import type { ConnGroup } from "../connGroups";
 import type { ConnMeta } from "../connMeta";
 import { t } from "../i18n";
+import { engineById, unsupportedEngine } from "../engines";
+import { basename, fillTemplate, templateValues } from "../engines/connection";
 import type { ConnSummary, SavedConnection } from "../store";
 import { DriverIcon } from "./DriverIcon";
 import { ChevronIcon, CloseIcon, ExternalIcon, FolderIcon } from "./icons";
@@ -39,37 +41,23 @@ interface HomeConnectionListProps {
   onMoveGroup(groupId: string, targetId: string, after: boolean): void;
 }
 
-function savedTarget(connection: SavedConnection) {
-  return connection.postgres ?? connection.cockroach ?? connection.mysql ?? connection.mssql ?? null;
-}
-
-// "host : database", as TablePlus lists connections; a SQLite profile shows
-// its file's path, as an open file's row does (the name is usually its basename).
+// The profile's address line as its engine words it ("host : database", a
+// SQLite profile's file path); an engine this page doesn't know says so.
 export function savedAddress(connection: SavedConnection): string {
-  if (connection.sqlite) {
-    return connection.sqlite.path;
+  const engine = engineById(connection.driver);
+  if (engine === undefined) {
+    return unsupportedEngine(connection.driver);
   }
-  const db = savedTarget(connection);
-  if (db === null) {
-    return t("설정 없음");
-  }
-  return db.database ? `${db.host} : ${db.database}` : db.host;
+  return fillTemplate(engine.connection.summary, connection.config) || t("설정 없음");
 }
 
 function savedDetail(connection: SavedConnection): string {
-  if (connection.sqlite) {
-    return connection.sqlite.path;
-  }
-  const db = savedTarget(connection);
-  if (db === null) {
-    return connection.name;
+  const engine = engineById(connection.driver);
+  if (engine === undefined) {
+    return unsupportedEngine(connection.driver);
   }
   const ssh = connection.ssh ? ` · SSH ${connection.ssh.user}@${connection.ssh.host}` : "";
-  return `${db.user}@${db.host}:${db.port}/${db.database}${ssh}`;
-}
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).pop() || path;
+  return `${fillTemplate(engine.connection.detail, connection.config) || connection.name}${ssh}`;
 }
 
 function relativeTime(at: number | undefined): string | null {
@@ -96,15 +84,16 @@ export function openName(conn: ConnSummary): string {
     return t("데모 데이터베이스");
   }
   // A file's name reads better than its full path; server connections keep their label.
-  return conn.kind === "sqlite" && conn.path ? basename(conn.path) : conn.label;
+  return engineById(conn.kind)?.transport === "file" && conn.path ? basename(conn.path) : conn.label;
 }
 
 export function openAddress(conn: ConnSummary): string {
   return conn.demo ? t("인메모리 데모") : (conn.path ?? conn.label);
 }
 
-// Connections a search shows: name, host, database, SQLite file path, tags or
-// group name containing the query, ignoring case. A matching group shows all of its own.
+// Connections a search shows: name, the parts of its address line (host and
+// database, a SQLite file's path), tags or group name containing the query,
+// ignoring case. A matching group shows all of its own.
 export function filterConnections(
   saved: SavedConnection[],
   metaById: Record<string, ConnMeta>,
@@ -116,12 +105,10 @@ export function filterConnections(
   const shown = new Set<string>();
   for (const connection of saved) {
     const meta = metaById[connection.id];
-    const db = savedTarget(connection);
+    const summary = engineById(connection.driver)?.connection.summary ?? "";
     const haystack = [
       connection.name,
-      db?.host ?? "",
-      db?.database ?? "",
-      connection.sqlite?.path ?? "",
+      ...templateValues(summary, connection.config),
       ...(meta?.tags ?? []),
       groupName.get(meta?.group ?? "") ?? "",
     ];

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { SQLITE_EXTENSIONS } from "../engines/sqlite";
 import { t } from "../i18n";
 import { store, type FsListing } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
@@ -9,8 +10,6 @@ interface FsModalProps {
   onClose(): void;
   onOpenDb(path: string | null): void;
 }
-
-export const SQLITE_EXTENSIONS = ["db", "sqlite", "sqlite3", "db3"];
 
 const DB_FILE_PATTERN = new RegExp(`\\.(${SQLITE_EXTENSIONS.join("|")})$`, "i");
 
@@ -75,7 +74,7 @@ export function FsModal({ onClose, onOpenDb }: FsModalProps) {
             <LoadingState variant="compact" />
           ) : error ? (
             <div className="fs-error-slot">
-              <ErrorNotice message={error} variant="compact" />
+              <ErrorNotice error={error} variant="compact" />
             </div>
           ) : listing ? (
             <>

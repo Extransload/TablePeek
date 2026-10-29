@@ -5,9 +5,9 @@ use std::time::Instant;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tablepeek_types::{
-    ColumnSchema, DbObjects, EditTarget, EngineMeta, ForeignKeyInfo, IndexInfo, InsertValue,
-    MssqlConfig, ObjectDefinition, PkValue, Relation, ServerInfo, ServerSession, TableDetail,
-    TableSchema, TriggerInfo, ValueExpr,
+    ColumnSchema, DbObjects, EditTarget, EngineMeta, ErrorFields, ErrorPosition, ForeignKeyInfo,
+    IndexInfo, IndexPart, InsertValue, MssqlConfig, ObjectDefinition, PkValue, Relation,
+    ServerInfo, ServerSession, TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 use tiberius::{
     AuthMethod, Client, ColumnData, Config, EncryptionLevel, ExecuteResult, FromSqlOwned,
@@ -147,17 +147,37 @@ fn build_config(config: &MssqlConfig) -> Config {
 }
 
 fn mssql_err(err: tiberius::error::Error) -> EngineError {
-    EngineError::Mssql(err.to_string())
+    let raw = err.to_string();
+    let mut fields = ErrorFields::default();
+    let message = match &err {
+        // "Token error: '…' on server x executing y on line 1 (code: 102, …)":
+        // the server's words lead; number and line go apart.
+        tiberius::error::Error::Server(token) => {
+            fields.server_code = Some(i64::from(token.code()));
+            fields.position = (token.line() > 0).then(|| ErrorPosition {
+                line: Some(token.line()),
+                ..ErrorPosition::default()
+            });
+            fields.raw = Some(raw);
+            token.message().to_string()
+        }
+        tiberius::error::Error::Tls(text) => format!("TLS 연결 실패: {text}"),
+        _ => raw,
+    };
+    EngineError::mssql(message, fields)
 }
 
 async fn open_client(config: &Config) -> Result<MssqlClient, EngineError> {
-    let tcp = TcpStream::connect(config.get_addr())
-        .await
-        .map_err(|err| EngineError::Mssql(format!("SQL Server 연결 실패: {err}")))?;
+    let tcp = TcpStream::connect(config.get_addr()).await.map_err(|err| {
+        EngineError::mssql(
+            format!("SQL Server 연결 실패: {err}"),
+            ErrorFields::default(),
+        )
+    })?;
     let _ = tcp.set_nodelay(true);
     Client::connect(config.clone(), tcp.compat_write())
         .await
-        .map_err(|err| EngineError::Mssql(format!("SQL Server 연결 실패: {err}")))
+        .map_err(mssql_err)
 }
 
 async fn trancount(client: &mut MsConn<'_>) -> Option<i64> {
@@ -435,6 +455,7 @@ pub(crate) async fn meta(
         path: Some(inner.label.clone()),
         demo: false,
         tables,
+        capabilities: None,
     })
 }
 
@@ -629,7 +650,10 @@ pub(crate) async fn query(
 
     if inner.take_cancelled() {
         outcome.map_err(|err| {
-            EngineError::Mssql(format!("KILL 요청으로 쿼리가 취소되었습니다: {err}"))
+            EngineError::mssql(
+                format!("KILL 요청으로 쿼리가 취소되었습니다: {err}"),
+                ErrorFields::default(),
+            )
         })?;
     } else {
         outcome?;
@@ -890,7 +914,7 @@ pub(crate) async fn table_detail(
     let mut indexes: Vec<IndexInfo> = Vec::new();
     let index_rows = client
         .query(
-            "SELECT i.name, i.is_unique, i.is_primary_key, c.name
+            "SELECT i.name, i.is_unique, i.is_primary_key, c.name, ic.is_descending_key
              FROM sys.indexes i
              JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
              JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
@@ -913,18 +937,58 @@ pub(crate) async fn table_detail(
             .map(|value| value != 0)
             .unwrap_or(false);
         let column = cd_string(values.get(3));
+        let part = IndexPart {
+            column: column.clone(),
+            descending: cd_i64(values.get(4)).is_some_and(|value| value != 0),
+            ..IndexPart::default()
+        };
         match indexes.last_mut() {
             Some(existing) if existing.name == index_name => {
                 if let Some(column) = column {
                     existing.columns.push(column);
                 }
+                existing.parts.get_or_insert_with(Vec::new).push(part);
             }
             _ => indexes.push(IndexInfo {
                 name: index_name,
                 unique,
                 primary,
                 columns: column.into_iter().collect(),
+                parts: Some(vec![part]),
+                ..IndexInfo::default()
             }),
+        }
+    }
+    // A filtered index's predicate and the INCLUDE columns, which the key
+    // columns above leave out.
+    let extra_rows = client
+        .query(
+            "SELECT i.name, i.filter_definition, c.name
+             FROM sys.indexes i
+             LEFT JOIN sys.index_columns ic
+               ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+             LEFT JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+             WHERE i.object_id = OBJECT_ID(@P1) AND i.type > 0
+               AND (i.has_filter = 1 OR ic.column_id IS NOT NULL)
+             ORDER BY i.name, ic.index_column_id",
+            &[&object_ref as &dyn ToSql],
+        )
+        .await
+        .map_err(mssql_err)?
+        .into_first_result()
+        .await
+        .map_err(mssql_err)?;
+    for row in extra_rows {
+        let values: Vec<ColumnData<'static>> = row.into_iter().collect();
+        let index_name = cd_string(values.first()).unwrap_or_default();
+        let Some(index) = indexes.iter_mut().find(|index| index.name == index_name) else {
+            continue;
+        };
+        if let Some(filter) = cd_string(values.get(1)) {
+            index.predicate = Some(filter);
+        }
+        if let Some(column) = cd_string(values.get(2)) {
+            index.included.get_or_insert_with(Vec::new).push(column);
         }
     }
     indexes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1154,6 +1218,8 @@ pub(crate) async fn server_info(inner: &MssqlInner) -> Result<ServerInfo, Engine
         size_bytes,
         sessions: Some(sessions),
         can_kill: true,
+        topology: None,
+        host: None,
     })
 }
 
@@ -1406,7 +1472,7 @@ pub(crate) async fn tx(inner: &MssqlInner, statement: &str) -> Result<(), Engine
     let active = inner.in_tx();
     match statement {
         "BEGIN" if active => {
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "이미 트랜잭션이 진행 중입니다".into(),
             ));
         }
@@ -1420,7 +1486,7 @@ pub(crate) async fn tx(inner: &MssqlInner, statement: &str) -> Result<(), Engine
                     _ => Ok(()),
                 };
             }
-            return Err(EngineError::Internal(
+            return Err(EngineError::BadRequest(
                 "진행 중인 트랜잭션이 없습니다".into(),
             ));
         }

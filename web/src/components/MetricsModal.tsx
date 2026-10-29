@@ -104,7 +104,7 @@ export function MetricsModal({ conn, onClose }: MetricsModalProps) {
               </svg>
             )}
           </div>
-          {error !== null ? <ErrorNotice message={error} variant="compact" /> : null}
+          {error !== null ? <ErrorNotice error={error} variant="compact" /> : null}
           <p className="helper">{t("이 연결에서 최근 실행한 쿼리 30개의 실행 시간입니다.")}</p>
         </div>
         <div className="modal-foot">

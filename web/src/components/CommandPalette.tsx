@@ -194,7 +194,7 @@ export function CommandPalette({ actions, sources, onClose }: CommandPaletteProp
         <div className="palette-list">
           {error ? (
             <div className="palette-error-slot">
-              <ErrorNotice message={error} variant="compact" />
+              <ErrorNotice error={error} variant="compact" />
             </div>
           ) : loading ? (
             <LoadingState variant="compact" />

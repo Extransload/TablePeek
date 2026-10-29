@@ -1,0 +1,242 @@
+{
+  "id": "mongodb",
+  "aliases": [
+    "mongo"
+  ],
+  "label": "MongoDB",
+  "paradigm": "document",
+  "family": "mongodb",
+  "transport": "server",
+  "default_port": 27017,
+  "url_schemes": [
+    "mongodb",
+    "mongodb+srv"
+  ],
+  "error_code_prefix": "mongo",
+  "capabilities": {
+    "language": "mongo",
+    "objects": [
+      "collection",
+      "view"
+    ],
+    "schema": "sampled",
+    "edit_by_key": true,
+    "transactions": "replica_set",
+    "foreign_keys": false,
+    "ddl": false,
+    "databases": "switch",
+    "users": false,
+    "explain": "mongo",
+    "exact_count": false,
+    "dump": "ejson",
+    "import_formats": [],
+    "export_formats": [],
+    "sessions": {
+      "kill": false
+    },
+    "validation": true,
+    "aggregation": true,
+    "indexes": {
+      "create": true,
+      "drop": true
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "uri",
+        "type": "uri",
+        "label": "연결 문자열",
+        "schemes": [
+          "mongodb",
+          "mongodb+srv"
+        ],
+        "fills_others": true,
+        "placeholder": "mongodb://… 또는 mongodb+srv://…"
+      },
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "required_unless": "uri",
+        "default": "127.0.0.1"
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "default": 27017
+      },
+      {
+        "key": "auth",
+        "type": "select",
+        "label": "인증 방식",
+        "default": "none",
+        "options": [
+          {
+            "value": "none",
+            "label": "없음"
+          },
+          {
+            "value": "password",
+            "label": "사용자·비밀번호"
+          },
+          {
+            "value": "x509",
+            "label": "X.509",
+            "sets": {
+              "tls": true
+            }
+          }
+        ]
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자",
+        "required_to_connect": true,
+        "visible_when": {
+          "auth": [
+            "password"
+          ]
+        }
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호",
+        "visible_when": {
+          "auth": [
+            "password"
+          ]
+        }
+      },
+      {
+        "key": "auth_source",
+        "type": "text",
+        "label": "인증 DB",
+        "default": "admin",
+        "visible_when": {
+          "auth": [
+            "password"
+          ]
+        }
+      },
+      {
+        "key": "auth_mechanism",
+        "type": "select",
+        "label": "SCRAM 방식",
+        "default": "",
+        "options": [
+          {
+            "value": "",
+            "label": "기본 (서버가 고름)"
+          },
+          {
+            "value": "SCRAM-SHA-256",
+            "label": "SCRAM-SHA-256"
+          },
+          {
+            "value": "SCRAM-SHA-1",
+            "label": "SCRAM-SHA-1"
+          }
+        ],
+        "visible_when": {
+          "auth": [
+            "password"
+          ]
+        }
+      },
+      {
+        "key": "database",
+        "type": "text",
+        "label": "데이터베이스",
+        "placeholder": "(선택) 처음 열 데이터베이스"
+      },
+      {
+        "key": "tls",
+        "type": "toggle",
+        "label": "TLS",
+        "description": "TLS로 암호화",
+        "default": false
+      },
+      {
+        "key": "tls_ca_file",
+        "type": "file",
+        "label": "CA 인증서",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_cert_key_file",
+        "type": "file",
+        "label": "클라이언트 인증서·키",
+        "group": "TLS 인증서",
+        "visible_when": [
+          {
+            "tls": [
+              true
+            ]
+          },
+          {
+            "auth": [
+              "x509"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "direct_connection",
+        "type": "toggle",
+        "label": "직접 연결",
+        "description": "레플리카셋의 다른 멤버를 찾지 않고 이 서버에만 연결",
+        "default": false
+      },
+      {
+        "key": "replica_set",
+        "type": "text",
+        "label": "레플리카셋 이름",
+        "advanced": true
+      },
+      {
+        "key": "read_preference",
+        "type": "select",
+        "label": "읽기 선호",
+        "advanced": true,
+        "default": "",
+        "options": [
+          {
+            "value": "",
+            "label": "기본 (primary)"
+          },
+          {
+            "value": "primaryPreferred",
+            "label": "primaryPreferred"
+          },
+          {
+            "value": "secondary",
+            "label": "secondary"
+          },
+          {
+            "value": "secondaryPreferred",
+            "label": "secondaryPreferred"
+          },
+          {
+            "value": "nearest",
+            "label": "nearest"
+          }
+        ]
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {database}",
+    "detail": "{user}@{host}:{port}/{database}"
+  }
+}

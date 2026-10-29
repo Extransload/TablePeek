@@ -1,22 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { rowWindowSql } from "../dataQuery";
-import { createTableSql, dependencyOrder, draftsFromDetail, foreignKeySql, quoteIdent } from "../ddl";
+import { createTableSql, dependencyOrder, draftsFromDetail, dumpIndexSql, foreignKeySql, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
 import { declaredAs } from "../grid/columns";
 import { t } from "../i18n";
 import { decodeText, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
 import { cancelJob, startJob } from "../jobs";
-import { restoreSql, snapshotSql } from "../sessionSettings";
+import type { SqlDialect } from "../engines/sqlDialect";
 import { getSettings } from "../settings";
 import { splitSqlRanges } from "../sqlSplit";
 import { store, type EngineMeta, type TableDetail } from "../store";
-import { ErrorNotice } from "./ErrorNotice";
+import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { FolderIcon, StopIcon } from "./icons";
 import { Select } from "./Select";
 
 interface DumpModalProps {
   conn: string;
   meta: EngineMeta;
+  dialect: SqlDialect;
   initialTab: "backup" | "restore";
   onClose(): void;
   onRestored(): void;
@@ -33,13 +34,13 @@ function errorOf(error: unknown, fallback: string): string {
 
 function baseName(meta: EngineMeta): string {
   if (meta.path === null) {
-    return meta.kind === "sqlite" ? "database" : "database";
+    return "database";
   }
   const parts = meta.path.split("/");
   return parts[parts.length - 1] || "database";
 }
 
-export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpModalProps) {
+export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored }: DumpModalProps) {
   const [tab, setTab] = useState<"backup" | "restore">(initialTab);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(meta.tables));
   const [includeDdl, setIncludeDdl] = useState(true);
@@ -61,7 +62,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
     () => (restoreBytes === null ? "" : decodeText(restoreBytes, restoreEncoding)),
     [restoreBytes, restoreEncoding],
   );
-  const restoreRanges = useMemo(() => splitSqlRanges(restoreText, meta.kind), [restoreText, meta.kind]);
+  const restoreRanges = useMemo(() => splitSqlRanges(restoreText, dialect), [restoreText, dialect]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -115,8 +116,9 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         "",
       ];
       // Structures first: tables go parents first, so creates and inserts find
-      // what they reference, and foreign keys are added after all the rows
-      // (the servers' CREATE TABLE text has none; SQLite's carries them).
+      // what they reference; each table's indexes follow its rows, and foreign
+      // keys are added after all the rows (the servers' CREATE TABLE text has
+      // neither; SQLite's carries both).
       const details = new Map<string, TableDetail>();
       const failures = new Map<string, unknown>();
       for (const table of tables) {
@@ -126,14 +128,9 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
           failures.set(table, err);
         }
       }
-      const keysAfter = includeDdl && meta.kind !== "sqlite";
-      const relaxKeys = meta.kind === "mysql";
-      if (relaxKeys) {
-        parts.push("SET FOREIGN_KEY_CHECKS = 0;", "");
-      }
-      // As SQLite's own .dump starts: its keys can't be added after the rows.
-      if (meta.kind === "sqlite") {
-        parts.push("PRAGMA foreign_keys = OFF;", "");
+      const keysAfter = includeDdl && !dialect.keysInCreate;
+      if (dialect.dumpBefore !== undefined) {
+        parts.push(dialect.dumpBefore, "");
       }
       let tableIndex = 0;
       for (const table of dependencyOrder(tables, (name) => details.get(name)?.foreign_keys.map((fk) => fk.ref_table) ?? [])) {
@@ -156,9 +153,9 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
           } else {
             const drafts = draftsFromDetail(detail);
             const created = createTableSql(
-              meta.kind,
+              dialect,
               table,
-              keysAfter ? { ...drafts, foreignKeys: [] } : drafts,
+              dialect.keysInCreate ? drafts : { ...drafts, indexes: [], foreignKeys: [] },
             );
             for (const statement of created.statements) {
               parts.push(`${statement};`);
@@ -168,16 +165,16 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         if (includeData) {
           const pkIndex = detail.indexes.find((index) => index.primary);
           const pk = pkIndex?.columns ?? detail.columns.filter((c) => c.pk).map((c) => c.name);
-          const order = pk.length > 0 ? pk.map((name) => quoteIdent(meta.kind, name)).join(", ") : null;
-          const binary = (columns: string[]) => declaredAs("binary", columns, detail, meta.kind);
+          const order = pk.length > 0 ? pk.map((name) => quoteIdent(dialect, name)).join(", ") : null;
+          const binary = (columns: string[]) => declaredAs("binary", columns, detail, dialect);
           if (order === null) {
             // No key to page by, and a table's order can change between two
             // reads: one read, so no row is skipped or copied twice.
-            const detached = await store.runDetached(conn, `SELECT * FROM ${quoteIdent(meta.kind, table)}`, TABLE_ROW_CAP);
+            const detached = await store.runDetached(conn, `SELECT * FROM ${quoteIdent(dialect, table)}`, TABLE_ROW_CAP);
             try {
               const rows = await collectRows(detached.source);
               if (rows.length > 0) {
-                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind, binary(detached.meta.columns)));
+                parts.push(toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns)));
               }
               job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: rows.length.toLocaleString() })}`);
               if (detached.meta.truncated) {
@@ -196,14 +193,14 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
                 );
                 break;
               }
-              const sql = `SELECT * FROM ${quoteIdent(meta.kind, table)} ${rowWindowSql(meta.kind, order, PAGE_SIZE, offset)}`;
+              const sql = `SELECT * FROM ${quoteIdent(dialect, table)} ${rowWindowSql(dialect, order, PAGE_SIZE, offset)}`;
               const detached = await store.runDetached(conn, sql, PAGE_SIZE);
               try {
                 const rows = await collectRows(detached.source);
                 if (rows.length === 0) {
                   break;
                 }
-                parts.push(toSqlInserts(table, detached.meta.columns, rows, meta.kind, binary(detached.meta.columns)));
+                parts.push(toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns)));
                 copied += rows.length;
                 offset += rows.length;
                 job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: copied.toLocaleString() })}`);
@@ -216,17 +213,22 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
             }
           }
         }
+        if (includeDdl) {
+          for (const statement of dumpIndexSql(dialect, table, detail)) {
+            parts.push(`${statement};`);
+          }
+        }
         parts.push("");
         job.update(tableIndex, table);
       }
       const keys = keysAfter
-        ? tables.flatMap((table) => details.get(table)?.foreign_keys.map((fk) => `${foreignKeySql(meta.kind, table, fk)};`) ?? [])
+        ? tables.flatMap((table) => details.get(table)?.foreign_keys.map((fk) => `${foreignKeySql(dialect, table, fk)};`) ?? [])
         : [];
       if (keys.length > 0) {
         parts.push("-- Foreign keys", ...keys, "");
       }
-      if (relaxKeys) {
-        parts.push("SET FOREIGN_KEY_CHECKS = 1;", "");
+      if (dialect.dumpAfter !== undefined) {
+        parts.push(dialect.dumpAfter, "");
       }
       const text = parts.join("\n");
       downloadBlob(suggestFilename(`${baseName(meta)}_backup`, "sql"), text, EXPORT_MIME.sql);
@@ -288,15 +290,15 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
       if (mountedRef.current) {
         (failed ? setError : setInfo)(message);
       } else {
-        (failed ? store.setError : store.setInfo)(message);
+        (failed ? notifyError : store.setInfo)(message);
       }
     };
     let executed = 0;
     // What the dump may change for its run (foreign key checks, search_path),
     // put back below however far it gets.
-    const snapshot = snapshotSql(meta.kind);
+    const snapshot = dialect.sessionSnapshot;
     let settings: unknown[] | undefined;
-    if (snapshot !== null) {
+    if (snapshot !== undefined) {
       try {
         settings = (await store.exec(conn, snapshot, { job: true })).rows[0] as unknown[] | undefined;
       } catch {
@@ -344,10 +346,10 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         setError(failure);
         setFailedAt({ error: failure, text: t("문장 {index}, {line}번째 줄에서 중단했습니다", where) });
       } else {
-        store.setError(t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: failure, ...where }));
+        notifyError(t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: failure, ...where }));
       }
     } finally {
-      const putBack = restoreSql(meta.kind, settings);
+      const putBack = settings === undefined ? null : (dialect.restoreSession?.(settings) ?? null);
       if (putBack !== null) {
         try {
           await store.exec(conn, putBack, { job: true });
@@ -395,7 +397,7 @@ export function DumpModal({ conn, meta, initialTab, onClose, onRestored }: DumpM
         </div>
         <div className="modal-body dump-body">
           {error && failedAt?.error === error ? <div className="import-failed-at">{failedAt.text}</div> : null}
-          {error ? <ErrorNotice message={error} /> : null}
+          {error ? <ErrorNotice error={error} context="export" /> : null}
           {info ? <div className="helper">{info}</div> : null}
           {tab === "backup" ? (
             <>

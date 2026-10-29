@@ -1,0 +1,330 @@
+/* The 스키마 and 검증 sub-tabs. Type colours come from the `t-<Type>`
+   classes (mongodb.css), which set --tc. */
+
+/* ---- 스키마 ---- */
+
+.mg-schema-bar .mg-schema-filter {
+  flex: 1 1 260px;
+  min-width: 180px;
+}
+.mg-schema-sizes {
+  margin: 0;
+}
+.mg-schema-sizes button {
+  height: 24px;
+  font-size: 11.5px;
+}
+.mg-agg-bar.mg-schema-sub {
+  min-height: 36px;
+  font-size: 11.5px;
+}
+.mg-schema-sum {
+  font-size: 11.5px;
+}
+.mg-schema-list {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 14px 24px;
+  overflow: auto;
+}
+.mg-sfield {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.mg-sfield + .mg-sfield {
+  margin-top: 8px;
+}
+.mg-schema-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.mg-schema-name {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.mg-schema-name > .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.mg-schema-toggle {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+button.mg-schema-toggle svg {
+  transition: transform 0.1s ease;
+}
+button.mg-schema-toggle.open svg {
+  transform: rotate(90deg);
+}
+.mg-schema-space {
+  flex: none;
+  width: 18px;
+}
+.mg-schema-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.mg-typebar {
+  display: flex;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--line-soft);
+}
+.mg-typebar > span {
+  background: var(--tc);
+}
+.mg-typebar > span + span {
+  border-left: 1px solid var(--panel);
+}
+.mg-schema-presence {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.mg-schema-presence .mg-bar {
+  width: 90px;
+}
+.mg-schema-viz {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.mg-viz {
+  min-width: 0;
+}
+.mg-viz-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mg-viz .mg-viz-note + .mg-viz-note,
+.mg-hbars + .mg-viz-note {
+  margin-top: 6px;
+}
+.mg-hist-svg {
+  display: block;
+  width: 100%;
+  height: 64px;
+}
+.mg-hist-col {
+  cursor: pointer;
+}
+.mg-hist-hit {
+  fill: transparent;
+}
+.mg-hist-col:hover .mg-hist-hit {
+  fill: var(--hover-fill);
+}
+.mg-hist-bar {
+  fill: var(--tc);
+  opacity: 0.8;
+}
+.mg-hist-col:hover .mg-hist-bar {
+  fill: var(--accent);
+  opacity: 1;
+}
+.mg-hist-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 3px;
+  color: var(--muted);
+  font: 10.5px var(--mono);
+}
+.mg-hbars {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) minmax(80px, 1fr) auto;
+  gap: 3px 10px;
+}
+button.mg-hbar {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  height: auto;
+  padding: 1px 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+}
+button.mg-hbar:hover {
+  background: var(--hover-fill);
+}
+.mg-hbar-label {
+  overflow: hidden;
+  max-width: 260px;
+  color: var(--tc);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mg-hbar-track {
+  align-self: center;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line-soft);
+  cursor: pointer;
+}
+.mg-hbar-track > span {
+  display: block;
+  height: 100%;
+  background: color-mix(in srgb, var(--tc) 70%, transparent);
+}
+button.mg-hbar:hover .mg-hbar-track > span {
+  background: var(--accent);
+}
+.mg-hbar-n {
+  color: var(--faint);
+  font: 11px var(--mono);
+  text-align: right;
+  cursor: pointer;
+}
+.mg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+button.mg-vchip {
+  height: 24px;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  background: var(--bg);
+  font: 11.5px var(--mono);
+}
+.mg-vchip-v {
+  color: var(--mg-ink-string);
+}
+.mg-vchip-v.t-ObjectId {
+  color: var(--tc);
+}
+.mg-vchip-n {
+  color: var(--faint);
+}
+button.mg-vchip:hover {
+  border-color: var(--accent-line);
+}
+
+/* ---- 검증 ---- */
+
+.mg-flag.ok {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+  font-family: var(--ui);
+  font-weight: 600;
+}
+.mg-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.mg-valid-load {
+  flex: none;
+  padding: 10px 14px 0;
+}
+.mg-valid-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+}
+.mg-valid-editor {
+  position: relative;
+  border-right: 1px solid var(--line-soft);
+}
+.mg-valid-editor > .mg-cm {
+  position: absolute;
+  inset: 0;
+}
+.mg-valid-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 14px;
+  overflow: auto;
+}
+.mg-valid-bar {
+  display: flex;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--line-soft);
+}
+.mg-valid-bar .pass {
+  background: var(--ok);
+}
+.mg-valid-bar .fail {
+  background: var(--error);
+}
+.mg-valid-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.mg-valid-counts .ok {
+  color: var(--ok);
+}
+.mg-valid-counts .bad {
+  color: var(--error);
+}
+.mg-valid-tabs {
+  margin: 0;
+}
+.mg-valid-tabs button {
+  height: 24px;
+  font-size: 11.5px;
+}
+.mg-valid-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mg-valid-list .mg-cards {
+  position: static;
+  padding: 0;
+  overflow: visible;
+}
+.mg-valid-doc {
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--error) 35%, var(--line-soft));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--error) 5%, var(--panel));
+}
+.mg-valid-reasons {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--error);
+  font-size: 12px;
+}

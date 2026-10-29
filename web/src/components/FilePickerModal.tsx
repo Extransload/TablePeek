@@ -121,7 +121,7 @@ export function FilePickerModal({ title, current, homeSubdir, onPick, onClose }:
             <LoadingState variant="compact" />
           ) : error ? (
             <div className="fs-error-slot">
-              <ErrorNotice message={error} variant="compact" />
+              <ErrorNotice error={error} variant="compact" />
             </div>
           ) : listing ? (
             <>

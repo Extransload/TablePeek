@@ -1,0 +1,105 @@
+{
+  "id": "mssql",
+  "aliases": [
+    "sqlserver"
+  ],
+  "label": "SQL Server",
+  "paradigm": "sql",
+  "family": "mssql",
+  "transport": "server",
+  "default_port": 1433,
+  "url_schemes": [
+    "sqlserver",
+    "mssql"
+  ],
+  "capabilities": {
+    "language": "sql",
+    "objects": [
+      "table",
+      "view",
+      "function",
+      "procedure",
+      "trigger",
+      "sequence"
+    ],
+    "schema": "declared",
+    "edit_by_key": true,
+    "transactions": "always",
+    "foreign_keys": true,
+    "ddl": true,
+    "databases": "switch",
+    "users": true,
+    "explain": null,
+    "exact_count": false,
+    "dump": "sql",
+    "import_formats": [
+      "csv",
+      "json",
+      "sql"
+    ],
+    "export_formats": [
+      "csv",
+      "json",
+      "sql",
+      "xlsx"
+    ],
+    "sessions": {
+      "kill": true
+    },
+    "validation": false,
+    "aggregation": false,
+    "indexes": {
+      "create": true,
+      "drop": true
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "required": true,
+        "placeholder": "호스트 또는 연결 URL 붙여넣기",
+        "default": "127.0.0.1"
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "required": true,
+        "default": 1433
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자",
+        "required_to_connect": true
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호"
+      },
+      {
+        "key": "database",
+        "type": "text",
+        "label": "데이터베이스",
+        "required_to_connect": true
+      },
+      {
+        "key": "encrypt",
+        "type": "toggle",
+        "label": "암호화",
+        "description": "TLS로 암호화 (자체 서명 인증서 허용)",
+        "default": true
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {database}",
+    "detail": "{user}@{host}:{port}/{database}"
+  }
+}

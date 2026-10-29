@@ -1,0 +1,1169 @@
+/* MongoDB document views: the collection tab, its query bar, the ☰ cards,
+   the {} JSON blocks, the mongosh tab and their dialogs. Built on the
+   app's own classes (filter-bar, data-toolbar, modal, …) and theme
+   variables; values are coloured with the editor's syntax palette. */
+
+:root {
+  --mg-ink-string: var(--syntax-string);
+  --mg-ink-int: var(--syntax-number);
+  --mg-ink-long: var(--syntax-label, var(--syntax-number));
+  --mg-ink-float: var(--syntax-number);
+  --mg-ink-bool: var(--syntax-bool);
+  --mg-ink-date: var(--syntax-type);
+  --mg-ink-oid: var(--syntax-function);
+  --mg-ink-obj: var(--syntax-keyword);
+  --mg-ink-arr: var(--syntax-operator, var(--syntax-keyword));
+}
+
+.mg-root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---- collection tab: sub-tabs, stats ---- */
+
+.mg-subbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 12px 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+.mg-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.mg-subtabs button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.mg-subtabs button:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+  box-shadow: none;
+}
+.mg-subtabs button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.mg-substats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.mg-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.mg-stat-k {
+  color: var(--faint);
+}
+.mg-stat-v {
+  color: var(--ink);
+  font-family: var(--mono);
+}
+.mg-panes {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.mg-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+.mg-pane > .data-toolbar.mg-pager {
+  border-top: 1px solid var(--line);
+  border-bottom: none;
+}
+.mg-pane > .mg-docbar {
+  border-top: none;
+  border-bottom: 1px solid var(--line-soft);
+}
+.mg-result-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.mg-docbody {
+  position: absolute;
+  inset: 0;
+}
+/* A failed page load: the last page stays, dimmed, under the notice. */
+.mg-docbody.stale {
+  opacity: 0.45;
+}
+.mg-load-error {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  right: 12px;
+  z-index: 3;
+}
+.mg-dirty-note {
+  margin-left: 6px;
+  color: var(--warn);
+  font-size: 11.5px;
+}
+.mg-pre-line {
+  white-space: pre-line;
+}
+
+/* ---- the code editor ---- */
+
+.mg-cm {
+  min-width: 0;
+}
+.mg-cm .cm-editor {
+  height: 100%;
+}
+.mg-cm-error {
+  text-decoration: underline wavy var(--error);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+.mg-cm-flash {
+  animation: mg-flash 0.7s ease-out;
+}
+@keyframes mg-flash {
+  0% {
+    background: var(--accent-line);
+  }
+  100% {
+    background: transparent;
+  }
+}
+/* One line, looking like the app's filter inputs. */
+.mg-cm.single {
+  flex: 1;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.mg-cm.single:focus-within {
+  border-color: var(--accent);
+}
+.mg-cm.single.invalid {
+  border-color: color-mix(in srgb, var(--error) 70%, var(--line));
+}
+.mg-cm.single .cm-editor {
+  height: 26px;
+}
+.mg-cm.single .cm-scroller {
+  overflow: hidden;
+  line-height: 26px;
+}
+.mg-cm.single .cm-content {
+  padding: 0 4px;
+  font-size: 12px;
+}
+.mg-cm.single .cm-line {
+  padding: 0 4px;
+}
+
+/* ---- query bar ---- */
+
+.mg-qbar {
+  position: relative;
+  gap: 6px;
+  padding: 8px 12px;
+}
+.mg-qbar .filter-row {
+  gap: 6px;
+}
+.mg-qlabel {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.mg-qbar .mg-opts {
+  padding-left: 34px;
+}
+.mg-qbar input.filter-value.mg-q-num {
+  flex: none;
+  width: 72px;
+  height: 28px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.mg-qbar input.filter-value.invalid {
+  border-color: color-mix(in srgb, var(--error) 70%, var(--line));
+}
+.mg-qbar button,
+button.mg-qbtn {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+button.mg-qbtn {
+  gap: 5px;
+  border: 1px solid var(--line-soft);
+  background: var(--btn);
+  color: var(--ink);
+}
+button.mg-qbtn.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+button.mg-qbtn svg {
+  color: var(--muted);
+}
+.mg-qbar button.icon-button.mg-qicon {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+.mg-opt-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: 700 9.5px/15px var(--mono);
+  text-align: center;
+}
+.mg-chev {
+  display: inline-flex;
+  color: var(--faint);
+}
+button.mg-find {
+  gap: 6px;
+  padding: 0 12px 0 10px;
+}
+button.mg-find .split-hint {
+  color: color-mix(in srgb, var(--accent-contrast) 70%, transparent);
+}
+/* The query's parse error hangs below the bar over the results, so nothing
+   moves while typing. */
+.mg-qerror {
+  position: absolute;
+  top: calc(100% - 4px);
+  left: 78px;
+  right: 12px;
+  z-index: 5;
+  pointer-events: none;
+}
+.mg-qerror.on {
+  width: max-content;
+  max-width: calc(100% - 90px);
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--error) 45%, var(--line));
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--shadow-1, 0 2px 6px rgb(0 0 0 / 0.12));
+  pointer-events: auto;
+}
+
+/* ---- popovers (history, fields) ---- */
+
+.mg-pop-anchor {
+  position: relative;
+  flex: none;
+}
+.menu-panel.mg-popover {
+  left: 0;
+  right: auto;
+  z-index: 60;
+  max-height: min(70vh, 560px);
+  padding: 6px;
+  overflow: auto;
+}
+.menu-panel.mg-hist-pop {
+  width: 480px;
+}
+.menu-panel.mg-fieldpop-wrap {
+  width: 420px;
+}
+.mg-hist-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.mg-hist-head:not(:first-child) {
+  height: 32px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+.mg-qbar button.mg-hist-save {
+  height: 22px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 400;
+}
+.mg-hist-item {
+  position: relative;
+  flex: none;
+  padding: 5px 30px 5px 8px;
+  border-radius: var(--r-xs);
+  cursor: pointer;
+}
+.mg-hist-item:hover {
+  background: var(--hover-fill);
+}
+.mg-hist-text {
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-hist-meta {
+  color: var(--faint);
+  font-size: 10px;
+}
+.mg-qbar button.mg-star {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  background: transparent;
+  color: var(--faint);
+}
+.mg-qbar button.mg-star.on {
+  color: var(--warn);
+}
+.mg-qbar button.mg-star.on svg path {
+  fill: currentColor;
+}
+.mg-hist-empty {
+  padding: 6px 8px;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+input.mg-pop-search {
+  flex: none;
+  width: 100%;
+  height: 26px;
+  margin: 2px 0 6px;
+}
+.mg-fieldpop-list {
+  max-height: 360px;
+  overflow: auto;
+}
+.mg-fieldpop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding-right: 6px;
+  border-radius: var(--r-xs);
+  cursor: pointer;
+}
+.mg-fieldpop-row:hover {
+  background: var(--hover-fill);
+}
+.mg-fieldpop-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-field-types {
+  display: inline-flex;
+  flex: none;
+  gap: 3px;
+}
+.mg-type {
+  --tc: var(--muted);
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tc) 16%, transparent);
+  color: var(--tc);
+  font: 600 9.5px/16px var(--mono);
+  white-space: nowrap;
+}
+.mg-presence {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+.mg-bar {
+  display: inline-block;
+  width: 34px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line-soft);
+}
+.mg-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.mg-pct {
+  min-width: 30px;
+  color: var(--faint);
+  font: 10px var(--mono);
+  text-align: right;
+}
+
+/* Value colours by BSON type (cards, type badges). */
+.t-String {
+  --tc: var(--mg-ink-string);
+}
+.t-Int32 {
+  --tc: var(--mg-ink-int);
+}
+.t-Int64 {
+  --tc: var(--mg-ink-long);
+}
+.t-Double,
+.t-Decimal128 {
+  --tc: var(--mg-ink-float);
+}
+.t-Boolean {
+  --tc: var(--mg-ink-bool);
+}
+.t-Date,
+.t-Timestamp {
+  --tc: var(--mg-ink-date);
+}
+.t-ObjectId {
+  --tc: var(--mg-ink-oid);
+}
+.t-Object {
+  --tc: var(--mg-ink-obj);
+}
+.t-Array {
+  --tc: var(--mg-ink-arr);
+}
+.t-Null,
+.t-Undefined {
+  --tc: var(--faint);
+}
+
+/* ---- the view switch and toolbar ---- */
+
+.mg-viewseg {
+  padding: 2px;
+  gap: 2px;
+  border-color: var(--line-soft);
+  background: var(--bg);
+}
+.data-toolbar .mg-viewseg button {
+  height: 22px;
+  padding: 0 9px;
+  color: var(--muted);
+}
+.data-toolbar .mg-viewseg button svg {
+  color: var(--faint);
+}
+.data-toolbar .mg-viewseg button.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.data-toolbar .mg-viewseg button.active svg {
+  color: var(--accent-contrast);
+}
+.data-toolbar button.footer-button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+/* ---- ☰ cards ---- */
+
+.mg-cards {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 18px;
+  overflow: auto;
+  outline: none;
+  background: var(--bg);
+}
+.mg-cards > .panel-empty {
+  flex: 1;
+}
+.mg-card {
+  flex: none;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+.mg-card.dirty {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line-soft));
+}
+.mg-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+  font: 12px var(--mono);
+}
+.mg-doc-no {
+  color: var(--faint);
+}
+.mg-doc-id {
+  min-width: 0;
+  overflow: hidden;
+  font: 12px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-card-actions {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+.mg-card:hover .mg-card-actions,
+.mg-card.dirty .mg-card-actions {
+  opacity: 1;
+}
+.mg-card-actions button {
+  height: 24px;
+  gap: 4px;
+  padding: 0 8px;
+  font-family: var(--ui);
+  font-size: 11px;
+}
+.mg-danger-text {
+  color: var(--error) !important;
+}
+.mg-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px 10px 14px;
+}
+.mg-f.top {
+  display: grid;
+  grid-template-columns: var(--kw, 12ch) minmax(0, 1fr) 84px 48px;
+  align-items: start;
+  gap: 10px;
+}
+.mg-f-key {
+  overflow: hidden;
+  padding-top: 5px;
+  color: var(--muted);
+  font: 12px/18px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.mg-f-key[data-rename] {
+  cursor: text;
+}
+.mg-f-key.idx {
+  color: var(--faint);
+}
+.mg-f-box {
+  min-width: 0;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font: 12.5px/20px var(--mono);
+}
+.mg-f-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+.mg-f-val {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--tc, var(--ink));
+}
+.mg-f-val.t-Null {
+  font-style: italic;
+}
+/* The whole box (or nested row) is the edit target, not only its text. */
+.mg-f-box.editable,
+.mg-n.editable {
+  cursor: text;
+}
+.mg-f-box.editable:hover,
+.mg-n.editable:hover {
+  border-color: var(--accent-line);
+  background: var(--hover-fill);
+}
+.mg-f-box.tree > .mg-f-line,
+.mg-n.tree {
+  cursor: pointer;
+}
+.mg-f-sum {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  user-select: none;
+}
+.mg-f-sum .cell-pop-chevron {
+  display: inline-flex;
+  width: 12px;
+  color: var(--muted);
+}
+.mg-f-sum .cell-pop-chevron svg {
+  transition: transform 0.1s ease;
+}
+.mg-f-sum .cell-pop-chevron.open svg {
+  transform: rotate(90deg);
+}
+.mg-f-count {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font: 600 11px/17px var(--mono);
+}
+.mg-f-count.obj {
+  background: color-mix(in srgb, var(--mg-ink-obj) 16%, transparent);
+  color: var(--mg-ink-obj);
+}
+.mg-f-count.arr {
+  background: color-mix(in srgb, var(--mg-ink-arr) 16%, transparent);
+  color: var(--mg-ink-arr);
+}
+.mg-f-prev {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-card button.mg-f-type {
+  justify-self: end;
+  height: 20px;
+  margin-top: 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  font-family: var(--ui);
+  font-size: 11px;
+}
+.mg-card button.mg-f-type:not(:disabled):hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+  box-shadow: none;
+}
+.mg-card button.mg-f-type:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.mg-f-acts {
+  display: inline-flex;
+  gap: 1px;
+  margin-top: 3px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.mg-f:hover > .mg-f-acts,
+.mg-n:hover > .mg-f-acts,
+.mg-f-acts:focus-within {
+  opacity: 1;
+}
+.mg-f-acts button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  justify-content: center;
+  background: transparent;
+  color: var(--faint);
+}
+.mg-f-acts button:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+  box-shadow: none;
+}
+.mg-kids {
+  margin: 4px -4px 2px;
+  padding: 3px 0 2px;
+  border-top: 1px dashed var(--line-soft);
+}
+.mg-n {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  border-radius: 5px;
+  font: 12px/20px var(--mono);
+}
+.mg-n:hover {
+  background: var(--hover-fill);
+}
+.mg-n .mg-f-key {
+  flex: none;
+  max-width: 40%;
+  padding-top: 0;
+}
+.mg-n-colon {
+  margin-left: -4px;
+  color: var(--faint);
+}
+.mg-n button.mg-f-type,
+.mg-n .mg-f-acts {
+  margin-top: 0;
+}
+.mg-n.empty,
+.mg-n.mg-more {
+  color: var(--faint);
+  font-style: italic;
+}
+.mg-n.mg-more button {
+  height: 20px;
+  font-style: normal;
+}
+.mg-f.changed > .mg-f-box,
+.mg-n.changed {
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg));
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+.mg-f.added > .mg-f-box,
+.mg-n.added {
+  background: color-mix(in srgb, var(--ok) 11%, var(--bg));
+  box-shadow: inset 2px 0 0 var(--ok);
+}
+input.mg-f-input {
+  flex: 1;
+  min-width: 80px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--accent-line) !important;
+  border-radius: 5px !important;
+  background: var(--panel) !important;
+  color: var(--tc, var(--ink));
+  font: 12.5px var(--mono);
+}
+input.mg-f-input.key {
+  max-width: 100%;
+  color: var(--ink);
+  font-size: 12px;
+}
+input.mg-f-input.invalid {
+  border-color: var(--error) !important;
+}
+/* In a card's value box the box itself is the editor: the input inside it
+   has no frame of its own, and the box takes the focus ring instead. */
+.mg-f-box input.mg-f-input {
+  height: 20px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.mg-f-box:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.mg-f-box:has(input.mg-f-input.invalid) {
+  border-color: var(--error);
+}
+/* Fields the last save's validation failed on: red over the edited mark. */
+.mg-f.invalid > .mg-f-box {
+  border-color: var(--error);
+  box-shadow: inset 2px 0 0 var(--error);
+}
+.mg-n.invalid {
+  box-shadow: inset 0 0 0 1px var(--error);
+}
+.mg-card button.mg-add-field {
+  align-self: flex-start;
+  height: 22px;
+  margin: 2px 0 0 calc(var(--kw, 12ch) + 10px);
+  padding: 0 8px;
+  gap: 4px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--faint);
+  font-size: 11px;
+  opacity: 0;
+}
+.mg-card:hover button.mg-add-field,
+.mg-card.dirty button.mg-add-field,
+.mg-card button.mg-add-field:focus-visible {
+  opacity: 1;
+}
+.mg-card button.mg-add-field:hover {
+  border-color: var(--accent-line);
+  color: var(--ink);
+  box-shadow: none;
+}
+.mg-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line-soft));
+  border-radius: 0 0 12px 12px;
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+}
+.mg-card-count {
+  font-size: 12px;
+  font-weight: 600;
+}
+/* A failed save, under the card's footer; wraps in full. */
+.mg-card-failure {
+  padding: 6px 10px 8px;
+}
+
+/* ---- {} JSON blocks ---- */
+
+.mg-jdocs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 18px;
+  overflow: auto;
+  outline: none;
+  background: var(--bg);
+}
+.mg-jdocs > .panel-empty {
+  flex: 1;
+}
+.mg-jdoc {
+  position: relative;
+  flex: none;
+  padding: 8px 0 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--panel);
+  outline: none;
+}
+.mg-jdoc:hover {
+  border-color: var(--line);
+}
+.mg-jdoc.editing {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.mg-jdoc-no {
+  position: absolute;
+  top: 9px;
+  right: 14px;
+  color: var(--faint);
+  font: 11px var(--mono);
+}
+.mg-jdoc-acts {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.mg-jdoc:hover .mg-jdoc-acts,
+.mg-jdoc-acts:focus-within {
+  opacity: 1;
+}
+.mg-jdoc.editing .mg-jdoc-acts,
+.mg-jdoc.editing .mg-jdoc-no {
+  display: none;
+}
+.mg-jdoc-acts button {
+  height: 22px;
+  gap: 4px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+.mg-jcode {
+  color: var(--syntax-text, var(--ink));
+  font: 12.5px/20px var(--mono);
+}
+.mg-jl {
+  position: relative;
+  min-height: 20px;
+  padding-right: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mg-jl:hover {
+  background: var(--hover-fill);
+}
+.mg-jl-fold {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2ch;
+  height: 20px;
+  margin-left: -2ch;
+  color: var(--faint);
+  cursor: pointer;
+}
+.mg-jl-fold svg {
+  transition: transform 0.1s ease;
+}
+.mg-jl-fold.open svg {
+  transform: rotate(90deg);
+}
+.mg-jl-fold:hover {
+  color: var(--accent);
+}
+.mg-jl-sum {
+  margin-left: 8px;
+  color: var(--faint);
+  font-size: 11px;
+}
+.mg-jl-sum button {
+  height: 20px;
+}
+.mg-jedit {
+  display: flex;
+  flex-direction: column;
+  margin: -8px 0 -10px;
+}
+.mg-jedit-host {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px 12px 0 0;
+}
+.mg-jedit-host > .mg-cm,
+.mg-doc-body > .mg-cm,
+.mg-shell-code > .mg-cm {
+  position: absolute;
+  inset: 0;
+}
+.mg-jedit-host .cm-editor,
+.mg-doc-body .cm-editor,
+.mg-shell-code .cm-editor {
+  height: 100%;
+}
+/* A parse error or a refused write in the JSON editor or a document modal. */
+.mg-jedit > .mg-syntax-error,
+.mg-jedit > .error-notice,
+.mg-modal-error {
+  margin: 6px 12px 0;
+}
+.mg-syntax-error {
+  min-width: 0;
+}
+.mg-syntax-error .mg-error-at {
+  overflow-x: auto;
+}
+.mg-error-where {
+  font-family: var(--ui);
+}
+.mg-jedit-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 7px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.mg-jedit-bar button {
+  height: 26px;
+  gap: 5px;
+}
+
+/* ---- dialogs ---- */
+
+.modal.mg-doc-modal {
+  width: min(780px, 94vw);
+  height: min(580px, 86vh);
+  max-height: 86vh;
+}
+.mg-doc-modal-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.mg-doc-modal-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal-body.mg-doc-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.modal.mg-conflict-modal {
+  width: min(960px, 94vw);
+}
+.mg-conflict-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+.mg-conflict-sides {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 10px;
+}
+.mg-conflict-title {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.mg-conflict-code {
+  max-height: 46vh;
+  margin: 0;
+  padding: 8px 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mg-conflict-code > div {
+  padding: 0 10px;
+  white-space: pre;
+}
+.mg-conflict-diff {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+button.primary.danger {
+  background: var(--error);
+  color: var(--accent-contrast, #fff);
+}
+
+/* ---- mongosh tab ---- */
+
+.mg-shell {
+  position: relative;
+}
+.mg-shell-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 38%;
+}
+.mg-shell-code {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.mg-shell-db {
+  color: var(--muted);
+  font-size: 11px;
+}
+.mg-shell-results {
+  min-height: 0;
+}
+.mg-run-hint {
+  height: 100%;
+  font-size: 14px;
+}
+.mg-shell-messages {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+}
+.mg-shell-source {
+  margin: 2px 0 0 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-shell-messages .mg-syntax-error,
+.mg-shell-messages .result-message > .error-notice {
+  max-width: 760px;
+  margin-top: 8px;
+}
+.mg-error-at {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font: 12px/1.4 var(--mono);
+  white-space: pre;
+}
+.mg-reply {
+  margin: 0;
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+}
+/* ---- sidebar (DocSidebar) ---- */
+
+.mg-side-coll > .schema-table-row {
+  padding-left: 26px;
+}
+.schema-toggle-space {
+  display: none;
+}
+.mg-side-coll .schema-table-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-side-badge {
+  flex: none;
+  margin-left: 4px;
+  padding: 0 5px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 15px;
+}
+.mg-side-count {
+  flex: none;
+  margin-left: 6px;
+}
+

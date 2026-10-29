@@ -9,12 +9,19 @@ import {
 import type { DefinitionKind } from "./sqlTools";
 import type { InstalledFont } from "./fonts";
 import { t } from "./i18n";
+import { appErrorFromBody, toAppError, type AppError } from "./errorHelp";
+// The TX controls' failures belong to no tab: they go to the error toasts.
+import { notifyError } from "./components/ErrorNotice";
+import type { Capabilities, EngineDescriptor, FieldValue } from "./engines";
 
 export interface EngineMeta {
+  // The engine's id.
   kind: string;
   path: string | null;
   demo: boolean;
   tables: string[];
+  // What this connection can actually do; absent from servers that predate it.
+  capabilities?: Capabilities;
 }
 
 export interface FsEntry {
@@ -73,6 +80,15 @@ export interface TableDetailIndex {
   unique: boolean;
   primary: boolean;
   columns: string[];
+  // The engine's own statement for the index (PostgreSQL, CockroachDB, SQLite).
+  definition?: string;
+  // A partial (filtered) index's predicate, without WHERE.
+  where?: string;
+  // The key parts in order (PostgreSQL, CockroachDB, MySQL, SQL Server): a
+  // column, with MySQL's prefix length, or an expression; descending or not.
+  parts?: { column?: string; expression?: string; prefix_length?: number; descending?: boolean }[];
+  // Non-key columns the index carries (INCLUDE).
+  included?: string[];
 }
 
 export interface TableDetailForeignKey {
@@ -126,6 +142,9 @@ export interface ServerInfo {
   size_bytes: number | null;
   sessions: ServerSession[] | null;
   can_kill: boolean;
+  // Document stores: "standalone", "replica_set", "sharded"…, and the host it reached.
+  topology?: string | null;
+  host?: string | null;
 }
 
 export interface ObjectList {
@@ -142,35 +161,9 @@ export interface DefinitionDetail {
   ddl: string | null;
 }
 
-export type SslMode = "disable" | "prefer" | "require";
-export type Driver = "postgres" | "mysql" | "cockroach" | "mssql" | "sqlite";
-
-export interface DbInput {
-  host: string;
-  port: number;
-  user: string;
-  password?: string;
-  database: string;
-  ssl_mode: SslMode;
-  ssl_root_cert?: string;
-  ssl_client_cert?: string;
-  ssl_client_key?: string;
-}
-
-export interface PostgresInput extends DbInput {}
-
-export interface MysqlInput extends DbInput {}
-
-export interface CockroachInput extends DbInput {}
-
-export interface MssqlInput {
-  host: string;
-  port: number;
-  user: string;
-  password?: string;
-  database: string;
-  encrypt: boolean;
-}
+// An engine's connection settings, keyed by its form's field keys (see the
+// engine's `connection.fields`), e.g. { host, port, user, database, ssl_mode }.
+export type ConnConfig = Record<string, FieldValue>;
 
 export interface SshInput {
   host: string;
@@ -187,41 +180,12 @@ export interface HttpTunnelInput {
   password?: string;
 }
 
-// A SQLite profile is just the database file on this machine.
-export interface SqliteInput {
-  path: string;
-}
-
 export interface ConnectInput {
-  driver: Driver;
-  postgres?: PostgresInput;
-  mysql?: MysqlInput;
-  cockroach?: CockroachInput;
-  mssql?: MssqlInput;
-  sqlite?: SqliteInput;
+  // The engine's id.
+  driver: string;
+  config: ConnConfig;
   ssh?: SshInput;
   http_tunnel?: HttpTunnelInput;
-}
-
-export interface SavedDb {
-  host: string;
-  port: number;
-  user: string;
-  database: string;
-  ssl_mode: SslMode;
-  ssl_root_cert?: string | null;
-  ssl_client_cert?: string | null;
-  ssl_client_key?: string | null;
-}
-
-export interface SavedPostgres extends SavedDb {}
-
-export interface SavedMysql extends SavedDb {}
-
-export interface SavedCockroach extends SavedDb {}
-
-export interface SavedMssql extends SavedDb {
-  encrypt?: boolean;
 }
 
 export interface SavedSsh {
@@ -237,15 +201,13 @@ export interface SavedHttpTunnel {
   username?: string;
 }
 
+// A saved profile as the server lists it: its settings without the secrets,
+// which stay in the keychain (`has_password` tells whether one is kept).
 export interface SavedConnection {
   id: string;
   name: string;
   driver: string;
-  postgres?: SavedPostgres;
-  mysql?: SavedMysql;
-  cockroach?: SavedCockroach;
-  mssql?: SavedMssql;
-  sqlite?: SqliteInput;
+  config: ConnConfig;
   ssh?: SavedSsh;
   http_tunnel?: SavedHttpTunnel;
   persist_password: boolean;
@@ -320,9 +282,35 @@ export type Status = "idle" | "running" | "error";
 export type Connection = "connecting" | "open" | "closed";
 export type TxState = "none" | "active";
 
+// Whether this page can reach the TablePeek server: "down" while neither REST
+// nor the socket gets through (retried by itself), "restarted" when the server
+// answers but no longer knows this page's token (it was started again).
+export type ServerReach = "up" | "down" | "restarted";
+
+export interface ServerState {
+  reach: ServerReach;
+  // When the next automatic try starts (ms since the epoch), while "down".
+  retryAt: number | null;
+  checking: boolean;
+  // Counts the returns from "down": panels read again on a change.
+  epoch: number;
+}
+
+// A batch of staged changes that failed at one row (and cell, for an edit):
+// the grid marks it until the changes are applied, discarded or replaced.
+export interface EditFailure {
+  result: GridResult;
+  row: number;
+  col: number | null;
+  error: AppError;
+}
+
 export interface StoreState {
   status: Status;
-  error: string | null;
+  // The error of the tab in front (its run, reload or apply); each tab keeps
+  // its own, and errors outside a tab go to the error toasts instead.
+  error: AppError | null;
+  editFailure: EditFailure | null;
   info: string | null;
   meta: EngineMeta | null;
   result: GridResult | null;
@@ -332,6 +320,7 @@ export interface StoreState {
   tabId: string | null;
   // The system's file dialog was asked for and isn't on screen yet.
   filePickOpening: boolean;
+  server: ServerState;
 }
 
 export interface TabSnapshot {
@@ -340,13 +329,13 @@ export interface TabSnapshot {
   source: WindowedRowSource | null;
   meta: QueryMeta | null;
   info: string | null;
-  error: string | null;
+  error: AppError | null;
 }
 
 export type QueryOutcome =
   | { kind: "ok"; result: GridResult }
   | { kind: "cancelled" }
-  | { kind: "error"; error: string };
+  | { kind: "error"; error: AppError };
 
 const TOKEN_KEY = "tablepeek.token";
 const UNKNOWN_ERROR = "알 수 없는 오류가 발생했습니다";
@@ -384,6 +373,7 @@ const tokenValue = initialToken();
 let state: StoreState = {
   status: "idle",
   error: null,
+  editFailure: null,
   info: null,
   meta: null,
   result: null,
@@ -392,6 +382,7 @@ let state: StoreState = {
   connId: null,
   tabId: null,
   filePickOpening: false,
+  server: { reach: "up", retryAt: null, checking: false, epoch: 0 },
 };
 
 const listeners = new Set<() => void>();
@@ -403,18 +394,29 @@ function setState(patch: Partial<StoreState>): void {
   }
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message
-    : t(UNKNOWN_ERROR);
+function errorOf(error: unknown): AppError {
+  return toAppError(error, t(UNKNOWN_ERROR));
 }
 
+// A failed REST call, with what the server said about it (see AppError).
 export class ApiRequestError extends Error {
   readonly code: string;
+  readonly sqlstate?: string;
+  readonly position?: AppError["position"];
+  readonly server_code?: number;
+  readonly code_name?: string;
+  readonly details?: unknown;
+  readonly raw?: string;
 
-  constructor(message: string, code: string) {
-    super(message);
-    this.code = code;
+  constructor(error: AppError) {
+    super(error.message);
+    this.code = error.code;
+    this.sqlstate = error.sqlstate;
+    this.position = error.position;
+    this.server_code = error.server_code;
+    this.code_name = error.code_name;
+    this.details = error.details;
+    this.raw = error.raw;
   }
 }
 
@@ -437,7 +439,14 @@ export function missingSecretOf(error: unknown): MissingSecret | null {
   }
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+function networkError(): ApiRequestError {
+  return new ApiRequestError({ code: "network", message: t(NETWORK_ERROR) });
+}
+
+// A request that reached nothing marks the server down; one refused for its
+// token marks it restarted. Every REST call (and the Mongo workbench's) goes
+// through here, so the app banner is the one place that says so.
+async function serverFetch(path: string, init?: RequestInit): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -448,9 +457,24 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
         ...(init?.headers ?? {}),
       },
     });
-  } catch {
-    throw new Error(t(NETWORK_ERROR));
+  } catch (error) {
+    // An aborted request (a cancelled export, say) says nothing about the server.
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
+    serverUnreachable();
+    throw networkError();
   }
+  if (response.status === 401) {
+    serverRestarted();
+  } else if (state.server.reach !== "up") {
+    serverReached();
+  }
+  return response;
+}
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await serverFetch(path, init);
   let body: unknown = null;
   try {
     body = await response.json();
@@ -458,20 +482,97 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     body = null;
   }
   if (!response.ok) {
-    const message =
-      body !== null && typeof body === "object" && "message" in body
-        ? String(
-            (body as { message?: unknown }).message ??
-              `HTTP ${response.status}`,
-          )
-        : `HTTP ${response.status}`;
-    const code =
-      body !== null && typeof body === "object" && "code" in body
-        ? String((body as { code?: unknown }).code ?? "")
-        : "";
-    throw new ApiRequestError(message, code);
+    throw new ApiRequestError(appErrorFromBody(body, response.status));
   }
   return body as T;
+}
+
+// Waits between automatic tries while the server is down, growing to the last.
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
+let retryTimer: number | undefined;
+let retryCount = 0;
+
+function setServer(patch: Partial<ServerState>): void {
+  setState({ server: { ...state.server, ...patch } });
+}
+
+function serverUnreachable(): void {
+  if (state.server.reach === "restarted") {
+    return;
+  }
+  if (state.server.reach === "up") {
+    retryCount = 0;
+    setServer({ reach: "down" });
+  }
+  if (retryTimer === undefined && !state.server.checking) {
+    scheduleRetry();
+  }
+}
+
+function scheduleRetry(): void {
+  const delay = RETRY_DELAYS_MS[Math.min(retryCount, RETRY_DELAYS_MS.length - 1)];
+  retryCount += 1;
+  retryTimer = window.setTimeout(() => void reconnect(), delay);
+  setServer({ retryAt: Date.now() + delay });
+}
+
+function serverRestarted(): void {
+  window.clearTimeout(retryTimer);
+  retryTimer = undefined;
+  if (state.server.reach !== "restarted") {
+    setServer({ reach: "restarted", retryAt: null, checking: false });
+  }
+}
+
+function serverReached(): void {
+  window.clearTimeout(retryTimer);
+  retryTimer = undefined;
+  retryCount = 0;
+  if (state.server.reach === "down") {
+    setServer({ reach: "up", retryAt: null, checking: false, epoch: state.server.epoch + 1 });
+  }
+}
+
+// One try at the server now (the banner's 다시 연결, or the timer): a cheap
+// authenticated call, then the socket.
+async function reconnect(): Promise<void> {
+  if (state.server.reach !== "down" || state.server.checking) {
+    return;
+  }
+  window.clearTimeout(retryTimer);
+  retryTimer = undefined;
+  setServer({ checking: true, retryAt: null });
+  try {
+    // Any reply marks the server reached (or restarted); then the socket.
+    await serverFetch("/api/engines");
+    await ensureSocket().connect();
+  } catch {
+    // Still down: the next try is planned below.
+  }
+  setServer({ checking: false });
+  // Read afresh: the awaits above moved it.
+  if (getState().server.reach === "down" && retryTimer === undefined) {
+    scheduleRetry();
+  }
+}
+
+// The address the restarted server printed (or just its token): this page
+// opens again with it.
+function openNewAddress(text: string): boolean {
+  const trimmed = text.trim();
+  let next: string | null = null;
+  try {
+    next = new URL(trimmed).searchParams.get("token");
+  } catch {
+    next = /^[0-9a-f]{16,}$/i.test(trimmed) ? trimmed : null;
+  }
+  if (next === null || next === "") {
+    return false;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set("token", next);
+  window.location.assign(url.toString());
+  return true;
 }
 
 let socket: TablePeekSocket | null = null;
@@ -482,6 +583,9 @@ function ensureSocket(): TablePeekSocket {
     const created = new TablePeekSocket(tokenValue);
     created.onStatus((status) => {
       setState({ connection: status });
+      if (status === "closed") {
+        serverUnreachable();
+      }
     });
     created.onRowChange((change) => {
       if (change.invalidate) {
@@ -551,6 +655,8 @@ function showSnapshot(conn: string, snapshot: TabSnapshot): void {
     result,
     info: snapshot.info,
     error: snapshot.error,
+    // A failed apply's mark belongs to the rows it failed on.
+    editFailure: state.editFailure?.result === result ? state.editFailure : null,
     status,
   });
 }
@@ -565,7 +671,7 @@ async function runQuery(
 ): Promise<QueryOutcome> {
   inflight.add(conn);
   if (state.connId === conn) {
-    setState({ status: "running", error: null, info: null });
+    setState({ status: "running", error: null, editFailure: null, info: null });
   }
   const isView = (): boolean =>
     state.connId === conn && (ownerId === undefined || state.tabId === ownerId);
@@ -581,7 +687,7 @@ async function runQuery(
     followTx(conn, meta.inTx);
     txEnded(conn, ownerId, meta.txEnded, meta.invalidated);
     if (isView()) {
-      setState({ status: "idle", error: null, info: null, result });
+      setState({ status: "idle", error: null, editFailure: null, info: null, result });
     } else if (state.connId === conn) {
       setState({ status: "idle" });
     }
@@ -594,15 +700,15 @@ async function runQuery(
     }
     if (error instanceof TablePeekSocketError && error.cancelled) {
       if (isView()) {
-        setState({ status: "idle", error: null, info: t(CANCELLED_INFO) });
+        setState({ status: "idle", error: null, editFailure: null, info: t(CANCELLED_INFO) });
       } else if (state.connId === conn) {
         setState({ status: "idle" });
       }
       return { kind: "cancelled" };
     }
-    const message = messageOf(error);
+    const message = errorOf(error);
     if (isView()) {
-      setState({ status: "error", error: message, info: null });
+      setState({ status: "error", error: message, editFailure: null, info: null });
     } else if (state.connId === conn) {
       setState({ status: "idle" });
     }
@@ -828,7 +934,7 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
   }
   if (inOwnTx(result.conn)) {
     // The changes would go into the import's transaction, and be undone with it.
-    setState({ error: t(BUSY_ERROR) });
+    setState({ error: { code: "", message: t(BUSY_ERROR) } });
     return null;
   }
   const ops = source.pendingOps();
@@ -839,6 +945,8 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
   const applied: { row: number; col: number; value: string | null }[] = [];
   let expressions = false;
   let phase: "begin" | "write" | "commit" = "begin";
+  // The row (and cell) being written when a statement failed.
+  let at: { row: number; col: number | null } | null = null;
   applying = true;
   try {
     if (ownTx) {
@@ -855,6 +963,7 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
       const cells = [...edit.cells].sort((a, b) => order(a) - order(b));
       for (const cell of cells) {
         const column = meta.columns[cell.col];
+        at = { row: edit.row, col: cell.col };
         const outcome = await sock.edit(conn, {
           session: result.queryId,
           table,
@@ -879,6 +988,7 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
     }
     // Deletes before inserts, so a deleted key can be re-used by a new row.
     for (const entry of ops.deletes) {
+      at = { row: entry.row, col: null };
       const change = await sock.deleteRow(conn, {
         session: result.queryId,
         table,
@@ -886,7 +996,9 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
       });
       requireRow(change.rowsAffected);
     }
-    for (const values of ops.inserts) {
+    const firstInserted = source.rowCount - ops.inserts.length;
+    for (const [index, values] of ops.inserts.entries()) {
+      at = { row: firstInserted + index, col: null };
       await sock.insertRow(conn, {
         session: result.queryId,
         table,
@@ -897,15 +1009,23 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
         })),
       });
     }
+    at = null;
     if (ownTx) {
       phase = "commit";
       await sock.commit(conn);
     }
   } catch (error) {
-    let message = messageOf(error);
+    let message = errorOf(error);
+    const failed = (shown: AppError): void => {
+      setState({
+        error: shown,
+        editFailure: at === null ? null : { result, row: at.row, col: at.col, error: shown },
+      });
+    };
     if (error instanceof TablePeekSocketError && error.rolledBack) {
       // COMMIT found the transaction failed and the server rolled it back.
-      setState({ error: message, tx: ownTx ? state.tx : "none" });
+      setState({ tx: ownTx ? state.tx : "none" });
+      failed(message);
       return null;
     }
     if (ownTx && phase !== "begin") {
@@ -914,12 +1034,17 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
       } catch {
         // The server may still hold the transaction open; surface the TX controls.
         setState({ tx: "active" });
-        message = t("{message} — 롤백하지 못했습니다. 트랜잭션을 확인하세요.", { message });
+        message = { ...message, message: t("{message} — 롤백하지 못했습니다. 트랜잭션을 확인하세요.", { message: message.message }) };
       }
     } else if (!ownTx && phase === "write") {
-      message = t("{message} — 일부 변경이 진행 중인 트랜잭션에 반영되었을 수 있습니다. 롤백 후 다시 적용하세요.", { message });
+      message = {
+        ...message,
+        message: t("{message} — 일부 변경이 진행 중인 트랜잭션에 반영되었을 수 있습니다. 롤백 후 다시 적용하세요.", {
+          message: message.message,
+        }),
+      };
     }
-    setState({ error: message });
+    failed(message);
     return null;
   } finally {
     applying = false;
@@ -928,6 +1053,7 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
     source.setCell(entry.row, entry.col, entry.value);
   }
   source.discardPending();
+  setState({ editFailure: null });
   // The server filed the committed statements under this connection's history.
   historyChanged(conn);
   // Rows added, removed, or holding values only the database knows yet are
@@ -959,7 +1085,7 @@ async function beginTx(): Promise<void> {
     await ensureSocket().begin(activeConnOrThrow());
     setState({ tx: "active" });
   } catch (error) {
-    setState({ status: "error", error: messageOf(error) });
+    notifyError(error);
   }
 }
 
@@ -976,11 +1102,12 @@ async function commitTx(): Promise<void> {
   } catch (error) {
     if (error instanceof TablePeekSocketError && error.rolledBack) {
       // The server rolled the failed transaction back instead.
-      setState({ tx: "none", status: "error", error: messageOf(error) });
+      setState({ tx: "none" });
+      notifyError(error);
       state.result?.source.clearWindows();
       return;
     }
-    setState({ status: "error", error: messageOf(error) });
+    notifyError(error);
   }
 }
 
@@ -993,7 +1120,7 @@ async function rollbackTx(): Promise<void> {
     setState({ tx: "none" });
     state.result?.source.clearWindows();
   } catch (error) {
-    setState({ status: "error", error: messageOf(error) });
+    notifyError(error);
   }
 }
 
@@ -1014,7 +1141,7 @@ function inOwnTx(conn: string): boolean {
 // The TX controls act on the active connection.
 function refuseWhileJob(): boolean {
   if (state.connId !== null && inOwnTx(state.connId)) {
-    setState({ status: "error", error: t(BUSY_ERROR) });
+    notifyError(t(BUSY_ERROR));
     return true;
   }
   return false;
@@ -1098,6 +1225,7 @@ function activate(
       result: null,
       info: null,
       error: null,
+      editFailure: null,
       status: "idle",
     });
   }
@@ -1123,7 +1251,11 @@ async function connect(input: ConnectInput): Promise<LiveConn> {
   });
 }
 
-const connectPostgres = connect;
+// Every engine the server can connect to, as it describes them.
+async function listEngines(): Promise<EngineDescriptor[]> {
+  const body = await api<{ engines: EngineDescriptor[] }>("/api/engines");
+  return body.engines;
+}
 
 export interface ConnectSecrets {
   password?: string;
@@ -1339,6 +1471,8 @@ export interface ExecResult {
   columns: string[];
   rows: unknown[][];
   row_count: number;
+  // The rows stop at the server's cap (10,000) and more were there.
+  truncated: boolean;
   elapsed_ms: number;
 }
 
@@ -1535,19 +1669,9 @@ type PickLine =
 async function pickFile(options: PickFileOptions): Promise<string | null> {
   setState({ filePickOpening: true });
   try {
-    let response: Response;
-    try {
-      response = await fetch("/api/fs/pick", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-tablepeek-token": tokenValue },
-        body: JSON.stringify(options),
-      });
-    } catch {
-      throw new Error(t(NETWORK_ERROR));
-    }
+    const response = await serverFetch("/api/fs/pick", { method: "POST", body: JSON.stringify(options) });
     if (!response.ok || response.body === null) {
-      const body = (await response.json().catch(() => null)) as { code?: string; message?: string } | null;
-      throw new ApiRequestError(body?.message ?? `HTTP ${response.status}`, body?.code ?? "");
+      throw new ApiRequestError(appErrorFromBody(await response.json().catch(() => null), response.status));
     }
     // One JSON line as the dialog comes up, one when it closes.
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -1557,10 +1681,10 @@ async function pickFile(options: PickFileOptions): Promise<string | null> {
       try {
         chunk = await reader.read();
       } catch {
-        throw new Error(t(NETWORK_ERROR));
+        throw networkError();
       }
       if (chunk.done) {
-        throw new Error(t(NETWORK_ERROR));
+        throw networkError();
       }
       pending += chunk.value;
       let newline = pending.indexOf("\n");
@@ -1570,7 +1694,7 @@ async function pickFile(options: PickFileOptions): Promise<string | null> {
         if ("shown" in line) {
           setState({ filePickOpening: false });
         } else if ("error" in line) {
-          throw new ApiRequestError(line.error.message, line.error.code);
+          throw new ApiRequestError({ code: line.error.code, message: line.error.message });
         } else {
           return line.path;
         }
@@ -1582,8 +1706,9 @@ async function pickFile(options: PickFileOptions): Promise<string | null> {
   }
 }
 
-function setError(message: string | null): void {
-  setState({ error: message });
+// The tab in front's error is done with (closed, its changes discarded).
+function clearError(): void {
+  setState({ error: null, editFailure: null, status: state.status === "error" ? "idle" : state.status });
 }
 
 function setInfo(message: string | null): void {
@@ -1621,11 +1746,15 @@ export const store = {
   listDir,
   statPath,
   pickFile,
-  setError,
+  reconnect,
+  openNewAddress,
+  serverUnreachable,
+  serverRestarted,
   setInfo,
+  clearError,
   warmSocket,
   connect,
-  connectPostgres,
+  listEngines,
   connectSaved,
   listConns,
   closeConn,

@@ -321,7 +321,7 @@ async fn forward(channel: Channel<Msg>, stream: TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tablepeek_types::{PostgresConfig, SslMode};
+    use tablepeek_engine::registry::{self, DriverFactory, NetRoute};
 
     fn docker_enabled() -> bool {
         std::env::var("TABLEPEEK_TEST_DOCKER").is_ok()
@@ -356,18 +356,18 @@ mod tests {
         }
     }
 
-    fn test_pg_config(host: &str, port: u16) -> PostgresConfig {
-        PostgresConfig {
-            host: host.into(),
-            port,
-            user: "tablepeek".into(),
-            password: Some("tablepeek_test_pw".into()),
-            database: "tablepeek_test".into(),
-            ssl_mode: SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        }
+    fn test_pg_config(host: &str, port: u16) -> tablepeek_types::ConnConfig {
+        let serde_json::Value::Object(config) = serde_json::json!({
+            "host": host, "port": port, "user": "tablepeek",
+            "password": "tablepeek_test_pw", "database": "tablepeek_test"
+        }) else {
+            unreachable!();
+        };
+        config
+    }
+
+    fn postgres() -> &'static dyn DriverFactory {
+        registry::factory("postgres").unwrap()
     }
 
     #[tokio::test]
@@ -391,10 +391,15 @@ mod tests {
         let tunnel = open(&test_ssh_config(), &pg_container_ip(), 5432)
             .await
             .expect("SSH 터널을 열 수 없습니다");
-        let config = test_pg_config("127.0.0.1", tunnel.local_port);
+        // The settings keep the container's address; the route goes through the tunnel.
+        let config = test_pg_config(&pg_container_ip(), 5432);
+        let net = NetRoute::Via {
+            host: "127.0.0.1".into(),
+            port: tunnel.local_port,
+        };
         let engine = tablepeek_engine::Engine::open_demo(1).unwrap();
         let meta = engine
-            .swap_to_postgres(&config)
+            .swap_to(postgres(), &config, &net)
             .await
             .expect("터널을 통한 PostgreSQL 연결 실패");
         assert_eq!(meta.kind, "postgres");
@@ -414,7 +419,7 @@ mod tests {
         let config = test_pg_config("127.0.0.1", 5433);
         let engine = tablepeek_engine::Engine::open_demo(1).unwrap();
         let meta = engine
-            .swap_to_postgres(&config)
+            .swap_to(postgres(), &config, &NetRoute::Direct)
             .await
             .expect("직접 PostgreSQL 연결 실패");
         assert_eq!(meta.kind, "postgres");

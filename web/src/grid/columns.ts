@@ -1,3 +1,4 @@
+import type { SqlDialect } from "../engines/sqlDialect";
 import type { TableDetail } from "../store";
 
 // What a grid knows about a column beyond its name, as TablePlus shows it:
@@ -46,13 +47,7 @@ function enumLabels(declType: string): string[] | null {
   return labels.length > 0 ? labels : null;
 }
 
-// Booleans as the grid shows them: PostgreSQL, CockroachDB and SQL Server's bit
-// come back as true/false; MySQL and SQLite store 1/0.
-function booleanOptions(dialect: string): string[] {
-  return dialect === "postgres" || dialect === "cockroach" || dialect === "mssql" ? ["true", "false"] : ["1", "0"];
-}
-
-export function kindOfType(declType: string | null, dialect: string): Pick<GridColumnSpec, "kind" | "options"> {
+export function kindOfType(declType: string | null, dialect: SqlDialect): Pick<GridColumnSpec, "kind" | "options"> {
   const type = (declType ?? "").trim().toLowerCase();
   // Arrays (PostgreSQL's "boolean[]", "time[]") are edited as text.
   if (type === "" || type.endsWith("[]")) {
@@ -63,14 +58,14 @@ export function kindOfType(declType: string | null, dialect: string): Pick<GridC
   if (labels !== null) {
     return { kind: /^set\b/.test(type) ? "set" : "enum", options: labels };
   }
-  if (/^(bool|boolean)\b/.test(type) || /^tinyint\s*\(\s*1\s*\)/.test(type) || (dialect === "mssql" && /^bit\b/.test(type))) {
-    return { kind: "boolean", options: booleanOptions(dialect) };
+  if (/^(bool|boolean)\b/.test(type) || /^tinyint\s*\(\s*1\s*\)/.test(type) || (dialect.gridBitIsBoolean && /^bit\b/.test(type))) {
+    return { kind: "boolean", options: [...dialect.booleanOptions] };
   }
   if (/^date$/.test(type)) {
     return { kind: "date" };
   }
   // SQL Server's timestamp is rowversion, a binary counter, not a time.
-  if (dialect === "mssql" && /^(timestamp|rowversion)\b/.test(type)) {
+  if (dialect.timestampIsVersion && /^(timestamp|rowversion)\b/.test(type)) {
     return { kind: "text" };
   }
   if (/^(datetime|datetime2|smalldatetime|datetimeoffset|timestamp|timestamptz)\b/.test(type)) {
@@ -93,7 +88,7 @@ export function kindOfType(declType: string | null, dialect: string): Pick<GridC
   // as its affinity rule (and the engine) reads it.
   if (
     /^(bytea|bytes|binary|varbinary|image|tinyblob|blob|mediumblob|longblob)\b/.test(type) ||
-    (dialect === "sqlite" && type.includes("blob"))
+    (dialect.blobByName && type.includes("blob"))
   ) {
     return { kind: "binary" };
   }
@@ -121,7 +116,7 @@ export function declaredAs(
   kind: CellKind,
   columns: string[],
   detail: TableDetail | undefined | null,
-  dialect: string,
+  dialect: SqlDialect,
 ): boolean[] {
   const types = new Map((detail?.columns ?? []).map((column) => [column.name, column.decl_type]));
   return columns.map((name) => types.has(name) && kindOfType(types.get(name) ?? null, dialect).kind === kind);
@@ -132,7 +127,7 @@ export function declaredAs(
 export function specsForTable(
   columns: string[],
   detail: TableDetail | undefined | null,
-  dialect: string,
+  dialect: SqlDialect,
 ): (GridColumnSpec | null)[] | null {
   if (!detail) {
     return null;

@@ -1,0 +1,151 @@
+/* The 성능 tab: a stats bar, four live charts in a two-column grid, and the
+   current-operation, per-collection time and profiler tables. Built on the
+   app's structure-section, panel-table and chart-* classes. */
+
+.mg-perf {
+  background: var(--bg);
+}
+.mg-perf-stats {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.mg-perf-stats b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.mg-perf-body > .error-notice {
+  margin-bottom: 12px;
+}
+.mg-perf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 0 12px;
+}
+.mg-perf-card .structure-section-head {
+  height: auto;
+  min-height: 34px;
+  flex-wrap: wrap;
+}
+.mg-perf-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.mg-perf-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.mg-perf-legend-item .chart-swatch.line {
+  width: 12px;
+}
+.mg-perf-legend-item .mono {
+  color: var(--ink);
+}
+.mg-perf-plot {
+  position: relative;
+  height: 150px;
+}
+.mg-perf-plot .chart-svg {
+  position: static;
+}
+.mg-perf-tip {
+  position: absolute;
+  top: 8px;
+  z-index: 2;
+  min-width: 140px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 18%);
+  font-size: 11px;
+  pointer-events: none;
+}
+.mg-perf-tip-time {
+  margin-bottom: 3px;
+  color: var(--muted);
+}
+.mg-perf-tip-row {
+  display: grid;
+  grid-template-columns: 9px 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+.mg-perf-section .structure-section-head {
+  height: auto;
+  min-height: 38px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  flex-wrap: wrap;
+}
+.mg-perf-section .structure-section-head select.mg-input,
+.mg-perf-section .structure-section-head input.mg-input,
+.mg-perf-section .structure-section-head button.mg-qbtn {
+  height: 26px;
+}
+.mg-perf-hint {
+  font-size: 11px;
+}
+.mg-perf-slowms {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+.mg-perf-slowms input.mg-num {
+  width: 72px;
+}
+.mg-perf-empty {
+  padding: 12px 14px;
+  font-size: 12px;
+}
+.mg-perf-scroll {
+  max-height: 340px;
+  overflow: auto;
+}
+.mg-perf-table td {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-perf-table td.mg-perf-cmd {
+  max-width: 420px;
+  font: 11.5px var(--mono);
+}
+.mg-perf-row {
+  cursor: pointer;
+}
+.mg-perf-row.open {
+  background: var(--accent-soft);
+}
+.mg-perf-detail td {
+  max-width: none;
+  padding: 0;
+  white-space: normal;
+}
+.mg-perf-detail pre {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px 14px;
+  overflow: auto;
+  background: var(--bg);
+  font-size: 11.5px;
+  white-space: pre;
+}
+.mg-perf-slow {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+}

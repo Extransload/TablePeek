@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { engineById } from "../engines";
 import { formatBytes, formatRowEstimate } from "../format";
 import { t } from "../i18n";
 import type { TableDetail, TableSchema } from "../store";
@@ -42,7 +43,10 @@ export function TableInfoCard({ table, detail, kind, top, left }: TableInfoCardP
   const facts: [string, ReactNode][] = [
     [
       t("행 수"),
-      loading ? pending : (formatRowEstimate(detail?.row_count_estimate ?? null, kind === "sqlite") ?? "—"),
+      loading
+        ? pending
+        : (formatRowEstimate(detail?.row_count_estimate ?? null, engineById(kind)?.capabilities.exact_count === true) ??
+          "—"),
     ],
     [
       t("크기"),

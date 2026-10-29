@@ -1,0 +1,170 @@
+/* ---- 데이터베이스·컬렉션 관리, 가져오기, 내보내기 ---- */
+
+.mg-admin-modal {
+  width: min(620px, 94vw);
+  max-height: 88vh;
+}
+.mg-create-modal,
+.mg-export-modal {
+  width: min(680px, 94vw);
+}
+.mg-import-modal {
+  width: min(880px, 96vw);
+}
+.mg-admin-modal .modal-body {
+  min-height: 0;
+}
+.mg-seg {
+  align-self: flex-start;
+}
+.mg-admin-editor {
+  height: 150px;
+  flex: none;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mg-col {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.mg-checks select.mg-input {
+  height: 24px;
+}
+
+/* 통계 */
+.mg-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+}
+.mg-stats-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+.mg-stats-table {
+  flex: none;
+}
+.mg-stats-table th {
+  text-align: left;
+}
+.mg-stats-table .num {
+  text-align: right;
+}
+
+/* 가져오기 */
+.mg-import-source,
+.mg-import-failhead,
+.mg-export-fieldhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+textarea.mg-import-paste {
+  flex: none;
+  height: 110px;
+  padding: 8px 9px;
+  font-size: 12px;
+  resize: vertical;
+}
+.mg-import-table-wrap {
+  flex: none;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+.mg-import-table th {
+  min-width: 120px;
+  vertical-align: top;
+}
+.mg-import-table th select.mg-input {
+  width: 100%;
+  height: 24px;
+  margin-top: 4px;
+  font-weight: 400;
+}
+.mg-import-table td {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-import-colname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mg-import-skip {
+  opacity: 0.45;
+}
+.mg-import-preview {
+  flex: none;
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 11.5px;
+}
+.mg-import-line {
+  display: flex;
+  gap: 10px;
+  padding: 1px 9px;
+  white-space: nowrap;
+}
+.mg-import-line.bad .mg-import-text {
+  color: var(--error);
+  white-space: normal;
+}
+.mg-import-ln {
+  flex: none;
+  min-width: 44px;
+  color: var(--faint);
+  text-align: right;
+}
+.mg-import-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mg-import-failures {
+  max-height: 180px;
+}
+
+/* 진행 */
+.mg-transfer-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mg-transfer-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 12px;
+}
+
+/* 내보내기 */
+.mg-export-fields {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+.mg-export-fields label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}

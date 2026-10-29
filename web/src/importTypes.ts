@@ -1,3 +1,4 @@
+import type { SqlDialect } from "./engines/sqlDialect";
 import { JsonNumber } from "./importParse";
 
 // Column types for a table made from an imported file, guessed from its
@@ -191,84 +192,11 @@ export function textProfile(maxLength = 0): ColumnProfile {
   return { kind: "text", maxLength, intDigits: 0, scale: 0, fraction: 0 };
 }
 
-function family(dialect: string): "postgres" | "mysql" | "sqlite" | "mssql" {
-  if (dialect === "postgres" || dialect === "cockroach") {
-    return "postgres";
-  }
-  return dialect === "mysql" || dialect === "mssql" ? dialect : "sqlite";
-}
-
-// The type the dialect spells for a profile.
-export function typeName(profile: ColumnProfile, dialect: string): string {
-  const { kind } = profile;
-  const precision = profile.intDigits + profile.scale;
-  switch (family(dialect)) {
-    case "postgres":
-      return {
-        integer: "integer",
-        bigint: "bigint",
-        decimal: "numeric",
-        double: "double precision",
-        boolean: "boolean",
-        date: "date",
-        datetime: "timestamp",
-        datetimetz: "timestamptz",
-        text: "text",
-      }[kind];
-    case "mysql":
-      if (kind === "decimal") {
-        return precision > 0 && precision <= 65 && profile.scale <= 30
-          ? `decimal(${Math.max(precision, 1)},${profile.scale})`
-          : "double";
-      }
-      if (kind === "datetime") {
-        return profile.fraction > 0 ? `datetime(${Math.min(profile.fraction, 6)})` : "datetime";
-      }
-      if (kind === "text" || kind === "datetimetz") {
-        // TEXT holds 65,535 bytes: 16,383 characters of four bytes each.
-        return profile.maxLength > 16383 ? "longtext" : "text";
-      }
-      return { integer: "int", bigint: "bigint", double: "double", boolean: "tinyint(1)", date: "date" }[kind];
-    case "mssql":
-      if (kind === "decimal") {
-        return precision > 0 && precision <= 38 ? `decimal(${precision},${profile.scale})` : "float";
-      }
-      if (kind === "text") {
-        return profile.maxLength > 4000 ? "nvarchar(max)" : profile.maxLength > 255 ? "nvarchar(4000)" : "nvarchar(255)";
-      }
-      return {
-        integer: "int",
-        bigint: "bigint",
-        double: "float",
-        boolean: "bit",
-        date: "date",
-        datetime: "datetime2",
-        datetimetz: "datetimeoffset",
-      }[kind];
-    default:
-      return {
-        integer: "INTEGER",
-        bigint: "INTEGER",
-        decimal: "REAL",
-        double: "REAL",
-        boolean: "BOOLEAN",
-        date: "DATE",
-        datetime: "DATETIME",
-        datetimetz: "DATETIME",
-        text: "TEXT",
-      }[kind];
-  }
-}
-
 // The types a new column's menu offers, with the guessed one among them.
-export function typeChoices(dialect: string, guessed: string): string[] {
+export function typeChoices(dialect: SqlDialect, guessed: string): string[] {
   const kinds: ValueKind[] = ["text", "integer", "bigint", "decimal", "double", "boolean", "date", "datetime", "datetimetz"];
-  const names = kinds.map((kind) => typeName({ ...textProfile(), kind, intDigits: 10, scale: 2 }, dialect));
-  if (family(dialect) === "postgres") {
-    names.push("varchar(255)", "jsonb");
-  } else if (family(dialect) === "mysql") {
-    names.push("varchar(255)", "json");
-  }
+  const names = kinds.map((kind) => dialect.importType({ ...textProfile(), kind, intDigits: 10, scale: 2 }));
+  names.push(...dialect.importExtraTypes);
   return [...new Set([guessed, ...names])];
 }
 
@@ -277,10 +205,10 @@ export function typeChoices(dialect: string, guessed: string): string[] {
 // TINYINT(1) and SQLite won't read the word), the rest go in as written.
 // BIT is a flag only in SQL Server and MySQL; PostgreSQL's bit(n) is a bit
 // string, which takes '1' and refuses TRUE.
-export function wantsBoolean(declType: string | null, dialect = ""): boolean {
+export function wantsBoolean(declType: string | null, dialect: SqlDialect): boolean {
   const type = (declType ?? "").trim().toLowerCase();
   if (/^bit\b/.test(type)) {
-    return dialect === "mssql" || dialect === "mysql";
+    return dialect.importBitIsBoolean;
   }
   return /^(bool|boolean)\b/.test(type) || /^tinyint\s*\(\s*1\s*\)/.test(type);
 }

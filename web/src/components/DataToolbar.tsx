@@ -232,7 +232,13 @@ export function DataTabToolbar({
         </button>
       </div>
       <div className="footer-middle">
-        {hasMeta ? (
+        {hasMeta && tab.error !== undefined && tab.errorFrom !== "apply" ? (
+          // A failed reload or filter: the rows shown are the last ones read,
+          // so neither their place nor a total is known.
+          <span className="row-range stale" title={t("다시 불러오지 못해 이전 결과를 보여 주고 있습니다")}>
+            {t("이전 결과 · {count}행", { count: meta.rowCount.toLocaleString() })}
+          </span>
+        ) : hasMeta ? (
           <button
             type="button"
             className="row-range"

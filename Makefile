@@ -22,7 +22,7 @@ endif
 
 # Throwaway test databases (testdb/compose.yml): every engine, or the ones
 # ENGINE names, e.g. ENGINE=postgres or ENGINE="mysql mssql".
-TESTDB_ENGINES := postgres mysql cockroach mssql
+TESTDB_ENGINES := postgres mysql cockroach mssql mongodb
 ENGINE ?= $(TESTDB_ENGINES)
 TESTDB := docker compose -f testdb/compose.yml
 # MySQL's host port; the tests read the same variable.
@@ -31,7 +31,8 @@ export TABLEPEEK_TEST_MYSQL_PORT
 TESTDB_ENV := $(if $(filter postgres,$(ENGINE)),TABLEPEEK_TEST_PG=1) \
 	$(if $(filter mysql,$(ENGINE)),TABLEPEEK_TEST_MYSQL=1) \
 	$(if $(filter cockroach,$(ENGINE)),TABLEPEEK_TEST_COCKROACH=1) \
-	$(if $(filter mssql,$(ENGINE)),TABLEPEEK_TEST_MSSQL=1)
+	$(if $(filter mssql,$(ENGINE)),TABLEPEEK_TEST_MSSQL=1) \
+	$(if $(filter mongodb,$(ENGINE)),TABLEPEEK_TEST_MONGODB=1)
 
 .PHONY: all help install web build run mcp test test-docker test-db test-db-down test-live check fmt clean distclean testdb-engines
 
@@ -51,7 +52,7 @@ help:
 		'  make test                    Run Rust tests and TypeScript checks' \
 		'  make test-docker             Run Docker-backed integration tests' \
 		'  make test-db                 Start the test databases in Docker, seeded' \
-		'  make test-db ENGINE=postgres Start only some (postgres mysql cockroach mssql)' \
+		'  make test-db ENGINE=postgres Start only some (postgres mysql cockroach mssql mongodb)' \
 		'  make test-live ENGINE=mysql  Run the engine live tests against them' \
 		'  make test-db-down            Stop them and throw their data away' \
 		'  TABLEPEEK_TEST_MYSQL_PORT=3329 make test-db ENGINE=mysql   Another MySQL port' \
@@ -93,11 +94,14 @@ test-db: testdb-engines
 	$(if $(filter cockroach,$(ENGINE)),$(TESTDB) exec -T cockroach /cockroach/cockroach sql --insecure -d defaultdb -f /seed/cockroach-shop.sql > /dev/null)
 	$(if $(filter mssql,$(ENGINE)),$(TESTDB) exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -b -r0 -i /seed/mssql.sql > /dev/null)
 	$(if $(filter mssql,$(ENGINE)),$(TESTDB) exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -b -r0 -i /seed/mssql-shop.sql > /dev/null)
+	$(if $(filter mongodb,$(ENGINE)),$(TESTDB) exec -T mongodb mongosh --quiet /seed/mongodb.js > /dev/null)
+	$(if $(filter mongodb,$(ENGINE)),$(TESTDB) exec -T mongodb mongosh --quiet /seed/mongodb-shop.js > /dev/null)
 	@printf '%s\n' 'Ready on 127.0.0.1 (test-only accounts; sample data in schema shop, or database shop on MySQL):'
 	$(if $(filter postgres,$(ENGINE)),@printf '%s\n' '  PostgreSQL   port 5433   tablepeek / tablepeek_test_pw   database tablepeek_test')
 	$(if $(filter mysql,$(ENGINE)),@printf '%s\n' '  MySQL        port $(TABLEPEEK_TEST_MYSQL_PORT)   root / root_pw                  database tablepeek_test')
 	$(if $(filter cockroach,$(ENGINE)),@printf '%s\n' '  CockroachDB  port 26258  root (no password; SSL off)    database defaultdb')
 	$(if $(filter mssql,$(ENGINE)),@printf '%s\n' '  SQL Server   port 14330  sa / MsSql_test_pw1             database tablepeek_test')
+	$(if $(filter mongodb,$(ENGINE)),@printf '%s\n' '  MongoDB      port 27018  tablepeek / tablepeek_test_pw   database shop (replica set rs0, directConnection)')
 
 test-db-down: testdb-engines
 	$(if $(filter-out $(ENGINE),$(TESTDB_ENGINES)),$(TESTDB) rm --stop --force --volumes $(ENGINE),$(TESTDB) down --volumes)

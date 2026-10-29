@@ -1,18 +1,12 @@
 import { basicSetup } from "codemirror";
-import {
-  MSSQL,
-  MariaSQL,
-  MySQL,
-  PostgreSQL,
-  SQLite,
-  keywordCompletionSource,
-  type SQLDialect,
-} from "@codemirror/lang-sql";
+import { SQLite, keywordCompletionSource, type SQLDialect } from "@codemirror/lang-sql";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting, syntaxTree } from "@codemirror/language";
-import { Compartment, EditorState, Prec, RangeSetBuilder } from "@codemirror/state";
+import { Compartment, EditorState, Prec, RangeSet, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
+  GutterMarker,
+  gutterLineClass,
   keymap,
   ViewPlugin,
   type DecorationSet,
@@ -31,6 +25,8 @@ import { isolateHistory } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { SqlDialect } from "../engines/sqlDialect";
+import type { AppError } from "../errorHelp";
 import { scrollbarsFor } from "../scrollbars";
 import { t } from "../i18n";
 import {
@@ -65,6 +61,13 @@ export interface SqlEditorHandle {
   forget(tabId: string): void;
   focus(): void;
   flush(): void;
+  // Underlines where the server says `statement` (as it was sent) failed, in
+  // this tab's text, and returns that spot's line and column; null when the
+  // statement or the spot isn't found (it was edited, or parameters were
+  // filled in). Typing clears the mark, as does markError(null).
+  markError(failure: { statement: string; position: AppError["position"] } | null): { line: number; column: number } | null;
+  // Puts the cursor on the marked spot.
+  revealError(): void;
 }
 
 interface SqlEditorProps {
@@ -83,8 +86,9 @@ interface SqlEditorProps {
   favorites: FavoriteSnippet[];
   // CodeMirror key for onRun; null leaves running to the app's shortcuts.
   runKey?: string | null;
-  // The engine's SQL, which decides where a statement ends (see sqlSplit).
-  dialect?: string;
+  // The engine's SQL, which decides where a statement ends (see sqlSplit);
+  // none without a connection.
+  dialect?: SqlDialect;
 }
 
 // Where `offset` in `before` lands in `after`, a rewrite of it that changed
@@ -115,19 +119,10 @@ function sameSpot(before: string, offset: number, after: string): number {
   return at;
 }
 
-// The connection's SQL, for highlighting and completion; any other kind (or
-// no connection) keeps SQLite's.
-const DIALECTS: Record<string, SQLDialect> = {
-  sqlite: SQLite,
-  postgres: PostgreSQL,
-  cockroach: PostgreSQL,
-  mysql: MySQL,
-  mariadb: MariaSQL,
-  mssql: MSSQL,
-};
-
-function dialectFor(kind: string | undefined): SQLDialect {
-  return DIALECTS[kind ?? ""] ?? SQLite;
+// The connection's SQL, for highlighting and completion; with no connection
+// SQLite's.
+function dialectFor(dialect: SqlDialect | undefined): SQLDialect {
+  return dialect?.editor ?? SQLite;
 }
 
 const dialectWords = new Map<SQLDialect, SqlWord[]>();
@@ -455,6 +450,70 @@ const quoteColors = ViewPlugin.fromClass(
   { decorations: (plugin) => plugin.decorations },
 );
 
+// A server error's spot: a wavy underline, its line tinted, a mark in the gutter.
+const setErrorMark = StateEffect.define<{ from: number; to: number } | null>();
+const errorRangeMark = Decoration.mark({ class: "cm-sql-error" });
+const errorLineMark = Decoration.line({ class: "cm-sql-error-line" });
+const errorGutterMark = new (class extends GutterMarker {
+  elementClass = "cm-sql-error-gutter";
+})();
+const errorMarkField = StateField.define<{ from: number; to: number } | null>({
+  create: () => null,
+  update(range, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setErrorMark)) {
+        return effect.value;
+      }
+    }
+    // The text the error was about is gone.
+    return tr.docChanged ? null : range;
+  },
+  provide: (field) => [
+    EditorView.decorations.from(field, (range) =>
+      range === null
+        ? Decoration.none
+        : Decoration.set([errorLineMark.range(range.from), errorRangeMark.range(range.from, range.to)], true),
+    ),
+    gutterLineClass.from(field, (range) => (range === null ? RangeSet.empty : RangeSet.of([errorGutterMark.range(range.from)]))),
+  ],
+});
+
+// Where a server position falls in the text when the statement starts at
+// `start`: PostgreSQL counts characters from 1, MySQL and SQL Server lines
+// (and maybe columns) from 1.
+function errorRange(
+  state: EditorState,
+  start: number,
+  statement: string,
+  position: NonNullable<AppError["position"]>,
+): { from: number; to: number } | null {
+  let from: number;
+  if (position.offset !== undefined) {
+    if (position.offset < 1 || position.offset > statement.length + 1) {
+      return null;
+    }
+    from = start + position.offset - 1;
+  } else if (position.line !== undefined) {
+    const number = state.doc.lineAt(start).number + position.line - 1;
+    if (position.line < 1 || number > state.doc.lines) {
+      return null;
+    }
+    const line = state.doc.line(number);
+    const lineStart = position.line === 1 ? start : line.from;
+    if (position.column === undefined) {
+      return { from: lineStart, to: Math.max(lineStart + 1, line.to) };
+    }
+    from = Math.min(line.to, lineStart + Math.max(0, position.column - 1));
+  } else {
+    return null;
+  }
+  from = Math.min(from, state.doc.length);
+  // The word there, or one character.
+  const rest = state.sliceDoc(from, Math.min(state.doc.length, from + 200));
+  const word = /^[\p{L}\p{N}_$"`.[\]]+/u.exec(rest)?.[0].length ?? 1;
+  return { from, to: Math.min(state.doc.length, from + Math.max(1, word)) };
+}
+
 // How the editor looks, shared with its Settings preview.
 const editorLook = [editorTheme, syntaxHighlighting(highlightStyle), quoteColors, EditorView.lineWrapping];
 
@@ -671,8 +730,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
 
     // Schema and saved queries are read when completing, so only a new
     // dialect needs the language reconfigured.
-    function sqlLanguage(kind: string | undefined): LanguageSupport {
-      const dialect = dialectFor(kind);
+    function sqlLanguage(sqlDialect: SqlDialect | undefined): LanguageSupport {
+      const dialect = dialectFor(sqlDialect);
       return new LanguageSupport(dialect.language, dialect.language.data.of({ autocomplete: sqlCompletion }));
     }
 
@@ -722,6 +781,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
             ],
           }),
           languageCompartment.of(sqlLanguage(dialectRef.current)),
+          errorMarkField,
           ...editorLook,
           EditorView.contentAttributes.of({
             spellcheck: "false",
@@ -904,6 +964,47 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         },
         flush(): void {
           flushPending();
+        },
+        markError(failure): { line: number; column: number } | null {
+          const view = viewRef.current;
+          if (!view) {
+            return null;
+          }
+          const { state } = view;
+          let range: { from: number; to: number } | null = null;
+          if (failure !== null && failure.position !== undefined && failure.statement !== "") {
+            // The statement's copy the cursor is in (Run Current), else the first.
+            const doc = state.doc.toString();
+            const head = state.selection.main.head;
+            let start = doc.indexOf(failure.statement);
+            for (let at = start; at >= 0; at = doc.indexOf(failure.statement, at + 1)) {
+              if (head >= at && head <= at + failure.statement.length) {
+                start = at;
+                break;
+              }
+            }
+            range = start < 0 ? null : errorRange(state, start, failure.statement, failure.position);
+          }
+          view.dispatch({
+            effects:
+              range === null
+                ? setErrorMark.of(null)
+                : [setErrorMark.of(range), EditorView.scrollIntoView(range.from, { y: "nearest" })],
+          });
+          if (range === null) {
+            return null;
+          }
+          const line = state.doc.lineAt(range.from);
+          return { line: line.number, column: range.from - line.from + 1 };
+        },
+        revealError(): void {
+          const view = viewRef.current;
+          const range = view?.state.field(errorMarkField, false) ?? null;
+          if (!view || range === null) {
+            return;
+          }
+          view.dispatch({ selection: { anchor: range.from, head: range.to }, scrollIntoView: true });
+          view.focus();
         },
       }),
       [],

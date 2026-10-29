@@ -4,7 +4,7 @@ import { t } from "../i18n";
 import { store, type DefinitionDetail } from "../store";
 import { DEFINITION_KIND_LABELS, type DefinitionKind } from "../sqlTools";
 import type { DefinitionTab } from "../tabs";
-import { ErrorNotice } from "./ErrorNotice";
+import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { CopyIcon, RefreshIcon } from "./icons";
 import { LoadingState, Spinner } from "./Spinner";
 
@@ -58,7 +58,7 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
   const label = kindLabel !== undefined ? t(kindLabel) : tab.obj;
 
   function copyDdl(ddl: string): void {
-    void writeClipboard(ddl, (message) => store.setError(message));
+    void writeClipboard(ddl, (message) => notifyError(message));
   }
 
   return (
@@ -85,7 +85,7 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
         </button>
       </div>
       <div className="panel-body">
-        {error ? <ErrorNotice message={error} /> : null}
+        {error ? <ErrorNotice error={error} context="structure" /> : null}
         {detail === null ? (
           error ? null : <LoadingState />
         ) : detail.ddl === null ? (

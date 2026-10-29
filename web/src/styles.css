@@ -999,26 +999,6 @@ select {
   font-weight: 600;
 }
 
-.driver-badge {
-  flex: none;
-  padding: 0 5px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  font-family: var(--mono);
-  font-size: calc(10px * var(--ui-scale, 1));
-  line-height: 15px;
-}
-
-.driver-badge.postgres {
-  color: var(--accent);
-  border-color: var(--accent-line);
-}
-
-.driver-badge.mysql {
-  color: var(--warn);
-  border-color: rgba(229, 192, 123, 0.45);
-}
-
 .field {
   display: flex;
   flex-direction: column;
@@ -1075,32 +1055,8 @@ select {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
-.connect-error,
-.connect-ok {
-  min-width: 0;
-  flex: 1;
-  font-size: calc(12px * var(--ui-scale, 1));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.connect-error {
-  color: var(--error);
-}
-
 .check-row.inline {
   height: 24px;
-}
-
-.driver-badge.cockroach {
-  color: var(--ok);
-  border-color: rgba(137, 209, 133, 0.45);
-}
-
-.driver-badge.mssql {
-  color: var(--muted);
-  border-color: var(--line);
 }
 
 .schema-toggle {
@@ -1518,14 +1474,6 @@ select {
   gap: 14px;
 }
 
-.panel-error {
-  padding: 8px 10px;
-  background: rgba(244, 135, 113, 0.08);
-  border: 1px solid rgba(244, 135, 113, 0.35);
-  border-radius: 4px;
-  color: var(--error);
-}
-
 .panel-empty {
   padding: 24px 0;
   color: var(--faint);
@@ -1689,6 +1637,12 @@ select {
   padding: 3px 6px 3px 10px;
   background: var(--head);
   border-bottom: 1px solid var(--line);
+}
+
+/* The draft's problems, between the head and the statements. */
+.panel-code > .field-error {
+  margin: 0;
+  padding: 6px 10px 0;
 }
 
 .panel-pre {
@@ -2673,11 +2627,6 @@ html[data-theme="light"] {
   font-size: calc(12px * var(--ui-scale, 1));
 }
 
-.lock-error {
-  color: var(--error);
-  font-size: calc(12px * var(--ui-scale, 1));
-}
-
 /* ── M15: 로그 / Activity / Metrics ─────────────────────────── */
 
 .activity-modal {
@@ -3327,8 +3276,7 @@ textarea:focus-visible {
 .connect-section,
 .metrics-card,
 .metrics-chart,
-.log-list,
-.panel-error {
+.log-list {
   border-radius: var(--r-md);
 }
 
@@ -4128,10 +4076,6 @@ textarea:focus-visible {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
-.sidebar-connection .driver-badge {
-  flex: none;
-}
-
 .sidebar-connections-empty {
   padding: 6px 5px 2px;
   color: var(--faint);
@@ -4530,10 +4474,6 @@ textarea:focus-visible {
   white-space: nowrap;
   font-size: calc(11.5px * var(--ui-scale, 1));
   font-weight: 500;
-}
-
-.conn-tab .driver-badge {
-  flex: none;
 }
 
 .schema-sidebar {
@@ -6219,21 +6159,18 @@ button.tabbar-side {
   overflow-wrap: anywhere;
 }
 
-.error-notice-message {
-  flex: 1;
-  min-width: 0;
-  color: var(--error);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-button.error-notice-close {
+/* Copy and close, top right of the box. */
+button.error-notice-icon-button {
   flex: none;
   width: 20px;
   height: 20px;
-  margin: -2px -4px 0 0;
+  margin: -2px 0 0;
   padding: 0;
   justify-content: center;
+}
+
+button.error-notice-icon-button:last-child {
+  margin-right: -4px;
 }
 
 .error-notice-cause,
@@ -6288,18 +6225,9 @@ button.error-notice-close {
   cursor: pointer;
 }
 
-.error-notice-raw-body {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin-top: 4px;
-}
-
 .error-notice-raw pre {
-  flex: 1;
-  min-width: 0;
-  max-height: 120px;
-  margin: 0;
+  max-height: 160px;
+  margin: 4px 0 0;
   padding: 6px 8px;
   overflow: auto;
   border-radius: 6px;
@@ -6310,31 +6238,251 @@ button.error-notice-close {
   overflow-wrap: anywhere;
 }
 
+.error-notice-raw > .error-notice-fixes {
+  margin-top: 4px;
+  padding-left: 0;
+}
+
+/* Code, SQLSTATE, the engine's number, position: "label value" rows. */
+.error-notice-codes {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 1px 10px;
+  margin: 4px 0 0;
+}
+
+.error-notice-codes > div {
+  display: contents;
+}
+
+.error-notice-codes dt {
+  color: var(--faint);
+}
+
+.error-notice-codes dd {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .error-notice.compact {
   gap: 4px;
   padding: 8px 10px;
   font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
-.error-notice.toast {
+/* A strip laid over a grid or result: one line (title, cause, buttons);
+   "자세히" opens the fixes and the original text below it. */
+.error-notice.banner {
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--error) 12%, var(--panel));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.error-notice.banner .error-notice-head {
+  align-items: center;
+}
+
+.error-notice.banner .error-notice-icon {
+  margin-top: 0;
+}
+
+.error-notice.banner .error-notice-title {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-notice.banner .error-notice-head > .error-notice-cause {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-notice.banner .error-notice-head > .error-notice-actions {
+  flex: none;
+  flex-wrap: nowrap;
+  padding: 0;
+}
+
+.error-notice.banner .error-notice-actions button {
+  height: 22px;
+}
+
+.error-notice.banner .error-notice-raw {
+  max-height: 40vh;
+  overflow: auto;
+}
+
+/* Error toasts (notifyError): red, bottom right, until closed. Unlike the
+   success flash they take the pointer, so the text can be selected and copied. */
+.error-toasts {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  z-index: 40;
+  z-index: 9500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   width: min(460px, calc(100vw - 32px));
-  max-height: min(60vh, 440px);
+}
+
+.error-toasts > .error-notice {
+  max-height: min(50vh, 400px);
   overflow: auto;
-  background: color-mix(in srgb, var(--error) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--error) 60%, var(--line-soft));
+  background: color-mix(in srgb, var(--error) 12%, var(--panel));
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  animation: tablepeek-fade-in var(--motion-fast) ease-out both;
+}
+
+/* A problem with one field's value, under the field. */
+.field-error {
+  margin: 2px 0 0;
+  color: var(--error);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.field-error:empty {
+  display: none;
+}
+
+/* Beside the buttons of a dialog's footer. */
+.modal-foot > .field-error {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--error);
 }
 
 .message-pane > .error-notice {
   max-width: 760px;
 }
 
-.data-error-slot {
+/* AppErrorStates: the tab's error over its rows (no layout shift), the rows
+   a failed read left dimmed, the failed-apply note at its cell, the filter's
+   own error, the SQL editor's error mark and the app's server banner. */
+.grid-error-banner {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 5;
+  width: min(640px, calc(100% - 24px));
+  transform: translateX(-50%);
+}
+
+/* Above the staged-edits bar, clear of a failed cell near the top. */
+.grid-error-banner.below {
+  top: auto;
+  bottom: 52px;
+}
+
+.result-layer.stale {
+  opacity: 0.45;
+}
+
+.row-range.stale {
+  color: var(--warn);
+}
+
+.grid-edit-error {
+  position: fixed;
+  z-index: 60;
+  max-width: 360px;
+  padding: 4px 8px;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--error);
+  font-size: calc(11px * var(--ui-scale, 1));
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+}
+
+.filter-error {
+  padding: 0 10px 8px;
+}
+
+.filter-apply.failed {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.filter-value[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.cm-sql-error {
+  text-decoration: wavy underline var(--error);
+  text-underline-offset: 3px;
+}
+
+.cm-sql-error-line {
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+}
+
+.cm-gutterElement.cm-sql-error-gutter {
+  box-shadow: inset 3px 0 0 var(--error);
+  color: var(--error);
+}
+
+.result-message-spot {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--error);
+  font: inherit;
+  cursor: pointer;
+}
+
+.server-banner {
+  display: flex;
   flex: none;
-  padding: 8px 10px 0;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--error) 40%, var(--line));
+  background: color-mix(in srgb, var(--error) 10%, var(--panel));
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.server-banner-icon {
+  margin-top: 2px;
+  color: var(--error);
+}
+
+.server-banner-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.server-banner-address {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.server-banner-address input {
+  flex: 1;
+  max-width: 520px;
 }
 
 .panel-error-slot {
@@ -6507,10 +6655,6 @@ button.home-settings:hover {
   .home-column {
     padding-top: 8px;
   }
-}
-
-.home-notice {
-  width: 100%;
 }
 
 button.launcher-action {
@@ -6978,11 +7122,6 @@ button.launcher-action:hover {
   height: 32px;
   padding: 0 10px;
   font-size: calc(12.5px * var(--ui-scale, 1));
-}
-
-.prompt-problem {
-  color: var(--error);
-  font-size: calc(11.5px * var(--ui-scale, 1));
 }
 
 .export-modal {
@@ -7796,10 +7935,8 @@ textarea.cell-pop-text {
   min-height: 0;
 }
 
-.saved-query-problem {
+.saved-query-error-slot {
   margin: 8px 16px 0;
-  color: var(--error);
-  font-size: calc(12px * var(--ui-scale, 1));
 }
 
 .schema-table-row.active .schema-table-name {
@@ -10258,4 +10395,20 @@ html[data-mode="light"] .chart-tip {
   margin-top: 4px;
   color: var(--faint);
   font-size: calc(10.5px * var(--ui-scale, 1));
+}
+
+/* ConfirmDialog: the app's confirm() */
+.confirm-dialog {
+  width: min(440px, calc(100vw - 32px));
+}
+.confirm-dialog-message {
+  white-space: pre-line;
+}
+.confirm-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
 }

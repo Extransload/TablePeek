@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createTableSql, draftKey, type ColumnDraft } from "../ddl";
+import type { SqlDialect } from "../engines/sqlDialect";
 import { gridHeaderH, type CanvasGrid } from "../grid/CanvasGrid";
 import type { RowSource } from "../grid/rowSource";
 import { t } from "../i18n";
@@ -17,19 +18,19 @@ import {
   CommitOutcomeUnknown,
   ImportFailure,
   importLiteral,
-  insertModes,
   modeNeedsKey,
   runImport,
   type ImportPlan,
   type InsertMode,
 } from "../importSql";
-import { asBoolean, profileColumn, textProfile, typeChoices, typeName, wantsBoolean } from "../importTypes";
+import { asBoolean, profileColumn, textProfile, typeChoices, wantsBoolean } from "../importTypes";
 import { cancelJob, startJob } from "../jobs";
 import { palette } from "../palette";
 import { getSettings } from "../settings";
 import { store, type TableDetail } from "../store";
+import { toAppError } from "../errorHelp";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
-import { ErrorNotice } from "./ErrorNotice";
+import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { FolderIcon, StopIcon } from "./icons";
 import { PromptModal } from "./PromptModal";
 import { TableGrid, type TableGridHandle } from "./TableGrid";
@@ -39,7 +40,9 @@ export type ImportFormat = "csv" | "json";
 
 interface ImportModalProps {
   conn: string;
+  // The engine's name, shown in the title, and its SQL.
   kind: string;
+  dialect: SqlDialect;
   format: ImportFormat;
   // The database's tables, to pick the destination from.
   tables: string[];
@@ -108,6 +111,8 @@ class PreviewSource implements RowSource {
   readonly rowCount: number;
   private readonly rows: unknown[][];
   private skipped: boolean[] = [];
+  // The row (and column) the import failed on, drawn in the error colour.
+  private failed: { row: number; col: number | null } | null = null;
   private readonly listeners = new Set<() => void>();
 
   constructor(rows: unknown[][]) {
@@ -115,9 +120,10 @@ class PreviewSource implements RowSource {
     this.rowCount = rows.length;
   }
 
-  label(columns: string[], skipped: boolean[]): void {
+  label(columns: string[], skipped: boolean[], failed: { row: number; col: number | null } | null): void {
     this.columns = columns;
     this.skipped = skipped;
+    this.failed = failed;
   }
 
   changed(): void {
@@ -131,7 +137,11 @@ class PreviewSource implements RowSource {
     return value === undefined ? null : value;
   }
 
-  cellInk(_row: number, col: number): string | null {
+  cellInk(row: number, col: number): string | null {
+    const failed = this.failed;
+    if (failed !== null && failed.row === row && (failed.col === null || failed.col === col)) {
+      return palette.error;
+    }
     return this.skipped[col] ? palette.faint : null;
   }
 
@@ -146,7 +156,7 @@ class PreviewSource implements RowSource {
 // columns match, then the first rows with each header naming where its column
 // goes; clicking a header changes that. Rows go in by chunks in one
 // transaction, so a failure or a stop leaves the table as it was.
-export function ImportModal({ conn, kind, format, tables, table, onImported, onClose }: ImportModalProps) {
+export function ImportModal({ conn, kind, dialect, format, tables, table, onImported, onClose }: ImportModalProps) {
   const settings = getSettings();
   const [fileName, setFileName] = useState("");
   const [bytes, setBytes] = useState<ArrayBuffer | null>(null);
@@ -171,10 +181,14 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
   const [menu, setMenu] = useState<{ x: number; y: number; col: number } | null>(null);
   const [renaming, setRenaming] = useState<number | null>(null);
   const [running, setRunning] = useState<Running | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // A string, or what the server said (explained with its code and fields).
+  const [error, setError] = useState<unknown>(null);
   // Where a failed import stopped, shown above the database's own error (whose
   // explanation would otherwise hide it); only while that error is the one shown.
-  const [failedAt, setFailedAt] = useState<{ error: string; text: string } | null>(null);
+  const [failedAt, setFailedAt] = useState<{ error: unknown; text: string } | null>(null);
+  // The failing row (from 0) and source column, marked in the preview whose
+  // rows they number.
+  const [failedRow, setFailedRow] = useState<{ preview: PreviewSource; row: number; col: number | null } | null>(null);
   // The running import's job: Stop here and in the jobs queue both cancel it.
   const jobRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -259,7 +273,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
   );
   const newColumns: NewColumn[] = sources.map((source, col) => {
     const profile = profiles[col] ?? textProfile();
-    const guessed = typeName(allText ? textProfile(profile.maxLength) : profile, kind);
+    const guessed = dialect.importType(allText ? textProfile(profile.maxLength) : profile);
     return { name: source, type: guessed, include: true, ...picks.columns[col] };
   });
 
@@ -267,18 +281,18 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
   const included = sources.flatMap((_, col) => {
     if (createNew) {
       const column = newColumns[col];
-      return column.include ? [{ source: col, name: column.name, boolean: wantsBoolean(column.type, kind) }] : [];
+      return column.include ? [{ source: col, name: column.name, boolean: wantsBoolean(column.type, dialect) }] : [];
     }
     const name = mapping[col];
     if (name === null) {
       return [];
     }
     const declared = tableDetail?.columns.find((column) => column.name === name)?.decl_type ?? null;
-    return [{ source: col, name, boolean: wantsBoolean(declared, kind) }];
+    return [{ source: col, name, boolean: wantsBoolean(declared, dialect) }];
   });
 
-  const modes = createNew ? (["insert"] as InsertMode[]) : insertModes(kind);
-  const keyMissing = modeNeedsKey(mode, kind) && pk.length === 0;
+  const modes: readonly InsertMode[] = createNew ? ["insert"] : dialect.insertModes;
+  const keyMissing = modeNeedsKey(mode, dialect) && pk.length === 0;
   const effectiveMode: InsertMode = modes.includes(mode) && !keyMissing ? mode : "insert";
 
   const preview = useMemo(() => new PreviewSource(parsed?.rows.slice(0, PREVIEW_ROWS) ?? []), [parsed]);
@@ -295,8 +309,9 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
   });
   const skipped = sources.map((_, col) => (createNew ? !newColumns[col].include : mapping[col] === null));
   // Set while rendering, so the grid takes its first source already labelled.
-  preview.label(labels, skipped);
-  const labelKey = JSON.stringify([labels, skipped]);
+  const failedMark = failedRow !== null && failedRow.preview === preview ? { row: failedRow.row, col: failedRow.col } : null;
+  preview.label(labels, skipped, failedMark);
+  const labelKey = JSON.stringify([labels, skipped, failedMark]);
   useLayoutEffect(() => {
     preview.changed();
   }, [preview, labelKey]);
@@ -307,6 +322,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
 
   function pick(file: File): void {
     setError(null);
+    setFailedRow(null);
     setFileName(file.name);
     setNewName(tableNameOf(file.name));
     void file.arrayBuffer().then(
@@ -347,7 +363,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
         { label: t("이름 변경…"), onSelect: () => setRenaming(col) },
         {
           label: t("데이터 타입"),
-          submenu: typeChoices(kind, column.type).map((type) => ({
+          submenu: typeChoices(dialect, column.type).map((type) => ({
             label: type,
             checked: type === column.type,
             onSelect: () => setColumn(col, { type }),
@@ -405,6 +421,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
       return;
     }
     setError(null);
+    setFailedRow(null);
     let create: string[] = [];
     if (createNew) {
       const drafts: ColumnDraft[] = included.map((column) => ({
@@ -416,7 +433,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
         pk: false,
         def: "",
       }));
-      const made = createTableSql(kind, destination, { columns: drafts, indexes: [], foreignKeys: [] });
+      const made = createTableSql(dialect, destination, { columns: drafts, indexes: [], foreignKeys: [] });
       if (made.errors.length > 0) {
         setError(made.errors.join("\n"));
         return;
@@ -425,7 +442,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
     }
     const rows = parsed.rows;
     const plan: ImportPlan = {
-      spec: { dialect: kind, table: destination, columns: included.map((column) => column.name), pk, mode: effectiveMode },
+      spec: { dialect, table: destination, columns: included.map((column) => column.name), pk, mode: effectiveMode },
       create,
       rowCount: rows.length,
       chunkRows: CHUNK_ROWS,
@@ -435,7 +452,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
           if (value === "" && emptyAsNull) {
             value = null;
           }
-          return importLiteral(column.boolean ? asBoolean(value) : value, kind);
+          return importLiteral(column.boolean ? asBoolean(value) : value, dialect);
         }),
     };
     setRunning({ done: 0, total: rows.length, locating: false, committing: false });
@@ -455,9 +472,17 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
       onCancel: () => store.cancelJobStatement(conn),
     });
     jobRef.current = job.id;
+    // Numbered as the preview numbers its rows; a CSV's line in the file
+    // (the header, blank or multi-line records count there) said beside it.
     const where = (row: number): string => {
       const at = parsed.at[row] ?? row + 1;
-      return parsed.unit === "line" ? t("{line}번째 줄", { line: at.toLocaleString() }) : t("레코드 {index}", { index: at.toLocaleString() });
+      const place = t("{row}번째 행", { row: (row + 1).toLocaleString() });
+      if (at === row + 1) {
+        return place;
+      }
+      return parsed.unit === "line"
+        ? t("{place} (파일 {line}번째 줄)", { place, line: at.toLocaleString() })
+        : t("{place} (레코드 {index})", { place, index: at.toLocaleString() });
     };
     try {
       await runImport(
@@ -534,13 +559,31 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
       job.fail(message);
       if (mountedRef.current) {
         if (at !== null && err instanceof ImportFailure) {
-          setError(err.message);
-          setFailedAt({ error: err.message, text: at });
+          const shown = err.source ?? err.message;
+          setError(shown);
+          setFailedAt({
+            error: shown,
+            text:
+              err.row !== null && err.row >= PREVIEW_ROWS
+                ? `${at} · ${t("미리보기에 없는 행입니다")}`
+                : at,
+          });
+          if (err.row !== null && err.row < PREVIEW_ROWS) {
+            // The column the database names (PostgreSQL's), as the file's.
+            const details = toAppError(err.source).details;
+            const column =
+              details !== null && typeof details === "object" && "column" in details
+                ? String(details.column)
+                : null;
+            const col = included.find((entry) => entry.name === column)?.source ?? null;
+            setFailedRow({ preview, row: err.row, col });
+            tableRef.current?.selectCell(err.row, col ?? 0);
+          }
         } else {
           setError(message);
         }
       } else {
-        store.setError(message);
+        notifyError(message);
       }
     } finally {
       await store.releaseConn(conn);
@@ -589,8 +632,8 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
           </div>
           <div className="modal-body import-body">
             {error && failedAt?.error === error ? <div className="import-failed-at">{failedAt.text}</div> : null}
-            {error ? <ErrorNotice message={error} /> : null}
-            {read.error ? <ErrorNotice message={read.error} /> : null}
+            {error ? <ErrorNotice error={error} context="import" /> : null}
+            {read.error ? <ErrorNotice error={read.error} context="import" /> : null}
             <section className="export-section">
               <div className="import-options">
                 <label className="file-button">
@@ -800,8 +843,8 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                       onChange={(event) => setMode(event.target.value as InsertMode)}
                     >
                       {modes.map((entry) => (
-                        <option value={entry} key={entry} disabled={modeNeedsKey(entry, kind) && pk.length === 0}>
-                          {modeNeedsKey(entry, kind) && pk.length === 0
+                        <option value={entry} key={entry} disabled={modeNeedsKey(entry, dialect) && pk.length === 0}>
+                          {modeNeedsKey(entry, dialect) && pk.length === 0
                             ? `${modeLabels[entry]} — ${t("기본 키 없음")}`
                             : modeLabels[entry]}
                         </option>
@@ -811,7 +854,7 @@ export function ImportModal({ conn, kind, format, tables, table, onImported, onC
                 ) : null}
               </div>
               <p className="helper">
-                {createNew && kind === "mysql"
+                {createNew && !dialect.ddlInTransaction
                   ? t("MySQL은 CREATE TABLE을 트랜잭션 밖에서 실행합니다. 가져오기가 실패하거나 중지되면 만든 테이블을 지웁니다.")
                   : t("모든 행을 한 트랜잭션으로 넣습니다. 실패하거나 중지하면 테이블은 그대로입니다.")}
               </p>

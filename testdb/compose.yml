@@ -75,3 +75,19 @@ services:
       interval: 5s
       retries: 60
       start_period: 20s
+
+  mongodb:
+    image: mongo:7
+    # A one-member replica set, so transactions, change streams and
+    # $indexStats behave as on a production deployment. `make test-db`
+    # initiates it and seeds it; authorization stays off, but the test
+    # account exists, so password logins are exercised too.
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "127.0.0.1:27018:27017"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 60

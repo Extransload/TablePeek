@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { capabilitiesOf } from "../engines";
 import { formatBytes, formatRowEstimate } from "../format";
 import { t } from "../i18n";
 import { store, type EngineMeta, type TableDetail, type TableSchema } from "../store";
@@ -64,7 +65,7 @@ export function OverviewPanel({
   const [search, setSearch] = useState("");
   const [nonce, setNonce] = useState(0);
 
-  const exactRows = meta.kind === "sqlite";
+  const exactRows = capabilitiesOf(meta)?.exact_count === true;
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -160,7 +161,7 @@ export function OverviewPanel({
         />
       </div>
       <div className="panel-body">
-        {error ? <ErrorNotice message={error} /> : null}
+        {error ? <ErrorNotice error={error} context="structure" /> : null}
         {schemas === null ? (
           error ? null : <LoadingState />
         ) : rows.length === 0 ? (

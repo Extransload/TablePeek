@@ -1,12 +1,10 @@
+import { engines } from "../engines";
 import { t } from "../i18n";
-import type { Driver } from "../store";
-import { DriverIcon, driverName } from "./DriverIcon";
+import { DriverIcon } from "./DriverIcon";
 import { DownloadIcon, FileIcon, PlusIcon } from "./icons";
 
-const CHOICES: Driver[] = ["postgres", "mysql", "mssql", "cockroach", "sqlite"];
-
 interface HomeWelcomeProps {
-  onNewConnection(options?: { driver?: Driver }): void;
+  onNewConnection(options?: { driver?: string }): void;
   onOpenFile(): void;
   onImportFile(): void;
 }
@@ -20,14 +18,14 @@ export function HomeWelcome({ onNewConnection, onOpenFile, onImportFile }: HomeW
         {t("테이블을 둘러보고, 쿼리를 실행하고, 데이터를 바로 고칠 수 있습니다.")}
       </p>
       <div className="launcher-welcome-drivers">
-        {CHOICES.map((choice) => (
+        {engines().map((engine) => (
           <button
             type="button"
-            key={choice}
-            onClick={() => onNewConnection({ driver: choice })}
+            key={engine.id}
+            onClick={() => onNewConnection({ driver: engine.id })}
           >
-            <DriverIcon kind={choice} size={20} />
-            <span>{driverName(choice)}</span>
+            <DriverIcon kind={engine.id} size={20} />
+            <span>{engine.label}</span>
           </button>
         ))}
       </div>

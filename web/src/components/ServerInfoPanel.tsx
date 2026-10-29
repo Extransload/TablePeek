@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes, humanizeElapsed } from "../format";
 import { t } from "../i18n";
+import { confirmDialog } from "./ConfirmDialog";
 import { store, type ServerInfo, type ServerSession } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { RefreshIcon } from "./icons";
@@ -40,6 +41,13 @@ function compatibilityOf(info: ServerInfo): string | null {
   return null;
 }
 
+// A document store's deployment (MongoDB's hello).
+const TOPOLOGY_LABELS: Record<string, string> = {
+  standalone: "단일 서버",
+  replica_set: "레플리카셋",
+  sharded: "샤드 클러스터",
+};
+
 function cardsOf(info: ServerInfo): InfoCard[] {
   const size = formatBytes(info.size_bytes);
   const compatibility = compatibilityOf(info);
@@ -50,6 +58,8 @@ function cardsOf(info: ServerInfo): InfoCard[] {
       : [{ name: t("호환 모드"), value: compatibility }]),
     { name: t("버전"), value: valueText(info.version), clamp: true },
     { name: t("데이터베이스"), value: valueText(info.database) },
+    ...(info.topology != null ? [{ name: t("구성"), value: t(TOPOLOGY_LABELS[info.topology] ?? info.topology) }] : []),
+    ...(info.host != null ? [{ name: t("호스트"), value: valueText(info.host) }] : []),
     { name: t("인코딩"), value: valueText(info.encoding) },
     { name: t("업타임"), value: valueText(info.uptime) },
     { name: t("크기"), value: size ?? "—" },
@@ -81,7 +91,13 @@ export function ServerInfoPanel({ conn }: { conn: string }) {
   }, [load, nonce]);
 
   async function kill(session: ServerSession): Promise<void> {
-    if (!window.confirm(t("이 세션을 종료할까요?"))) {
+    const ok = await confirmDialog({
+      title: t("세션 종료"),
+      message: t("이 세션을 종료할까요?"),
+      confirmLabel: t("종료"),
+      danger: true,
+    });
+    if (!ok) {
       return;
     }
     setKilling(session.id);
@@ -123,7 +139,7 @@ export function ServerInfoPanel({ conn }: { conn: string }) {
         </button>
       </div>
       <div className="panel-body">
-        {error ? <ErrorNotice message={error} /> : null}
+        {error ? <ErrorNotice error={error} context="admin" /> : null}
         {info === null ? (
           error ? null : <LoadingState />
         ) : (

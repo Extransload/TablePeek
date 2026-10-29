@@ -1,81 +1,48 @@
 import { quoteIdent, quoteName } from "./ddl";
-import { quoteLiteral } from "./export";
+import type { SqlDialect } from "./engines/sqlDialect";
 import { JsonNumber } from "./importParse";
 
 // How rows that collide with an existing key are handled. TablePlus offers
 // these for PostgreSQL and MySQL/MariaDB; SQLite has the same two, spelled
-// its own way, CockroachDB is PostgreSQL's ON CONFLICT, SQL Server only inserts.
+// its own way, CockroachDB is PostgreSQL's ON CONFLICT, SQL Server only
+// inserts (SqlDialect.insertModes).
 export type InsertMode = "insert" | "upsert" | "replace";
-
-export function insertModes(dialect: string): InsertMode[] {
-  switch (dialect) {
-    case "postgres":
-    case "cockroach":
-      return ["insert", "upsert"];
-    case "mysql":
-    case "sqlite":
-      return ["insert", "upsert", "replace"];
-    default:
-      return ["insert"];
-  }
-}
 
 // ON CONFLICT needs the key to name; MySQL's ON DUPLICATE KEY and both
 // REPLACEs find it themselves.
-export function modeNeedsKey(mode: InsertMode, dialect: string): boolean {
-  return mode === "upsert" && dialect !== "mysql";
+export function modeNeedsKey(mode: InsertMode, dialect: SqlDialect): boolean {
+  return mode === "upsert" && dialect.upsertNeedsKey;
 }
 
-function stringLiteral(text: string, dialect: string): string {
-  if (dialect === "mysql") {
-    // Backslash is an escape in MySQL strings unless NO_BACKSLASH_ESCAPES is set.
-    return `'${text.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
-  }
-  if (dialect === "mssql") {
-    // Without N the text goes through the database's code page.
-    return `N'${text.replace(/'/g, "''")}'`;
-  }
-  return quoteLiteral(text);
-}
-
-export function importLiteral(value: unknown, dialect: string): string {
+export function importLiteral(value: unknown, dialect: SqlDialect): string {
   if (value === null || value === undefined) {
     return "NULL";
   }
   if (value instanceof JsonNumber) {
     // The file's digits, without an exponent (which MySQL and SQL Server
-    // would read as a float). SQLite would round anything but a 64-bit
-    // integer to a REAL and SQL Server refuses numerics past 38 digits, so
-    // there the digits go in as text, which the column converts.
+    // would read as a float), or as text where the engine would lose them
+    // (SqlDialect.numberAsText); the column converts the text.
     const text = value.plain;
-    const integer = /^-?\d+$/.test(text);
-    const digits = text.replace(/^-/, "").split(/[eE]/)[0].replace(".", "").replace(/^0+/, "").length;
-    const quoted =
-      (dialect === "sqlite" && !(integer && BigInt(text) >= -(2n ** 63n) && BigInt(text) < 2n ** 63n)) ||
-      (dialect === "mssql" && digits > 38);
-    return quoted ? stringLiteral(text, dialect) : text;
+    return dialect.numberAsText?.(text) === true ? dialect.stringLiteral(text) : text;
   }
   if (typeof value === "boolean") {
-    if (dialect === "mssql") {
-      return value ? "1" : "0";
-    }
-    return value ? "TRUE" : "FALSE";
+    return dialect.booleanLiteral(value);
   }
   if (typeof value === "number") {
-    return Number.isFinite(value) ? String(value) : stringLiteral(String(value), dialect);
+    return Number.isFinite(value) ? String(value) : dialect.stringLiteral(String(value));
   }
   if (typeof value === "bigint") {
     return value.toString();
   }
   if (typeof value === "string") {
-    return stringLiteral(value, dialect);
+    return dialect.stringLiteral(value);
   }
   const text = JSON.stringify(value);
-  return stringLiteral(text === undefined ? String(value) : text, dialect);
+  return dialect.stringLiteral(text === undefined ? String(value) : text);
 }
 
 export interface InsertSpec {
-  dialect: string;
+  dialect: SqlDialect;
   table: string;
   columns: string[];
   // The table's primary key, for ON CONFLICT and for collapsing repeats.
@@ -87,12 +54,7 @@ export interface InsertSpec {
 export function insertStatement(spec: InsertSpec, rows: string[][]): string {
   const { dialect, mode } = spec;
   const column = (name: string): string => quoteName(dialect, name);
-  const head =
-    mode === "replace"
-      ? dialect === "sqlite"
-        ? "INSERT OR REPLACE INTO"
-        : "REPLACE INTO"
-      : "INSERT INTO";
+  const head = mode === "replace" ? dialect.replaceInto : "INSERT INTO";
   const values = rows.map((row) => `  (${row.join(", ")})`).join(",\n");
   let sql = `${head} ${quoteIdent(dialect, spec.table)} (${spec.columns.map(column).join(", ")}) VALUES\n${values}`;
   if (mode !== "upsert") {
@@ -100,14 +62,8 @@ export function insertStatement(spec: InsertSpec, rows: string[][]): string {
   }
   const keys = new Set(spec.pk.map((name) => name.toLowerCase()));
   const updated = spec.columns.filter((name) => !keys.has(name.toLowerCase()));
-  if (dialect === "mysql") {
-    // Nothing but key columns: a no-op update keeps the row and skips the error.
-    const sets =
-      updated.length > 0
-        ? updated.map((name) => `${column(name)} = VALUES(${column(name)})`)
-        : [`${column(spec.columns[0])} = ${column(spec.columns[0])}`];
-    sql += `\nON DUPLICATE KEY UPDATE ${sets.join(", ")}`;
-    return sql;
+  if (dialect.upsertClause !== undefined) {
+    return `${sql}\n${dialect.upsertClause(spec.columns, updated, column)}`;
   }
   const target = spec.pk.map(column).join(", ");
   sql +=
@@ -120,7 +76,7 @@ export function insertStatement(spec: InsertSpec, rows: string[][]): string {
 // PostgreSQL won't let one ON CONFLICT statement update a row twice, so of
 // rows repeating a key only the last stays, as a row-at-a-time import would end.
 export function collapseRepeats(spec: InsertSpec, rows: string[][]): string[][] {
-  if (spec.mode !== "upsert" || (spec.dialect !== "postgres" && spec.dialect !== "cockroach")) {
+  if (spec.mode !== "upsert" || !spec.dialect.collapseRepeats) {
     return rows;
   }
   const lower = spec.columns.map((name) => name.toLowerCase());
@@ -165,6 +121,9 @@ export class ImportFailure extends Error {
   // The COMMIT went out but whether it went through is not known (the
   // connection dropped with it): the rows, and a new table, may be there.
   readonly outcomeUnknown: boolean;
+  // The database's own error for the failing row (its SQLSTATE, column, …),
+  // when there was one.
+  readonly source: unknown;
 
   constructor(
     message: string,
@@ -172,12 +131,14 @@ export class ImportFailure extends Error {
     stopped = false,
     undoError: string | null = null,
     outcomeUnknown = false,
+    source: unknown = undefined,
   ) {
     super(message);
     this.row = row;
     this.stopped = stopped;
     this.undoError = undoError;
     this.outcomeUnknown = outcomeUnknown;
+    this.source = source;
   }
 }
 
@@ -187,12 +148,6 @@ export class CommitOutcomeUnknown extends Error {}
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
-}
-
-// MySQL commits around DDL, so its CREATE TABLE can't be part of the
-// transaction; it runs first, and the table goes again if the import doesn't.
-function ddlInTransaction(dialect: string): boolean {
-  return dialect !== "mysql";
 }
 
 function chunkSql(plan: ImportPlan, from: number, to: number): string {
@@ -217,11 +172,14 @@ export async function runImport(
   onProgress: ImportProgress,
 ): Promise<void> {
   const { dialect } = plan.spec;
+  // MySQL commits around DDL, so its CREATE TABLE can't be part of the
+  // transaction; it runs first, and the table goes again if the import doesn't.
+  const ddlInTransaction = dialect.ddlInTransaction;
   const created = plan.create.length > 0;
   const stopped = (): ImportFailure => new ImportFailure("stopped", null, true);
   // Each returns why it couldn't, or null.
   const dropCreated = async (): Promise<string | null> => {
-    if (!created || ddlInTransaction(dialect)) {
+    if (!created || ddlInTransaction) {
       return null;
     }
     try {
@@ -240,7 +198,7 @@ export async function runImport(
     }
   };
 
-  if (created && !ddlInTransaction(dialect)) {
+  if (created && !ddlInTransaction) {
     for (const statement of plan.create) {
       await session.exec(statement);
     }
@@ -253,7 +211,7 @@ export async function runImport(
   }
   let failedAt = -1;
   try {
-    if (created && ddlInTransaction(dialect)) {
+    if (created && ddlInTransaction) {
       for (const statement of plan.create) {
         await session.exec(statement);
       }
@@ -296,9 +254,9 @@ export async function runImport(
     const found = await locate(plan, session, signal, failedAt, onProgress);
     const undoError = found.undoError ?? (await dropCreated());
     if (found.row === null) {
-      throw new ImportFailure(messageOf(error), failedAt, false, undoError);
+      throw new ImportFailure(messageOf(error), failedAt, false, undoError, false, error);
     }
-    throw new ImportFailure(messageOf(found.error), found.row, false, undoError);
+    throw new ImportFailure(messageOf(found.error), found.row, false, undoError, false, found.error);
   }
   try {
     await session.commit();
@@ -343,7 +301,7 @@ async function locate(
     let found: Located | null = null;
     let replayFailed = false;
     try {
-      if (plan.create.length > 0 && ddlInTransaction(plan.spec.dialect)) {
+      if (plan.create.length > 0 && plan.spec.dialect.ddlInTransaction) {
         for (const statement of plan.create) {
           await session.exec(statement);
         }

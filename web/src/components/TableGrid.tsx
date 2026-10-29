@@ -44,6 +44,8 @@ export interface TableGridProps {
   editing?: GridEditHandlers | null;
   sortColumns?: SortIndicator[];
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
+  // A plain click on one cell (no drag or modifier), after it is selected.
+  onCellClick?(row: number, col: number): void;
   onSelectionChange?(row: number | null, rows: SelectedRows | null): void;
   // `selection`: what the menu acts on, the clicked cell inside it.
   onCellContextMenu?(row: number, col: number, x: number, y: number, selection: GridSelection): void;
@@ -138,6 +140,10 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
             onCommit: (row, col, value) => propsRef.current.editing?.onCommit(row, col, value),
             onCancel: () => propsRef.current.editing?.onCancel?.(),
             choices: (row, col) => propsRef.current.editing?.choices?.(row, col) ?? null,
+            editText:
+              propsRef.current.editing?.editText !== undefined
+                ? (row, col) => propsRef.current.editing?.editText?.(row, col) ?? ""
+                : undefined,
           }
         : null,
     );
@@ -184,6 +190,11 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
       hasHeaderClick ? (columnIndex, event) => propsRef.current.onHeaderClick?.(columnIndex, event) : null,
     );
   }, [hasHeaderClick]);
+
+  const hasCellClick = props.onCellClick !== undefined;
+  useLayoutEffect(() => {
+    gridRef.current?.setCellClickHandler(hasCellClick ? (row, col) => propsRef.current.onCellClick?.(row, col) : null);
+  }, [hasCellClick]);
 
   const sortsKey = JSON.stringify(props.sortColumns ?? null);
   useLayoutEffect(() => {
