@@ -10,6 +10,13 @@ members = [
 # workspace fmt and clippy leave Oracle's source as published.
 exclude = ["crates/vendor/oracledb"]
 
+# The one version every crate takes; web/package.json carries the same
+# number (`make check` compares them, `make version V=x.y.z` bumps both).
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/Extransload/TablePeek"
+
 [patch.crates-io]
 oracledb = { path = "crates/vendor/oracledb" }
 

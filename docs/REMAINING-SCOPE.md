@@ -49,7 +49,7 @@ MCP 서버는 구현했다. Plugin은 샌드박스·권한·프로세스 격리 
 | Vertica | PG wire protocol과 호환되지 않아 현행 PG 드라이버로 접속 불가 |
 | Redis, DuckDB, 설치 프로그램, AI 기능, 스키마 비교 | 사용자 결정으로 제외. TablePeek은 웹 전용으로 유지 |
 | Plugin 샌드박스 | 권한·프로세스 격리·매니페스트·배포 설계가 선행되어야 함. MCP는 별도로 구현됨 |
-| 자동 업데이트·서명·공증 | M5 배포 트랙, 사용자 요청으로 현재 제외 |
+| 배포(M5) | 완료: SemVer(v0.1.0부터, `CHANGELOG.md`), 태그 `vX.Y.Z`로 GitHub Releases에 macOS(arm64·x64)·Linux(x64·arm64)·Windows(x64) 일반 아카이브와 `SHA256SUMS` 게시(`.github/workflows/release.yml`, 절차는 `docs/RELEASING.md`), 소스 빌드 병행, 앱 안 새 버전 알림(하루 한 번 확인, 설정에서 끔). 제외: 코드 서명·공증, 설치 프로그램, 패키지 매니저(brew/winget/scoop), 바이너리 자동 교체 |
 
 Oracle, MongoDB, Cassandra·ScyllaDB, Elasticsearch·OpenSearch, ClickHouse는 이후 엔진으로 들어왔다(`docs/ENGINES.md`, `docs/MONGODB.md`, `docs/engines/*.md`).
 

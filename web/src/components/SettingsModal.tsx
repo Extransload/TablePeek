@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from "react";
 import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, palette, type ValueKind } from "../palette";
 import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFont } from "../fonts";
-import { store } from "../store";
+import { store, type VersionInfo } from "../store";
+import { checkUpdateNow, configureUpdate, getUpdate, loadUpdate, refreshUpdate, subscribeUpdate } from "../update";
 import {
   MAX_QUERY_TIMEOUT,
   MAX_ROWS_LIMIT,
@@ -33,17 +34,25 @@ import {
 } from "../shortcuts";
 import { SYNTAX_PRESETS, type SyntaxColorKey, type SyntaxPresetId } from "../syntax";
 import {
+  AlertIcon,
+  CheckIcon,
   ChevronIcon,
   CodeIcon,
   ColumnsIcon,
+  DownloadIcon,
+  ExternalIcon,
   KeyIcon,
   PanelLeftIcon,
   PlusIcon,
+  RefreshIcon,
   SettingsIcon,
   ShieldIcon,
   TableIcon,
   UpDownIcon,
 } from "./icons";
+import { ErrorNotice, notifyError } from "./ErrorNotice";
+import { Spinner } from "./Spinner";
+import { UpdateHowDialog } from "./UpdateBanner";
 import { gridHeightsAt } from "../grid/CanvasGrid";
 import { Select } from "./Select";
 import { SqlPreview } from "./SqlEditor";
@@ -145,16 +154,23 @@ function SettingsField({
 
 function SettingsCheck({
   checked,
+  disabled = false,
   onChange,
   children,
 }: {
   checked: boolean;
+  disabled?: boolean;
   onChange(checked: boolean): void;
   children: ReactNode;
 }) {
   return (
     <label className="settings-check">
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
       {children}
     </label>
   );
@@ -450,6 +466,184 @@ function SidebarPreview() {
   );
 }
 
+// Why the last update check failed, by the server's code.
+function updateErrorText(code: string): string {
+  if (code === "network") {
+    return t("네트워크에 연결할 수 없어 새 버전을 확인하지 못했습니다");
+  }
+  if (code === "timeout") {
+    return t("GitHub가 5초 안에 답하지 않아 새 버전을 확인하지 못했습니다");
+  }
+  if (code === "rate_limited") {
+    return t("GitHub 요청 한도에 걸려 새 버전을 확인하지 못했습니다. 잠시 뒤 다시 확인하세요");
+  }
+  if (code.startsWith("http_")) {
+    return t("GitHub가 HTTP {status}로 답해 새 버전을 확인하지 못했습니다", { status: code.slice(5) });
+  }
+  return t("GitHub의 릴리스 정보를 읽지 못했습니다");
+}
+
+// General: what this build is, and the check for a newer release.
+function VersionSettings() {
+  const update = useSyncExternalStore(subscribeUpdate, getUpdate);
+  const [version, setVersion] = useState<VersionInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [howOpen, setHowOpen] = useState(false);
+
+  useEffect(() => {
+    store.fetchVersion().then(setVersion, (error: unknown) => notifyError(error));
+    loadUpdate().catch((error: unknown) => notifyError(error));
+  }, []);
+
+  async function checkNow(): Promise<void> {
+    setChecking(true);
+    try {
+      await checkUpdateNow();
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function setEnabled(enabled: boolean): Promise<void> {
+    try {
+      await configureUpdate({ enabled });
+      // Turned on: the server checks now if the last check is a day old.
+      if (enabled) {
+        setChecking(true);
+        await refreshUpdate();
+      }
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const checkedAt = update !== null && update.checked_at !== null ? new Date(update.checked_at * 1000).toLocaleString() : null;
+  const lastChecked = checkedAt === null ? null : t("마지막 확인: {time}", { time: checkedAt });
+  // One status line in the tone of what it says: green when this is the
+  // newest release, orange when a newer one is out, the accent for a build
+  // ahead of the newest release, red when the check failed, muted otherwise.
+  let tone: "ok" | "new" | "ahead" | "error" | "muted" = "muted";
+  let icon: ReactNode = <RefreshIcon size={13} />;
+  let title: string;
+  let detail: string | null = lastChecked;
+  if (update === null || (checking && update.enabled)) {
+    icon = <Spinner size={11} />;
+    title = t("확인하는 중…");
+    detail = null;
+  } else if (!update.enabled) {
+    title = t("새 버전 확인이 꺼져 있습니다");
+    detail = null;
+  } else if (update.newer && update.latest !== null) {
+    tone = "new";
+    icon = <DownloadIcon size={13} />;
+    title = update.latest === update.skipped ? t("{latest}이 나왔습니다 (건너뛴 버전)", { latest: update.latest }) : t("{latest}이 나왔습니다", { latest: update.latest });
+    detail = update.published_at !== null ? t("지금 {current} · {date} 공개", { current: update.current, date: new Date(update.published_at).toLocaleDateString() }) : t("지금 {current}", { current: update.current });
+  } else if (update.error !== null) {
+    tone = "error";
+    icon = <AlertIcon size={13} />;
+    title = t("새 버전을 확인하지 못했습니다");
+  } else if (update.checked_at === null) {
+    title = t("아직 확인하지 않았습니다");
+  } else if (update.latest === null) {
+    title = t("아직 공개된 릴리스가 없습니다");
+  } else if (update.latest !== update.current) {
+    tone = "ahead";
+    icon = <CodeIcon size={13} />;
+    title = t("최신 릴리스보다 앞선 빌드입니다");
+    detail = [t("최신 릴리스 {latest}", { latest: update.latest }), lastChecked].filter(Boolean).join(" · ");
+  } else {
+    tone = "ok";
+    icon = <CheckIcon size={13} />;
+    title = t("최신 버전입니다");
+  }
+
+  return (
+    <SettingsGroup title={t("버전")}>
+      <div className="version-head">
+        <span className="version-name">TablePeek</span>
+        {version === null ? (
+          <Spinner size={10} />
+        ) : (
+          <>
+            <span className="version-number mono" data-testid="settings-version">
+              v{version.version}
+            </span>
+            <span className="version-chip mono" title={t("커밋")}>
+              {version.commit}
+            </span>
+            <span className="version-chip">{version.dist === "release" ? t("릴리스 바이너리") : t("소스 빌드")}</span>
+          </>
+        )}
+      </div>
+      <div className={`version-status ${tone}`} role="status">
+        <span className="version-status-icon">{icon}</span>
+        <div className="version-status-text">
+          <span className="version-status-title">{title}</span>
+          {detail !== null ? <span className="version-status-detail">{detail}</span> : null}
+        </div>
+        <div className="version-status-actions">
+          {update?.enabled && update.newer && update.latest !== null ? (
+            <>
+              {update.url !== null ? (
+                <a className="link-button" href={update.url} target="_blank" rel="noreferrer">
+                  {t("변경 내역")}
+                  <ExternalIcon size={10} />
+                </a>
+              ) : null}
+              {update.skipped !== null && update.skipped === update.latest ? (
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    configureUpdate({ skipped: null }).catch((error: unknown) => notifyError(error));
+                  }}
+                >
+                  {t("다시 알리기")}
+                </button>
+              ) : null}
+              <button type="button" className="version-update-button" onClick={() => setHowOpen(true)}>
+                {t("업데이트 방법")}
+              </button>
+            </>
+          ) : null}
+          {update?.enabled ? (
+            <button type="button" onClick={() => void checkNow()} disabled={checking}>
+              <RefreshIcon size={11} />
+              {t("지금 확인")}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {update?.enabled && update.error !== null && !checking ? (
+        <div className="settings-update-error">
+          <ErrorNotice error={updateErrorText(update.error)} variant="compact" onRetry={() => void checkNow()} />
+        </div>
+      ) : null}
+      <div className="version-check">
+        <SettingsCheck
+          checked={update?.enabled ?? true}
+          disabled={update === null || update.env_disabled}
+          onChange={(enabled) => void setEnabled(enabled)}
+        >
+          {t("새 버전 확인")}
+        </SettingsCheck>
+        <p className="settings-hint">
+          {update?.env_disabled
+            ? t("TABLEPEEK_NO_UPDATE_CHECK 환경 변수가 확인을 껐습니다.")
+            : t("하루에 한 번 GitHub에서 최신 릴리스를 확인합니다. 지금 버전(User-Agent) 말고는 아무것도 보내지 않습니다.")}
+        </p>
+      </div>
+      {howOpen && update !== null && update.latest !== null ? (
+        <UpdateHowDialog update={update} latest={update.latest} onClose={() => setHowOpen(false)} />
+      ) : null}
+    </SettingsGroup>
+  );
+}
+
 export function SettingsModal({
   settings,
   onChange,
@@ -626,22 +820,25 @@ export function SettingsModal({
     switch (category) {
       case "general":
         return (
-          <SettingsGroup>
-            <SettingsField label={t("언어")}>
-              <div className="segmented settings-language">
-                {(["ko", "en"] as Language[]).map((language) => (
-                  <button
-                    key={language}
-                    type="button"
-                    className={settings.language === language ? "active" : ""}
-                    onClick={() => onChange({ language })}
-                  >
-                    {languageLabel(language)}
-                  </button>
-                ))}
-              </div>
-            </SettingsField>
-          </SettingsGroup>
+          <>
+            <SettingsGroup>
+              <SettingsField label={t("언어")}>
+                <div className="segmented settings-language">
+                  {(["ko", "en"] as Language[]).map((language) => (
+                    <button
+                      key={language}
+                      type="button"
+                      className={settings.language === language ? "active" : ""}
+                      onClick={() => onChange({ language })}
+                    >
+                      {languageLabel(language)}
+                    </button>
+                  ))}
+                </div>
+              </SettingsField>
+            </SettingsGroup>
+            <VersionSettings />
+          </>
         );
 
       case "theme":

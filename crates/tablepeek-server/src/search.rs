@@ -813,6 +813,12 @@ mod tests {
             demo_rows: 3,
             allowed_hosts: Arc::new(vec!["127.0.0.1:1".into()]),
             store: Arc::new(tokio::sync::Mutex::new(store::StoreFile::load(&dir))),
+            update: Arc::new(crate::update::UpdateChecker::new(
+                &dir,
+                crate::update::RELEASES_URL.into(),
+                crate::update::VERSION,
+                true,
+            )),
         };
         (state, dir)
     }

@@ -2,6 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 NPM ?= npm
+NODE ?= node
 PORT ?= 7870
 DEMO ?= 0
 DEMO_ROWS ?= 10000
@@ -101,7 +102,7 @@ LINUX_RUN := docker run --rm -v "$(CURDIR)":/src -w /src \
 	-v tablepeek-cargo-registry:/usr/local/cargo/registry \
 	-e CARGO_TARGET_DIR=/src/target/linux -e CARGO_BUILD_JOBS -e TABLEPEEK_TEST_MYSQL_PORT
 
-.PHONY: all help install web build run mcp test test-docker test-db test-db-down test-live check fmt clean distclean testdb-engines linux-image build-kerberos-linux test-live-linux test-oracle-oob
+.PHONY: all help install web build run mcp test test-docker test-db test-db-down test-live check fmt version clean distclean testdb-engines linux-image build-kerberos-linux test-live-linux test-oracle-oob
 
 all: build
 
@@ -131,8 +132,9 @@ help:
 		'  make test-oracle-oob         Oracle out-of-band break test, on the test network (after make test-db ENGINE=oracle)' \
 		'  make test-db-down            Stop them and throw their data away' \
 		'  TABLEPEEK_TEST_MYSQL_PORT=3329 make test-db ENGINE=mysql   Another MySQL port' \
-		'  make check                   Check formatting, Rust, and TypeScript' \
+		'  make check                   Check versions, formatting, Rust, and TypeScript' \
 		'  make fmt                     Format Rust code' \
+		'  make version V=0.2.0         Bump the version everywhere and open a CHANGELOG section' \
 		'  make clean                   Remove Rust and web build artifacts' \
 		'  make distclean               Also remove web dependencies'
 
@@ -260,12 +262,22 @@ test-oracle-oob: linux-image
 		exit $$status
 
 check: web
+	$(NODE) scripts/version.mjs check
 	$(CARGO) fmt --all --check
 	$(CARGO) check --workspace
 	cd web && $(NPM) run typecheck
 
 fmt:
 	$(CARGO) fmt --all
+
+# Bumps Cargo.toml, web/package.json and its lockfile, opens an empty
+# CHANGELOG.md section dated today, and records the new version in
+# Cargo.lock. Committing and tagging are left to the maintainer
+# (docs/RELEASING.md).
+version:
+	@if [ -z "$(V)" ]; then echo 'usage: make version V=x.y.z' >&2; exit 2; fi
+	$(NODE) scripts/version.mjs set $(V)
+	$(CARGO) update --workspace --offline
 
 clean:
 	$(CARGO) clean

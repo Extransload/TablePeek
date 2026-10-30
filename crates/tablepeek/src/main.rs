@@ -3,7 +3,7 @@ use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 
 use tablepeek_engine::Engine;
-use tablepeek_server::{serve, store::StoreFile, AppState, ConnSlot, Registry};
+use tablepeek_server::{serve, store, update, AppState, ConnSlot, Registry};
 
 mod mcp;
 
@@ -25,7 +25,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "사용법:\n  tablepeek serve [--db <SQLite 파일>] [--port <포트>] [--demo] [--demo-rows <행 수>] [--no-open]\n  tablepeek mcp [--url <URL>] [--token <토큰>] [--conn <연결 ID>]"
+        "사용법:\n  tablepeek serve [--db <SQLite 파일>] [--port <포트>] [--demo] [--demo-rows <행 수>] [--no-open]\n  tablepeek mcp [--url <URL>] [--token <토큰>] [--conn <연결 ID>]\n  tablepeek --version"
     );
     std::process::exit(2);
 }
@@ -47,6 +47,10 @@ fn parse_args() -> Args {
     match it.next().as_deref() {
         Some("serve") => {}
         Some("mcp") => args.mcp = true,
+        Some("--version" | "-V") => {
+            println!("{}", update::version_line());
+            std::process::exit(0);
+        }
         _ => usage(),
     }
 
@@ -149,13 +153,15 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
+    let dir = store::default_dir();
     let state = AppState {
         registry: Arc::new(tokio::sync::Mutex::new(registry)),
         default_conn: "main".into(),
         token: token.clone().into(),
         demo_rows: args.demo_rows,
         allowed_hosts,
-        store: Arc::new(tokio::sync::Mutex::new(StoreFile::load_home())),
+        store: Arc::new(tokio::sync::Mutex::new(store::StoreFile::load(&dir))),
+        update: Arc::new(update::UpdateChecker::from_env(&dir)),
     };
 
     let url = format!("http://127.0.0.1:{}/?token={}", addr.port(), token);

@@ -362,10 +362,6 @@ impl StoreFile {
         store
     }
 
-    pub fn load_home() -> Self {
-        Self::load(&default_dir())
-    }
-
     pub fn data(&self) -> &StoreData {
         &self.data
     }

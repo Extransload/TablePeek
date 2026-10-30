@@ -37,6 +37,7 @@ import { ExportModal, type ExportTarget } from "./components/ExportModal";
 import { FilterBar } from "./components/FilterBar";
 import { ServerBanner } from "./components/ServerBanner";
 import { OidcLoginBanner } from "./components/OidcLoginBanner";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
 import type { SelectedRows } from "./grid/CanvasGrid";
@@ -6053,6 +6054,7 @@ export default function App() {
       ) : null}
       <ServerBanner />
       <OidcLoginBanner />
+      <UpdateBanner />
       {home ? (
         <HomeScreen
           conns={conns}

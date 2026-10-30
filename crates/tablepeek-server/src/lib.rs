@@ -34,6 +34,7 @@ mod search;
 pub mod store;
 pub mod transfer;
 pub mod tunnel;
+pub mod update;
 
 #[derive(RustEmbed)]
 #[folder = "$CARGO_MANIFEST_DIR/../../web/dist"]
@@ -502,6 +503,7 @@ pub struct AppState {
     pub demo_rows: usize,
     pub allowed_hosts: Arc<Vec<String>>,
     pub store: Arc<tokio::sync::Mutex<store::StoreFile>>,
+    pub update: Arc<update::UpdateChecker>,
 }
 
 async fn slot_for(
@@ -697,6 +699,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/query", post(query))
         .route("/api/table", get(table_info))
         .route("/api/connection-info", get(connection_info_route))
+        .route("/api/version", get(version_route))
+        .route("/api/update", get(update_status).put(update_configure))
+        .route("/api/update/check", post(update_check))
         .route("/api/server", get(server_info_route))
         .route("/api/objects", get(objects_route))
         .route("/api/definition", get(definition_route))
@@ -3128,6 +3133,57 @@ async fn fs_pick(
         Body::from_stream(stream),
     )
         .into_response())
+}
+
+// What this build is: GET /api/version.
+async fn version_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<update::VersionInfo>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    Ok(Json(update::version_info()))
+}
+
+// Whether a newer release is out, checking GitHub when the last check is a
+// day old and checks are on.
+async fn update_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<update::UpdateStatus>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    Ok(Json(state.update.status().await))
+}
+
+// Settings' "Check now": checks whatever the time of the last check.
+async fn update_check(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<update::UpdateStatus>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    Ok(Json(state.update.check_now().await))
+}
+
+// Turns checks on or off, or skips a release.
+async fn update_configure(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(settings): Json<update::UpdateSettings>,
+) -> Result<Json<update::UpdateStatus>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    state
+        .update
+        .configure(settings)
+        .await
+        .map(Json)
+        .map_err(store_error)
 }
 
 /// The font families installed on this machine, for the settings' font
@@ -5630,6 +5686,12 @@ mod tests {
             demo_rows: 3,
             allowed_hosts: Arc::new(vec!["127.0.0.1:1".into()]),
             store: Arc::new(tokio::sync::Mutex::new(store::StoreFile::load(dir))),
+            update: Arc::new(update::UpdateChecker::new(
+                dir,
+                update::RELEASES_URL.into(),
+                update::VERSION,
+                true,
+            )),
         }
     }
 

@@ -1549,6 +1549,51 @@ async function cancelOidcLogin(id: string): Promise<void> {
   await api<{ ok: boolean }>(`/api/oidc/logins?id=${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+// What this build is: its version, commit and how it was built.
+export interface VersionInfo {
+  version: string;
+  commit: string;
+  dist: "release" | "source";
+  target: string;
+}
+
+// Whether a newer release is out (see crates/tablepeek-server/src/update.rs).
+export interface UpdateStatus {
+  enabled: boolean;
+  setting: boolean;
+  env_disabled: boolean;
+  current: string;
+  latest: string | null;
+  newer: boolean;
+  url: string | null;
+  notes: string | null;
+  published_at: string | null;
+  checked_at: number | null;
+  error: string | null;
+  skipped: string | null;
+  dist: "release" | "source";
+  target: string;
+  asset_name: string | null;
+  asset_url: string | null;
+}
+
+async function fetchVersion(): Promise<VersionInfo> {
+  return api<VersionInfo>("/api/version");
+}
+
+// The server checks GitHub only when checks are on and a day has passed.
+async function fetchUpdate(): Promise<UpdateStatus> {
+  return api<UpdateStatus>("/api/update");
+}
+
+async function checkUpdateNow(): Promise<UpdateStatus> {
+  return api<UpdateStatus>("/api/update/check", { method: "POST" });
+}
+
+async function configureUpdate(patch: { enabled?: boolean; skipped?: string | null }): Promise<UpdateStatus> {
+  return api<UpdateStatus>("/api/update", { method: "PUT", body: JSON.stringify(patch) });
+}
+
 // Every engine the server can connect to, as it describes them.
 async function listEngines(): Promise<EngineDescriptor[]> {
   const body = await api<{ engines: EngineDescriptor[] }>("/api/engines");
@@ -2319,4 +2364,8 @@ export const store = {
   createFavoriteFolder,
   renameFavoriteFolder,
   deleteFavoriteFolder,
+  fetchVersion,
+  fetchUpdate,
+  checkUpdateNow,
+  configureUpdate,
 };

@@ -106,7 +106,8 @@
 | M17 | 인코딩/HEX 인스펙터, MySQL `prefer` TLS 오류 한정, 키체인 왕복, MCP stdio 서버 | 완료 |
 | M18 | 스피너·탭 모션, SQL syntax preset, JSON 트리 우측 Quick Look, 환경 배지, 행 관계 탭·FK 점프 | 완료 |
 | M18.1 | 그리드 셀 텍스트 대비·헤더 ellipsis, 상단 다중 연결 바, DB 컨텍스트 사이드바, 카테고리 설정 모달, 저장 연결 삭제 | 완료 |
-| M5 | 배포: brew/winget/scoop, 코드 서명·공증, 자동 업데이트 알림 | 예정 |
+| M5 | 배포: SemVer 버전(v0.1.0부터, `CHANGELOG.md`), GitHub Releases 바이너리 아카이브 5종 + `SHA256SUMS`(`.github/workflows/release.yml`, `docs/RELEASING.md`), CI, 앱 안 새 버전 알림 | 완료 |
+| M5+ | brew/winget/scoop, 코드 서명·공증, 설치 프로그램 | 이번 범위에서 제외 |
 
 ## 8. UI 셸 구성 (M18.1)
 

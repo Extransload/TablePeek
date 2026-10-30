@@ -5389,7 +5389,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "reqwest",
  "serde_json",
@@ -5401,7 +5401,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5437,7 +5437,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek-server"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5448,8 +5448,10 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "keyring",
+ "reqwest",
  "russh",
  "rust-embed",
+ "semver",
  "serde",
  "serde_json",
  "tablepeek-engine",
@@ -5460,7 +5462,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek-types"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",

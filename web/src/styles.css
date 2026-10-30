@@ -6601,6 +6601,239 @@ textarea[aria-invalid="true"] {
   color: var(--accent);
 }
 
+/* A newer release: one slim line in the theme's accent, in the page flow
+   under the app bar (on the home screen, at the very top). */
+.update-banner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 2px 8px 2px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+
+.update-banner-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.update-banner-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-banner .link-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.update-banner-skip {
+  margin-left: auto;
+}
+
+.update-banner .link-button.update-banner-skip {
+  color: var(--muted);
+}
+
+.update-banner-close {
+  flex: none;
+  height: 20px;
+}
+
+.update-how-modal {
+  width: min(560px, 92vw);
+}
+
+.update-how-body {
+  padding: 14px 18px;
+}
+
+.update-how-steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.update-how-steps li + li {
+  margin-top: 12px;
+}
+
+/* Numbered steps; what a step holds (its text, a download, a command) is
+   stacked under its number. */
+.update-how-steps li {
+  line-height: 1.5;
+}
+
+.update-how-steps li::marker {
+  color: var(--muted);
+}
+
+.update-how-steps li > * {
+  display: block;
+}
+
+.update-how-steps li > * + * {
+  margin-top: 6px;
+}
+
+.update-how-steps li > .update-how-asset {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.update-how-command {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 5px);
+  background: var(--head);
+  font-family: var(--mono);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  white-space: pre-wrap;
+  user-select: all;
+}
+
+.settings-update-error {
+  padding: 0;
+}
+
+/* Settings > General > Version: the build on one line, then a status card
+   coloured by what it says (newest, newer out, ahead, failed, muted). */
+.version-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+}
+
+.version-name {
+  color: var(--ink);
+  font-size: calc(14px * var(--ui-scale, 1));
+  font-weight: 650;
+}
+
+.version-number {
+  color: var(--accent);
+  font-size: calc(14px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+
+.version-chip {
+  padding: 1px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.version-status {
+  --tone: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--tone) 32%, var(--line-soft));
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--tone) 8%, var(--panel));
+}
+
+.version-status.ok {
+  --tone: var(--ok);
+}
+
+.version-status.new {
+  --tone: var(--warn);
+}
+
+.version-status.ahead {
+  --tone: var(--accent);
+}
+
+.version-status.error {
+  --tone: var(--error);
+}
+
+.version-status-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tone) 18%, transparent);
+  color: var(--tone);
+}
+
+.version-status-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.version-status-title {
+  color: var(--ink);
+  font-size: calc(12.5px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+
+.version-status.muted .version-status-title {
+  color: var(--muted);
+}
+
+.version-status-detail {
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.version-status-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px 10px;
+}
+
+.version-status-actions button,
+.version-status-actions .link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.version-status-actions .version-update-button {
+  border-color: transparent;
+  background: var(--warn);
+  /* Dark text reads on the orange in light and dark themes alike. */
+  color: #1c1306;
+  font-weight: 600;
+}
+
+.version-status-actions .version-update-button:hover {
+  background: color-mix(in srgb, var(--warn) 85%, var(--ink));
+}
+
+.version-check {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
 .panel-error-slot {
   margin: 8px 0;
 }

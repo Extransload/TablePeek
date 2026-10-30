@@ -1,7 +1,8 @@
 [package]
 name = "tablepeek-server"
-version = "0.0.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
 
 [dependencies]
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
@@ -17,6 +18,10 @@ getrandom = "0.3"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 tablepeek-engine = { path = "../tablepeek-engine" }
 tablepeek-types = { path = "../tablepeek-types" }
+# The update check: GitHub's latest release over HTTPS with the system's
+# roots (the client the engine already uses), and its tag compared as SemVer.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
+semver = "1"
 russh = "0.64"
 rust-embed = { workspace = true }
 serde = { workspace = true }

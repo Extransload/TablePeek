@@ -3288,6 +3288,54 @@ const EN: Record<string, string> = {
   "서로 다른 값 {distinct}개 · 만든 때 {first} ~ {last}": "{distinct} distinct · created {first} ~ {last}",
   "{min}–{max} (평균 {mean})": "{min}–{max} (mean {mean})",
   // ---- end MongoPanel ----
+  // ---- Update check (UpdateBanner, Settings > General) ----
+  "새 버전": "New version",
+  "TablePeek {latest}이 나왔습니다 (지금 {current})": "TablePeek {latest} is out (you have {current})",
+  "변경 내역": "Release notes",
+  "업데이트 방법": "How to update",
+  "이 버전 건너뛰기": "Skip this version",
+  "{platform}용 압축 파일을 내려받습니다.": "Download the archive for {platform}.",
+  "릴리스 페이지에서 위 이름의 파일을 고르세요.": "Pick the file with this name on the release page.",
+  "TablePeek을 끄고(터미널에서 Ctrl+C), 압축을 풀어 나온 {binary}로 지금 쓰는 실행 파일을 바꿉니다.":
+    "Stop TablePeek (Ctrl+C in its terminal), extract the archive and replace the binary you run with the {binary} from it.",
+  "macOS가 내려받은 파일이라며 실행을 막으면 격리 표시를 지웁니다.":
+    "If macOS refuses to run it as a downloaded file, remove the quarantine flag.",
+  "다시 실행하고 버전을 확인합니다.": "Start it again and check the version.",
+  "소스에서 빌드한 TablePeek입니다. 저장소 폴더에서 새 코드를 받아 다시 빌드합니다.":
+    "This TablePeek was built from source. Pull the new code in the repository folder and build again.",
+  "TablePeek을 끄고(터미널에서 Ctrl+C) 다시 실행합니다.": "Stop TablePeek (Ctrl+C in its terminal) and start it again.",
+  "릴리스 페이지": "Release page",
+  "네트워크에 연결할 수 없어 새 버전을 확인하지 못했습니다": "Couldn't check for a new version: the network is unreachable",
+  "GitHub가 5초 안에 답하지 않아 새 버전을 확인하지 못했습니다":
+    "Couldn't check for a new version: GitHub didn't answer within 5 seconds",
+  "GitHub 요청 한도에 걸려 새 버전을 확인하지 못했습니다. 잠시 뒤 다시 확인하세요":
+    "Couldn't check for a new version: GitHub's rate limit was reached. Check again later",
+  "GitHub가 HTTP {status}로 답해 새 버전을 확인하지 못했습니다":
+    "Couldn't check for a new version: GitHub answered HTTP {status}",
+  "GitHub의 릴리스 정보를 읽지 못했습니다": "Couldn't read GitHub's release information",
+  "{latest}이 나왔습니다 (건너뛴 버전)": "{latest} is out (skipped)",
+  "{latest}이 나왔습니다": "{latest} is out",
+  "아직 확인하지 않았습니다": "Not checked yet",
+  "최신 버전입니다": "You have the latest version",
+  "마지막 확인: {time}": "Last checked: {time}",
+  "릴리스 바이너리": "Release binary",
+  "소스 빌드": "Source build",
+  "TABLEPEEK_NO_UPDATE_CHECK 환경 변수가 확인을 껐습니다.":
+    "The TABLEPEEK_NO_UPDATE_CHECK environment variable turned the check off.",
+  "하루에 한 번 GitHub에서 최신 릴리스를 확인합니다. 지금 버전(User-Agent) 말고는 아무것도 보내지 않습니다.":
+    "Checks GitHub for the latest release once a day. Nothing is sent but the running version (in the User-Agent).",
+  "새 버전 확인": "Check for new versions",
+  "확인하는 중…": "Checking…",
+  "새 버전 확인이 꺼져 있습니다": "Checking for new versions is off",
+  "지금 {current} · {date} 공개": "You have {current} · released {date}",
+  "지금 {current}": "You have {current}",
+  "새 버전을 확인하지 못했습니다": "Couldn't check for a new version",
+  "아직 공개된 릴리스가 없습니다": "No release has been published yet",
+  "최신 릴리스보다 앞선 빌드입니다": "This build is ahead of the latest release",
+  "최신 릴리스 {latest}": "Latest release {latest}",
+  "지금 확인": "Check now",
+  "다시 알리기": "Notify me again",
+  // ---- end Update check ----
 };
 
 // Keys for words Korean uses in more than one sense where English needs

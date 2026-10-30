@@ -31,9 +31,68 @@ TablePeek pairs a Rust query engine with a browser UI. Open SQLite files or conn
 
 ## Quick start
 
-TablePeek is built from source for now, so you need two toolchains: **Rust** (`cargo`, for the server) and **Node.js 20+** (`npm`, for the web bundle). SQLite is bundled and TLS uses rustls, so there is no OpenSSL or database client library to install. macOS and Windows are the primary targets; Linux uses the same stack.
+There are two ways to get TablePeek: download a prebuilt binary from [GitHub Releases](https://github.com/Extransload/TablePeek/releases), or build it from source. Both give the same program; the binary carries the web UI inside it, so there is nothing else to install. SQLite is bundled and TLS uses rustls, so there is no OpenSSL or database client library to install either. macOS and Windows are the primary targets; Linux uses the same stack.
 
-### 1. Install the toolchains
+### Download a binary
+
+Each release has one archive per platform, plus a `SHA256SUMS` file:
+
+| Platform | Archive |
+|---|---|
+| macOS, Apple silicon | `tablepeek-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `tablepeek-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
+| Linux, x86_64 | `tablepeek-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux, arm64 | `tablepeek-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows, x86_64 | `tablepeek-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
+
+Each archive holds a `tablepeek-vX.Y.Z-<platform>` folder with the `tablepeek` binary (`tablepeek.exe` on Windows) and this README. The binaries are not signed or notarized, and there is no installer: you unpack the archive and run the binary.
+
+**macOS and Linux**
+
+```sh
+VERSION=v0.1.0                    # the latest release
+TARGET=aarch64-apple-darwin       # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+curl -LO "https://github.com/Extransload/TablePeek/releases/download/$VERSION/tablepeek-$VERSION-$TARGET.tar.gz"
+tar -xzf "tablepeek-$VERSION-$TARGET.tar.gz"
+cd "tablepeek-$VERSION-$TARGET"
+./tablepeek serve
+```
+
+> **macOS: "cannot be opened because Apple cannot check it for malicious software".** The binary is not notarized, so Gatekeeper stops it when the archive came through a web browser, which marks the download as quarantined. Clear the mark once with `xattr -d com.apple.quarantine tablepeek` (in the unpacked folder), or try to run it, then pick **Open Anyway** under System Settings > Privacy & Security. Archives fetched with `curl` as above are not quarantined, and `xattr` then answers "No such xattr", which is harmless.
+
+The Linux binaries need glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40, or newer) and, to save passwords, a Secret Service keyring such as GNOME Keyring or KWallet over D-Bus (`libdbus-1-3`, present on desktop installs). On an older distribution, [build from source](#build-from-source).
+
+To run `tablepeek` from anywhere, move it onto your `PATH`, for example `mv tablepeek ~/.local/bin/` or `sudo mv tablepeek /usr/local/bin/`.
+
+**Windows**
+
+1. Download `tablepeek-vX.Y.Z-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/Extransload/TablePeek/releases/latest) and extract it (right-click > Extract All).
+2. Open PowerShell in the extracted folder and run:
+
+   ```powershell
+   .\tablepeek.exe serve
+   ```
+
+   If SmartScreen or PowerShell blocks the unsigned binary, run `Unblock-File .\tablepeek.exe` once, or choose **More info > Run anyway** in the SmartScreen dialog.
+
+`tablepeek serve` starts the server on a free port, prints a tokenized loopback URL (keep it private), and opens your browser on the connection home. Options: `--port 7870` for a fixed port (the one [`tablepeek mcp`](#mcp-for-ai-clients) expects by default), `--demo` for an in-memory demo database, `--db <file>` to open a SQLite file, `--no-open` to leave the browser alone. `tablepeek --version` prints the version, the commit it was built from, and whether it is a release or a source build.
+
+**Verify the download (optional).** Download `SHA256SUMS` from the same release into the folder with the archive, then:
+
+```sh
+shasum -a 256 --check --ignore-missing SHA256SUMS      # macOS
+sha256sum --check --ignore-missing SHA256SUMS          # Linux
+```
+
+```powershell
+Get-FileHash .\tablepeek-vX.Y.Z-x86_64-pc-windows-msvc.zip -Algorithm SHA256   # compare with its line in SHA256SUMS
+```
+
+### Build from source
+
+Building needs two toolchains: **Rust** (`cargo`, for the server) and **Node.js 20+** (`npm`, for the web bundle).
+
+#### 1. Install the toolchains
 
 **macOS**
 
@@ -66,7 +125,7 @@ node --version    # v20 or later
 
 > `cargo: command not found` right after installing Rust means the terminal predates the installer's PATH change. Open a new terminal, or on macOS/Linux run `source "$HOME/.cargo/env"`.
 
-### 2. Build and run
+#### 2. Build and run
 
 macOS / Linux:
 
@@ -112,6 +171,34 @@ make run DEMO=1 DEMO_ROWS=500000   # demo database with more rows, up to 2,000,0
 make run NO_OPEN=1                 # do not open a browser automatically
 make help                          # full command list
 ```
+
+## Updating
+
+TablePeek tells you when a newer release is out: a notice at the top of the app names the new version, links to its changes, and opens the update steps for the way your copy was installed. It checks GitHub Releases at most once a day, says nothing when offline, and can be turned off under Settings > General > **Check for new versions**; [Update check](#update-check) describes exactly what it sends. Versions follow [Semantic Versioning](https://semver.org) and every change is listed in [CHANGELOG.md](CHANGELOG.md).
+
+**A downloaded binary.** Quit TablePeek, download the archive for the new version as in [Download a binary](#download-a-binary), and replace the old `tablepeek` binary with the new one (on macOS, clear the quarantine mark again). Your connections and settings live in `~/.tablepeek` and the OS keychain, not next to the binary, so they carry over.
+
+**A source build.** Pull and rebuild, then restart the server:
+
+```sh
+git pull
+make build           # or make run; Windows: cd web; npm install; npm run build; cd ..; cargo build -p tablepeek
+```
+
+To build a particular release rather than the latest commit, check out its tag, for example `git checkout v0.1.0`. `tablepeek --version` shows which version and commit you are running.
+
+## Update check
+
+The server, not the page, asks GitHub whether a newer release is out. When the app opens it asks the server for the update status; the server checks only if checks are on and the last check is at least 24 hours old (Settings > General > **Check now** checks right away).
+
+- **What is sent.** One unauthenticated `GET https://api.github.com/repos/Extransload/TablePeek/releases/latest` with `User-Agent: TablePeek/<version>` and `Accept: application/vnd.github+json`, with a 5-second timeout. Nothing else: no identifier, no connection or usage data, no cookies. GitHub sees your IP address as with any request.
+- **What is kept.** `~/.tablepeek/update.json` holds the setting, the release you chose to skip, the time of the last check and what it found (tag, release page, publish date, the start of the release notes, the archive names). Delete it to start over.
+- **What counts as newer.** Tags are compared as [Semantic Versioning](https://semver.org); drafts and prereleases (`v0.2.0-rc.1`) are never offered. **Skip this version** hides the notice for that release only; closing it hides it until the next launch.
+- **Failures are quiet.** Offline, a timeout, an HTTP error or GitHub's rate limit leaves the app silent; Settings > General shows why the last check failed.
+- **Turning it off.** Clear Settings > General > **Check for new versions** (kept in `update.json`), or start the server with `TABLEPEEK_NO_UPDATE_CHECK=1` (any value but empty or `0`), which wins over the setting; CI and packagers can use it. Either way no request is made at all.
+- **Mirrors.** `TABLEPEEK_UPDATE_URL` replaces the GitHub URL with any endpoint answering in the shape of GitHub's latest-release API (`tag_name`, `html_url`, `published_at`, `body`, `draft`, `prerelease`, `assets[].name`, `assets[].browser_download_url`). The tests use it to point the check at a local server.
+
+`tablepeek --version` and `GET /api/version` report the version, the commit it was built from (`-dirty` with uncommitted changes) and whether it is a `release` binary or a `source` build.
 
 ## Database connections
 
@@ -374,10 +461,12 @@ cargo test
 | `crates/tablepeek-types` | Shared request, result, and connection types |
 | `web` | React UI, CodeMirror editor, canvas grid, themes, i18n |
 | `testdb` | Docker Compose test databases and their seed data |
-| `docs` | Architecture, MCP, remaining scope, and manual checklists |
+| `scripts` | Version bumps, release notes, and release archives (`version.mjs`, `package.sh`) |
+| `.github/workflows` | CI on `main` and the release build for `v*` tags |
+| `docs` | Architecture, MCP, remaining scope, releasing, and manual checklists |
 
 ## Status
 
-TablePeek is pre-release. The feature set is implemented and exercised across the five drivers, and the recent work has been on the everyday surface: filtering, transfer jobs, foreign-key Quick Look, connection management, schema-aware SQL completion, the ER diagram, chart and pivot views, fonts, scrollbars, and settings. Signed installers and package-manager distribution are still ahead; source builds are the supported path today.
+TablePeek is in its 0.x series: versions follow Semantic Versioning, with new features raising the minor version and fixes the patch version, and [CHANGELOG.md](CHANGELOG.md) lists what each release changed. The feature set is implemented and exercised across the five drivers, and the recent work has been on the everyday surface: filtering, transfer jobs, foreign-key Quick Look, connection management, schema-aware SQL completion, the ER diagram, chart and pivot views, fonts, scrollbars, and settings. Releases ship as plain archives for macOS, Linux, and Windows beside source builds; signed installers, notarization, and package-manager distribution are still ahead. Maintainers cut releases as described in [docs/RELEASING.md](docs/RELEASING.md).
 
 See [docs/REMAINING-SCOPE.md](docs/REMAINING-SCOPE.md) for the current scope boundaries and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and protocol details.

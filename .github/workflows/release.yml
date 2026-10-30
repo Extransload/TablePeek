@@ -1,0 +1,146 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (or vX.Y.Z-rc.N for a prerelease) builds the release
+# archives and publishes them on GitHub Releases with the CHANGELOG section
+# as notes. docs/RELEASING.md walks through it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# One run per tag; a re-pushed tag waits for the previous run instead of
+# racing it to the release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  verify:
+    name: Tag matches the version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: node scripts/version.mjs tag "$TAG"
+      # Fails early when the CHANGELOG section is missing or empty.
+      - run: node scripts/version.mjs notes "${TAG#v}"
+
+  web:
+    name: Web bundle
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    env:
+      TARGET: ${{ matrix.target }}
+      # Marks the binary as a release build in --version and /api/version.
+      TABLEPEEK_DIST: release
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install the D-Bus headers (password keyring)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      - run: cargo build --release --locked -p tablepeek --target "$TARGET"
+        shell: bash
+      - name: Check the binary's version
+        shell: bash
+        run: |
+          exe="target/$TARGET/release/tablepeek"
+          if [ "$RUNNER_OS" = Windows ]; then exe="$exe.exe"; fi
+          reported="$("$exe" --version)"
+          echo "$reported"
+          case "$reported" in
+            "tablepeek ${TAG#v} ("*", release)") ;;
+            *) echo "expected tablepeek ${TAG#v} (<commit>, release)" >&2; exit 1 ;;
+          esac
+      - name: Package
+        shell: bash
+        run: |
+          exe="target/$TARGET/release/tablepeek"
+          if [ "$RUNNER_OS" = Windows ]; then exe="$exe.exe"; fi
+          scripts/package.sh archive "$TAG" "$TARGET" "$exe" dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+      - run: scripts/package.sh sums dist
+      - run: node scripts/version.mjs notes "${TAG#v}" > notes.md
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" dist/* \
+            --verify-tag \
+            --title "TablePeek $TAG" \
+            --notes-file notes.md \
+            "${prerelease[@]}"
