@@ -1,6 +1,6 @@
 import type { SqlDialect } from "./engines/sqlDialect";
 import { FUNCTIONS_WITHOUT_ENGINE } from "./engines/sqlFunctions";
-import { escapeString, lexingFor, splitSqlRanges } from "./sqlSplit";
+import { escapeString, lexingFor, loneSlashAt, qQuoteAt, splitSqlRanges } from "./sqlSplit";
 
 // What the SQL editor offers at the cursor, as in TablePlus, and a little
 // more. After "alias." or "table." that table's columns alone; right after
@@ -171,12 +171,14 @@ function isName(token: Token | undefined): token is Token {
   return token?.kind === "quoted" || (token?.kind === "name" && !NOT_NAMES.has(upper(token)));
 }
 
-// The statement the cursor is in: from just past the ";" before it to the
-// end of the one it is in. Text after the cursor counts (SELECT na| FROM t).
+// The statement the cursor is in: from just past the ";" (or "/" line) before
+// it to the end of the one it is in. Text after the cursor counts (SELECT na| FROM t).
 function statementBounds(input: string, pos: number, dialect?: SqlDialect): [number, number] {
+  const slashes = lexingFor(dialect).slashBlocks === true;
   let start = 0;
   for (const range of splitSqlRanges(input, dialect)) {
-    if (range.to <= pos && input[range.to - 1] === ";") {
+    const ended = input[range.to - 1] === ";" || (slashes && loneSlashAt(input, range.to - 1));
+    if (range.to <= pos && ended) {
       start = range.to;
     } else if (range.to > pos) {
       return [start, range.to];
@@ -196,6 +198,7 @@ function tokenize(input: string, from: number, to: number, pos: number, dialect:
     const ch = input[at];
     const next = input[at + 1] ?? "";
     const tag = ch === "$" && lex.dollarQuotes ? dollarTagAt(input, at) : null;
+    const q = lex.qQuotes === true && /[nNqQ]/.test(ch) ? qQuoteAt(input, at) : null;
     if (/\s/.test(ch)) {
       at += 1;
     } else if ((ch === "-" && next === "-") || (ch === "#" && lex.hashComments)) {
@@ -208,6 +211,12 @@ function tokenize(input: string, from: number, to: number, pos: number, dialect:
       const closed = end >= 0 && end + 2 <= to;
       const stop = closed ? end + 2 : to;
       tokens.push({ kind: "comment", from: at, to: stop, text: "", closed });
+      at = stop;
+    } else if (q !== null) {
+      const end = input.indexOf(q.close, q.body);
+      const closed = end >= 0 && end + q.close.length <= to;
+      const stop = closed ? end + q.close.length : to;
+      tokens.push({ kind: "string", from: at, to: stop, text: "", closed });
       at = stop;
     } else if (ch === "'" || ch === '"' || ch === "`" || (ch === "[" && nameQuote(ch))) {
       const name = nameQuote(ch);
@@ -573,12 +582,15 @@ export function completeSql(input: string, pos: number, config: SqlCompletionCon
   // The tables named before the cursor, in order: the last is the one a JOIN … ON is joining.
   const refsBefore = tableRefs(before, keys);
   // In quotes the user opened, names come in those; elsewhere the dialect's
-  // first quote wraps the names that need one (as lang-sql does).
+  // first quote wraps the names that need one (as lang-sql does, or as the
+  // dialect says: Oracle's upper-case names go bare).
   const open = quote ?? quotes[0];
   const shut = open === "[" ? "]" : open;
   const plain = new RegExp("^[a-z_][a-z_\\d]*$", config.caseInsensitiveIdentifiers ? "i" : "");
   const quoteName = (name: string): string =>
-    quote === null && plain.test(name) ? name : open + name.replaceAll(shut, shut + shut) + shut;
+    quote === null && (config.dialect?.bareName?.(name) ?? plain.test(name))
+      ? name
+      : open + name.replaceAll(shut, shut + shut) + shut;
   const quoteTable = (key: string): string => key.split(".").map(quoteName).join(".");
 
   interface Candidate {
@@ -744,9 +756,10 @@ export function completeSql(input: string, pos: number, config: SqlCompletionCon
         );
         addNames([...keys.map((key) => tableOf(key)), ...aliases]);
         if (quote === null) {
+          const keepCase = config.dialect?.namesKeepCase !== undefined;
           addNames(
             (config.dialect?.functions ?? FUNCTIONS_WITHOUT_ENGINE).map((fn) => {
-              const name = caseLike(fn.name, typed);
+              const name = keepCase ? fn.name : caseLike(fn.name, typed);
               return {
                 name,
                 kind: "function" as const,
@@ -762,9 +775,11 @@ export function completeSql(input: string, pos: number, config: SqlCompletionCon
         }
       }
       if (quote === null) {
+        // Names spelled as the engine spells them (ClickHouse's UInt32, JSONEachRow).
+        const exact = new Map((config.dialect?.namesKeepCase ?? []).map((name) => [name.toLowerCase(), name]));
         addNames(
           config.words.map((word) => ({
-            name: caseLike(word.label, typed),
+            name: exact.get(word.label.toLowerCase()) ?? caseLike(word.label, typed),
             kind: word.type === "type" ? ("type" as const) : ("keyword" as const),
             usageKey: `word:${word.label.toLowerCase()}`,
           })),

@@ -13,7 +13,7 @@ import { isAppServerDown } from "../../../errorHelp";
 import { ChevronDownIcon, CodeIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { say, t } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { store } from "../../../store";
 import { collStats, count as countDocs, find, insert, isAbort, remove, type CollStats, type Namespace } from "../api";
@@ -24,7 +24,8 @@ import { idFilter } from "../guard";
 import type { AggDraft } from "../pipeline";
 import { AggregationPanel } from "./AggregationPanel";
 import { BulkModal, type BulkMode } from "./BulkModal";
-import { CardView } from "./CardView";
+import { CardView, docKey } from "./CardView";
+import { DocDetail, DocDetailPanel, FactsList, NothingSelected, useCollectionFacts } from "./DocDetailPanel";
 import { ConfirmModal, ConflictModal, type ConfirmRequest } from "./DocModals";
 import { DocTableView } from "./DocTableView";
 import { ExplainPanel } from "./ExplainPanel";
@@ -103,9 +104,6 @@ export interface DocumentWorkbenchProps {
   collections?: string[];
   // False while another tab is in front: shortcuts stay off.
   active?: boolean;
-  // The table view's detail panel; App owns it (its ⌘I and toolbar button).
-  panelOpen: boolean;
-  onPanelOpenChange(open: boolean): void;
   // Bumped by the app's refresh (F5).
   refreshSeq?: number;
   // The connection's safe mode (confirm before writes the server needs
@@ -162,8 +160,6 @@ export function DocumentWorkbench({
   maxTimeMS,
   collections,
   active = true,
-  panelOpen,
-  onPanelOpenChange,
   refreshSeq = 0,
   safeMode,
   onCollectionsChanged,
@@ -218,6 +214,8 @@ export function DocumentWorkbench({
   // 코드로: the query as it was when the dialog opened.
   const [codeQuery, setCodeQuery] = useState<DocQuery | null>(null);
   const [bulk, setBulk] = useState<BulkMode | null>(null);
+  // The card or JSON block shown in the app's detail panel (its docKey).
+  const [picked, setPicked] = useState<string | null>(null);
 
   useEffect(() => {
     memory.set(tabKey, { sub, query, optsOpen, applied, view, page, pageSize, path, canonical });
@@ -269,6 +267,8 @@ export function DocumentWorkbench({
   );
 
   const edits = useDocEdits(ns, reload, notify);
+  // What the detail panel lists with nothing selected.
+  const facts = useCollectionFacts(ns, statsSeq);
 
   // ---- Loading ----
 
@@ -388,6 +388,7 @@ export function DocumentWorkbench({
         return;
       }
       setSub("docs");
+      setPicked(null);
       setApplied(next);
       setPage(0);
       setPath([]);
@@ -598,6 +599,8 @@ export function DocumentWorkbench({
         notify={notify}
         onDirtyCount={setDirtyCount}
         emptyText={loadError !== null ? t("불러오지 못했습니다") : undefined}
+        selected={picked}
+        onSelect={setPicked}
       />
     );
   } else if (view === "json") {
@@ -614,6 +617,8 @@ export function DocumentWorkbench({
         onDelete={(doc) => void deleteDoc(doc)}
         notify={notify}
         emptyText={loadError !== null ? t("불러오지 못했습니다") : undefined}
+        selected={picked}
+        onSelect={setPicked}
       />
     );
   } else {
@@ -626,13 +631,13 @@ export function DocumentWorkbench({
         sort={appliedQuery?.sort ?? null}
         onSort={(sort) => run({ ...applied, sort: sort === null ? "" : toShell(sort) })}
         save={edits.save}
-        panelOpen={panelOpen}
-        onPanelOpenChange={onPanelOpenChange}
+        facts={facts}
         path={path}
         onPathChange={setPath}
       />
     );
   }
+  const pickedAt = picked === null ? -1 : docs.findIndex((doc, i) => docKey(doc, start + i) === picked);
 
   // A validation failure's "검증 탭 열기"; views and read-only tabs have none.
   const openValidation = readOnly ? null : () => setSub("validation");
@@ -812,8 +817,7 @@ export function DocumentWorkbench({
             collections={collections}
             maxTimeMS={maxTimeMS}
             host={host}
-            panelOpen={panelOpen}
-            onPanelOpenChange={onPanelOpenChange}
+            facts={facts}
             onCreateIndex={requestIndex}
             onCollectionsChanged={onCollectionsChanged}
             onOpenCollection={onOpenCollection}
@@ -825,6 +829,7 @@ export function DocumentWorkbench({
           <div className="mg-pane">
             <SchemaPanel
               ns={ns}
+              facts={facts}
               filterText={query.filter}
               active={sub === "schema"}
               host={host}
@@ -843,26 +848,39 @@ export function DocumentWorkbench({
         {sub === "validation" ? (
           <div className="mg-pane">
             <ValidationPanel ns={ns} readOnly={readOnly} active={sub === "validation"} host={host} draft={schemaDraft} />
+            <DocDetailPanel>{(q) => <FactsList title={<span className="mg-detail-path mono">{coll}</span>} facts={facts} query={q} />}</DocDetailPanel>
           </div>
         ) : null}
         {sub === "indexes" ? (
           <div className="mg-pane">
-            <IndexesPanel ns={ns} readOnly={readOnly} fields={fields.map((f) => f.path)} createRequest={indexRequest} host={host} onChanged={() => setStatsSeq((n) => n + 1)} />
+            <IndexesPanel ns={ns} readOnly={readOnly} fields={fields.map((f) => f.path)} createRequest={indexRequest} host={host} facts={facts} onChanged={() => setStatsSeq((n) => n + 1)} />
           </div>
         ) : null}
         {sub === "explain" ? (
           <div className="mg-pane">
             <ExplainPanel
               ns={ns}
-              query={liveQuery.ok ? liveQuery.value : { error: liveQuery.error.message }}
+              facts={facts}
+              query={liveQuery.ok ? liveQuery.value : { error: say(liveQuery.error.message) }}
               active={sub === "explain"}
               runSeq={explainSeq}
               onCreateIndex={requestIndex}
             />
           </div>
         ) : null}
-        {sub === "changes" ? <ChangeStreamPanel conn={conn} db={db} coll={coll} sessionKey={tabKey} notify={notify} /> : null}
+        {sub === "changes" ? <ChangeStreamPanel conn={conn} db={db} coll={coll} sessionKey={tabKey} notify={notify} facts={facts} /> : null}
       </div>
+      {sub === "docs" && view !== "table" ? (
+        <DocDetailPanel>
+          {(q) =>
+            pickedAt >= 0 ? (
+              <DocDetail ns={ns} doc={docs[pickedAt]} position={start + pickedAt} save={editable ? edits.save : undefined} query={q} />
+            ) : (
+              <NothingSelected facts={facts} query={q} />
+            )
+          }
+        </DocDetailPanel>
+      ) : null}
       {sizeMenu !== null ? (
         <ContextMenu
           x={sizeMenu.x}

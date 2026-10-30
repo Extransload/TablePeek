@@ -14,7 +14,7 @@ import { ConnectModal } from "./components/ConnectModal";
 import { CreateTableModal } from "./components/CreateTableModal";
 import { ConnSwitcher } from "./components/ConnSwitcher";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
-import { DataTabToolbar, type DataTotal } from "./components/DataToolbar";
+import { DataTabToolbar, type DataProgress, type DataTotal } from "./components/DataToolbar";
 import { EditorActions } from "./components/EditorActions";
 import {
   dropTableSql,
@@ -51,6 +51,7 @@ import { ImportModal, type ImportFormat } from "./components/ImportModal";
 import { JobsModal } from "./components/JobsModal";
 import { ParamModal } from "./components/ParamModal";
 import { ReviewModal } from "./components/ReviewModal";
+import { ConsistencyMenu } from "./components/ConsistencyMenu";
 import { SAFE_MODE_LABELS, SafeModeMenu } from "./components/SafeModeMenu";
 import { SettingsModal } from "./components/SettingsModal";
 import { ConsolePanel } from "./components/ConsolePanel";
@@ -72,11 +73,13 @@ import { HistoryPane } from "./components/HistoryPane";
 import { PromptModal } from "./components/PromptModal";
 import { DiscardModal } from "./components/DiscardModal";
 import { ConfirmDialogHost, confirmDialog, promptDialog } from "./components/ConfirmDialog";
+import { BinaryCellDialogHost, binaryCellDialog } from "./components/BinaryCellModal";
 import { ServerInfoPanel } from "./components/ServerInfoPanel";
 import { SqlEditor, type SqlEditorHandle } from "./components/SqlEditor";
 import { StructurePanel } from "./components/StructurePanel";
 import { UserManagerModal } from "./components/UserManagerModal";
 import { TabStrip } from "./components/TabStrip";
+import { DetailSlotContext, type DetailSlot } from "./engines/mongodb/ui/DocDetailPanel";
 import { DocSidebar } from "./engines/mongodb/ui/DocSidebar";
 import { DocumentWorkbench } from "./engines/mongodb/ui/DocumentWorkbench";
 import { DocAdminDialogs, type DocAdminEffect, type DocAdminRequest } from "./engines/mongodb/ui/ManageModals";
@@ -84,6 +87,14 @@ import { ShellTab } from "./engines/mongodb/ui/ShellTab";
 import { PerfTab } from "./engines/mongodb/ui/PerfTab";
 import { ChangeStreamTab } from "./engines/mongodb/ui/ChangeStreamPanel";
 import { GridFsTab } from "./engines/mongodb/ui/GridFsTab";
+import { SearchAdminDialogs } from "./engines/elasticsearch/ui/AdminDialogs";
+import { ClusterTab } from "./engines/elasticsearch/ui/ClusterTab";
+import { SearchConfirmModal, useConfirm, type SearchHost } from "./engines/elasticsearch/ui/common";
+import { ConsoleTab } from "./engines/elasticsearch/ui/ConsoleTab";
+import { SearchSidebar } from "./engines/elasticsearch/ui/SearchSidebar";
+import { SecurityTab } from "./engines/elasticsearch/ui/SecurityTab";
+import { SearchWorkbench } from "./engines/elasticsearch/ui/SearchWorkbench";
+import type { SearchAdminEffect, SearchAdminRequest, TargetKind } from "./engines/elasticsearch/ui/types";
 import {
   CheckIcon,
   DiagramIcon,
@@ -107,6 +118,7 @@ import {
   buildWhere,
   cycleSort,
   EMPTY_FILTER,
+  filterKey,
   inEffect,
   quoteLiteral,
   selectList,
@@ -146,9 +158,10 @@ import {
   type ReviewItem,
   type SafeMode,
 } from "./sqlTools";
-import { forgetSchema, loadRelations, loadSchema } from "./schemaCache";
+import { forgetSchema, loadRelations, loadSchema, peekSchema } from "./schemaCache";
 import type { CompletionColumn, CompletionRelation } from "./sqlComplete";
 import { splitSqlStatements } from "./sqlSplit";
+import { defaultCluster, onCluster } from "./components/ClusterPicker";
 import { loadAutoSave } from "./savedQueries";
 import { isDateKind, specsForTable, withResultKinds } from "./grid/columns";
 import { cellMenuItems, deleteRowsLabel, type CellValueChoice } from "./grid/cellMenu";
@@ -160,6 +173,7 @@ import {
   missingSecretOf,
   store,
   type ConnSummary,
+  type CountStepResult,
   type EngineMeta,
   type Favorite,
   type GridResult,
@@ -186,6 +200,10 @@ import {
   createPerfTab,
   createWatchTab,
   createGridFsTab,
+  createSearchClusterTab,
+  createSearchConsoleTab,
+  createSearchSecurityTab,
+  createSearchIndexTab,
   createServerTab,
   freeQueryNumber,
   migrateTabsState,
@@ -227,6 +245,9 @@ const SIDEBAR_MAX = 560;
 const DETAIL_WIDTH_KEY = "tablepeek.detail-width";
 const DETAIL_MIN = 260;
 const DETAIL_MAX = 720;
+// The tabs of document and search connections whose views fill the detail
+// panel with what they have selected (DocDetailPanel).
+const DOC_PANEL_TABS: Record<string, true> = { collection: true, mongosh: true, watch: true, gridfs: true, searchIndex: true };
 
 // Keeps the schema sidebar wide enough to read and the editor wide enough to use.
 function clampSidebar(width: number): number {
@@ -325,7 +346,7 @@ function keyPanelEdge(
 }
 const WORKSPACES_KEY = "tablepeek.workspaces";
 const PINNED_KEY = "tablepeek.pinned-tables";
-const PERSIST_DROP_KEYS = new Set(["source", "data", "detail"]);
+const PERSIST_DROP_KEYS = new Set(["source", "data", "detail", "pageMarks"]);
 const TABLE_VIEWS: TableView[] = ["data", "structure", "index"];
 
 interface DataRunSpec {
@@ -333,6 +354,15 @@ interface DataRunSpec {
   pageSize: number;
   filter: FilterState | null;
   sorts: SortState[] | null;
+  // On an engine that pages by the server's token: tokens just found for
+  // this statement (a far jump's, Next's), by the row each leads to, added
+  // to the tab's.
+  marks?: ReadonlyMap<number, string>;
+}
+
+// A walk to a far page or a count in steps, for the data tab it belongs to.
+interface StepTask extends DataProgress {
+  tabId: string;
 }
 
 interface DbMenuState {
@@ -643,12 +673,21 @@ export default function App() {
   const [moreMenu, setMoreMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
   // A document connection's management dialog (create, import, export, rename, drop, stats).
   const [docAdmin, setDocAdmin] = useState<DocAdminRequest | null>(null);
+  // A search connection's management dialog (create, import, export, delete, reindex, …).
+  const [searchAdmin, setSearchAdmin] = useState<SearchAdminRequest | null>(null);
+  // The search workbench's write confirmations (safe mode).
+  const searchConfirm = useConfirm();
   const [metaNonce, setMetaNonce] = useState(0);
   const [pinnedTables, setPinnedTables] = useState<Record<string, string[]>>(() =>
     loadTableMap(PINNED_KEY),
   );
   const [countingTabId, setCountingTabId] = useState<string | null>(null);
   const countSeqRef = useRef(new Map<string, number>());
+  // A far page jump or a count the server does in steps (token-paged
+  // engines): how far it got, shown in the tab's footer with a stop.
+  const [stepTask, setStepTask] = useState<StepTask | null>(null);
+  // How to drop each tab's far-page walk still on its way, for a newer one.
+  const stepStopRef = useRef(new Map<string, () => void>());
   // Tables whose structure couldn't be read: no automatic count asks again.
   const detailFailedRef = useRef(new Set<string>());
   const [columnsPickOpen, setColumnsPickOpen] = useState(false);
@@ -745,6 +784,9 @@ export default function App() {
   const [detailWidth, setDetailWidth] = useState<number | null>(() =>
     storedWidth(DETAIL_WIDTH_KEY, clampDetail),
   );
+  // The detail column while a document or search tab fills it: their views
+  // portal what they have selected into this element (DocDetailPanel).
+  const [docSlot, setDocSlot] = useState<HTMLElement | null>(null);
   const [splitSide, setSplitSide] = useState<"bottom" | "right">(() =>
     window.localStorage.getItem("tablepeek.split-side") === "right" ? "right" : "bottom",
   );
@@ -936,6 +978,8 @@ export default function App() {
   fsOpenRef.current = fsOpen;
   // The side and bottom panels start open; closing one is what's remembered.
   detailPanelOpenRef.current = activeKey !== null && detailPanels[activeKey] !== false;
+  const detailSlotOpen = detailPanelOpenRef.current;
+  const detailSlot = useMemo<DetailSlot>(() => ({ element: docSlot, open: detailSlotOpen, setOpen: (open) => setDetailPanelOpen(open) }), [docSlot, detailSlotOpen]);
   cellQuickLookRef.current = cellQuickLook;
   exportTargetRef.current = exportTarget;
   importTargetRef.current = importTarget;
@@ -961,6 +1005,10 @@ export default function App() {
   // A document database's collection names, from the connection's `db.collection` list.
   const collectionsOf = (db: string): string[] =>
     (meta?.tables ?? []).filter((name) => name.startsWith(`${db}.`)).map((name) => name.slice(db.length + 1));
+  // A search engine (Elasticsearch, OpenSearch): its own sidebar and tabs too.
+  const searchConn = activeEngine?.workbench === "search";
+  const searchHost: SearchHost | null =
+    searchConn && activeConnId !== null ? { conn: activeConnId, notify, confirm: searchConfirm.confirm, safeMode: alertMode, readOnly: false } : null;
   const caps = meta !== null ? capabilitiesOf(meta) : undefined;
   const sqlDialect = activeEngine?.sql;
   const home = activeConnId === null || workspace === null;
@@ -1227,6 +1275,9 @@ export default function App() {
     if (engineById(meta.kind)?.workbench === "document") {
       return createMongoshTab(1, documentDbOf(meta), "");
     }
+    if (engineById(meta.kind)?.workbench === "search") {
+      return createSearchConsoleTab(1, "");
+    }
     const reopen = reopenableDrafts(conn)[0];
     if (reopen === undefined) {
       return createQueryTab(nextQueryNumber(conn), seedSqlForMeta(meta));
@@ -1291,6 +1342,87 @@ export default function App() {
     }
     const tab = createMongoshTab(seq, target, text);
     setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
+  }
+
+  // A search connection's index (alias, data stream) tab: the open one, else a new one.
+  function openSearchIndexTab(index: string, target: TargetKind): void {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    if (conn === null || current === null) {
+      return;
+    }
+    const open = current.tabs.find((tab) => tab.kind === "searchIndex" && tab.index === index);
+    if (open !== undefined) {
+      activate(open.id);
+      return;
+    }
+    const tab = createSearchIndexTab(index, target);
+    setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
+  }
+
+  // A new Dev Tools console tab, numbered after the open ones.
+  function openSearchConsoleTab(text = ""): void {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    if (conn === null || current === null) {
+      return;
+    }
+    const used = new Set(current.tabs.flatMap((tab) => (tab.kind === "searchConsole" ? [Number(/(\d+)$/.exec(tab.title)?.[1] ?? 0)] : [])));
+    let seq = 1;
+    while (used.has(seq)) {
+      seq += 1;
+    }
+    const tab = createSearchConsoleTab(seq, text);
+    setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
+  }
+
+  function openSearchClusterTab(): void {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    if (conn === null || current === null) {
+      return;
+    }
+    const open = current.tabs.find((tab) => tab.kind === "searchCluster");
+    if (open !== undefined) {
+      activate(open.id);
+      return;
+    }
+    activateNewTab(conn, createSearchClusterTab());
+  }
+
+  function openSearchSecurityTab(): void {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    if (conn === null || current === null) {
+      return;
+    }
+    const open = current.tabs.find((tab) => tab.kind === "searchSecurity");
+    if (open !== undefined) {
+      activate(open.id);
+      return;
+    }
+    activateNewTab(conn, createSearchSecurityTab());
+  }
+
+  // After a search management dialog: the sidebar reads again, a new index
+  // opens, a deleted one's tabs close.
+  function applySearchAdminEffect(effect: SearchAdminEffect): void {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    setDocRefreshSeq((value) => value + 1);
+    void refreshActiveMeta();
+    if (conn === null || current === null) {
+      return;
+    }
+    if (effect.kind === "created") {
+      openSearchIndexTab(effect.index, "index");
+    } else if (effect.kind === "deleted") {
+      for (const tab of current.tabs) {
+        if (tab.kind === "searchIndex" && tab.index === effect.index) {
+          closeTabById(tab.id, true);
+        }
+      }
+    }
   }
 
   // After a management dialog: the sidebar and the collection tabs read
@@ -1397,7 +1529,7 @@ export default function App() {
 
   // False when nothing started: the connection is busy, staged changes are
   // waiting on the discard warning, or the workspace is gone.
-  function runDataWith(conn: string, tab: DataTab, spec: DataRunSpec): boolean {
+  function runDataWith(conn: string, tab: DataTab, spec: DataRunSpec, detailAsked = false): boolean {
     const current = store.getState();
     if (current.status === "running" && current.connId === conn) {
       return false;
@@ -1416,6 +1548,25 @@ export default function App() {
       primaryKeyOf(detailCacheRef.current.get(`${conn}:${tab.table}`)) ??
       tab.meta?.pk ??
       null;
+    const cursor = caps?.cursor_paging === true;
+    // Rows of a table with a key are read with what tells them apart where
+    // the key doesn't (ClickHouse's part and offset).
+    const schemaTable = (peekSchema(conn, false) ?? peekSchema(conn, true) ?? []).find(
+      (schema) => schema.name === tab.table,
+    );
+    const keyed = (pk !== null && pk.length > 0) || schemaTable?.columns.some((column) => column.pk) === true;
+    // A table the sidebar hasn't listed yet (made a moment ago): its key is
+    // read first, so even the first page carries what tells its rows apart.
+    if (
+      !keyed &&
+      !detailAsked &&
+      dialect.rowIdentity !== undefined &&
+      schemaTable === undefined &&
+      !detailCacheRef.current.has(`${conn}:${tab.table}`)
+    ) {
+      void ensureDetail(conn, tab.table).then(() => runDataWith(conn, tab, spec, true));
+      return true;
+    }
     const sql = buildDataSql({
       dialect,
       table: tab.table,
@@ -1423,9 +1574,27 @@ export default function App() {
       sorts: spec.sorts,
       pk,
       columns: tab.columns ?? null,
+      identity: keyed ? dialect.rowIdentity : undefined,
       limit: spec.pageSize,
-      offset: spec.offset,
+      offset: cursor ? 0 : spec.offset,
     });
+    // Tokens continue the statement they came from: the tab's are kept while
+    // it reads the same statement (another page, another page size) and
+    // dropped with a filter, sort or column change.
+    let marks: Map<number, string> | undefined;
+    if (cursor) {
+      marks = new Map(tab.pageMarks?.sql === sql ? tab.pageMarks.at : []);
+      for (const [at, token] of spec.marks ?? []) {
+        marks.set(at, token);
+      }
+    }
+    const offset = spec.offset;
+    const token = marks !== undefined && offset > 0 ? marks.get(offset) : undefined;
+    if (marks !== undefined && offset > 0 && token === undefined) {
+      // No token leads to this page yet: the server walks there first.
+      walkTo(conn, tab, spec, sql, marks);
+      return true;
+    }
     const tabsState = tabsOf(conn);
     if (tabsState === null) {
       return false;
@@ -1434,21 +1603,22 @@ export default function App() {
       conn,
       patchTab(tabsState, tab.id, {
         sql,
-        offset: spec.offset,
+        offset,
         pageSize: spec.pageSize,
         filter: spec.filter ?? undefined,
         sorts: spec.sorts ?? undefined,
+        pageMarks: marks !== undefined ? { sql, at: marks } : undefined,
       }),
     );
     setRunningTabId(tab.id);
     // A reload of what the tab shows (Refresh, F5) counts again; paging or
     // sorting keeps the count of the same filter.
     const reload =
-      spec.offset === tab.offset &&
+      offset === tab.offset &&
       spec.pageSize === tab.pageSize &&
       JSON.stringify(spec.filter ?? null) === JSON.stringify(tab.filter ?? null) &&
       JSON.stringify(spec.sorts ?? null) === JSON.stringify(tab.sorts ?? null);
-    const countKey = buildWhere(spec.filter, dialect) ?? "";
+    const countKey = filterKey(spec.filter, dialect);
     // The table in front read again: its columns keep their widths (and the
     // same rows their scroll), so the header doesn't jump when a sort, page
     // or filter swaps the rows under it, as TablePlus keeps it.
@@ -1461,7 +1631,7 @@ export default function App() {
     if (keepView) {
       gridHostRef.current?.keepViewOnNextResult(reload ? "all" : "columns");
     }
-    void store.runQuery(conn, sql, spec.pageSize, tab.id).then((outcome) => {
+    void store.runQuery(conn, sql, spec.pageSize, tab.id, false, token).then((outcome) => {
       // A run for another tab may already have started (the next table's load).
       setRunningTabId((value) => (value === tab.id ? null : value));
       const applied = handleOutcome(conn, tab.id, outcome);
@@ -1481,17 +1651,44 @@ export default function App() {
         }
         return;
       }
-      if (outcome.result.meta.rowCount === 0 && spec.offset > 0) {
-        const back = Math.max(0, spec.offset - spec.pageSize);
-        runDataWith(conn, { ...tab, meta: outcome.result.meta }, { ...spec, offset: back });
+      if (outcome.result.meta.rowCount === 0 && offset > 0) {
+        const back = Math.max(0, offset - spec.pageSize);
+        let kept = marks;
+        if (marks !== undefined) {
+          // The token led past the last row: the rows before it are all of
+          // them, and it leads nowhere now.
+          kept = new Map(marks);
+          kept.delete(offset);
+          const latest = tabsOf(conn);
+          if (latest !== null) {
+            setTabsFor(conn, patchTab(latest, tab.id, { count: offset, countFilter: countKey }));
+          }
+        }
+        runDataWith(
+          conn,
+          { ...tab, meta: outcome.result.meta, pageMarks: kept !== undefined ? { sql, at: kept } : undefined },
+          { ...spec, offset: back, marks: undefined },
+        );
         return;
       }
       const rows = outcome.result.meta.rowCount;
-      if (!outcome.result.meta.truncated && rows < spec.pageSize) {
+      const next = outcome.result.meta.nextPage;
+      if (marks !== undefined && next !== undefined) {
+        // Next goes on from the token this page ended at.
+        const latest = tabsOf(conn);
+        const latestTab = latest !== null ? tabById(latest, tab.id) : null;
+        if (latest !== null && latestTab !== null && latestTab.kind === "data" && latestTab.pageMarks?.sql === sql) {
+          const at = new Map(latestTab.pageMarks.at);
+          at.set(offset + rows, next);
+          setTabsFor(conn, patchTab(latest, tab.id, { pageMarks: { sql, at } }));
+        }
+      }
+      const last = marks !== undefined ? next === undefined : !outcome.result.meta.truncated && rows < spec.pageSize;
+      if (last) {
         // The last page: the total needs no count.
         const latest = tabsOf(conn);
         if (latest !== null) {
-          setTabsFor(conn, patchTab(latest, tab.id, { count: spec.offset + rows, countFilter: countKey }));
+          setTabsFor(conn, patchTab(latest, tab.id, { count: offset + rows, countFilter: countKey }));
         }
       } else if (tab.count !== undefined && (tab.countFilter ?? "") === countKey) {
         // Counted already: a reload (Refresh, the rerun after Apply) brings
@@ -1504,6 +1701,165 @@ export default function App() {
       }
     });
     return true;
+  }
+
+  // A page of a token-paged table no token leads to yet (a jump by OFFSET,
+  // Prev past what was read): the server walks the rows before it from the
+  // nearest token known, without sending them here and noting tokens on
+  // the way, a step at a time with the footer showing how far it got. The
+  // page is then read from where the walk stopped. Stopped midway, the
+  // tokens found stay for the next try.
+  function walkTo(conn: string, tab: DataTab, spec: DataRunSpec, sql: string, marks: Map<number, string>): void {
+    let from = 0;
+    let page: string | undefined;
+    for (const [at, token] of marks) {
+      if (at <= spec.offset && at > from) {
+        from = at;
+        page = token;
+      }
+    }
+    // A newer jump on the same tab replaces one still on its way.
+    stepStopRef.current.get(tab.id)?.();
+    const stop = { stopped: false };
+    const target = spec.offset;
+    const label = (done: number): string =>
+      t("{row}행째로 가는 중 · {done} / {total}행 건너뜀", {
+        row: (target + 1).toLocaleString(),
+        done: done.toLocaleString(),
+        total: (target - from).toLocaleString(),
+      });
+    const task: StepTask = {
+      tabId: tab.id,
+      label: label(0),
+      fraction: 0,
+      onCancel: () => {
+        stop.stopped = true;
+        store.cancelQuery(conn);
+        setStepTask((value) => (value?.onCancel === task.onCancel ? null : value));
+      },
+    };
+    stepStopRef.current.set(tab.id, () => {
+      stop.stopped = true;
+    });
+    setStepTask(task);
+    const found = new Map(marks);
+    // The tab as it is now, for the read that follows the walk.
+    const latestTab = (): DataTab | null => {
+      const latest = tabsOf(conn);
+      const now = latest !== null ? tabById(latest, tab.id) : null;
+      return now !== null && now.kind === "data" ? now : null;
+    };
+    const keepFound = (): void => {
+      const latest = tabsOf(conn);
+      if (latest !== null && latestTab() !== null) {
+        setTabsFor(conn, patchTab(latest, tab.id, { pageMarks: { sql, at: found } }));
+      }
+    };
+    void (async () => {
+      let at = from;
+      try {
+        while (at < target) {
+          const step = await store.skipRows(conn, sql, { page, offset: at }, target - at, spec.pageSize);
+          for (const [offset, token] of step.marks) {
+            found.set(offset, token);
+          }
+          at += step.skipped;
+          if (stop.stopped) {
+            keepFound();
+            return;
+          }
+          if (step.page === null) {
+            // The rows end before the page: how many there are is known now,
+            // and the last page is shown instead.
+            const now = latestTab();
+            const latest = tabsOf(conn);
+            if (now === null || latest === null) {
+              return;
+            }
+            const dialect = sqlDialect;
+            if (dialect !== undefined) {
+              setTabsFor(conn, patchTab(latest, tab.id, { count: at, countFilter: filterKey(spec.filter, dialect) }));
+            }
+            setStepTask((value) => (value?.onCancel === task.onCancel ? null : value));
+            const lastPage = at === 0 ? 0 : Math.floor((at - 1) / spec.pageSize) * spec.pageSize;
+            runDataWith(conn, { ...now, pageMarks: { sql, at: found } }, { ...spec, offset: lastPage });
+            return;
+          }
+          page = step.page;
+          setStepTask((value) =>
+            value?.onCancel === task.onCancel
+              ? { ...value, label: label(at - from), fraction: (at - from) / Math.max(1, target - from) }
+              : value,
+          );
+        }
+        if (page !== undefined) {
+          found.set(target, page);
+        }
+        const now = latestTab();
+        setStepTask((value) => (value?.onCancel === task.onCancel ? null : value));
+        if (now !== null) {
+          runDataWith(conn, { ...now, pageMarks: { sql, at: found } }, spec);
+        }
+      } catch (err) {
+        keepFound();
+        if (!stop.stopped) {
+          notifyError(toAppError(err, t("그 페이지로 가지 못했습니다")));
+        }
+      } finally {
+        setStepTask((value) => (value?.onCancel === task.onCancel ? null : value));
+      }
+    })();
+  }
+
+  // An exact count the server does in steps (capabilities.count_steps:
+  // Cassandra's token ranges, several at once), with the footer showing how
+  // far it got and a stop. Null when stopped.
+  async function countInSteps(conn: string, tabId: string, sql: string): Promise<number | null> {
+    const stop = { stopped: false };
+    const task: StepTask = {
+      tabId,
+      label: t("행 수 세는 중…"),
+      fraction: 0,
+      onCancel: () => {
+        stop.stopped = true;
+        setStepTask((value) => (value?.onCancel === task.onCancel ? null : value));
+        store.cancelQuery(conn);
+      },
+    };
+    setStepTask(task);
+    try {
+      let total = 0;
+      let cursor: string | null = null;
+      do {
+        const step: CountStepResult = await store.countStep(conn, sql, cursor);
+        if (stop.stopped) {
+          return null;
+        }
+        total += step.rows;
+        cursor = step.cursor;
+        const percent = Math.floor(step.done * 100);
+        setStepTask((value) =>
+          value?.onCancel === task.onCancel
+            ? {
+                ...value,
+                label: t("행 수 세는 중 · {percent}% · {count}행까지", {
+                  percent,
+                  count: total.toLocaleString(),
+                }),
+                fraction: step.done,
+              }
+            : value,
+        );
+      } while (cursor !== null);
+      return total;
+    } catch (err) {
+      if (stop.stopped) {
+        return null;
+      }
+      throw err;
+    } finally {
+      setStepTask((value) => (value?.onCancel === task.onCancel ? null : value));
+    }
   }
 
   // Counts a table's rows as TablePlus does when it opens, unless its size
@@ -1549,7 +1905,7 @@ export default function App() {
     if (dialect === undefined) {
       return;
     }
-    const countKey = buildWhere(tab.filter ?? null, dialect) ?? "";
+    const countKey = filterKey(tab.filter ?? null, dialect);
     if (!asked && (workspacesRef.current[conn]?.tx === "active" || store.inOwnTx(conn))) {
       // Inside a transaction a count cut short by the next query would abort
       // it (Postgres), so none runs on its own; the one shown may be stale.
@@ -1564,8 +1920,18 @@ export default function App() {
     countSeqRef.current.set(tabId, seq);
     setCountingTabId(tabId);
     try {
-      const result = await store.exec(conn, buildCountSql({ dialect, table: tab.table, filter: tab.filter ?? null }));
-      const count = Number(result.rows[0]?.[0]);
+      const countSql = buildCountSql({ dialect, table: tab.table, filter: tab.filter ?? null });
+      let count: number;
+      if (caps?.count_steps === true) {
+        const counted = await countInSteps(conn, tabId, countSql);
+        if (counted === null) {
+          return;
+        }
+        count = counted;
+      } else {
+        const result = await store.exec(conn, countSql);
+        count = Number(result.rows[0]?.[0]);
+      }
       if (!Number.isFinite(count)) {
         throw new Error(t("행 수를 계산하지 못했습니다"));
       }
@@ -1577,7 +1943,7 @@ export default function App() {
         latest !== null &&
         latestTab !== null &&
         latestTab.kind === "data" &&
-        (buildWhere(latestTab.filter ?? null, dialect) ?? "") === countKey
+        filterKey(latestTab.filter ?? null, dialect) === countKey
       ) {
         setTabsFor(conn, patchTab(latest, tabId, { count, countFilter: countKey }));
       }
@@ -1983,6 +2349,11 @@ export default function App() {
       openMongoshTab();
       return;
     }
+    // A search connection's new tab is a console tab.
+    if (engineById(workspacesRef.current[conn]?.meta.kind ?? "")?.workbench === "search") {
+      openSearchConsoleTab();
+      return;
+    }
     // As TablePlus does: the query tabs closed earlier come back first, lowest
     // number first, with their SQL; a fresh one only when none is left.
     const reopen = reopenableDrafts(conn)[0];
@@ -2115,6 +2486,23 @@ export default function App() {
       store.cancelQuery(conn);
     }
     setRunningTabId(null);
+  }
+
+  // Stop. Where stopping ends the session (Oracle, SQL Server) an open
+  // transaction rolls back with it, so Stop asks first inside one.
+  async function stopRun(): Promise<void> {
+    if (caps?.cancel_ends_session === true && store.getState().tx === "active") {
+      const ok = await confirmDialog({
+        title: t("실행 정지"),
+        message: t("정지하면 세션이 끝나 열린 트랜잭션의 변경이 모두 롤백됩니다. 정지할까요?"),
+        confirmLabel: t("정지"),
+        danger: true,
+      });
+      if (!ok) {
+        return;
+      }
+    }
+    store.cancelQuery();
   }
 
   // The temporary tab becomes a kept one: a double-click, or a change in it.
@@ -2875,7 +3263,8 @@ export default function App() {
     // Text columns compare as text: "12345" in a varchar isn't a number.
     const spec = gridSpecs?.[col] ?? null;
     const isText = spec !== null ? spec.kind !== "number" && spec.kind !== "boolean" : typeof value === "string";
-    const filter = quickFilterFor(column, value, isText);
+    // The tab's "allow filtering" switch stays as it was.
+    const filter = { ...quickFilterFor(column, value, isText), allowFiltering: tab.filter?.allowFiltering };
     runDataWith(conn, tab, { offset: 0, pageSize: tab.pageSize, filter, sorts: tab.sorts ?? null });
     // The condition shows in the filter bar, as TablePlus's quick filter does.
     setFilterOpen((prev) => ({ ...prev, [tab.id]: true }));
@@ -3068,7 +3457,7 @@ export default function App() {
         setSettingsOpen(true);
         return;
       case "refresh":
-        if (activeEngine?.workbench === "document") {
+        if (activeEngine?.workbench === "document" || activeEngine?.workbench === "search") {
           setDocRefreshSeq((value) => value + 1);
           return;
         }
@@ -3080,9 +3469,9 @@ export default function App() {
     if (!inWorkspace) {
       return;
     }
-    // A document connection's editors run, save and switch databases on
-    // their own (⌘↩ in the query bar or mongosh, `use` in mongosh).
-    if (activeEngine?.workbench === "document" && (action === "run" || action === "runAll" || action === "applyChanges" || action === "dbSwitch")) {
+    // A document or search connection's editors run, save and switch
+    // databases on their own (⌘↩ in the query bar, mongosh or the console).
+    if ((activeEngine?.workbench === "document" || activeEngine?.workbench === "search") && (action === "run" || action === "runAll" || action === "applyChanges" || action === "dbSwitch")) {
       return;
     }
     switch (action) {
@@ -3411,7 +3800,8 @@ export default function App() {
       return;
     }
     try {
-      await store.exec(conn, `CREATE DATABASE ${quoteIdent(dialect, trimmed)}`, { history: true });
+      const quoted = quoteIdent(dialect, trimmed);
+      await store.exec(conn, dialect.createDatabase?.(quoted) ?? `CREATE DATABASE ${quoted}`, { history: true });
       store.setInfo(t("데이터베이스 생성됨: {name}", { name: trimmed }));
     } catch (err) {
       notifyError(toAppError(err, t("데이터베이스를 만들지 못했습니다")));
@@ -3439,7 +3829,8 @@ export default function App() {
       return;
     }
     try {
-      await store.exec(conn, `DROP DATABASE ${quoteIdent(dialect, trimmed)}`, { history: true });
+      const quoted = quoteIdent(dialect, trimmed);
+      await store.exec(conn, dialect.dropDatabase?.(quoted) ?? `DROP DATABASE ${quoted}`, { history: true });
       store.setInfo(t("데이터베이스 삭제됨: {name}", { name: trimmed }));
     } catch (err) {
       notifyError(toAppError(err, t("데이터베이스를 삭제하지 못했습니다")));
@@ -3510,7 +3901,13 @@ export default function App() {
       return false;
     }
     try {
-      await store.exec(conn, renameTableSql(requireSqlDialect(meta?.kind ?? ""), table, nextName), { history: true });
+      const dialect = requireSqlDialect(meta?.kind ?? "");
+      const [statement] = onCluster(
+        dialect,
+        [renameTableSql(dialect, table, nextName)],
+        await defaultCluster(conn, dialect),
+      );
+      await store.exec(conn, statement, { history: true });
       store.setInfo(t("테이블 이름을 변경했습니다: {from} → {to}", { from: table, to: nextName }));
       const current = tabsOf(conn);
       if (current !== null) {
@@ -3647,7 +4044,12 @@ export default function App() {
       const targetQuoted = quoteIdent(dialect, target);
       const sql = dialect.copyTable?.(targetQuoted, quoted) ?? `CREATE TABLE ${targetQuoted} AS SELECT * FROM ${quoted};`;
       try {
-        await store.exec(conn, sql, { history: true });
+        // One statement, or several where the engine copies structure and
+        // rows apart (ClickHouse).
+        const cluster = await defaultCluster(conn, dialect);
+        for (const statement of onCluster(dialect, splitSqlStatements(sql, dialect), cluster)) {
+          await store.exec(conn, statement, { history: true });
+        }
         store.setInfo(t("테이블을 복제했습니다: {name}", { name: target }));
         await refreshActiveMeta();
       } catch (err) {
@@ -3655,14 +4057,19 @@ export default function App() {
       }
       return;
     }
-    // The confirmation names the first few tables only.
+    // The confirmation names the first few tables only, and the cluster the
+    // change runs on (the connection's ON CLUSTER setting).
     const shown = tables.slice(0, 10).join(", ");
+    const cluster = action === "truncate" || action === "delete" ? await defaultCluster(conn, dialect) : null;
     const names =
       tables.length > 10 ? `${shown} ${t("외 {count}개", { count: tables.length - 10 })}` : shown;
+    const onAll = cluster === null ? "" : `\n${t("클러스터 {cluster}의 모든 서버에서 실행합니다", { cluster })}`;
     if (action === "truncate") {
-      const question = several
-        ? t("테이블 {count}개의 모든 행을 삭제할까요?\n{tables}", { count: tables.length, tables: names })
-        : t("{table} 테이블의 모든 행을 삭제할까요?", { table });
+      const question = `${
+        several
+          ? t("테이블 {count}개의 모든 행을 삭제할까요?\n{tables}", { count: tables.length, tables: names })
+          : t("{table} 테이블의 모든 행을 삭제할까요?", { table })
+      }${onAll}`;
       const ok = await confirmDialog({
         title: t("테이블 비우기"),
         message: question,
@@ -3684,7 +4091,7 @@ export default function App() {
               () => ({ done: tables, failed: [] }),
               (error: unknown) => ({ done: [], failed: [{ table: names, error }] }),
             )
-        : await eachTable(conn, tables, (name) => `${truncateTableSql(dialect, name)};`);
+        : await eachTable(conn, tables, (name) => onCluster(dialect, [`${truncateTableSql(dialect, name)};`], cluster)[0]);
       if (failed.length === 0) {
         store.setInfo(
           several
@@ -3709,12 +4116,14 @@ export default function App() {
       return;
     }
     if (action === "delete") {
-      const question = several
-        ? t("테이블 {count}개를 삭제하면 되돌릴 수 없습니다. 삭제할까요?\n{tables}", {
-            count: tables.length,
-            tables: names,
-          })
-        : t("테이블 {table}을(를) 삭제하면 되돌릴 수 없습니다. 삭제할까요?", { table });
+      const question = `${
+        several
+          ? t("테이블 {count}개를 삭제하면 되돌릴 수 없습니다. 삭제할까요?\n{tables}", {
+              count: tables.length,
+              tables: names,
+            })
+          : t("테이블 {table}을(를) 삭제하면 되돌릴 수 없습니다. 삭제할까요?", { table })
+      }${onAll}`;
       const ok = await confirmDialog({ title: t("테이블 삭제"), message: question, confirmLabel: t("삭제"), danger: true });
       if (!ok) {
         return;
@@ -3722,7 +4131,7 @@ export default function App() {
       const { done: dropped, failed } = await eachTable(
         conn,
         tables,
-        (name) => `DROP TABLE ${quoteIdent(dialect, name)};`,
+        (name) => onCluster(dialect, [`DROP TABLE ${quoteIdent(dialect, name)};`], cluster)[0],
       );
       if (failed.length === 0) {
         store.setInfo(
@@ -4494,6 +4903,9 @@ export default function App() {
     const dialect = requireSqlDialect(meta?.kind ?? "");
     const editableRow = (r: number): boolean =>
       editableTable && (keyed || source.isInserted(r)) && !source.isDeleted(r);
+    // A stored row's key cell, which the engine can't change (CQL).
+    const lockedKey = (r: number, c: number): boolean =>
+      dialect.fixedKeys === true && result.meta.pk?.includes(columns[c]) === true && !source.isInserted(r);
     const selectedCols = rangeOf(selection.c0, selection.c1);
     // Whole columns take every row; the row actions leave them alone, as the
     // Delete key does.
@@ -4507,7 +4919,14 @@ export default function App() {
           // INSERT writes a staged DEFAULT or NOW() as SQL; the rest show its label.
           const values = await rangeValues(source, selection.r0, selection.r1, cols, format === "insert");
           const binary = cols.map((c) => gridSpecs?.[c]?.kind === "binary");
-          const target = table !== null ? { table, dialect, binary } : null;
+          // Declared types, for literals that depend on them (CQL's uuids,
+          // numbers and collections).
+          const conn = activeConnIdRef.current;
+          const detail = conn !== null && table !== null ? detailCacheRef.current.get(`${conn}:${table}`) : undefined;
+          const declared = cols.map(
+            (c) => detail?.columns.find((column) => column.name === columns[c])?.decl_type ?? null,
+          );
+          const target = table !== null ? { table, dialect, binary, declared } : null;
           await writeClipboard(formatCopy(format, { columns: cols.map((c) => columns[c]), rows: values }, target));
           noteCapped(
             selection.r1 - selection.r0 + 1,
@@ -4535,6 +4954,9 @@ export default function App() {
           continue;
         }
         for (const c of selectedCols) {
+          if (lockedKey(r, c)) {
+            continue;
+          }
           if (choice === "default" && source.isInserted(r)) {
             // A new row's cell back at DEFAULT: left out of its INSERT.
             store.revertCell(r, c);
@@ -4550,6 +4972,44 @@ export default function App() {
         selection.r1 - selection.r0 + 1,
         t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
       );
+    };
+    // Columns that change by addition only (CQL counters), as the table's
+    // structure declares them: every selected one must be.
+    const menuConn = activeConnIdRef.current;
+    const menuDetail = menuConn !== null && table !== null ? detailCacheRef.current.get(`${menuConn}:${table}`) : undefined;
+    const addsOnly =
+      dialect.addsTo !== undefined &&
+      menuDetail !== undefined &&
+      selectedCols.every((c) => {
+        const declared = menuDetail.columns.find((column) => column.name === columns[c])?.decl_type;
+        return declared !== undefined && declared !== null && dialect.addsTo?.(declared) === true;
+      });
+    const addTo = (): void => {
+      void (async () => {
+        const amount = await promptDialog({
+          title: t("더할 값"),
+          label: t("{column}에 더할 수 (빼려면 음수)", { column: columns[col] ?? "" }),
+          initial: "1",
+          confirmLabel: t("확인"),
+          validate: (text) => (/^[+-]?\d+$/.test(text) ? null : t("정수를 입력하세요")),
+        });
+        if (amount === null) {
+          return;
+        }
+        const normalized = BigInt(amount).toString();
+        for (let r = selection.r0; r <= lastRow; r += 1) {
+          if (!editableRow(r)) {
+            continue;
+          }
+          for (const c of selectedCols) {
+            store.addToCell(r, c, normalized);
+          }
+        }
+        noteCapped(
+          selection.r1 - selection.r0 + 1,
+          t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+        );
+      })();
     };
 
     const views: ContextMenuItem[] = [
@@ -4573,6 +5033,26 @@ export default function App() {
             void fkJump(row, col);
           },
         });
+      }
+      // A binary cell of a saved row, whole (capabilities.binary_cells):
+      // past the 16 KiB the grid shows, and from a file.
+      const cell = single && gridSpecs?.[col]?.kind === "binary" ? store.binaryCellRef(row, col) : null;
+      if (caps?.binary_cells === true && conn !== null && cell !== null && source.cellState(row, col) !== "edited") {
+        const tab = dataTab;
+        const open = (start: "download" | "replace") =>
+          binaryCellDialog({
+            conn,
+            cell,
+            shown: value,
+            start,
+            onReplaced: () => {
+              runDataWith(conn, tab, dataSpecOf(tab, tab.offset, tab.pageSize));
+            },
+          });
+        views.push({ label: t("전체 값 내려받기"), onSelect: () => open("download") });
+        if (editableRow(row)) {
+          views.push({ label: t("값 바꾸기…"), onSelect: () => open("replace") });
+        }
       }
     }
 
@@ -4599,7 +5079,8 @@ export default function App() {
       },
       quickLook: () => openCellQuickLook(row, col),
       views,
-      edit: editableRow(row) ? () => gridHostRef.current?.beginEdit(row, col) : undefined,
+      edit: editableRow(row) && !lockedKey(row, col) ? () => gridHostRef.current?.beginEdit(row, col) : undefined,
+      addTo: anyEditable && addsOnly ? addTo : undefined,
       setValue: anyEditable ? setValue : undefined,
       // Without the table's structure, any column may take either.
       nullable: specsOf.every((spec) => spec?.nullable ?? true),
@@ -5529,7 +6010,7 @@ export default function App() {
             connection={state.connection}
             activeDetail={
               meta !== null
-                ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${documentConn ? t("컬렉션 {count}개", { count: meta.tables.length }) : tTableCount(meta.tables.length)}`
+                ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${documentConn ? t("컬렉션 {count}개", { count: meta.tables.length }) : searchConn ? t("인덱스 {count}개", { count: meta.tables.length }) : tTableCount(meta.tables.length)}`
                 : null
             }
             onSwitch={(id) => void enterConn(id)}
@@ -5657,6 +6138,9 @@ export default function App() {
                   </button>
                 </div>
               ) : null}
+              {sqlDialect?.consistencyLevels !== undefined && activeConnId !== null ? (
+                <ConsistencyMenu key={activeConnId} conn={activeConnId} levels={sqlDialect.consistencyLevels} />
+              ) : null}
               <SafeModeMenu mode={alertMode} onChange={setAlertMode} compact />
               <button
                 type="button"
@@ -5688,6 +6172,8 @@ export default function App() {
               </button>
             </div>
           </div>
+          {/* The detail column the document and search views portal into. */}
+          <DetailSlotContext.Provider value={detailSlot}>
           <div
             className="workbench"
             style={
@@ -5703,7 +6189,7 @@ export default function App() {
                   key={activeConnId}
                   conn={activeConnId}
                   queries={
-                    documentConn ? (
+                    documentConn || searchConn ? (
                       <div className="schema-empty">{t("저장한 쿼리는 SQL 연결에서 씁니다")}</div>
                     ) : (
                       <QueriesPane onOpen={openSavedQuery} onRun={runInNewTab} onInsert={insertIntoEditor} />
@@ -5714,9 +6200,9 @@ export default function App() {
                       conn={activeConnId}
                       version={historyVersion}
                       active={active}
-                      onOpen={(sqlText) => (documentConn ? openMongoshTab(undefined, sqlText) : void openQueryTab(sqlText))}
-                      onRun={documentConn ? (sqlText) => openMongoshTab(undefined, sqlText) : runInNewTab}
-                      onInsert={documentConn ? (sqlText) => openMongoshTab(undefined, sqlText) : insertIntoEditor}
+                      onOpen={(sqlText) => (documentConn ? openMongoshTab(undefined, sqlText) : searchConn ? openSearchConsoleTab(sqlText) : void openQueryTab(sqlText))}
+                      onRun={documentConn ? (sqlText) => openMongoshTab(undefined, sqlText) : searchConn ? (sqlText) => openSearchConsoleTab(sqlText) : runInNewTab}
+                      onInsert={documentConn ? (sqlText) => openMongoshTab(undefined, sqlText) : searchConn ? (sqlText) => openSearchConsoleTab(sqlText) : insertIntoEditor}
                     />
                   )}
                   items={
@@ -5731,6 +6217,18 @@ export default function App() {
                     onOpenWatch={(db) => openDocDbTab("watch", db)}
                     onOpenBucket={(db, bucket) => openDocDbTab("gridfs", db, bucket)}
                     activeBucket={activeTab?.kind === "gridfs" ? { db: activeTab.db, bucket: activeTab.bucket } : null}
+                  />
+                ) : searchHost !== null ? (
+                  <SearchSidebar
+                    host={searchHost}
+                    refreshKey={docRefreshSeq}
+                    active={activeTab?.kind === "searchIndex" ? { index: activeTab.index, kind: activeTab.target } : null}
+                    onOpen={openSearchIndexTab}
+                    onOpenConsole={(text) => openSearchConsoleTab(text)}
+                    onOpenCluster={openSearchClusterTab}
+                    onOpenSecurity={openSearchSecurityTab}
+                    onAdmin={setSearchAdmin}
+                    onChanged={() => void refreshActiveMeta()}
                   />
                 ) : (
                 <SchemaSidebar
@@ -5750,7 +6248,7 @@ export default function App() {
                   onOpenInEditor={pickTable}
                   onOpenStructure={(table) => openDataTab(table, { view: "structure" })}
                   onOpenOverview={openOverviewTab}
-                  onOpenDiagram={openDiagramTab}
+                  onOpenDiagram={caps?.foreign_keys === false ? undefined : openDiagramTab}
                   onOpenServer={openServerTab}
                   onOpenDefinition={openDefinitionTab}
                   onTogglePin={togglePin}
@@ -5870,7 +6368,7 @@ export default function App() {
                           beautifyHint={formatBinding(BEAUTIFY_KEY)}
                           onLimit={(limit) => setSettings(saveSettings({ maxRows: limit }))}
                           onRun={run}
-                          onStop={() => store.cancelQuery()}
+                          onStop={() => void stopRun()}
                           onFormat={formatCurrent}
                           onExplain={explain}
                         />
@@ -5940,8 +6438,6 @@ export default function App() {
                         readOnly={activeTab.isView === true}
                         notify={notify}
                         collections={collectionsOf(activeTab.db)}
-                        panelOpen={detailPanelOpen}
-                        onPanelOpenChange={setDetailPanelOpen}
                         refreshSeq={docRefreshSeq}
                         safeMode={alertMode}
                         maxTimeMS={settings.queryTimeout > 0 ? settings.queryTimeout * 1000 : undefined}
@@ -5985,6 +6481,50 @@ export default function App() {
                     ) : (
                       <EmptyWorkspace onNewQuery={() => openMongoshTab()} onHome={goHome} />
                     )
+                  ) : searchHost !== null && activeConnId !== null ? (
+                    activeTab?.kind === "searchIndex" ? (
+                      <SearchWorkbench
+                        key={`${activeConnId}:${activeTab.id}`}
+                        host={searchHost}
+                        connKey={stableKeyOf(activeConnId)}
+                        index={activeTab.index}
+                        kind={activeTab.target}
+                        tabKey={`${activeConnId}:${activeTab.id}`}
+                        persisted={activeTab.search}
+                        onPersist={(search) => updateActiveTabs((current) => patchTab(current, activeTab.id, { search }))}
+                        active
+                        refreshSeq={docRefreshSeq}
+                        onChanged={() => {
+                          setDocRefreshSeq((value) => value + 1);
+                          void refreshActiveMeta();
+                        }}
+                        onAdmin={setSearchAdmin}
+                      />
+                    ) : activeTab?.kind === "searchConsole" ? (
+                      <ConsoleTab
+                        key={`${activeConnId}:${activeTab.id}`}
+                        host={searchHost}
+                        connKey={stableKeyOf(activeConnId)}
+                        tabKey={`${activeConnId}:${activeTab.id}`}
+                        text={activeTab.text}
+                        onTextChange={(text) => updateActiveTabs((current) => patchTab(current, activeTab.id, { text }))}
+                        active
+                      />
+                    ) : activeTab?.kind === "searchCluster" ? (
+                      <ClusterTab key={`${activeConnId}:${activeTab.id}`} host={searchHost} active onOpenIndex={(name) => openSearchIndexTab(name, "index")} />
+                    ) : activeTab?.kind === "searchSecurity" ? (
+                      <SecurityTab
+                        key={`${activeConnId}:${activeTab.id}`}
+                        host={searchHost}
+                        section={activeTab.section}
+                        onSectionChange={(section) => updateActiveTabs((current) => patchTab(current, activeTab.id, { section }))}
+                        refreshSeq={docRefreshSeq}
+                      />
+                    ) : activeTab?.kind === "server" ? (
+                      <ServerInfoPanel key={`${activeConnId}:${activeTab.id}`} conn={activeConnId} />
+                    ) : (
+                      <EmptyWorkspace onNewQuery={() => openSearchConsoleTab()} onHome={goHome} />
+                    )
                   ) : meta !== null && activeEngine?.workbench !== "sql" ? (
                     // An engine this page has no workbench for stops here, never falling back to another's.
                     <div className="empty-workspace" role="alert">
@@ -6005,7 +6545,7 @@ export default function App() {
                       dialect={sqlDialect}
                       table={activeTab.table}
                       data={activeTab.data}
-                      onRename={(name) => renameTable(activeConnId, activeTab.table, name)}
+                      onRename={sqlDialect?.noTableRename === true ? undefined : (name) => renameTable(activeConnId, activeTab.table, name)}
                       onData={(detail) =>
                         updateActiveTabs((current) => patchTab(current, activeTab.id, { data: detail }))
                       }
@@ -6057,8 +6597,10 @@ export default function App() {
                                 refreshHint={shortcutHint(settings.keymap, "refresh")}
                                 filterHint={shortcutHint(settings.keymap, "openFilter")}
                                 running={connRunning}
+                                cursorPaging={caps?.cursor_paging === true}
                                 loading={resultLoading}
                                 counting={countingTabId === activeDataTab.id}
+                                progress={stepTask?.tabId === activeDataTab.id ? stepTask : null}
                                 filterOpen={filterVisible}
                                 columnsOpen={columnsPickOpen}
                                 columnsPicker={
@@ -6109,6 +6651,8 @@ export default function App() {
                                 }
                                 onCount={() => void refreshCount(activeConnId, activeDataTab.id)}
                                 onPrev={() =>
+                                  // On a token-paged table the page before
+                                  // starts from a token noted on the way here.
                                   runDataWith(
                                     activeConnId,
                                     activeDataTab,
@@ -6119,7 +6663,18 @@ export default function App() {
                                     ),
                                   )
                                 }
-                                onNext={() =>
+                                onNext={() => {
+                                  const next = activeDataTab.meta?.nextPage;
+                                  if (caps?.cursor_paging === true) {
+                                    if (next !== undefined) {
+                                      const at = activeDataTab.offset + (activeDataTab.meta?.rowCount ?? 0);
+                                      runDataWith(activeConnId, activeDataTab, {
+                                        ...dataSpecOf(activeDataTab, at, activeDataTab.pageSize),
+                                        marks: new Map([[at, next]]),
+                                      });
+                                    }
+                                    return;
+                                  }
                                   runDataWith(
                                     activeConnId,
                                     activeDataTab,
@@ -6128,8 +6683,8 @@ export default function App() {
                                       activeDataTab.offset + activeDataTab.pageSize,
                                       activeDataTab.pageSize,
                                     ),
-                                  )
-                                }
+                                  );
+                                }}
                               />
                         </div>
                       ) : null}
@@ -6147,7 +6702,9 @@ export default function App() {
                           table={activeDataTab.table}
                           data={activeDataTab.detail}
                           viewTabs={tableViewTabs}
-                          onRename={(name) => renameTable(activeConnId, activeDataTab.table, name)}
+                          onRename={
+                            sqlDialect?.noTableRename === true ? undefined : (name) => renameTable(activeConnId, activeDataTab.table, name)
+                          }
                           onSelectRows={(pick) =>
                             pickStructureRows(
                               pick === null ? null : { ...pick, key: `${activeDataTab.id}:${activeDataTab.view}` },
@@ -6172,6 +6729,9 @@ export default function App() {
                           filter={activeDataTab.filter ?? EMPTY_FILTER}
                           running={connRunning}
                           error={filterError}
+                          ops={sqlDialect?.filterOps}
+                          logics={sqlDialect?.filterLogics}
+                          allowFilteringClause={sqlDialect?.allowFilteringClause}
                           focusRequest={filterFocus?.tab === activeDataTab.id ? filterFocus.seq : null}
                           defaultColumn={filterFocus?.tab === activeDataTab.id ? filterFocus.column : null}
                           onFocusHandled={() => setFilterFocus(null)}
@@ -6188,7 +6748,11 @@ export default function App() {
                             runDataWith(activeConnId, activeDataTab, {
                               offset: 0,
                               pageSize: activeDataTab.pageSize,
-                              filter: null,
+                              // The "allow filtering" switch stays as it was.
+                              filter:
+                                activeDataTab.filter?.allowFiltering === true
+                                  ? { ...EMPTY_FILTER, allowFiltering: true }
+                                  : null,
                               sorts: activeDataTab.sorts ?? null,
                             });
                           }}
@@ -6251,6 +6815,7 @@ export default function App() {
                             onQuickLook={(row) => openRowDetail(row)}
                             onCellQuickLook={(row, col) => openCellQuickLook(row, col)}
                             specs={gridSpecs}
+                            fixedKeys={sqlDialect?.fixedKeys === true}
                             onLink={(row, col) => void fkJump(row, col)}
                             themeKey={`${settings.theme}:${settings.accent}:${settings.rowAlt}`}
                           />
@@ -6260,7 +6825,7 @@ export default function App() {
                               label={activeTab?.kind === "data" ? t("불러오는 중…") : t("실행 중…")}
                             >
                               {activeTab?.kind === "data" && connRunning && runningTabId === activeTab.id ? (
-                                <button type="button" onClick={() => store.cancelQuery()}>
+                                <button type="button" onClick={() => void stopRun()}>
                                   <StopIcon size={10} />
                                   {t("정지")}
                                 </button>
@@ -6401,7 +6966,7 @@ export default function App() {
                               ? t("불러오는 중…")
                               : t("실행 중…")}
                             {activeTab?.kind === "data" && runningTabId === activeTab.id ? (
-                              <button type="button" onClick={() => store.cancelQuery()} title={t("정지")}>
+                              <button type="button" onClick={() => void stopRun()} title={t("정지")}>
                                 {t("정지")}
                               </button>
                             ) : null}
@@ -6446,7 +7011,7 @@ export default function App() {
                 </>
               ) : null}
             </div>
-            {detailPanelOpen && !documentConn ? (
+            {detailPanelOpen ? (
               <>
                 <div
                   className="detail-splitter"
@@ -6471,20 +7036,33 @@ export default function App() {
                     keyPanelEdge(event, event.currentTarget.nextElementSibling, -1, clampDetail, saveDetailWidth)
                   }
                 />
-                <RowDetailPanel
-                  source={structureRows?.source ?? detailResult?.source ?? null}
-                  columns={structureRows?.source.columns ?? detailResult?.meta.columns ?? EMPTY_TABLES}
-                  rows={structureRows?.rows ?? detailRows}
-                  tableRows={structureRows === null}
-                  table={detailTable}
-                  detail={panelDetail}
-                  detailLoading={rowDetailLoading}
-                  exactRows={caps?.exact_count === true}
-                  onOpenReference={(row, col) => void fkJump(row, col)}
-                />
+                {documentConn || searchConn ? (
+                  // A document or search tab's views portal their selection
+                  // here; the other tabs of those connections have none.
+                  activeTab !== null && Object.hasOwn(DOC_PANEL_TABS, activeTab.kind) ? (
+                    <aside key="slot" ref={setDocSlot} className="row-detail mg-detail" aria-label={t("행 상세")} />
+                  ) : (
+                    <aside key="none" className="row-detail mg-detail" aria-label={t("행 상세")}>
+                      <div className="panel-empty mg-detail-empty">{t("이 탭에는 보여 줄 상세 정보가 없습니다")}</div>
+                    </aside>
+                  )
+                ) : (
+                  <RowDetailPanel
+                    source={structureRows?.source ?? detailResult?.source ?? null}
+                    columns={structureRows?.source.columns ?? detailResult?.meta.columns ?? EMPTY_TABLES}
+                    rows={structureRows?.rows ?? detailRows}
+                    tableRows={structureRows === null}
+                    table={detailTable}
+                    detail={panelDetail}
+                    detailLoading={rowDetailLoading}
+                    exactRows={caps?.exact_count === true}
+                    onOpenReference={(row, col) => void fkJump(row, col)}
+                  />
+                )}
               </>
             ) : null}
           </div>
+          </DetailSlotContext.Provider>
         </>
       )}
       <div className="flash-toast" role="status">
@@ -6594,7 +7172,17 @@ export default function App() {
           x={moreMenu.x}
           y={moreMenu.y}
           anchor={moreMenu.anchor}
-          items={documentConn ? [
+          items={searchConn ? [
+            { label: t("새 콘솔 탭"), onSelect: () => openSearchConsoleTab() },
+            { label: t("서버 정보"), onSelect: openServerTab },
+            { label: t("클러스터"), onSelect: openSearchClusterTab },
+            { label: t("보안 (사용자·역할·API 키)"), onSelect: openSearchSecurityTab },
+            { label: t("인덱스 만들기…"), separatorBefore: true, onSelect: () => setSearchAdmin({ kind: "create" }) },
+            { label: t("파일에서 가져오기…"), onSelect: () => setSearchAdmin({ kind: "import", index: activeTab?.kind === "searchIndex" ? activeTab.index : null }) },
+            ...(activeTab?.kind === "searchIndex"
+              ? [{ label: t("내보내기 (NDJSON·JSON·CSV)…"), onSelect: () => setSearchAdmin({ kind: "export", index: activeTab.index }) }]
+              : []),
+          ] : documentConn ? [
             { label: t("새 mongosh 탭"), onSelect: () => openMongoshTab() },
             { label: t("서버 정보"), onSelect: openServerTab },
             { label: t("성능"), onSelect: () => openSingleTab("perf") },
@@ -6643,6 +7231,10 @@ export default function App() {
       {docAdmin !== null && documentConn && activeConnId !== null ? (
         <DocAdminDialogs key={activeConnId} conn={activeConnId} request={docAdmin} safeMode={alertMode} notify={notify} onEffect={applyDocAdminEffect} onClose={() => setDocAdmin(null)} />
       ) : null}
+      {searchAdmin !== null && searchHost !== null ? (
+        <SearchAdminDialogs key={searchHost.conn} host={searchHost} request={searchAdmin} onEffect={applySearchAdminEffect} onClose={() => setSearchAdmin(null)} />
+      ) : null}
+      {searchConfirm.pending !== null ? <SearchConfirmModal request={searchConfirm.pending.request} onResult={searchConfirm.pending.resolve} /> : null}
       {snippetMenu !== null ? (
         <ContextMenu
           x={snippetMenu.x}
@@ -6809,7 +7401,7 @@ export default function App() {
         <ReviewModal
           mode={alertMode}
           items={reviewPrompt.items}
-          txActive={state.tx === "active"}
+          offerTx={state.tx !== "active" && caps?.transactions !== "none"}
           onRun={runReviewed}
           onClose={() => setReviewPrompt(null)}
         />
@@ -6830,6 +7422,7 @@ export default function App() {
         />
       )}
       <ConfirmDialogHost />
+      <BinaryCellDialogHost />
     </div>
     {locked ? <LockScreen onUnlock={() => setLocked(false)} /> : null}
     <HoverTooltip />

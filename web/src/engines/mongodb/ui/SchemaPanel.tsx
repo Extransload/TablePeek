@@ -6,7 +6,8 @@
 // boolean ratio, ObjectId creation times), and a world map of location
 // fields (GeoMap). Clicking a value or a bar, or drawing a region on the map,
 // filters the documents by it; the analysis exports as JSON and drafts a
-// `$jsonSchema` for the 검증 tab.
+// `$jsonSchema` for the 검증 tab. A field picked by its name shows its
+// summary in the app's detail panel.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ErrorNotice } from "../../../components/ErrorNotice";
@@ -21,14 +22,18 @@ import { shellCollection, toShell } from "../format";
 import { findGeoFields, type GeoField } from "../geo";
 import { SAMPLE_SIZES, analyzeSchema, draftJsonSchema, filterNumber, schemaExport, typesByCount, type SchemaAnalysis, type SchemaField } from "../schema";
 import { parseFilter } from "../shell/parse";
+import { DocDetailPanel, FactsList, NothingSelected, type Fact } from "./DocDetailPanel";
 import { GeoMap } from "./GeoMap";
 import { MongoEditor } from "./MongoEditor";
+import { arrowStep } from "./selection";
 import type { DocHost } from "./types";
 import "./panels.css";
 import "./schema.css";
 
 export interface SchemaPanelProps {
   ns: Namespace;
+  // What the detail panel lists with no field picked.
+  facts: Fact[] | null;
   // The query bar's filter text; the analysis starts from it.
   filterText: string;
   // False while another sub-tab is in front.
@@ -82,6 +87,44 @@ function numberText(n: number): string {
 function dayText(ms: number, withTime: boolean): string {
   const iso = new Date(ms).toISOString();
   return withTime ? iso.slice(0, 16).replace("T", " ") : iso.slice(0, 10);
+}
+
+// A field's summary as the detail panel lists it.
+function fieldFacts(field: SchemaField, sampleSize: number): Fact[] {
+  const types = typesByCount(field.types);
+  const total = types.reduce((n, [, c]) => n + c, 0) || 1;
+  const facts: Fact[] = [
+    { name: t("있음"), value: t("{pct} · 문서 {count}/{sample}개", { pct: percent(field.presence), count: field.count.toLocaleString(), sample: sampleSize.toLocaleString() }) },
+    { name: t("타입"), value: types.map(([type, n]) => `${type} ${percent(n / total)}`).join(" · ") },
+  ];
+  const elems = typesByCount(field.elemTypes);
+  if (elems.length > 0) {
+    facts.push({ name: t("원소 타입"), value: elems.map(([type, n]) => t("{type} {count}개", { type, count: n.toLocaleString() })).join(" · ") });
+  }
+  if (field.children.length > 0) {
+    facts.push({ name: t("하위 필드"), value: field.children.map((path) => path.slice(field.path.length + 1)).join(", ") });
+  }
+  const { number: num, date, string: str, objectId: oid, boolean: bool, array: arr } = field;
+  if (num) {
+    facts.push({ name: t("수"), value: t("최소 {min} · 최대 {max} · 평균 {mean} · 서로 다른 값 {distinct}개", { min: numberText(num.min), max: numberText(num.max), mean: numberText(num.mean), distinct: num.distinct.toLocaleString() }) });
+  }
+  if (date) {
+    facts.push({ name: t("날짜"), value: `${new Date(date.min).toISOString()} ~ ${new Date(date.max).toISOString()}` });
+  }
+  if (str) {
+    facts.push({ name: t("문자열"), value: t("서로 다른 값 {distinct}개 · 길이 {min}–{max} (평균 {mean})", { distinct: str.distinct.toLocaleString(), min: str.minLength, max: str.maxLength, mean: numberText(str.meanLength) }) });
+    facts.push({ name: t("자주 나오는 값"), value: str.top.map((x) => `${x.value === "" ? t("(빈 문자열)") : x.value} (${x.count.toLocaleString()})`).join("\n") });
+  }
+  if (oid) {
+    facts.push({ name: "ObjectId", value: t("서로 다른 값 {distinct}개 · 만든 때 {first} ~ {last}", { distinct: oid.distinct.toLocaleString(), first: dayText(oid.first, true), last: dayText(oid.last, true) }) });
+  }
+  if (bool) {
+    facts.push({ name: "Boolean", value: `true ${bool.trues.toLocaleString()} · false ${bool.falses.toLocaleString()}` });
+  }
+  if (arr) {
+    facts.push({ name: t("배열 길이"), value: t("{min}–{max} (평균 {mean})", { min: arr.minLength, max: arr.maxLength, mean: numberText(arr.meanLength) }) });
+  }
+  return facts;
 }
 
 interface Bar {
@@ -299,13 +342,21 @@ function FieldViz({ field, geo, onFilter }: { field: SchemaField; geo: GeoField 
   );
 }
 
-function FieldRow({ field, geo, sampleSize, open, onToggle, onFilter }: { field: SchemaField; geo: GeoField | undefined; sampleSize: number; open: boolean; onToggle(): void; onFilter(path: string, value: BsonValue): void }) {
+function FieldRow({ field, geo, sampleSize, open, selected, onToggle, onPick, onFilter }: { field: SchemaField; geo: GeoField | undefined; sampleSize: number; open: boolean; selected: boolean; onToggle(): void; onPick(): void; onFilter(path: string, value: BsonValue): void }) {
   const types = typesByCount(field.types);
   const total = types.reduce((n, [, c]) => n + c, 0) || 1;
   const missing = sampleSize - field.count;
   return (
-    <div className="mg-sfield">
-      <div className="mg-schema-left" style={{ paddingLeft: field.depth * 18 }}>
+    <div className={`mg-sfield${selected ? " selected" : ""}`}>
+      <div
+        className="mg-schema-left"
+        style={{ paddingLeft: field.depth * 18 }}
+        onClick={(event) => {
+          if (!(event.target instanceof Element && event.target.closest("button") !== null)) {
+            onPick();
+          }
+        }}
+      >
         <div className="mg-schema-name">
           {field.children.length > 0 ? (
             <button type="button" className={`mg-schema-toggle${open ? " open" : ""}`} title={open ? t("하위 필드 접기") : t("하위 필드 펼치기")} aria-expanded={open} onClick={onToggle}>
@@ -346,7 +397,7 @@ function FieldRow({ field, geo, sampleSize, open, onToggle, onFilter }: { field:
   );
 }
 
-export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }: SchemaPanelProps) {
+export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onDraft }: SchemaPanelProps) {
   const key = `${ns.conn}\u0000${ns.db}\u0000${ns.coll}`;
   const mem = useMemo(() => {
     let m = memory.get(key);
@@ -438,6 +489,11 @@ export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }:
   const result = shown !== null && "analysis" in shown ? shown : null;
   const analysis = result?.analysis ?? null;
   const geo = useMemo(() => (shown !== null && "docs" in shown ? findGeoFields(shown.docs) : new Map<string, GeoField>()), [shown]);
+  // The field in the detail panel, by path.
+  const [picked, setPicked] = useState<string | null>(null);
+  const pickedField = picked === null ? undefined : analysis?.fields.get(picked);
+  // The rows on show top to bottom, for the arrow keys.
+  const order: string[] = [];
 
   let body;
   if (shown === null) {
@@ -456,7 +512,8 @@ export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }:
           continue;
         }
         const isOpen = open.has(path);
-        rows.push(<FieldRow key={path} field={f} geo={geo.get(path)} sampleSize={a.sampleSize} open={isOpen} onToggle={() => toggle(path)} onFilter={onFilter} />);
+        order.push(path);
+        rows.push(<FieldRow key={path} field={f} geo={geo.get(path)} sampleSize={a.sampleSize} open={isOpen} selected={path === picked} onToggle={() => toggle(path)} onPick={() => pickRow(null, path)} onFilter={onFilter} />);
         if (isOpen) {
           walk(f.children);
         }
@@ -464,6 +521,11 @@ export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }:
     };
     walk(a.roots);
     body = rows;
+  }
+
+  function pickRow(list: HTMLElement | null, path: string): void {
+    setPicked(path);
+    list?.querySelectorAll(".mg-sfield")[order.indexOf(path)]?.scrollIntoView({ block: "nearest" });
   }
 
   let summary = "";
@@ -544,7 +606,33 @@ export function SchemaPanel({ ns, filterText, active, host, onFilter, onDraft }:
           {t("JSON 내보내기")}
         </button>
       </div>
-      <div className="mg-schema-list">{body}</div>
+      <div
+        className="mg-schema-list"
+        tabIndex={-1}
+        onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest(".mg-schema-left") !== null) {
+            event.currentTarget.focus({ preventScroll: true });
+          }
+        }}
+        onKeyDown={(event) => {
+          const next = arrowStep(event, order.length, picked === null ? -1 : order.indexOf(picked));
+          if (next !== null) {
+            event.preventDefault();
+            pickRow(event.currentTarget, order[next]);
+          }
+        }}
+      >
+        {body}
+      </div>
+      <DocDetailPanel>
+        {(query) =>
+          pickedField !== undefined && analysis !== null ? (
+            <FactsList key={pickedField.path} title={<span className="mg-detail-path mono">{pickedField.path}</span>} facts={fieldFacts(pickedField, analysis.sampleSize)} query={query} />
+          ) : (
+            <NothingSelected facts={facts} query={query} empty={t("선택된 필드가 없습니다")} />
+          )
+        }
+      </DocDetailPanel>
     </div>
   );
 }

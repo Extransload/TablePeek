@@ -4,8 +4,9 @@
 // after an update and before a change, and the newest events first: time,
 // kind, collection, _id and what changed. A row opens to the fields an
 // update set or removed beside their earlier values, the document before and
-// after, and the raw event. The session (changeStream.ts) keeps the events
-// and reconnects after the last one received.
+// after, and the raw event. A row picked by a click or the arrow keys shows
+// its whole event in the app's detail panel. The session (changeStream.ts)
+// keeps the events and reconnects after the last one received.
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { writeClipboard } from "../../../clipboard";
@@ -17,6 +18,8 @@ import { BsonDate, Timestamp, isDocument, type BsonDocument, type BsonValue } fr
 import { MAX_EVENTS, OP_FILTERS, watchSession, type ChangeEvent, type OpFilter, type WatchSnapshot } from "../changeStream";
 import { toShell, toShellPretty } from "../format";
 import { DocFields } from "./CardView";
+import { DocDetailPanel, ItemDetail, NothingSelected, type Fact } from "./DocDetailPanel";
+import { arrowStep } from "./selection";
 import { ShellText } from "./ShellText";
 import "./streams.css";
 
@@ -28,6 +31,9 @@ export interface ChangeStreamPanelProps {
   // The tab the session belongs to.
   sessionKey: string;
   notify(message: string): void;
+  // What the detail panel lists with no event picked; omitted for a
+  // database's stream.
+  facts?: Fact[] | null;
 }
 
 const OP_LABELS: Record<OpFilter, string> = {
@@ -125,10 +131,12 @@ function statusText(s: WatchSnapshot): string {
   }
 }
 
-export function ChangeStreamPanel({ conn, db, coll, sessionKey, notify }: ChangeStreamPanelProps) {
+export function ChangeStreamPanel({ conn, db, coll, sessionKey, notify, facts = null }: ChangeStreamPanelProps) {
   const session = useMemo(() => watchSession(sessionKey, conn, db, coll), [sessionKey, conn, db, coll]);
   const snap = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const [openSeq, setOpenSeq] = useState<Set<number>>(() => new Set());
+  // The event in the detail panel, by its sequence number.
+  const [picked, setPicked] = useState<number | null>(null);
 
   useEffect(() => {
     session.setShown(true);
@@ -137,6 +145,7 @@ export function ChangeStreamPanel({ conn, db, coll, sessionKey, notify }: Change
 
   const running = snap.status === "connecting" || snap.status === "live" || snap.status === "retrying";
   const newestFirst = useMemo(() => [...snap.events].reverse(), [snap.events]);
+  const pickedEvent = picked === null ? undefined : newestFirst.find((event) => event.seq === picked);
   const target = coll === null ? t("데이터베이스 {db}", { db }) : `${db}.${coll}`;
 
   const toggleOp = (op: OpFilter) => {
@@ -213,26 +222,66 @@ export function ChangeStreamPanel({ conn, db, coll, sessionKey, notify }: Change
               {t("이벤트 {count}개 (최근 {max}개까지 보관)", { count: snap.events.length.toLocaleString(), max: MAX_EVENTS.toLocaleString() })}
               {snap.dropped > 0 ? ` · ${t("오래된 {count}개는 버렸습니다", { count: snap.dropped.toLocaleString() })}` : ""}
             </div>
-            <div className="mg-watch-list" role="list">
+            <div
+              className="mg-watch-list"
+              role="list"
+              onKeyDown={(event) => {
+                const next = arrowStep(event, newestFirst.length, picked === null ? -1 : newestFirst.findIndex((e) => e.seq === picked));
+                if (next !== null) {
+                  event.preventDefault();
+                  setPicked(newestFirst[next].seq);
+                  const row = event.currentTarget.querySelectorAll<HTMLElement>(".mg-watch-row")[next];
+                  row?.focus({ preventScroll: true });
+                  row?.scrollIntoView({ block: "nearest" });
+                }
+              }}
+            >
               {newestFirst.map((event) => (
-                <EventRow key={event.seq} event={event} showNs={coll === null} open={openSeq.has(event.seq)} wantBefore={snap.options.before} onToggle={() => toggleRow(event.seq)} notify={notify} />
+                <EventRow
+                  key={event.seq}
+                  event={event}
+                  showNs={coll === null}
+                  open={openSeq.has(event.seq)}
+                  selected={event.seq === picked}
+                  wantBefore={snap.options.before}
+                  onToggle={() => {
+                    setPicked(event.seq);
+                    toggleRow(event.seq);
+                  }}
+                  notify={notify}
+                />
               ))}
             </div>
           </>
         )}
       </div>
+      <DocDetailPanel>
+        {(query) =>
+          pickedEvent !== undefined ? (
+            <ItemDetail
+              key={pickedEvent.seq}
+              title={String(pickedEvent.doc.get("operationType") ?? "?")}
+              note={timeText(eventTime(pickedEvent))}
+              doc={pickedEvent.doc}
+              query={query}
+            />
+          ) : (
+            <NothingSelected facts={facts} query={query} empty={t("선택된 이벤트가 없습니다")} />
+          )
+        }
+      </DocDetailPanel>
     </div>
   );
 }
 
-function EventRow({ event, showNs, open, wantBefore, onToggle, notify }: { event: ChangeEvent; showNs: boolean; open: boolean; wantBefore: boolean; onToggle(): void; notify(message: string): void }) {
+function EventRow({ event, showNs, open, selected, wantBefore, onToggle, notify }: { event: ChangeEvent; showNs: boolean; open: boolean; selected: boolean; wantBefore: boolean; onToggle(): void; notify(message: string): void }) {
   const doc = event.doc;
   const op = String(doc.get("operationType") ?? "?");
   const ns = docOf(doc, "ns");
   const key = docOf(doc, "documentKey");
   const id = key?.get("_id");
   return (
-    <div className={`mg-watch-event${open ? " open" : ""}`} role="listitem">
+    <div className={`mg-watch-event${open ? " open" : ""}${selected ? " selected" : ""}`} role="listitem">
       <div
         className="mg-watch-row"
         role="button"

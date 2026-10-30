@@ -6,6 +6,10 @@ import { UpIcon } from "./icons";
 
 interface ColumnsEditorProps {
   columns: ColumnDraft[];
+  // The engine's columns have no NOT NULL or default (CQL).
+  noConstraints?: boolean;
+  // The type a new column starts as (SqlDialect.newColumnType).
+  newType?: string;
   onChange(columns: ColumnDraft[]): void;
 }
 
@@ -21,7 +25,8 @@ function moveItem<T>(items: T[], index: number, delta: -1 | 1): T[] {
   return next;
 }
 
-export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
+export function ColumnsEditor({ columns, noConstraints = false, newType = "TEXT", onChange }: ColumnsEditorProps) {
+  const constraintTitle = noConstraints ? t("이 엔진의 컬럼에는 NOT NULL과 기본값이 없습니다") : undefined;
   function patch(index: number, part: Partial<ColumnDraft>): void {
     onChange(columns.map((column, i) => (i === index ? { ...column, ...part } : column)));
   }
@@ -70,10 +75,11 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
             placeholder={t("타입")}
             onChange={(event) => patch(index, { type: event.target.value })}
           />
-          <label className="draft-check draft-nn">
+          <label className="draft-check draft-nn" title={constraintTitle}>
             <input
               type="checkbox"
               checked={column.notNull}
+              disabled={noConstraints}
               onChange={(event) => patch(index, { notNull: event.target.checked })}
             />
           </label>
@@ -88,6 +94,8 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
             value={column.def}
             spellCheck={false}
             placeholder={t("기본값")}
+            disabled={noConstraints}
+            title={constraintTitle}
             onChange={(event) => patch(index, { def: event.target.value })}
           />
           <button
@@ -110,7 +118,7 @@ export function ColumnsEditor({ columns, onChange }: ColumnsEditorProps) {
               key: draftKey(),
               orig: null,
               name: "",
-              type: "TEXT",
+              type: newType,
               notNull: false,
               pk: false,
               def: "",

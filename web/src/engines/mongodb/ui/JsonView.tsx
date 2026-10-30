@@ -8,13 +8,14 @@ import { writeClipboard } from "../../../clipboard";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CopyIcon, PencilIcon, TrashIcon } from "../../../components/icons";
 import type { ErrorContext } from "../../../errorHelp";
-import { t } from "../../../i18n";
+import { errorPhrase, phrase, say, t, type Phrase } from "../../../i18n";
 import { JsonSyntaxError, fromEJSON, isDocument, jsonKeys, parseJson, stringifyJson, toEJSON, type BsonDocument, type BsonValue, type EJSON } from "../bson";
-import { VIEW_LIMITS, shellKey, toShell, toShellPretty, truncation } from "../format";
+import { VIEW_LIMITS, ejsonText, shellKey, toShell, toShellPretty, truncation } from "../format";
 import { parseValue } from "../shell/parse";
 import { docKey } from "./CardView";
 import { CloneIcon } from "./icons";
 import { MongoEditor, type MongoEditorHandle } from "./MongoEditor";
+import { arrowStep, selectsItem } from "./selection";
 import { ShellText } from "./ShellText";
 import { WriteErrorNotice } from "./writeErrors";
 import type { CompletionContext } from "../complete";
@@ -39,29 +40,33 @@ export function SyntaxErrorNotice({ src, message, at, context, variant = "compac
   );
 }
 
-type Parsed = { ok: true; value: BsonDocument } | { ok: false; message: string; from: number; to: number };
+// `message` is translated where it shows, so it follows a language switch.
+type Parsed = { ok: true; value: BsonDocument } | { ok: false; message: Phrase; from: number; to: number };
 
 // The editor's text as a document: mongosh notation, or with EJSON on,
 // Extended JSON.
-export function parseDocText(text: string, canonical: boolean): Parsed {
-  if (canonical) {
+// `json`: plain JSON, whose whole numbers past 2^53 read back exactly.
+export function parseDocText(text: string, canonical: boolean, json = false): Parsed {
+  if (canonical || json) {
     try {
-      const value = fromEJSON(parseJson(text));
-      return isDocument(value) ? { ok: true, value } : { ok: false, message: t("문서 { … }를 써야 합니다"), from: 0, to: text.length };
+      const value = fromEJSON(parseJson(text, { bigints: json }));
+      return isDocument(value) ? { ok: true, value } : { ok: false, message: phrase("문서 { … }를 써야 합니다"), from: 0, to: text.length };
     } catch (error) {
       const pos = error instanceof JsonSyntaxError ? error.offset : 0;
-      return { ok: false, message: error instanceof Error ? error.message : String(error), from: pos, to: pos + 1 };
+      return { ok: false, message: errorPhrase(error), from: pos, to: pos + 1 };
     }
   }
   const r = parseValue(text);
   if (!r.ok) {
     return { ok: false, message: r.error.message, from: r.error.from, to: r.error.to };
   }
-  return isDocument(r.value) ? { ok: true, value: r.value } : { ok: false, message: t("문서 { … }를 써야 합니다"), from: 0, to: text.length };
+  return isDocument(r.value) ? { ok: true, value: r.value } : { ok: false, message: phrase("문서 { … }를 써야 합니다"), from: 0, to: text.length };
 }
 
-export function docText(doc: BsonValue, canonical: boolean): string {
-  return canonical ? stringifyJson(toEJSON(doc), 2) : toShellPretty(doc);
+// The block's text: mongosh notation, canonical Extended JSON, or for plain
+// JSON documents (the search engines) plain JSON.
+export function docText(doc: BsonValue, canonical: boolean, json = false): string {
+  return json ? ejsonText(doc, { relaxed: true, exactNumbers: true }) : canonical ? stringifyJson(toEJSON(doc), 2) : toShellPretty(doc);
 }
 
 interface Line {
@@ -83,6 +88,7 @@ interface JsonBlockProps {
   doc: BsonDocument;
   position: number;
   canonical: boolean;
+  json: boolean;
   allFolded: boolean;
   readOnly: boolean;
   completion?: () => CompletionContext;
@@ -90,13 +96,16 @@ interface JsonBlockProps {
   onClone?(doc: BsonDocument): void;
   onDelete?(doc: BsonDocument): void;
   notify(message: string): void;
+  selected: boolean;
+  // Picks the block for the app's detail panel; omitted where nothing is picked.
+  onPick?(): void;
 }
 
-function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, onSave, onClone, onDelete, notify }: JsonBlockProps) {
+function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, completion, onSave, onClone, onDelete, notify, selected, onPick }: JsonBlockProps) {
   const [toggled, setToggled] = useState<Set<string>>(() => new Set());
   // The text being edited, and what stopped the last save: the text did not
   // parse, or the server refused the write.
-  const [editing, setEditing] = useState<{ text: string; parse: { message: string; from: number; to: number } | null; failure: Error | null } | null>(null);
+  const [editing, setEditing] = useState<{ text: string; parse: { message: Phrase; from: number; to: number } | null; failure: Error | null } | null>(null);
   const [saving, setSaving] = useState(false);
   const [full, setFull] = useState(false);
   const editorRef = useRef<MongoEditorHandle | null>(null);
@@ -111,7 +120,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
     const cut = full ? null : truncation(doc);
     const cutArrays = new Set(cut?.arrays.map((a) => a.path));
     const isFolded = (path: string, depth: number) => toggled.has(path) !== (allFolded && depth >= 1);
-    const scalar = (v: BsonValue, e: EJSON) => (canonical ? (isWrapper(e) ? stringifyJson(e).replace(/":/g, '": ') : JSON.stringify(e)) : toShell(v));
+    const scalar = (v: BsonValue, e: EJSON) => (json ? ejsonText(v, { relaxed: true, exactNumbers: true, indent: 0 }) : canonical ? (isWrapper(e) ? stringifyJson(e).replace(/":/g, '": ') : JSON.stringify(e)) : toShell(v));
     const walk = (v: BsonValue, e: EJSON, path: string, depth: number, prefix: string, comma: boolean) => {
       const tail = comma ? "," : "";
       const container = (Array.isArray(v) || isDocument(v)) && !(canonical && isWrapper(e));
@@ -143,7 +152,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
         const child = (Array.isArray(v) ? v[Number(k)] : isDocument(v) ? v.get(k) : null) ?? null;
         const childE = Array.isArray(e) ? e[Number(k)] : e !== null && typeof e === "object" ? e[k] : null;
         const childPath = path === "" ? k : `${path}.${k}`;
-        walk(child, childE, childPath, depth + 1, arr ? "" : `${canonical ? JSON.stringify(k) : shellKey(k)}: `, i < keys.length - 1 || more !== null);
+        walk(child, childE, childPath, depth + 1, arr ? "" : `${canonical || json ? JSON.stringify(k) : shellKey(k)}: `, i < keys.length - 1 || more !== null);
       });
       if (more !== null) {
         out.push({ depth: depth + 1, text: "", fold: null, folded: false, summary: null, more });
@@ -152,7 +161,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
     };
     walk(doc, toEJSON(doc), "", 0, "", false);
     return out;
-  }, [doc, canonical, toggled, allFolded, full]);
+  }, [doc, canonical, json, toggled, allFolded, full]);
 
   const toggle = (path: string) =>
     setToggled((prev) => {
@@ -165,7 +174,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
 
   const startEdit = () => {
     if (!ro) {
-      setEditing({ text: docText(doc, canonical), parse: null, failure: null });
+      setEditing({ text: docText(doc, canonical, json), parse: null, failure: null });
     }
   };
 
@@ -179,7 +188,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
       return;
     }
     const text = editorRef.current?.text() ?? editing.text;
-    const parsed = parseDocText(text, canonical);
+    const parsed = parseDocText(text, canonical, json);
     if (!parsed.ok) {
       setEditing({ text, parse: parsed, failure: null });
       return;
@@ -195,7 +204,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
   };
 
   const copy = () => {
-    void writeClipboard(docText(doc, canonical), notify);
+    void writeClipboard(docText(doc, canonical, json), notify);
     notify(t("복사했습니다"));
   };
 
@@ -217,11 +226,11 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
             ariaLabel={t("문서 편집")}
           />
         </div>
-        {editing.parse !== null ? <SyntaxErrorNotice src={editing.text} message={editing.parse.message} at={editing.parse.from} context="document" /> : null}
+        {editing.parse !== null ? <SyntaxErrorNotice src={editing.text} message={say(editing.parse.message)} at={editing.parse.from} context="document" /> : null}
         {editing.failure !== null ? <WriteErrorNotice error={editing.failure} /> : null}
         <div className="mg-jedit-bar">
           <span className="panel-dim">
-            {canonical ? "Extended JSON" : t("mongosh 표기")} · {t("_id는 바꿀 수 없습니다")} · {t("Esc 취소")}
+            {json ? "JSON" : canonical ? "Extended JSON" : t("mongosh 표기")} · {t("_id는 바꿀 수 없습니다")} · {t("Esc 취소")}
           </span>
           <span className="spacer" />
           <button type="button" onClick={cancel} disabled={saving}>
@@ -264,8 +273,13 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
   return (
     <div
       ref={blockRef}
-      className={`mg-jdoc${editing !== null ? " editing" : ""}`}
+      className={`mg-jdoc${editing !== null ? " editing" : ""}${selected ? " selected" : ""}`}
       tabIndex={-1}
+      onClick={(event) => {
+        if (editing === null && onPick !== undefined && selectsItem(event.target)) {
+          onPick();
+        }
+      }}
       onDoubleClick={(event) => {
         if (editing === null && !(event.target as HTMLElement).closest(".mg-jl-fold, button")) {
           startEdit();
@@ -286,7 +300,7 @@ function JsonBlock({ doc, position, canonical, allFolded, readOnly, completion, 
             {t("복제")}
           </button>
         ) : null}
-        <button type="button" className="icon-text-button" title={canonical ? t("Extended JSON으로 복사") : t("mongosh 표기로 복사")} onClick={copy}>
+        <button type="button" className="icon-text-button" title={json ? t("JSON으로 복사") : canonical ? t("Extended JSON으로 복사") : t("mongosh 표기로 복사")} onClick={copy}>
           <CopyIcon size={10} />
           {t("복사")}
         </button>
@@ -307,6 +321,8 @@ export interface JsonViewProps {
   offset: number;
   // Canonical Extended JSON instead of mongosh notation.
   canonical: boolean;
+  // Plain JSON documents (the search engines) instead of either.
+  json?: boolean;
   // Nested values folded (the toolbar's 모두 접기).
   allFolded: boolean;
   readOnly: boolean;
@@ -316,9 +332,14 @@ export interface JsonViewProps {
   onDelete?(doc: BsonDocument): void;
   notify(message: string): void;
   emptyText?: string;
+  // The block shown in the app's detail panel (its docKey), picked by a click
+  // on a block or the arrow keys; omitted where nothing is picked.
+  selected?: string | null;
+  onSelect?(key: string): void;
 }
 
-export function JsonView({ docs, offset, emptyText, ...rest }: JsonViewProps) {
+export function JsonView({ docs, offset, emptyText, json = false, selected = null, onSelect, ...rest }: JsonViewProps) {
+  const listRef = useRef<HTMLDivElement | null>(null);
   if (docs.length === 0) {
     return (
       <div className="mg-jdocs">
@@ -326,10 +347,44 @@ export function JsonView({ docs, offset, emptyText, ...rest }: JsonViewProps) {
       </div>
     );
   }
+  const keys = docs.map((doc, i) => docKey(doc, offset + i));
+  const pick = (index: number) => {
+    const key = keys[index];
+    if (key !== undefined && onSelect !== undefined) {
+      onSelect(key);
+      listRef.current?.children[index]?.scrollIntoView({ block: "nearest" });
+    }
+  };
   return (
-    <div className="mg-jdocs" tabIndex={-1}>
+    <div
+      ref={listRef}
+      className="mg-jdocs"
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        const next = onSelect === undefined ? null : arrowStep(event, keys.length, selected === null ? -1 : keys.indexOf(selected));
+        if (next !== null) {
+          event.preventDefault();
+          pick(next);
+        }
+      }}
+    >
       {docs.map((doc, i) => (
-        <JsonBlock key={docKey(doc, offset + i)} doc={doc} position={offset + i} {...rest} />
+        <JsonBlock
+          key={keys[i]}
+          doc={doc}
+          position={offset + i}
+          json={json}
+          selected={keys[i] === selected}
+          onPick={
+            onSelect === undefined
+              ? undefined
+              : () => {
+                  pick(i);
+                  listRef.current?.focus({ preventScroll: true });
+                }
+          }
+          {...rest}
+        />
       ))}
     </div>
   );

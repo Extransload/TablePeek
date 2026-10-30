@@ -1,0 +1,169 @@
+{
+  "id": "oracle",
+  "aliases": [
+    "oracledb"
+  ],
+  "label": "Oracle",
+  "paradigm": "sql",
+  "family": "oracle",
+  "transport": "server",
+  "default_port": 1521,
+  "url_schemes": [
+    "oracle"
+  ],
+  "capabilities": {
+    "language": "sql",
+    "objects": [
+      "table",
+      "view",
+      "materialized_view",
+      "sequence",
+      "synonym",
+      "package",
+      "procedure",
+      "function",
+      "trigger",
+      "type"
+    ],
+    "schema": "declared",
+    "edit_by_key": true,
+    "transactions": "always",
+    "cancel_ends_session": false,
+    "binary_cells": true,
+    "foreign_keys": true,
+    "ddl": true,
+    "databases": "none",
+    "users": true,
+    "explain": "oracle",
+    "exact_count": false,
+    "dump": "sql",
+    "import_formats": [
+      "csv",
+      "json",
+      "sql"
+    ],
+    "export_formats": [
+      "csv",
+      "json",
+      "sql",
+      "xlsx"
+    ],
+    "sessions": {
+      "kill": true
+    },
+    "validation": false,
+    "aggregation": false,
+    "indexes": {
+      "create": true,
+      "drop": true
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "connect_mode",
+        "type": "select",
+        "label": "접속 방식",
+        "default": "service",
+        "options": [
+          { "value": "service", "label": "서비스 이름" },
+          { "value": "sid", "label": "SID" },
+          { "value": "descriptor", "label": "연결 문자열" }
+        ]
+      },
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "placeholder": "호스트 또는 연결 URL 붙여넣기",
+        "default": "127.0.0.1",
+        "required_to_connect": true,
+        "visible_when": { "connect_mode": ["service", "sid"] }
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "default": 1521,
+        "visible_when": { "connect_mode": ["service", "sid"] }
+      },
+      {
+        "key": "database",
+        "type": "text",
+        "label": "서비스 이름",
+        "placeholder": "예: FREEPDB1, ORCLPDB1",
+        "required_to_connect": true,
+        "visible_when": { "connect_mode": ["service", "sid"] },
+        "variants": [
+          { "when": { "connect_mode": ["sid"] }, "label": "SID", "placeholder": "예: ORCL" }
+        ]
+      },
+      {
+        "key": "connect_string",
+        "type": "textarea",
+        "label": "연결 문자열",
+        "placeholder": "Easy Connect (host:1521/service, tcps://…), (DESCRIPTION=…) 또는 tnsnames.ora의 별칭",
+        "required_to_connect": true,
+        "visible_when": { "connect_mode": ["descriptor"] }
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자",
+        "required_to_connect": true
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호"
+      },
+      {
+        "key": "privilege",
+        "type": "select",
+        "label": "접속 권한",
+        "default": "",
+        "advanced": true,
+        "options": [
+          { "value": "", "label": "일반" },
+          { "value": "sysdba", "label": "SYSDBA" },
+          { "value": "sysoper", "label": "SYSOPER" }
+        ]
+      },
+      {
+        "key": "tls",
+        "type": "toggle",
+        "label": "TLS",
+        "description": "TCPS로 암호화 (서버 인증서를 확인)",
+        "default": false,
+        "visible_when": { "connect_mode": ["service", "sid"] }
+      },
+      {
+        "key": "wallet_file",
+        "type": "file",
+        "label": "월렛 (ewallet.pem)",
+        "group": "TLS 월렛",
+        "visible_when": [{ "tls": [true] }, { "connect_mode": ["descriptor"] }]
+      },
+      {
+        "key": "wallet_password",
+        "type": "secret",
+        "label": "월렛 비밀번호",
+        "placeholder": "(선택) 월렛의 개인 키가 암호화되어 있을 때",
+        "visible_when": [{ "tls": [true] }, { "connect_mode": ["descriptor"] }]
+      },
+      {
+        "key": "tnsnames_file",
+        "type": "file",
+        "label": "tnsnames.ora",
+        "group": "TNS 설정",
+        "visible_when": { "connect_mode": ["descriptor"] }
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {database}",
+    "detail": "{user}@{host}:{port}/{database}"
+  }
+}

@@ -1,9 +1,15 @@
 import { t } from "../i18n";
+import { cassandra } from "./cassandra";
+import { clickhouse } from "./clickhouse";
 import { cockroach } from "./cockroach";
+import { elasticsearch } from "./elasticsearch";
 import { mongodb } from "./mongodb";
 import { mssql } from "./mssql";
 import { mysql } from "./mysql";
+import { opensearch } from "./opensearch";
+import { oracle } from "./oracle";
 import { postgres } from "./postgres";
+import { scylladb } from "./scylladb";
 import { sqlite } from "./sqlite";
 import type { SqlDialect } from "./sqlDialect";
 import type { Capabilities, Engine, EngineDescriptor } from "./types";
@@ -26,7 +32,7 @@ export type { SqlDialect } from "./sqlDialect";
 
 // Every engine this page can show, in the order the pickers list them. Adding
 // an engine is its folder plus one line here.
-const BUILT_IN: readonly Engine[] = [postgres, mysql, mssql, mongodb, cockroach, sqlite];
+const BUILT_IN: readonly Engine[] = [postgres, mysql, mssql, oracle, clickhouse, cassandra, scylladb, mongodb, elasticsearch, opensearch, cockroach, sqlite];
 
 let registry: readonly Engine[] = BUILT_IN;
 

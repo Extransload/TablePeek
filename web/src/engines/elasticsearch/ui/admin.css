@@ -1,0 +1,117 @@
+/* ---- 검색 작업 화면: 인덱스 관리, 가져오기, 내보내기 (mongodb/ui/admin.css 위에) ---- */
+
+.es-request-pre {
+  white-space: pre;
+}
+.es-admin-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line-soft));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  font-size: 12px;
+}
+.es-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mg-form-grid.es-form-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.mg-admin-editor.es-tall-editor {
+  height: 260px;
+}
+.mg-admin-editor.es-short-editor {
+  height: 110px;
+}
+.mg-checks input.mg-input.es-narrow {
+  width: 110px;
+  height: 24px;
+}
+.es-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.es-task code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.es-cell-clip {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 통계 */
+.es-stats-modal {
+  width: min(760px, 96vw);
+}
+.es-stats-value {
+  overflow-wrap: anywhere;
+}
+.es-stats-shards {
+  flex: none;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
+/* 가져오기 */
+.es-drop {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.es-drop.over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.es-csv-columns {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 6px 12px;
+  max-height: 180px;
+  overflow: auto;
+}
+.es-csv-columns label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.es-csv-columns select.mg-input {
+  height: 24px;
+}
+.es-import-table th {
+  white-space: nowrap;
+}
+.es-import-table td {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.es-import-table tr.bad td.mg-danger-text {
+  max-width: none;
+  white-space: normal;
+}
+.es-fail-id {
+  flex: none;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+}

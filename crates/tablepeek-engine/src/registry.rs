@@ -395,17 +395,23 @@ pub trait DriverFactory: Send + Sync {
 
 /// Every registered engine, in the order the page offers them. A new engine
 /// is one line here.
-static FACTORIES: [&dyn DriverFactory; 6] = [
+static FACTORIES: &[&dyn DriverFactory] = &[
     &engines::postgres::FACTORY,
     &engines::mysql::FACTORY,
     &engines::mssql::FACTORY,
+    &engines::oracle::FACTORY,
+    &engines::clickhouse::FACTORY,
+    &engines::cassandra::FACTORY,
+    &engines::scylladb::FACTORY,
     &engines::cockroach::FACTORY,
     &engines::sqlite::FACTORY,
     &engines::mongodb::FACTORY,
+    &engines::elasticsearch::FACTORY,
+    &engines::elasticsearch::OPENSEARCH,
 ];
 
 pub fn factories() -> &'static [&'static dyn DriverFactory] {
-    &FACTORIES
+    FACTORIES
 }
 
 /// The engine `id` names, by its id or one of its aliases.
@@ -482,9 +488,9 @@ mod tests {
     fn aliases_find_their_engine_and_unknown_ids_fail() {
         assert_eq!(factory("mariadb").unwrap().descriptor().id, "mysql");
         assert_eq!(factory("postgresql").unwrap().descriptor().id, "postgres");
-        assert!(factory("oracle").is_none());
-        let err = require("oracle").err().unwrap();
-        assert_eq!(err.to_string(), "지원하지 않는 엔진: oracle");
+        assert!(factory("db2").is_none());
+        let err = require("db2").err().unwrap();
+        assert_eq!(err.to_string(), "지원하지 않는 엔진: db2");
     }
 
     #[test]

@@ -5,7 +5,7 @@
 // time limit running out, ends the worker wherever it is, even inside an
 // endless loop.
 
-import { getLanguage, type Language } from "../../../i18n";
+import { getLanguage, type Language, type Phrase } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { store } from "../../../store";
 import type { MongoErrorFields } from "../api";
@@ -36,6 +36,9 @@ export interface ScriptStart {
 export interface ScriptError {
   name: string;
   message: string;
+  // The message as a phrase when the app wrote it, translated where it
+  // shows so it follows a language switch.
+  phrase?: Phrase;
   code?: string;
   fields?: MongoErrorFields;
   // A write safe mode would have asked about.
@@ -47,7 +50,9 @@ export interface ScriptError {
 }
 
 export type ScriptEvent =
-  | { type: "print"; text: string }
+  // `phrase`: a line the app writes itself (not the script's print), to be
+  // translated where it shows.
+  | { type: "print"; text: string; phrase?: Phrase }
   // A value as canonical Extended JSON text: printjson's, a print of one
   // object, or the script's final value. `coll` names the collection
   // documents came from; `more` says a cursor had more than was shown.

@@ -3,3 +3,6 @@
 /x509/*.key
 /ssh/
 /x509/*.p12
+/clickhouse/certs/
+/oracle-wallet/
+/elasticsearch-tls/certs/

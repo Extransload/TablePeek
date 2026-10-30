@@ -6,6 +6,12 @@ members = [
     "crates/tablepeek-server",
     "crates/tablepeek-types",
 ]
+# Vendored with TablePeek's changes (see its Cargo.toml); not a member, so
+# workspace fmt and clippy leave Oracle's source as published.
+exclude = ["crates/vendor/oracledb"]
+
+[patch.crates-io]
+oracledb = { path = "crates/vendor/oracledb" }
 
 [workspace.dependencies]
 axum = { version = "0.8", features = ["ws"] }

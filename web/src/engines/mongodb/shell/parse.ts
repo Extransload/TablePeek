@@ -3,7 +3,7 @@
 // text becomes a typed request, and anything else (variables, functions,
 // loops, operators) is rejected with its position.
 
-import { t } from "../../../i18n";
+import { errorPhrase, phrase, phraseError, say, type Phrase } from "../../../i18n";
 import {
   Binary,
   BsonDate,
@@ -31,7 +31,8 @@ import {
 // ---- Results ----
 
 export interface ShellError {
-  message: string;
+  // Translated where it shows (`say`), so it follows a language switch.
+  message: Phrase;
   from: number;
   to: number;
 }
@@ -90,11 +91,11 @@ export interface ShellStatement {
 
 class ShellSyntaxError extends Error {
   constructor(
-    message: string,
+    readonly phrase: Phrase,
     readonly from: number,
     readonly to: number,
   ) {
-    super(message);
+    super(say(phrase));
   }
 }
 
@@ -182,10 +183,10 @@ export function tokenize(src: string, tolerant = false, offset = 0): Token[] {
         i++;
       }
       if (!closed && !tolerant) {
-        throw new ShellSyntaxError(t("닫히지 않은 문자열입니다"), start + offset, i + offset);
+        throw new ShellSyntaxError(phrase("닫히지 않은 문자열입니다"), start + offset, i + offset);
       }
       if (ch === "`" && text.includes("${") && !tolerant) {
-        throw new ShellSyntaxError(t("템플릿 문자열 안의 ${…}는 쓸 수 없습니다"), start + offset, i + offset);
+        throw new ShellSyntaxError(phrase("템플릿 문자열 안의 ${…}는 쓸 수 없습니다"), start + offset, i + offset);
       }
       push("str", text, start, closed);
       continue;
@@ -219,7 +220,7 @@ export function tokenize(src: string, tolerant = false, offset = 0): Token[] {
         i++;
       }
       if (!closed && !tolerant) {
-        throw new ShellSyntaxError(t("닫히지 않은 정규식입니다"), start + offset, i + offset);
+        throw new ShellSyntaxError(phrase("닫히지 않은 정규식입니다"), start + offset, i + offset);
       }
       while (closed && i < n && /[a-z]/.test(src[i])) {
         i++;
@@ -240,7 +241,7 @@ export function tokenize(src: string, tolerant = false, offset = 0): Token[] {
       continue;
     }
     if (!tolerant) {
-      throw new ShellSyntaxError(t("알 수 없는 문자입니다: {char}", { char: ch }), start + offset, i + offset);
+      throw new ShellSyntaxError(phrase("알 수 없는 문자입니다: {char}", { char: ch }), start + offset, i + offset);
     }
     push("bad", ch, start);
   }
@@ -280,7 +281,7 @@ class Parser {
 
   // The next token where the caller has already seen that one is there.
   take(): Token {
-    return this.next() ?? this.fail(t("입력이 끝났습니다"));
+    return this.next() ?? this.fail(phrase("입력이 끝났습니다"));
   }
 
   atEnd(): boolean {
@@ -301,7 +302,7 @@ class Parser {
     return tok !== undefined && tok.type === "punc" && tok.text === text;
   }
 
-  fail(message: string, tok = this.peek()): never {
+  fail(message: Phrase, tok = this.peek()): never {
     throw new ShellSyntaxError(message, tok ? tok.from : this.end(), tok ? tok.to : this.end());
   }
 
@@ -309,28 +310,28 @@ class Parser {
   unsupported(tok: Token, to = tok.to): never {
     const line = this.src.slice(tok.from - this.offset).split("\n")[0].trim();
     const text = line.length > 40 ? `${line.slice(0, 39)}…` : line;
-    let message = this.filter ? t("필터를 읽을 수 없습니다: {text}", { text }) : t("지원하지 않는 mongosh 문법입니다: {text}", { text });
+    let message = this.filter ? phrase("필터를 읽을 수 없습니다: {text}", { text }) : phrase("지원하지 않는 mongosh 문법입니다: {text}", { text });
     if (!this.filter && ["var", "let", "const", "for", "while", "function", "if"].includes(tok.text)) {
-      message += ` — ${t("변수·반복문·함수는 실행하지 않습니다. db.컬렉션.find({ … })처럼 쿼리를 한 문장씩 쓰세요")}`;
+      message = phrase("{message} — {more}", { message, more: phrase("변수·반복문·함수는 실행하지 않습니다. db.컬렉션.find({ … })처럼 쿼리를 한 문장씩 쓰세요") });
     } else if (!this.filter && (tok.text === "print" || tok.text === "printjson")) {
-      message += ` — ${t("{name}() 없이 쿼리만 쓰면 결과 창에 보입니다", { name: tok.text })}`;
+      message = phrase("{message} — {more}", { message, more: phrase("{name}() 없이 쿼리만 쓰면 결과 창에 보입니다", { name: tok.text }) });
     }
     throw new ShellSyntaxError(message, tok.from, to);
   }
 
   // A token where something else was expected: an operator or a name reads
   // as JavaScript, anything else as a plain syntax error.
-  unexpected(message: string): never {
+  unexpected(message: Phrase): never {
     const tok = this.peek();
     if (tok && ((tok.type === "punc" && OPERATOR_CHARS.includes(tok.text)) || tok.type === "ident")) {
       this.unsupported(tok);
     }
-    this.fail(tok ? `${message} (${tok.type === "str" ? JSON.stringify(tok.text) : tok.text})` : message);
+    this.fail(tok ? phrase("{message} ({token})", { message, token: tok.type === "str" ? JSON.stringify(tok.text) : tok.text }) : message);
   }
 
   expect(text: string): Token {
     if (!this.isPunc(text)) {
-      this.unexpected(this.atEnd() ? t("'{want}'가 와야 하는데 입력이 끝났습니다", { want: text }) : t("'{want}'가 와야 합니다", { want: text }));
+      this.unexpected(this.atEnd() ? phrase("'{want}'가 와야 하는데 입력이 끝났습니다", { want: text }) : phrase("'{want}'가 와야 합니다", { want: text }));
     }
     return this.take();
   }
@@ -338,7 +339,7 @@ class Parser {
   value(): BsonValue {
     const tok = this.peek();
     if (!tok) {
-      this.fail(t("값이 와야 하는데 입력이 끝났습니다"));
+      this.fail(phrase("값이 와야 하는데 입력이 끝났습니다"));
     }
     if (tok.type === "punc") {
       if (tok.text === "{") {
@@ -350,7 +351,7 @@ class Parser {
       if (tok.text === "-" || tok.text === "+") {
         return this.signed(tok);
       }
-      this.unexpected(t("값이 와야 합니다"));
+      this.unexpected(phrase("값이 와야 합니다"));
     }
     this.next();
     switch (tok.type) {
@@ -363,7 +364,7 @@ class Parser {
       case "ident":
         return this.identValue(tok);
       default:
-        return this.fail(t("값이 와야 합니다"), tok);
+        return this.fail(phrase("값이 와야 합니다"), tok);
     }
   }
 
@@ -404,7 +405,7 @@ class Parser {
     try {
       return new BsonRegex(pattern, flags);
     } catch (e) {
-      return this.fail(e instanceof Error ? e.message : String(e), tok);
+      return this.fail(errorPhrase(e), tok);
     }
   }
 
@@ -460,12 +461,12 @@ class Parser {
   construct(tok: Token, name: string, isNew: boolean): BsonValue {
     const args = this.args();
     const span = { from: tok.from, to: this.lastEnd() };
-    const fail = (message: string): never => {
+    const fail = (message: Phrase): never => {
       throw new ShellSyntaxError(message, span.from, span.to);
     };
     const values = args.map((a) => a.value);
     if (values.length > CONSTRUCTOR_ARITY[name]) {
-      fail(t("{name}()의 인수가 너무 많습니다", { name }));
+      fail(phrase("{name}()의 인수가 너무 많습니다", { name }));
     }
     const text = (v: BsonValue | undefined): string => {
       if (typeof v === "string") {
@@ -474,14 +475,14 @@ class Parser {
       if (isNumber(v)) {
         return String(v.value);
       }
-      return fail(t("{name}()에는 문자열이나 숫자가 와야 합니다", { name }));
+      return fail(phrase("{name}()에는 문자열이나 숫자가 와야 합니다", { name }));
     };
     const int = (v: BsonValue | undefined, fallback: number): number => {
       if (v === undefined) {
         return fallback;
       }
       const n = Number(text(v));
-      return Number.isInteger(n) ? n : fail(t("{name}()에는 정수가 와야 합니다", { name }));
+      return Number.isInteger(n) ? n : fail(phrase("{name}()에는 정수가 와야 합니다", { name }));
     };
     const [a, b] = values;
     try {
@@ -516,11 +517,11 @@ class Parser {
         case "UUID":
           return Binary.fromUuid(a === undefined ? crypto.randomUUID() : text(a));
         case "BinData":
-          return new Binary(typeof b === "string" ? b : fail(t("BinData(하위 타입, base64)로 쓰세요")), int(a, 0));
+          return new Binary(typeof b === "string" ? b : fail(phrase("BinData(하위 타입, base64)로 쓰세요")), int(a, 0));
         case "Binary.createFromBase64":
-          return new Binary(typeof a === "string" ? a : fail(t("base64 문자열이 와야 합니다")), int(b, 0));
+          return new Binary(typeof a === "string" ? a : fail(phrase("base64 문자열이 와야 합니다")), int(b, 0));
         case "Binary.createFromHexString":
-          return Binary.fromHex(typeof a === "string" ? a : fail(t("16진수 문자열이 와야 합니다")), int(b, 0));
+          return Binary.fromHex(typeof a === "string" ? a : fail(phrase("16진수 문자열이 와야 합니다")), int(b, 0));
         case "Timestamp":
           if (isDocument(a)) {
             return new Timestamp(int(a.get("t"), 0), int(a.get("i"), 0));
@@ -532,7 +533,7 @@ class Parser {
           return MAX_KEY;
         case "Code":
           if (b !== undefined && !isDocument(b)) {
-            fail(t("Code()의 두 번째 인수는 문서여야 합니다"));
+            fail(phrase("Code()의 두 번째 인수는 문서여야 합니다"));
           }
           return new Code(text(a ?? ""), isDocument(b) ? b : null);
         case "RegExp":
@@ -542,7 +543,7 @@ class Parser {
       if (e instanceof ShellSyntaxError) {
         throw e;
       }
-      fail(e instanceof Error ? e.message : String(e));
+      fail(errorPhrase(e));
     }
     return this.unsupported(tok, span.to);
   }
@@ -550,7 +551,7 @@ class Parser {
   key(): string {
     const tok = this.next();
     if (!tok) {
-      this.fail(t("키가 와야 하는데 입력이 끝났습니다"));
+      this.fail(phrase("키가 와야 하는데 입력이 끝났습니다"));
     }
     if (tok.type === "str" || tok.type === "num") {
       return tok.text;
@@ -567,7 +568,7 @@ class Parser {
     if (tok.type === "punc" && tok.text === "[") {
       this.unsupported(tok);
     }
-    return this.fail(t("키가 와야 합니다"), tok);
+    return this.fail(phrase("키가 와야 합니다"), tok);
   }
 
   object(): BsonValue {
@@ -581,7 +582,7 @@ class Parser {
       try {
         typed = fromEJSON(plainEJSON(doc));
       } catch (e) {
-        throw new ShellSyntaxError(e instanceof Error ? e.message : String(e), open.from, this.lastEnd());
+        throw new ShellSyntaxError(errorPhrase(e), open.from, this.lastEnd());
       }
       if (!isDocument(typed)) {
         return typed;
@@ -605,7 +606,7 @@ class Parser {
       if (!done()) {
         if (!this.isPunc(",")) {
           this.unexpected(
-            close === null ? t("'{want}'가 와야 합니다", { want: "," }) : this.atEnd() ? t("'}'가 와야 하는데 입력이 끝났습니다") : t("',' 또는 '}'가 와야 합니다"),
+            close === null ? phrase("'{want}'가 와야 합니다", { want: "," }) : this.atEnd() ? phrase("'}'가 와야 하는데 입력이 끝났습니다") : phrase("',' 또는 '}'가 와야 합니다"),
           );
         }
         this.next();
@@ -621,7 +622,7 @@ class Parser {
       out.push(this.value());
       if (!this.isPunc("]")) {
         if (!this.isPunc(",")) {
-          this.unexpected(this.atEnd() ? t("']'가 와야 하는데 입력이 끝났습니다") : t("',' 또는 ']'가 와야 합니다"));
+          this.unexpected(this.atEnd() ? phrase("']'가 와야 하는데 입력이 끝났습니다") : phrase("',' 또는 ']'가 와야 합니다"));
         }
         this.next();
       }
@@ -643,7 +644,7 @@ class Parser {
       if (tok.type === "punc" && OPERATOR_CHARS.includes(tok.text)) {
         this.unsupported(tok);
       }
-      this.fail(this.filter ? t("필터 뒤에 남은 내용이 있습니다: {text}", { text: tok.text }) : t("문장 뒤에 남은 내용이 있습니다: {text}", { text: tok.text }), tok);
+      this.fail(this.filter ? phrase("필터 뒤에 남은 내용이 있습니다: {text}", { text: tok.text }) : phrase("문장 뒤에 남은 내용이 있습니다: {text}", { text: tok.text }), tok);
     }
   }
 }
@@ -693,7 +694,7 @@ function isoDate(text: string): BsonDate {
 function jsDate(text: string): BsonDate {
   const ms = Date.parse(text);
   if (Number.isNaN(ms)) {
-    throw new Error(t("날짜로 읽을 수 없습니다: {text}", { text }));
+    throw phraseError(phrase("날짜로 읽을 수 없습니다: {text}", { text }));
   }
   return new BsonDate(ms);
 }
@@ -715,7 +716,7 @@ function capture<T>(run: () => T): ParseResult<T> {
     return { ok: true, value: run() };
   } catch (e) {
     if (e instanceof ShellSyntaxError) {
-      return { ok: false, error: { message: e.message, from: e.from, to: e.to } };
+      return { ok: false, error: { message: e.phrase, from: e.from, to: e.to } };
     }
     throw e;
   }
@@ -749,7 +750,7 @@ export function parseFilter(text: string, offset = 0): ParseResult<BsonDocument>
     const v = p.value();
     p.finish();
     if (!isDocument(v)) {
-      throw new ShellSyntaxError(t("{ … } 형태의 문서가 와야 합니다"), from, p.lastEnd());
+      throw new ShellSyntaxError(phrase("{ … } 형태의 문서가 와야 합니다"), from, p.lastEnd());
     }
     return v;
   });
@@ -778,7 +779,7 @@ function statement(p: Parser, text: string, offset: number): ShellRequest {
   p.skipSemicolons();
   const first = p.next();
   if (!first) {
-    throw new ShellSyntaxError(t("실행할 문장이 없습니다"), offset, offset + text.length);
+    throw new ShellSyntaxError(phrase("실행할 문장이 없습니다"), offset, offset + text.length);
   }
   if (first.type === "ident" && first.text === "use") {
     const name = text
@@ -786,14 +787,14 @@ function statement(p: Parser, text: string, offset: number): ShellRequest {
       .replace(/;\s*$/, "")
       .trim();
     if (!DB_NAME.test(name)) {
-      throw new ShellSyntaxError(t("use 다음에는 데이터베이스 이름이 와야 합니다"), first.from, offset + text.length);
+      throw new ShellSyntaxError(phrase("use 다음에는 데이터베이스 이름이 와야 합니다"), first.from, offset + text.length);
     }
     return { kind: "use", db: name };
   }
   if (first.type === "ident" && first.text === "show") {
     const what = p.next();
     if (!what || what.type !== "ident") {
-      p.fail(t("show 다음에는 dbs 또는 collections가 와야 합니다"), what);
+      p.fail(phrase("show 다음에는 dbs 또는 collections가 와야 합니다"), what);
     }
     p.finish();
     if (what.text === "dbs" || what.text === "databases") {
@@ -815,7 +816,7 @@ function statement(p: Parser, text: string, offset: number): ShellRequest {
     const args = p.args();
     const name = args.length === 1 ? args[0].value : null;
     if (typeof name !== "string" || !DB_NAME.test(name)) {
-      throw new ShellSyntaxError(t("getSiblingDB()에는 데이터베이스 이름 문자열 하나가 와야 합니다"), method.from, p.lastEnd());
+      throw new ShellSyntaxError(phrase("getSiblingDB()에는 데이터베이스 이름 문자열 하나가 와야 합니다"), method.from, p.lastEnd());
     }
     db = name;
   }
@@ -840,7 +841,7 @@ function dbStatement(p: Parser): DbRequest {
       return p.unsupported(method, p.lastEnd());
     }
     if (args.length > 0) {
-      throw new ShellSyntaxError(t("{name}()에는 인수가 없습니다", { name: method.text }), args[0].from, args[args.length - 1].to);
+      throw new ShellSyntaxError(phrase("{name}()에는 인수가 없습니다", { name: method.text }), args[0].from, args[args.length - 1].to);
     }
     if (method.text === "stats") {
       return { kind: "stats", coll: null };
@@ -852,7 +853,7 @@ function dbStatement(p: Parser): DbRequest {
     p.next();
     const name = p.next();
     if (!name || name.type !== "ident") {
-      p.fail(t("메서드 이름이 와야 합니다"), name);
+      p.fail(phrase("메서드 이름이 와야 합니다"), name);
     }
     if (!p.isPunc("(")) {
       p.unsupported(name);
@@ -862,7 +863,7 @@ function dbStatement(p: Parser): DbRequest {
   }
   p.finish();
   if (calls.length === 0) {
-    throw new ShellSyntaxError(t("db.{coll} 다음에 메서드를 부르세요 (예: .find())", { coll: coll.name }), coll.from, coll.to);
+    throw new ShellSyntaxError(phrase("db.{coll} 다음에 메서드를 부르세요 (예: .find())", { coll: coll.name }), coll.from, coll.to);
   }
   return collectionRequest(coll.name, calls);
 }
@@ -877,7 +878,7 @@ function collectionName(p: Parser): { name: string; from: number; to: number } |
     p.next();
     const tok = p.next();
     if (!tok || tok.type !== "str") {
-      p.fail(t("db[…] 안에는 컬렉션 이름 문자열이 와야 합니다"), tok);
+      p.fail(phrase("db[…] 안에는 컬렉션 이름 문자열이 와야 합니다"), tok);
     }
     p.expect("]");
     return { name: tok.text, from: tok.from, to: tok.to };
@@ -885,14 +886,14 @@ function collectionName(p: Parser): { name: string; from: number; to: number } |
   p.expect(".");
   const tok = p.peek();
   if (!tok || tok.type !== "ident") {
-    p.fail(t("db. 다음에는 컬렉션 이름이 와야 합니다"), tok);
+    p.fail(phrase("db. 다음에는 컬렉션 이름이 와야 합니다"), tok);
   }
   if (p.isPunc("(", 1)) {
     if (tok.text === "getCollection") {
       p.next();
       const args = p.args();
       if (args.length !== 1 || typeof args[0].value !== "string") {
-        throw new ShellSyntaxError(t("getCollection()에는 이름 문자열 하나가 와야 합니다"), tok.from, p.lastEnd());
+        throw new ShellSyntaxError(phrase("getCollection()에는 이름 문자열 하나가 와야 합니다"), tok.from, p.lastEnd());
       }
       return { name: args[0].value, from: args[0].from, to: args[0].to };
     }
@@ -921,14 +922,14 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
     verbosity = explainVerbosity(calls[0]);
     rest = calls.slice(1);
     if (rest.length === 0) {
-      throw new ShellSyntaxError(t("explain() 다음에 find나 aggregate를 부르세요"), calls[0].from, calls[0].to);
+      throw new ShellSyntaxError(phrase("explain() 다음에 find나 aggregate를 부르세요"), calls[0].from, calls[0].to);
     }
   }
   const [call, ...chain] = rest;
   const target = (request: FindRequest | AggregateRequest): DbRequest =>
     verbosity === null ? request : { kind: "explain", verbosity, target: request };
   if (verbosity !== null && call.name !== "find" && call.name !== "aggregate") {
-    throw new ShellSyntaxError(t("explain()은 find와 aggregate에만 쓸 수 있습니다"), call.from, call.to);
+    throw new ShellSyntaxError(phrase("explain()은 find와 aggregate에만 쓸 수 있습니다"), call.from, call.to);
   }
   switch (call.name) {
     case "find": {
@@ -944,7 +945,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       };
       for (const link of chain) {
         if (verbosity !== null) {
-          throw new ShellSyntaxError(t("explain() 뒤에는 다른 메서드를 이을 수 없습니다"), link.from, link.to);
+          throw new ShellSyntaxError(phrase("explain() 뒤에는 다른 메서드를 이을 수 없습니다"), link.from, link.to);
         }
         switch (link.name) {
           case "sort":
@@ -978,7 +979,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       arity(call, 1, 1);
       const pipeline = call.args[0].value;
       if (!Array.isArray(pipeline) || !pipeline.every(isDocument)) {
-        throw new ShellSyntaxError(t("aggregate()에는 단계 문서의 배열 [ { … } ]이 와야 합니다"), call.args[0].from, call.args[0].to);
+        throw new ShellSyntaxError(phrase("aggregate()에는 단계 문서의 배열 [ { … } ]이 와야 합니다"), call.args[0].from, call.args[0].to);
       }
       for (const link of chain) {
         if (link.name === "explain" && verbosity === null) {
@@ -1006,7 +1007,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       const options = optionalDocArg(call, 1) ?? new Map();
       for (const [key, value] of options) {
         if (key !== "maxTimeMS" || !isNumber(value)) {
-          throw new ShellSyntaxError(t("지원하지 않는 옵션입니다: {name}", { name: key }), call.args[1].from, call.args[1].to);
+          throw new ShellSyntaxError(phrase("지원하지 않는 옵션입니다: {name}", { name: key }), call.args[1].from, call.args[1].to);
         }
       }
       return { kind: "countDocuments", coll, filter: optionalDocArg(call, 0) ?? new Map() };
@@ -1018,7 +1019,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       arity(call, 1, 2);
       const key = call.args[0].value;
       if (typeof key !== "string") {
-        throw new ShellSyntaxError(t("distinct()의 첫 인수는 필드 이름 문자열입니다"), call.args[0].from, call.args[0].to);
+        throw new ShellSyntaxError(phrase("distinct()의 첫 인수는 필드 이름 문자열입니다"), call.args[0].from, call.args[0].to);
       }
       return { kind: "distinct", coll, key, filter: optionalDocArg(call, 1) ?? new Map() };
     }
@@ -1029,7 +1030,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       arity(call, 1, 1);
       const docs = call.args[0].value;
       if (!Array.isArray(docs) || !docs.every(isDocument)) {
-        throw new ShellSyntaxError(t("insertMany()에는 문서의 배열 [ { … } ]이 와야 합니다"), call.args[0].from, call.args[0].to);
+        throw new ShellSyntaxError(phrase("insertMany()에는 문서의 배열 [ { … } ]이 와야 합니다"), call.args[0].from, call.args[0].to);
       }
       return { kind: "insertMany", coll, docs };
     }
@@ -1044,7 +1045,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       } else if (Array.isArray(raw) && raw.every(isDocument)) {
         update = raw;
       } else {
-        throw new ShellSyntaxError(t("수정 문서에는 $set 같은 연산자만 쓸 수 있습니다 (문서를 통째로 바꾸려면 replaceOne)"), call.args[1].from, call.args[1].to);
+        throw new ShellSyntaxError(phrase("수정 문서에는 $set 같은 연산자만 쓸 수 있습니다 (문서를 통째로 바꾸려면 replaceOne)"), call.args[1].from, call.args[1].to);
       }
       return {
         kind: call.name,
@@ -1058,7 +1059,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       arity(call, 2, 3);
       const replacement = docArg(call, 1);
       if ([...replacement.keys()].some((k) => k.startsWith("$"))) {
-        throw new ShellSyntaxError(t("바꿀 문서에는 $ 연산자를 쓸 수 없습니다"), call.args[1].from, call.args[1].to);
+        throw new ShellSyntaxError(phrase("바꿀 문서에는 $ 연산자를 쓸 수 없습니다"), call.args[1].from, call.args[1].to);
       }
       return { kind: "replaceOne", coll, filter: docArg(call, 0), replacement, upsert: upsertOption(call, 2) };
     }
@@ -1073,7 +1074,7 @@ function collectionRequest(coll: string, calls: Call[]): DbRequest {
       arity(call, 1, 1);
       const index = call.args[0].value;
       if (typeof index !== "string" && !isDocument(index)) {
-        throw new ShellSyntaxError(t("dropIndex()에는 인덱스 이름이나 키 문서가 와야 합니다"), call.args[0].from, call.args[0].to);
+        throw new ShellSyntaxError(phrase("dropIndex()에는 인덱스 이름이나 키 문서가 와야 합니다"), call.args[0].from, call.args[0].to);
       }
       return { kind: "dropIndex", coll, index };
     }
@@ -1119,25 +1120,25 @@ const STAGE_INSTEAD: Record<string, string> = { sort: "$sort", limit: "$limit", 
 function unsupportedCall(call: Call, after?: "aggregate"): ShellSyntaxError {
   const text = `.${call.name}()`;
   const stage = after === "aggregate" ? STAGE_INSTEAD[call.name] : undefined;
-  const instead = stage !== undefined ? t("{stage} 단계를 파이프라인에 넣으세요", { stage }) : Object.hasOwn(INSTEAD, call.name) ? t("{form}를 쓰세요", { form: INSTEAD[call.name] }) : null;
-  const message = t("지원하지 않는 mongosh 문법입니다: {text}", { text });
-  return new ShellSyntaxError(instead === null ? message : `${message} — ${instead}`, call.from, call.to);
+  const instead = stage !== undefined ? phrase("{stage} 단계를 파이프라인에 넣으세요", { stage }) : Object.hasOwn(INSTEAD, call.name) ? phrase("{form}를 쓰세요", { form: INSTEAD[call.name] }) : null;
+  const message = phrase("지원하지 않는 mongosh 문법입니다: {text}", { text });
+  return new ShellSyntaxError(instead === null ? message : phrase("{message} — {more}", { message, more: instead }), call.from, call.to);
 }
 
 function arity(call: Call, min: number, max: number): void {
   if (call.args.length < min) {
-    throw new ShellSyntaxError(t("{name}()에 인수가 모자랍니다", { name: call.name }), call.from, call.to);
+    throw new ShellSyntaxError(phrase("{name}()에 인수가 모자랍니다", { name: call.name }), call.from, call.to);
   }
   if (call.args.length > max) {
     const extra = call.args[max];
-    throw new ShellSyntaxError(t("{name}()의 인수가 너무 많습니다", { name: call.name }), extra.from, call.args[call.args.length - 1].to);
+    throw new ShellSyntaxError(phrase("{name}()의 인수가 너무 많습니다", { name: call.name }), extra.from, call.args[call.args.length - 1].to);
   }
 }
 
 function docArg(call: Call, index: number): BsonDocument {
   const arg = call.args[index];
   if (arg === undefined || !isDocument(arg.value)) {
-    throw new ShellSyntaxError(t("{ … } 형태의 문서가 와야 합니다"), arg?.from ?? call.from, arg?.to ?? call.to);
+    throw new ShellSyntaxError(phrase("{ … } 형태의 문서가 와야 합니다"), arg?.from ?? call.from, arg?.to ?? call.to);
   }
   return arg.value;
 }
@@ -1151,7 +1152,7 @@ function countArg(call: Call): number {
   const arg = call.args[0];
   const n = isNumber(arg.value) ? Number(arg.value.value) : NaN;
   if (!Number.isSafeInteger(n) || n < 0) {
-    throw new ShellSyntaxError(t("{name}()에는 0 이상의 정수가 와야 합니다", { name: call.name }), arg.from, arg.to);
+    throw new ShellSyntaxError(phrase("{name}()에는 0 이상의 정수가 와야 합니다", { name: call.name }), arg.from, arg.to);
   }
   return n;
 }
@@ -1167,7 +1168,7 @@ function explainVerbosity(call: Call): ExplainVerbosity {
   }
   const found = VERBOSITIES.find((v) => v === arg.value);
   if (found === undefined) {
-    throw new ShellSyntaxError(t("explain()에는 {list} 중 하나가 와야 합니다", { list: VERBOSITIES.join(", ") }), arg.from, arg.to);
+    throw new ShellSyntaxError(phrase("explain()에는 {list} 중 하나가 와야 합니다", { list: VERBOSITIES.join(", ") }), arg.from, arg.to);
   }
   return found;
 }
@@ -1180,7 +1181,7 @@ function upsertOption(call: Call, index: number): boolean {
   for (const [key, value] of options) {
     if (key !== "upsert" || typeof value !== "boolean") {
       const arg = call.args[index];
-      throw new ShellSyntaxError(t("지원하지 않는 옵션입니다: {name}", { name: key }), arg.from, arg.to);
+      throw new ShellSyntaxError(phrase("지원하지 않는 옵션입니다: {name}", { name: key }), arg.from, arg.to);
     }
   }
   return options.get("upsert") === true;

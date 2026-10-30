@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildOrderBy, buildWhere, rowWindowSql } from "../dataQuery";
+import { buildOrderBy, buildWhere, filteringClause, rowWindowSql } from "../dataQuery";
 import {
   createTableSql,
   dependencyOrder,
@@ -28,14 +28,23 @@ import {
   type CsvOptions,
   type ExportFormat,
 } from "../export";
+import { capabilitiesOf } from "../engines";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { declaredAs } from "../grid/columns";
 import type { WindowedRowSource } from "../grid/windowSource";
 import { t } from "../i18n";
 import { cancelJob, startJob, subscribeJobs, type Job, type JobHandle } from "../jobs";
 import { getSettings } from "../settings";
+import { scriptStatement } from "../sqlSplit";
 import { classifyStatement } from "../sqlTools";
-import { store, type EngineMeta, type GridResult, type TableDetail, type TableDetailForeignKey } from "../store";
+import {
+  store,
+  type EngineMeta,
+  type GridResult,
+  type NativeExportOptions,
+  type TableDetail,
+  type TableDetailForeignKey,
+} from "../store";
 import { countFor, type DataTab } from "../tabs";
 import { XlsxWriter } from "../xlsx";
 import { ZipWriter } from "../zip";
@@ -196,8 +205,9 @@ async function fetchPage(
   base: string,
   order: string,
   offset: number,
+  tail: string,
 ): Promise<{ columns: string[]; rows: unknown[][] }> {
-  const sql = `${base} ${rowWindowSql(dialect, order, PAGE_SIZE, offset)}`;
+  const sql = `${base} ${rowWindowSql(dialect, order, PAGE_SIZE, offset)}${tail}`;
   const detached = await store.runDetached(conn, sql, PAGE_SIZE);
   try {
     return { columns: detached.meta.columns, rows: await readRows(detached.source, 0, PAGE_SIZE) };
@@ -207,9 +217,17 @@ async function fetchPage(
 }
 
 // A page at a time in key order, so no row is read twice or missed and the
-// table's size has no limit.
-async function pagedFeed(conn: string, dialect: SqlDialect, base: string, order: string, signal: AbortSignal): Promise<Feed> {
-  const first = await fetchPage(conn, dialect, base, order, 0);
+// table's size has no limit. `tail` follows the row window (CQL's ALLOW
+// FILTERING).
+async function pagedFeed(
+  conn: string,
+  dialect: SqlDialect,
+  base: string,
+  order: string,
+  tail: string,
+  signal: AbortSignal,
+): Promise<Feed> {
+  const first = await fetchPage(conn, dialect, base, order, 0, tail);
   let pending: unknown[][] | null = first.rows;
   let offset = first.rows.length;
   return {
@@ -226,7 +244,7 @@ async function pagedFeed(conn: string, dialect: SqlDialect, base: string, order:
         return rows.length > 0 ? rows : null;
       }
       signal.throwIfAborted();
-      const page = await fetchPage(conn, dialect, base, order, offset);
+      const page = await fetchPage(conn, dialect, base, order, offset, tail);
       offset += page.rows.length;
       pending = page.rows;
       return rows;
@@ -235,17 +253,65 @@ async function pagedFeed(conn: string, dialect: SqlDialect, base: string, order:
   };
 }
 
+// On an engine that pages by the server's token (cursor_paging): one
+// statement a page at a time, each read from where the one before stopped,
+// so no row is read twice or missed and the table's size has no limit.
+async function cursorFeed(conn: string, sql: string, signal: AbortSignal): Promise<Feed> {
+  const read = async (page: string | undefined) => {
+    const detached = await store.runDetached(conn, sql, PAGE_SIZE, page);
+    try {
+      return {
+        columns: detached.meta.columns,
+        rows: await readRows(detached.source, 0, PAGE_SIZE),
+        next: detached.meta.nextPage,
+      };
+    } finally {
+      detached.source.dispose();
+    }
+  };
+  const first = await read(undefined);
+  let pending: { rows: unknown[][]; next: string | undefined } | null = first;
+  return {
+    columns: first.columns,
+    size: null,
+    truncated: false,
+    async next() {
+      const page = pending;
+      if (page === null) {
+        return null;
+      }
+      if (page.next === undefined) {
+        pending = null;
+        return page.rows.length > 0 ? page.rows : null;
+      }
+      signal.throwIfAborted();
+      pending = await read(page.next);
+      return page.rows;
+    },
+    close() {},
+  };
+}
+
+// A whole table (or the picked columns of it) as one SELECT.
+function tableSelect(dialect: SqlDialect, item: Item, columns: string[] | null): string {
+  const list = columns === null ? "*" : columns.map((name) => escapeSqlIdentifier(name, dialect)).join(", ");
+  return `SELECT ${list} FROM ${quoteIdentifier(item.name, dialect)}`;
+}
+
 function tableFeed(
   conn: string,
   dialect: SqlDialect,
   item: Item,
   detail: TableDetail | null,
   columns: string[] | null,
+  cursor: boolean,
   signal: AbortSignal,
 ): Promise<Feed> {
-  const list = columns === null ? "*" : columns.map((name) => escapeSqlIdentifier(name, dialect)).join(", ");
-  const base = `SELECT ${list} FROM ${quoteIdentifier(item.name, dialect)}`;
-  const pk = detail === null ? [] : keyColumns(detail);
+  const base = tableSelect(dialect, item, columns);
+  if (cursor) {
+    return cursorFeed(conn, base, signal);
+  }
+  const pk = detail === null || dialect.keyOrder === false ? [] : keyColumns(detail);
   // A table without a declared key may still have an order of its own (SQLite's rowid).
   const order =
     pk.length > 0
@@ -253,25 +319,29 @@ function tableFeed(
       : detail !== null
         ? dialect.implicitRowOrder
         : null;
-  return order !== null ? pagedFeed(conn, dialect, base, order, signal) : singlePassFeed(conn, base, null, signal);
+  return order !== null ? pagedFeed(conn, dialect, base, order, "", signal) : singlePassFeed(conn, base, null, signal);
 }
 
 // Every row of a data tab under its filter and sort; the key breaks ties so
-// pages don't overlap.
+// pages don't overlap. By the server's token (`cursor`) only the sorts order
+// the rows, and so does an engine whose key doesn't order them.
 function dataTabFeed(
   conn: string,
   dialect: SqlDialect,
   tab: DataTab,
   result: GridResult,
   names: string[],
+  cursor: boolean,
   signal: AbortSignal,
 ): Promise<Feed> {
   const where = buildWhere(tab.filter ?? null, dialect);
   const base = `SELECT ${names.map((name) => escapeSqlIdentifier(name, dialect)).join(", ")} FROM ${quoteIdentifier(tab.table, dialect)}${
     where === null ? "" : ` WHERE ${where}`
   }`;
+  const clause = filteringClause(tab.filter ?? null, dialect);
+  const tail = clause === null ? "" : ` ${clause}`;
   const sorts = tab.sorts ?? [];
-  const pk = tab.pkColumns ?? tab.meta?.pk ?? result.meta.pk ?? [];
+  const pk = cursor || dialect.keyOrder === false ? [] : (tab.pkColumns ?? tab.meta?.pk ?? result.meta.pk ?? []);
   const sorted = new Set(sorts.map((sort) => sort.column));
   const order = [
     buildOrderBy(sorts, dialect),
@@ -279,10 +349,14 @@ function dataTabFeed(
   ]
     .filter((part): part is string => part !== null && part !== "")
     .join(", ");
-  if (pk.length > 0) {
-    return pagedFeed(conn, dialect, base, order, signal);
+  const sql = `${order === "" ? base : `${base} ORDER BY ${order}`}${tail}`;
+  if (cursor) {
+    return cursorFeed(conn, sql, signal);
   }
-  return singlePassFeed(conn, order === "" ? base : `${base} ORDER BY ${order}`, null, signal);
+  if (pk.length > 0) {
+    return pagedFeed(conn, dialect, base, order, tail, signal);
+  }
+  return singlePassFeed(conn, sql, null, signal);
 }
 
 // ── Writing files ────────────────────────────────────────────────────────
@@ -290,6 +364,35 @@ function dataTabFeed(
 interface FileWriter {
   write(rows: unknown[][]): void;
   end(): Promise<Blob>;
+}
+
+// The options a native export takes for this format, or null where the
+// database can't write the file as the page's options ask (Excel, a quote
+// other than ", a decimal comma, line breaks as spaces).
+function nativeOptions(format: Exclude<ExportFormat, "sql">, csv: CsvOptions): NativeExportOptions | null {
+  if (format === "json") {
+    return { format, header: true, delimiter: ",", crlf: false, null_word: false, nested_json: false };
+  }
+  const lineBreak = csv.lineBreak ?? "\r\n";
+  const delimiter = csv.delimiter ?? ",";
+  if (
+    format !== "csv" ||
+    delimiter.length !== 1 ||
+    (csv.quote ?? '"') !== '"' ||
+    (csv.decimal ?? ".") !== "." ||
+    csv.lineBreakAsSpace === true ||
+    (lineBreak !== "\r\n" && lineBreak !== "\n")
+  ) {
+    return null;
+  }
+  return {
+    format,
+    header: csv.header,
+    delimiter,
+    crlf: lineBreak === "\r\n",
+    null_word: csv.nullAsEmpty === false,
+    nested_json: csv.nestedJson === true,
+  };
 }
 
 function fileWriter(
@@ -338,6 +441,8 @@ interface Section {
   expected: number;
   numeric(columns: string[]): boolean[];
   binary(columns: string[]): boolean[];
+  // Each column's declared type (null where the structure doesn't say).
+  declared(columns: string[]): (string | null)[];
   drop: string | null;
   // References dropped before any table is, where dropped tables form a cycle.
   unlink: string[];
@@ -348,9 +453,14 @@ interface Section {
   // ALTER TABLE … ADD CONSTRAINT, written once every table holds its rows.
   foreignKeys: string[];
   open(signal: AbortSignal): Promise<Feed>;
+  // The SELECT of the item's whole data, which the database writes as the
+  // file itself where its dialect offers that (SqlDialect.nativeExport);
+  // null: rows go through the page.
+  nativeSql: string | null;
 }
 
 interface ExportPlan {
+  conn: string;
   format: ExportFormat;
   // The engine's name, for the file's header, and its SQL.
   kind: string;
@@ -417,13 +527,14 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
       out.push(`${plan.dialect.dumpBefore}\n\n`);
     }
     // Sections come parents first, so children (and views) are dropped before
-    // the tables they depend on.
+    // the tables they depend on. Oracle's conditional drops are PL/SQL blocks,
+    // which end with a "/" line rather than a ";".
     for (const statement of sections.flatMap((section) => section.unlink)) {
-      out.push(`${statement};\n`);
+      out.push(`${scriptStatement(statement, plan.dialect)}\n`);
     }
     const drops = sections.filter((section) => section.drop !== null).reverse();
     for (const section of drops) {
-      out.push(`${section.drop};\n`);
+      out.push(`${scriptStatement(section.drop ?? "", plan.dialect)}\n`);
     }
     if (drops.length > 0) {
       out.push("\n");
@@ -441,9 +552,10 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
         const feed = await section.open(signal);
         try {
           const binary = section.binary(feed.columns);
+          const declared = section.declared(feed.columns);
           await pump(index, feed, (rows) => {
             if (rows.length > 0) {
-              out.push(`${toSqlInserts(section.table, feed.columns, rows, plan.dialect, binary)}\n`);
+              out.push(`${toSqlInserts(section.table, feed.columns, rows, plan.dialect, binary, declared)}\n`);
             }
           });
           if (feed.truncated) {
@@ -480,14 +592,22 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
   for (const [index, section] of sections.entries()) {
     signal.throwIfAborted();
     report(section.name);
-    const feed = await section.open(signal);
+    const native = section.nativeSql === null ? null : nativeOptions(format, plan.csv);
     let blob: Blob;
-    try {
-      const writer = fileWriter(format, section.name, feed.columns, section.numeric(feed.columns), plan.csv);
-      await pump(index, feed, (rows) => writer.write(rows));
-      blob = await writer.end();
-    } finally {
-      feed.close();
+    if (section.nativeSql !== null && native !== null) {
+      blob = await store.exportNative(plan.conn, section.nativeSql, native, signal);
+      if (format === "csv" && plan.csv.bom) {
+        blob = new Blob(["\uFEFF", blob], { type: EXPORT_MIME.csv });
+      }
+    } else {
+      const feed = await section.open(signal);
+      try {
+        const writer = fileWriter(format, section.name, feed.columns, section.numeric(feed.columns), plan.csv);
+        await pump(index, feed, (rows) => writer.write(rows));
+        blob = await writer.end();
+      } finally {
+        feed.close();
+      }
     }
     if (zip === null) {
       single = blob;
@@ -557,6 +677,7 @@ function tableSections(
   items: Item[],
   flags: ItemFlags[],
   columns: string[] | null,
+  cursor: boolean,
 ): ExportPlan["sections"] {
   const sql = format === "sql";
   return async (signal) => {
@@ -574,6 +695,7 @@ function tableSections(
         expected: detail?.row_count_estimate ?? 0,
         numeric: (names) => declaredAs("number", names, detail, dialect),
         binary: (names) => declaredAs("binary", names, detail, dialect),
+        declared: (names) => names.map((name) => detail?.columns.find((column) => column.name === name)?.decl_type ?? null),
         drop: sql && flag.drop ? dropIfExistsSql(dialect, item.name, item.kind) : null,
         unlink: [],
         structure: sql && flag.structure ? () => structureSql(conn, dialect, item, detail) : null,
@@ -581,7 +703,8 @@ function tableSections(
         indexes: sql && flag.structure && detail !== null ? dumpIndexSql(dialect, item.name, detail) : [],
         foreignKeys:
           sql && flag.structure && !dialect.keysInCreate ? keys.map((fk) => foreignKeySql(dialect, item.name, fk)) : [],
-        open: (sig) => tableFeed(conn, dialect, item, detail, columns, sig),
+        open: (sig) => tableFeed(conn, dialect, item, detail, columns, cursor, sig),
+        nativeSql: !sql && dialect.nativeExport === true ? tableSelect(dialect, item, columns) : null,
       });
     }
     if (!sql) {
@@ -628,6 +751,7 @@ function resultSections(
   entries: ResultPick[],
   tab: DataTab | null,
   wantAll: boolean,
+  cursor: boolean,
 ): ExportPlan["sections"] {
   return async (signal) => {
     const sections: Section[] = [];
@@ -635,18 +759,25 @@ function resultSections(
       signal.throwIfAborted();
       const source = entry.result.meta.sourceTable;
       const detail = source === null ? null : await detailOrNull(conn, source);
-      const names =
-        entry.pick === null ? entry.result.meta.columns : entry.pick.map((index) => entry.result.meta.columns[index]);
+      const columns = entry.result.meta.columns;
+      // The columns that only tell rows apart (ClickHouse's _part) aren't data.
+      const identity = dialect.rowIdentity ?? [];
+      const pick =
+        entry.pick ??
+        (columns.some((name) => identity.includes(name))
+          ? columns.flatMap((name, index) => (identity.includes(name) ? [] : [index]))
+          : null);
+      const names = pick === null ? columns : pick.map((index) => columns[index]);
       let open: (sig: AbortSignal) => Promise<Feed>;
       let expected = entry.result.source.baseRowCount;
       if (wantAll && tab !== null) {
-        open = (sig) => dataTabFeed(conn, dialect, tab, entry.result, names, sig);
+        open = (sig) => dataTabFeed(conn, dialect, tab, entry.result, names, cursor, sig);
         expected = countFor(tab, dialect) ?? expected;
       } else if (wantAll && entry.result.meta.truncated && rerunnable(entry.result.sql, dialect)) {
-        open = (sig) => singlePassFeed(conn, entry.result.sql, entry.pick, sig);
+        open = (sig) => singlePassFeed(conn, entry.result.sql, pick, sig);
       } else {
         // Every row already came back, or the statement changes data and isn't run again.
-        open = async () => sourceFeed(entry.result.source, entry.pick);
+        open = async () => sourceFeed(entry.result.source, pick);
       }
       sections.push({
         name: entry.label,
@@ -654,6 +785,7 @@ function resultSections(
         expected,
         numeric: (columns) => declaredAs("number", columns, detail, dialect),
         binary: (columns) => declaredAs("binary", columns, detail, dialect),
+        declared: (columns) => columns.map((name) => detail?.columns.find((column) => column.name === name)?.decl_type ?? null),
         drop: null,
         unlink: [],
         structure: null,
@@ -661,6 +793,7 @@ function resultSections(
         indexes: [],
         foreignKeys: [],
         open,
+        nativeSql: null,
       });
     }
     return sections;
@@ -712,7 +845,13 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
   const [fields, setFields] = useState<string[] | null>(() =>
     target.mode === "results" ? target.result.meta.columns : null,
   );
-  const [fieldOff, setFieldOff] = useState<Set<number>>(() => new Set());
+  // The columns that only tell rows apart (SqlDialect.rowIdentity) start
+  // unchecked: they aren't the table's data.
+  const [fieldOff, setFieldOff] = useState<Set<number>>(() => {
+    const identity = dialect.rowIdentity ?? [];
+    const columns = target.mode === "results" ? target.result.meta.columns : [];
+    return new Set(columns.flatMap((name, index) => (identity.includes(name) ? [index] : [])));
+  });
 
   const running = jobId !== null;
   const columnPick = target.mode === "tables" && target.columnPick;
@@ -829,6 +968,8 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
   const dataTab = target.mode === "results" ? target.dataTab : null;
   const current = target.mode === "results" ? target.result : null;
   const currentRerun = current !== null && rerunnable(current.sql, dialect);
+  // The engine pages by the server's token: tables and data tabs are read by it.
+  const cursor = capabilitiesOf(meta)?.cursor_paging === true;
   // A statement that changes data isn't run again, so rows past those loaded are out of reach.
   const allDisabled = current !== null && dataTab === null && current.meta.truncated && !currentRerun;
 
@@ -899,6 +1040,7 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
     const conn = target.conn;
     const name = base.trim();
     const plan: ExportPlan = {
+      conn,
       format,
       kind,
       dialect,
@@ -915,8 +1057,9 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
               chosen,
               chosen.map(flagsOf),
               columnPick && fields !== null && pick !== null ? pick.map((index) => fields[index]) : null,
+              cursor,
             )
-          : resultSections(conn, dialect, resultPicks(), every ? null : dataTab, scope === "all"),
+          : resultSections(conn, dialect, resultPicks(), every ? null : dataTab, scope === "all", cursor),
     };
     const handle = startJob(t("내보내기"), `${name}${extension}`, 0, {
       cancellable: true,
@@ -1116,16 +1259,19 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
     const loadedLabel = dataTab
       ? t("현재 페이지 ({count}행)", { count: current.meta.rowCount.toLocaleString() })
       : t("로드된 행 ({count}행)", { count: current.meta.rowCount.toLocaleString() });
-    const hasKey = (dataTab?.pkColumns ?? dataTab?.meta?.pk ?? current.meta.pk ?? []).length > 0;
+    const hasKey =
+      dialect.keyOrder !== false && (dataTab?.pkColumns ?? dataTab?.meta?.pk ?? current.meta.pk ?? []).length > 0;
     let allHelp: string;
     if (every) {
       allHelp = t("결과마다 SQL을 다시 실행해 최대 {count}행까지 씁니다. 데이터를 바꾸는 문장은 다시 실행하지 않고 로드된 행을 씁니다.", {
         count: EXPORT_MAX_ROWS.toLocaleString(),
       });
     } else if (dataTab !== null) {
-      allHelp = hasKey
-        ? t("필터·정렬을 적용해 키 순서로 나눠 읽으므로 행 수 제한이 없습니다")
-        : t("키가 없어 한 번에 최대 {count}행까지 읽습니다", { count: EXPORT_MAX_ROWS.toLocaleString() });
+      allHelp = cursor
+        ? t("필터·정렬을 적용해 서버 페이지 단위로 나눠 읽으므로 행 수 제한이 없습니다")
+        : hasKey
+          ? t("필터·정렬을 적용해 키 순서로 나눠 읽으므로 행 수 제한이 없습니다")
+          : t("키가 없어 한 번에 최대 {count}행까지 읽습니다", { count: EXPORT_MAX_ROWS.toLocaleString() });
     } else if (!current.meta.truncated) {
       allHelp = t("결과의 모든 행이 이미 로드되어 있습니다");
     } else if (currentRerun) {
@@ -1253,6 +1399,20 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
               />
               <span>{t("값 안의 줄바꿈을 공백으로")}</span>
             </label>
+            {dialect.nativeExport === true ? (
+              <label
+                className="check-row"
+                title={t("끄면 데이터베이스가 쓰는 모양(예: ['a','b'])으로, 켜면 그리드처럼 JSON(예: [\"a\",\"b\"])으로 씁니다")}
+              >
+                <input
+                  type="checkbox"
+                  checked={csv.nestedJson === true}
+                  disabled={running}
+                  onChange={(event) => set({ nestedJson: event.target.checked })}
+                />
+                <span>{t("배열·맵·튜플을 JSON으로")}</span>
+              </label>
+            ) : null}
             <label className="check-row">
               <input
                 type="checkbox"

@@ -48,6 +48,10 @@ function enumLabels(declType: string): string[] | null {
 }
 
 export function kindOfType(declType: string | null, dialect: SqlDialect): Pick<GridColumnSpec, "kind" | "options"> {
+  const own = declType === null ? null : (dialect.cellKind?.(declType) ?? null);
+  if (own !== null) {
+    return own;
+  }
   const type = (declType ?? "").trim().toLowerCase();
   // Arrays (PostgreSQL's "boolean[]", "time[]") are edited as text.
   if (type === "" || type.endsWith("[]")) {
@@ -61,8 +65,9 @@ export function kindOfType(declType: string | null, dialect: SqlDialect): Pick<G
   if (/^(bool|boolean)\b/.test(type) || /^tinyint\s*\(\s*1\s*\)/.test(type) || (dialect.gridBitIsBoolean && /^bit\b/.test(type))) {
     return { kind: "boolean", options: [...dialect.booleanOptions] };
   }
+  // Oracle's DATE holds a time of day too.
   if (/^date$/.test(type)) {
-    return { kind: "date" };
+    return { kind: dialect.dateHasTime === true ? "datetime" : "date" };
   }
   // SQL Server's timestamp is rowversion, a binary counter, not a time.
   if (dialect.timestampIsVersion && /^(timestamp|rowversion)\b/.test(type)) {
@@ -78,16 +83,16 @@ export function kindOfType(declType: string | null, dialect: SqlDialect): Pick<G
     return { kind: "json" };
   }
   if (
-    /^(tinyint|smallint|mediumint|int|integer|bigint|serial|bigserial|smallserial|real|float|double|decimal|numeric|money|smallmoney|number)\b/.test(
+    /^(tinyint|smallint|mediumint|int|integer|bigint|serial|bigserial|smallserial|real|float|double|decimal|numeric|money|smallmoney|number|binary_float|binary_double)\b/.test(
       type,
     )
   ) {
     return { kind: "number" };
   }
   // Bytes, which every engine shows as hex; on SQLite any type naming BLOB,
-  // as its affinity rule (and the engine) reads it.
+  // as its affinity rule (and the engine) reads it. Oracle's RAW is bytes too.
   if (
-    /^(bytea|bytes|binary|varbinary|image|tinyblob|blob|mediumblob|longblob)\b/.test(type) ||
+    /^(bytea|bytes|binary|varbinary|image|tinyblob|blob|mediumblob|longblob|raw|long raw)\b/.test(type) ||
     (dialect.blobByName && type.includes("blob"))
   ) {
     return { kind: "binary" };

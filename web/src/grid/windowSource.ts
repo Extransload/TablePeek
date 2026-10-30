@@ -36,6 +36,9 @@ export interface PendingCell {
   col: number;
   value: string | null;
   expr?: ValueExpr;
+  // `value` is an amount the database adds to the column in one write (a
+  // CQL counter's increment); what the column becomes is read back.
+  add?: true;
 }
 
 export interface PendingEditOp {
@@ -52,9 +55,11 @@ export interface PendingOps {
 
 interface PendingEditRow {
   key: PkPair[];
-  // An expression's cell holds its label.
+  // An expression's cell holds its label, an increment's "+n".
   cells: Map<number, string | null>;
   exprs: Map<number, ValueExpr>;
+  // Increments staged by stageAdd: the amount of each.
+  adds: Map<number, string>;
 }
 
 interface PendingInsertRow {
@@ -221,6 +226,7 @@ export class WindowedRowSource implements RowSource {
     if (base !== undefined && cellToString(base) === value) {
       if (entry !== undefined && entry.cells.delete(col)) {
         entry.exprs.delete(col);
+        entry.adds.delete(col);
         if (entry.cells.size === 0) {
           this.edits.delete(row);
         }
@@ -231,8 +237,9 @@ export class WindowedRowSource implements RowSource {
     if (entry !== undefined) {
       entry.cells.set(col, value);
       entry.exprs.delete(col);
+      entry.adds.delete(col);
     } else if (key !== null) {
-      this.edits.set(row, { key, cells: new Map([[col, value]]), exprs: new Map() });
+      this.edits.set(row, { key, cells: new Map([[col, value]]), exprs: new Map(), adds: new Map() });
     } else {
       return false;
     }
@@ -260,11 +267,46 @@ export class WindowedRowSource implements RowSource {
     if (entry !== undefined) {
       entry.cells.set(col, staged.label);
       entry.exprs.set(col, staged.expr);
+      entry.adds.delete(col);
     } else if (key !== null) {
       this.edits.set(row, {
         key,
         cells: new Map([[col, staged.label]]),
         exprs: new Map([[col, staged.expr]]),
+        adds: new Map(),
+      });
+    } else {
+      return false;
+    }
+    this.changed();
+    return true;
+  }
+
+  // An amount the database adds to a stored row's counter when applied
+  // (UPDATE … SET c = c + n); the cell shows "+n" until then. A new row's
+  // counter starts from the amount, so it is staged as its value.
+  stageAdd(row: number, col: number, amount: string, key: PkPair[] | null): boolean {
+    if (col < 0 || col >= this.columns.length) {
+      return false;
+    }
+    if (this.isInserted(row)) {
+      return this.stageEdit(row, col, amount, key);
+    }
+    if (!Number.isInteger(row) || row < 0 || row >= this.baseRowCount) {
+      return false;
+    }
+    const label = amount.startsWith("-") ? amount : `+${amount}`;
+    const entry = this.edits.get(row);
+    if (entry !== undefined) {
+      entry.cells.set(col, label);
+      entry.exprs.delete(col);
+      entry.adds.set(col, amount);
+    } else if (key !== null) {
+      this.edits.set(row, {
+        key,
+        cells: new Map([[col, label]]),
+        exprs: new Map(),
+        adds: new Map([[col, amount]]),
       });
     } else {
       return false;
@@ -285,6 +327,7 @@ export class WindowedRowSource implements RowSource {
     const entry = this.edits.get(row);
     if (entry !== undefined && entry.cells.delete(col)) {
       entry.exprs.delete(col);
+      entry.adds.delete(col);
       if (entry.cells.size === 0) {
         this.edits.delete(row);
       }
@@ -379,8 +422,12 @@ export class WindowedRowSource implements RowSource {
       edits.push({
         row,
         key: entry.key,
-        cells: [...entry.cells].map(([col, value]) => {
+        cells: [...entry.cells].map(([col, value]): PendingCell => {
           const expr = entry.exprs.get(col);
+          const amount = entry.adds.get(col);
+          if (amount !== undefined) {
+            return { col, value: amount, add: true };
+          }
           return expr === undefined ? { col, value } : { col, value: null, expr };
         }),
       });

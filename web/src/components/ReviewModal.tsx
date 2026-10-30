@@ -7,12 +7,13 @@ import { SAFE_MODE_LABELS } from "./SafeModeMenu";
 interface ReviewModalProps {
   mode: SafeMode;
   items: ReviewItem[];
-  txActive: boolean;
+  // "Run in a transaction" is offered: the engine has them and none is open.
+  offerTx: boolean;
   onRun(wrapTx: boolean): void;
   onClose(): void;
 }
 
-export function ReviewModal({ mode, items, txActive, onRun, onClose }: ReviewModalProps) {
+export function ReviewModal({ mode, items, offerTx, onRun, onClose }: ReviewModalProps) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const runRef = useRef<HTMLButtonElement | null>(null);
   const danger = items.some((item) => item.severity === "danger");
@@ -74,7 +75,7 @@ export function ReviewModal({ mode, items, txActive, onRun, onClose }: ReviewMod
           <button type="button" ref={cancelRef} onClick={onClose}>
             {t("취소")}
           </button>
-          {txActive ? null : (
+          {!offerTx ? null : (
             <button
               type="button"
               onClick={() => onRun(true)}

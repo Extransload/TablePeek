@@ -321,6 +321,92 @@ export function parseSqlitePlan(columns: string[], rows: unknown[][]): ParsedPla
   return { engine: "sqlite", nodes: roots };
 }
 
+// DBMS_XPLAN's figures: 1000K, 10M, …
+function xplanNumber(cell: string | undefined): number | undefined {
+  const found = /^(\d+(?:\.\d+)?)([KMGTPE]?)$/.exec((cell ?? "").trim());
+  if (found === null) {
+    return undefined;
+  }
+  return Number(found[1]) * 1000 ** " KMGTPE".indexOf(found[2] || " ");
+}
+
+// EXPLAIN PLAN as DBMS_XPLAN.DISPLAY prints it (Oracle), a line per row: the
+// table "| Id | Operation | Name | Rows | Bytes | Cost (%CPU)| Time |", whose
+// Operation is indented by depth and whose ids carry a * when a predicate
+// applies, then "Predicate Information" ("   1 - access(…)" and its
+// continuation lines).
+export function parseOraclePlan(columns: string[], rows: unknown[][]): ParsedPlan | null {
+  if (columns.length !== 1) {
+    return null;
+  }
+  const lines = rows.map((row) => (typeof row[0] === "string" ? row[0] : ""));
+  const headerAt = lines.findIndex((line) => /^\|\s*Id\s*\|\s*Operation\s*\|/.test(line));
+  if (headerAt < 0) {
+    return null;
+  }
+  const header = lines[headerAt].split("|").map((cell) => cell.trim());
+  const at = (name: RegExp): number => header.findIndex((cell) => name.test(cell));
+  const nameAt = at(/^Name$/);
+  const rowsAt = at(/^Rows$/);
+  const costAt = at(/^Cost/);
+
+  const predicates = new Map<string, string[]>();
+  const predicatesAt = lines.findIndex((line) => line.startsWith("Predicate Information"));
+  if (predicatesAt >= 0) {
+    let id: string | null = null;
+    for (const line of lines.slice(predicatesAt + 1)) {
+      const start = /^\s+(\d+)\s+-\s+(.*)$/.exec(line);
+      if (start !== null) {
+        id = start[1];
+        predicates.set(id, [...(predicates.get(id) ?? []), start[2].trim()]);
+      } else if (/^\S/.test(line) && !/^-+$/.test(line)) {
+        // The next section ("Note", "Column Projection Information", …).
+        break;
+      } else if (id !== null && line.trim() !== "" && !/^-+$/.test(line)) {
+        predicates.get(id)?.push(line.trim());
+      }
+    }
+  }
+
+  const roots: PlanNode[] = [];
+  // The open nodes, outermost first, with the indent of their operation.
+  const stack: { indent: number; node: PlanNode }[] = [];
+  for (const line of lines.slice(headerAt + 1)) {
+    const cells = line.split("|");
+    const id = /^\*?\s*(\d+)$/.exec((cells[1] ?? "").trim())?.[1];
+    if (!line.startsWith("|") || id === undefined) {
+      continue;
+    }
+    const operation = cells[2] ?? "";
+    const indent = operation.length - operation.trimStart().length;
+    const cost = xplanNumber(/^\s*(\d+)/.exec(cells[costAt] ?? "")?.[1]);
+    const node: PlanNode = {
+      label: operation.trim(),
+      subtitle: nameAt > 0 ? text(cells[nameAt]) : undefined,
+      cost,
+      costLabel: cost?.toLocaleString(),
+      rows: rowsAt > 0 ? xplanNumber(cells[rowsAt]) : undefined,
+      detail: predicates.get(id)?.join("\n"),
+      children: [],
+    };
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
+    }
+    (stack.length > 0 ? stack[stack.length - 1].node.children : roots).push(node);
+    stack.push({ indent, node });
+  }
+  if (roots.length === 0) {
+    return null;
+  }
+  return {
+    engine: "oracle",
+    nodes: roots,
+    costLabel: roots[0].costLabel,
+    rowsLabel: roots[0].rows?.toLocaleString(),
+    raw: lines.join("\n"),
+  };
+}
+
 export function parseExplainPlan(
   dialect: SqlDialect | undefined,
   columns: string[],

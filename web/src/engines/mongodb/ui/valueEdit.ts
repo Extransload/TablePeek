@@ -2,7 +2,7 @@
 // panel: the text a value is edited as, reading typed text back keeping the
 // value's BSON type, and switching a value to another type.
 
-import { t } from "../../../i18n";
+import { errorPhrase, phrase, type Phrase } from "../../../i18n";
 import { BsonDate, Decimal128, Double, Int32, Int64, ObjectId, doubleText, isDocument, typeName, type BsonTypeName, type BsonValue } from "../bson";
 import { cellText, toShell } from "../format";
 import { parseValue } from "../shell/parse";
@@ -10,7 +10,8 @@ import { parseValue } from "../shell/parse";
 // The types the type menu offers, in Compass's order.
 export const EDIT_TYPES: BsonTypeName[] = ["String", "Int32", "Int64", "Double", "Decimal128", "Boolean", "Date", "ObjectId", "Null", "Object", "Array"];
 
-export type Coerced = { value: BsonValue } | { error: string };
+// `error` is translated where it shows, so it follows a language switch.
+export type Coerced = { value: BsonValue } | { error: Phrase };
 
 // A constructor typed out (`NumberLong(5)`, `ISODate("…")`) says the type
 // itself, whatever the field held before.
@@ -37,32 +38,32 @@ export function coerceInput(text: string, type: BsonTypeName): Coerced {
     case "Int32": {
       const n = Number(s);
       if (!/^[+-]?\d+$/.test(s) || n < -2147483648 || n > 2147483647) {
-        return { error: t("Int32 값이 아닙니다 — 정수를 쓰거나 타입을 바꾸세요") };
+        return { error: phrase("Int32 값이 아닙니다 — 정수를 쓰거나 타입을 바꾸세요") };
       }
       return { value: new Int32(n) };
     }
     case "Int64":
       if (!/^[+-]?\d+$/.test(s)) {
-        return { error: t("Int64 값이 아닙니다 — 정수를 쓰세요") };
+        return { error: phrase("Int64 값이 아닙니다 — 정수를 쓰세요") };
       }
       try {
         return { value: new Int64(s) };
       } catch (error) {
-        return { error: (error as Error).message };
+        return { error: errorPhrase(error) };
       }
     case "Double":
       if (s === "" || !(Number.isFinite(Number(s)) || /^[+-]?(Infinity|NaN)$/.test(s))) {
-        return { error: t("Double 값이 아닙니다") };
+        return { error: phrase("Double 값이 아닙니다") };
       }
       return { value: new Double(Number(s)) };
     case "Decimal128":
       if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) {
-        return { error: t("Decimal128 값이 아닙니다 — 예: 318.74") };
+        return { error: phrase("Decimal128 값이 아닙니다 — 예: 318.74") };
       }
       return { value: new Decimal128(s) };
     case "Boolean":
       if (!/^(true|false)$/i.test(s)) {
-        return { error: t("Boolean 값은 true 또는 false입니다") };
+        return { error: phrase("Boolean 값은 true 또는 false입니다") };
       }
       return { value: s.toLowerCase() === "true" };
     case "Date": {
@@ -74,13 +75,13 @@ export function coerceInput(text: string, type: BsonTypeName): Coerced {
       }
       const ms = Date.parse(iso);
       if (Number.isNaN(ms)) {
-        return { error: t("날짜로 읽을 수 없습니다 — 예: 2025-03-01T09:30:00Z") };
+        return { error: phrase("날짜로 읽을 수 없습니다 — 예: 2025-03-01T09:30:00Z") };
       }
       return { value: new BsonDate(ms) };
     }
     case "ObjectId":
       if (!/^[0-9a-fA-F]{24}$/.test(s)) {
-        return { error: t("ObjectId는 16진수 24자리입니다") };
+        return { error: phrase("ObjectId는 16진수 24자리입니다") };
       }
       return { value: new ObjectId(s) };
     case "Null":

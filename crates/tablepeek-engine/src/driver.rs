@@ -1,7 +1,8 @@
 //! What every engine implements. `Driver` is the part all engines share
 //! (status, cancel, server info); each paradigm adds its own set of
 //! operations: `SqlDriver` for SQL databases, `DocumentDriver` for document
-//! stores. An engine answers `sql()` or `document()` with itself for the
+//! stores, `SearchDriver` (crate::search) for search engines. An engine
+//! answers `sql()`, `document()` or `search()` with itself for the
 //! paradigm it speaks and None for the rest.
 
 use std::path::PathBuf;
@@ -10,8 +11,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tablepeek_types::{
-    Capabilities, DbObjects, EditTarget, EngineMeta, InsertValue, ObjectDefinition, PkValue,
-    Relation, ServerInfo, TableDetail, TableSchema,
+    Capabilities, CellRef, DbObjects, EditTarget, EngineMeta, InsertValue, ObjectDefinition,
+    PkValue, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
 use crate::sql_log::Dialect;
@@ -84,6 +85,10 @@ pub trait Driver: Send + Sync {
     fn document(&self) -> Option<&dyn DocumentDriver> {
         None
     }
+
+    fn search(&self) -> Option<&dyn crate::search::SearchDriver> {
+        None
+    }
 }
 
 /// The operations of a SQL database.
@@ -104,9 +109,78 @@ pub trait SqlDriver: Send + Sync {
     /// The databases a connection could switch to; empty where there are none.
     async fn databases(&self) -> Result<Vec<String>, EngineError>;
     async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError>;
+    /// The rows of `sql` from where an earlier read of the same statement
+    /// stopped: `page` is the `next_page` that read gave. Only engines whose
+    /// capabilities say `cursor_paging` have one.
+    async fn query_from(
+        &self,
+        _sql: &str,
+        _max_rows: usize,
+        _page: &str,
+    ) -> Result<QueryData, EngineError> {
+        Err(EngineError::Unsupported(
+            "이 엔진은 페이지 토큰으로 이어 읽을 수 없습니다".into(),
+        ))
+    }
+    /// Walks `sql`'s rows from `skip.page` (None: the start), which is row
+    /// `skip.offset` of the statement, past `skip.rows` of them without returning any,
+    /// for a jump to a far page on an engine that pages by token
+    /// (`cursor_paging`). Stops early once `budget` has passed, so the page
+    /// can show progress and stop the walk between calls. Engines without
+    /// page tokens have none.
+    async fn skip_rows(
+        &self,
+        _sql: &str,
+        _skip: &SkipRequest,
+        _budget: std::time::Duration,
+    ) -> Result<SkipOutcome, EngineError> {
+        Err(EngineError::Unsupported(
+            "이 엔진은 페이지 토큰으로 행을 건너뛸 수 없습니다".into(),
+        ))
+    }
+    /// One part of the `SELECT COUNT(*)` `sql`, counted in parts the engine
+    /// chooses (Cassandra's token ranges, several at once): `cursor` is the
+    /// last part's (None: the first). Stops early once `budget` has passed,
+    /// so the page can show progress and stop between parts. Only engines
+    /// whose capabilities say `count_steps` have one.
+    async fn count_step(
+        &self,
+        _sql: &str,
+        _cursor: Option<&str>,
+        _budget: std::time::Duration,
+    ) -> Result<CountStep, EngineError> {
+        Err(EngineError::Unsupported(
+            "이 엔진은 행 수를 나눠 셀 수 없습니다".into(),
+        ))
+    }
     async fn edit(&self, target: &EditTarget) -> Result<u64, EngineError>;
+    /// An edit with `seen`: every column of the row as the grid last knew
+    /// it (what it read, with what this apply already wrote). Engines whose
+    /// row identity can move (ClickHouse's part after a merge) find the row
+    /// again by it, and counters change by the difference from it; the rest
+    /// edit by key alone.
+    async fn edit_seen(&self, target: &EditTarget, _seen: &[PkValue]) -> Result<u64, EngineError> {
+        self.edit(target).await
+    }
+    /// Adds `target.value` (a whole number) to the column, as one write the
+    /// database applies atomically (a CQL counter's `c = c + n`). Engines
+    /// without such columns have none.
+    async fn edit_add(&self, _target: &EditTarget) -> Result<u64, EngineError> {
+        Err(EngineError::Unsupported(
+            "이 엔진에는 값을 더해 바꾸는 컬럼이 없습니다".into(),
+        ))
+    }
     async fn insert_row(&self, table: &str, values: &[InsertValue]) -> Result<u64, EngineError>;
     async fn delete_row(&self, table: &str, pk: &[PkValue]) -> Result<u64, EngineError>;
+    /// A delete with the row as the grid last knew it (see `edit_seen`).
+    async fn delete_row_seen(
+        &self,
+        table: &str,
+        pk: &[PkValue],
+        _seen: &[PkValue],
+    ) -> Result<u64, EngineError> {
+        self.delete_row(table, pk).await
+    }
     async fn table_detail(&self, name: &str) -> Result<TableDetail, EngineError>;
     async fn objects(&self, include_system: bool) -> Result<DbObjects, EngineError>;
     async fn object_definition(
@@ -114,9 +188,128 @@ pub trait SqlDriver: Send + Sync {
         kind: &str,
         name: &str,
     ) -> Result<Option<ObjectDefinition>, EngineError>;
-    async fn kill_session(&self, id: u64) -> Result<(), EngineError>;
+    /// Ends another session: `id` as the server info's session list gives
+    /// it (a number on most engines; ClickHouse's query id, Oracle's
+    /// "sid,serial#").
+    async fn kill_session(&self, id: &str) -> Result<(), EngineError>;
     async fn in_tx(&self) -> Result<bool, EngineError>;
     async fn tx(&self, op: TxOp) -> Result<(), EngineError>;
+
+    /// How long, in seconds, the statements the page runs from now on may
+    /// take before the server stops them (Settings' query time limit); 0 for
+    /// no limit of the app's own. Engines that send a limit with each
+    /// statement (ClickHouse's max_execution_time) keep it; the rest ignore it.
+    fn set_query_timeout(&self, _secs: u64) {}
+
+    /// The whole result of the read `sql` as a file the database writes
+    /// itself, read as it arrives (ClickHouse's FORMAT CSV and
+    /// JSONEachRow): faster than rows through the grid, with no row limit.
+    /// Only engines whose dialect offers it have one.
+    async fn export_native(
+        &self,
+        _sql: &str,
+        _export: &NativeExport,
+    ) -> Result<FileStream, EngineError> {
+        Err(EngineError::Unsupported(
+            "이 엔진은 데이터베이스가 직접 쓰는 파일로 내보낼 수 없습니다".into(),
+        ))
+    }
+
+    /// The whole value of one binary cell (`capabilities.binary_cells`), in
+    /// pieces as the server sends them: past what the grid shows of a large
+    /// one. Read in the page's session, so it is the value the page sees.
+    async fn read_cell(&self, _cell: &CellRef) -> Result<FileStream, EngineError> {
+        Err(EngineError::Unsupported(
+            "이 엔진은 바이너리 값을 통째로 읽지 않습니다".into(),
+        ))
+    }
+
+    /// Replaces one binary cell with the bytes `data` brings, written to the
+    /// server in pieces as they come, as a cell edit is: in the open
+    /// transaction, else committed (a failure midway leaves the old value).
+    /// Returns the rows changed.
+    async fn write_cell(&self, _cell: &CellRef, _data: FileStream) -> Result<u64, EngineError> {
+        Err(EngineError::Unsupported(
+            "이 엔진은 바이너리 값을 통째로 바꾸지 않습니다".into(),
+        ))
+    }
+}
+
+/// Where `SqlDriver::skip_rows` starts and how far it goes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkipRequest {
+    /// The token the walk starts from (a result's `next_page`, or an
+    /// earlier walk's); None for the statement's first row.
+    #[serde(default)]
+    pub page: Option<String>,
+    /// Which row of the statement `page` leads to.
+    #[serde(default)]
+    pub offset: usize,
+    /// How many rows to pass.
+    pub rows: usize,
+    /// The walk notes the token wherever it passes a multiple of this many
+    /// rows (the data tab's page size), so later jumps start nearer.
+    #[serde(default)]
+    pub mark_every: usize,
+}
+
+/// How far `SqlDriver::skip_rows` got.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkipOutcome {
+    /// Where the rows after the passed ones start; None when the statement
+    /// has no more rows.
+    pub page: Option<String>,
+    pub skipped: usize,
+    /// The tokens noted on the way: `[offset, token]`, each offset a
+    /// multiple of `mark_every` counted from the statement's first row.
+    pub marks: Vec<(usize, String)>,
+}
+
+/// One part of a count (`SqlDriver::count_step`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CountStep {
+    /// The rows the parts counted this time hold.
+    pub rows: i64,
+    /// Where the next step starts; None once every part is counted.
+    pub cursor: Option<String>,
+    /// How much of the whole is counted so far, from 0 to 1.
+    pub done: f64,
+}
+
+/// A file's bytes as the database sends them.
+pub type FileStream = futures_util::stream::BoxStream<'static, Result<Vec<u8>, EngineError>>;
+
+/// What `export_native` writes: "csv" (with the page's CSV options) or
+/// "json" (an array of objects, as the page's JSON export).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeExport {
+    pub format: String,
+    #[serde(default)]
+    pub header: bool,
+    #[serde(default = "default_delimiter")]
+    pub delimiter: char,
+    /// Records end with CRLF rather than LF.
+    #[serde(default)]
+    pub crlf: bool,
+    /// NULL as the word NULL rather than an empty field.
+    #[serde(default)]
+    pub null_word: bool,
+    /// CSV: arrays, maps and tuples as JSON text (as the grid shows them)
+    /// rather than in the database's own text form.
+    #[serde(default)]
+    pub nested_json: bool,
+}
+
+fn default_delimiter() -> char {
+    ','
+}
+
+/// A session id that must be a number (a PostgreSQL pid, a MySQL thread id,
+/// a SQL Server spid).
+pub fn numeric_session_id(id: &str) -> Result<u64, EngineError> {
+    id.trim()
+        .parse()
+        .map_err(|_| EngineError::BadRequest("세션 ID가 올바르지 않습니다".into()))
 }
 
 /// The operations of a document store (MongoDB and the like). Documents,

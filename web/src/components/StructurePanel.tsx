@@ -11,13 +11,15 @@ import {
   type IndexDraft,
   type StructureDraft,
 } from "../ddl";
-import type { SqlDialect } from "../engines/sqlDialect";
+import type { PropertyAction, SqlDialect } from "../engines/sqlDialect";
 import { palette } from "../palette";
 import { getSettings } from "../settings";
 import { peekSchema } from "../schemaCache";
 import type { SelectedRows } from "../grid/CanvasGrid";
 import type { RowSource } from "../grid/rowSource";
 import { store, type TableDetail, type TableSchema } from "../store";
+import { ClusterPicker, onCluster, useCluster } from "./ClusterPicker";
+import { confirmDialog } from "./ConfirmDialog";
 import { DdlPreview } from "./DraftEditors";
 import { t } from "../i18n";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
@@ -47,6 +49,18 @@ interface StructurePanelProps {
 
 function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+// The statements a save runs, on `cluster`'s servers when one is picked.
+function changesOn(
+  dialect: SqlDialect,
+  table: string,
+  orig: StructureDraft,
+  next: StructureDraft,
+  cluster: string | null,
+): { statements: string[]; errors: string[] } {
+  const made = diffStructure(dialect, table, orig, next);
+  return { ...made, statements: onCluster(dialect, made.statements, cluster) };
 }
 
 // "ref_table(ref_column)"; a bare "ref_table" takes that table's primary key.
@@ -161,6 +175,9 @@ export function StructurePanel({
   // The CREATE statement and the triggers, shown under the grid while asked for.
   const [showDdl, setShowDdl] = useState(false);
   const [showTriggers, setShowTriggers] = useState(false);
+  // The engine's storage settings (ClickHouse's ORDER BY, TTL, …), shown
+  // until hidden, where the engine reports any.
+  const [showProperties, setShowProperties] = useState(true);
   // What the top bar's search keeps: columns by name, indexes by name or column.
   const [columnQuery, setColumnQuery] = useState("");
   const [indexQuery, setIndexQuery] = useState("");
@@ -209,6 +226,7 @@ export function StructurePanel({
   }, [conn, table, nonce]);
 
   const detail = data ?? null;
+  const properties = detail?.properties ?? [];
   // An engine that rebuilds the table on save (SQLite) drops every column
   // and index the draft leaves out, not just new ones.
   const rebuilds = dialect.rebuildsTable;
@@ -274,12 +292,13 @@ export function StructurePanel({
     return withoutColumns(kept, gone, (orig) => rebuilds || orig === null);
   }, [draft, deleted, rebuilds]);
 
+  const { clusters, cluster, setCluster } = useCluster(conn, dialect);
   const diff = useMemo(
     () =>
       effective !== null && origDraft !== null && (draft !== origDraft || deleted.size > 0)
-        ? diffStructure(dialect, table, origDraft, effective)
+        ? changesOn(dialect, table, origDraft, effective, cluster)
         : null,
-    [effective, draft, deleted, origDraft, dialect, table],
+    [effective, draft, deleted, origDraft, dialect, table, cluster],
   );
   const pending = diff !== null && (diff.statements.length > 0 || diff.errors.length > 0);
   const pendingRef = useRef(pending);
@@ -307,7 +326,7 @@ export function StructurePanel({
     if (origDraft === null || effective === null || busy) {
       return;
     }
-    const result = diffStructure(dialect, table, origDraft, effective);
+    const result = changesOn(dialect, table, origDraft, effective, cluster);
     if (result.errors.length > 0) {
       setSaveError(result.errors.join("\n"));
       setPreview(true);
@@ -352,6 +371,38 @@ export function StructurePanel({
     }
   }
   saveRef.current = save;
+
+  // A property's one-click change (SqlDialect.propertyAction): explained
+  // and asked first, then run like a save, on the picked cluster.
+  async function runPropertyAction(action: PropertyAction): Promise<void> {
+    if (busy) {
+      return;
+    }
+    const statements = onCluster(dialect, [action.statement], cluster);
+    const ok = await confirmDialog({
+      title: t(action.title),
+      message: `${t(action.message)}\n\n${statements.join(";\n")}`,
+      confirmLabel: t(action.label),
+    });
+    if (!ok) {
+      return;
+    }
+    setBusy(true);
+    setSaveError(null);
+    try {
+      for (const statement of statements) {
+        await store.exec(conn, statement, { history: true });
+      }
+      store.setInfo(t("{change}: 적용했습니다", { change: t(action.title) }));
+      addActivity("ddl", t("구조 변경: {table}", { table }), t(action.title));
+      setNonce((value) => value + 1);
+      onChanged();
+    } catch (err) {
+      setSaveError(errorOf(err, t("구조 변경에 실패했습니다")));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // After a failed save, puts a SQLite rebuild back the way it started: the
   // half-made copy goes and foreign keys come back on. True when the table was
@@ -620,7 +671,7 @@ export function StructurePanel({
       key: draftKey(),
       orig: null,
       name: "",
-      type: "TEXT",
+      type: dialect.newColumnType ?? "TEXT",
       notNull: false,
       pk: false,
       def: "",
@@ -664,6 +715,11 @@ export function StructurePanel({
   const yesNo: CellChoices = { options: ["YES", "NO"], strict: true };
   const trueFalse: CellChoices = { options: ["TRUE", "FALSE"], strict: true };
 
+  // An existing column of an engine with fixed columns (CQL) keeps its type
+  // and its place in the key.
+  const fixed = (row: number) => dialect.fixedColumns === true && columns[row].orig !== null;
+  const fixedTitle = (row: number) => (fixed(row) ? t("이 엔진에서는 만든 뒤 바꿀 수 없습니다") : undefined);
+
   const columnGrid: GridColumn[] = [
     {
       header: "column_name",
@@ -679,15 +735,23 @@ export function StructurePanel({
       choices: () => ({ options: typeChoices }),
       commit: (row, value) => patchColumn(row, { type: value.trim() }),
       changed: (row) => columnChanged(row, "type"),
+      readOnly: fixed,
+      title: fixedTitle,
     },
-    {
-      header: "is_nullable",
-      value: (row) => (columns[row].notNull ? "NO" : "YES"),
-      ink: flagInk,
-      choices: () => yesNo,
-      commit: (row, value) => patchColumn(row, { notNull: value === "NO" }),
-      changed: (row) => columnChanged(row, "notNull"),
-    },
+    // Engines whose columns have no NOT NULL or default (CQL) get no
+    // column for them.
+    ...(dialect.fixedColumns === true
+      ? []
+      : [
+          {
+            header: "is_nullable",
+            value: (row: number) => (columns[row].notNull ? "NO" : "YES"),
+            ink: flagInk,
+            choices: () => yesNo,
+            commit: (row: number, value: string) => patchColumn(row, { notNull: value === "NO" }),
+            changed: (row: number) => columnChanged(row, "notNull"),
+          },
+        ]),
     {
       header: "is_primary",
       value: (row) => (columns[row].pk ? "YES" : "NO"),
@@ -695,28 +759,40 @@ export function StructurePanel({
       choices: () => yesNo,
       commit: (row, value) => patchColumn(row, { pk: value === "YES" }),
       changed: (row) => columnChanged(row, "pk"),
+      readOnly: fixed,
+      title: fixedTitle,
     },
-    {
-      header: "column_default",
-      // No default shows NULL, as TablePlus does.
-      value: (row) => (columns[row].def === "" ? null : columns[row].def),
-      choices: () => ({ options: defaultChoices }),
-      commit: (row, value) => patchColumn(row, { def: value.trim().toUpperCase() === "NULL" ? "" : value }),
-      nullable: true,
-      changed: (row) => columnChanged(row, "def"),
-      title: (row) => columns[row].def || undefined,
-    },
-    {
-      header: "foreign_key",
-      value: (row) => fkText(columns[row]),
-      ink: () => palette.accent,
-      choices: () => ({ options: fkChoices }),
-      commit: (row, value) => setColumnFk(row, value.trim().toUpperCase() === "NULL" ? "" : value),
-      nullable: true,
-      readOnly: (row) => fkLocked(columns[row]),
-      changed: (row) => fkChanged(columns[row]),
-      title: (row) => (fkLocked(columns[row]) ? t("복합 외래 키는 SQL로 변경하세요") : undefined),
-    },
+    ...(dialect.fixedColumns === true
+      ? []
+      : [
+          {
+            header: "column_default",
+            // No default shows NULL, as TablePlus does.
+            value: (row: number) => (columns[row].def === "" ? null : columns[row].def),
+            choices: () => ({ options: defaultChoices }),
+            commit: (row: number, value: string) =>
+              patchColumn(row, { def: value.trim().toUpperCase() === "NULL" ? "" : value }),
+            nullable: true,
+            changed: (row: number) => columnChanged(row, "def"),
+            title: (row: number) => columns[row].def || undefined,
+          },
+        ]),
+    // Engines without foreign keys (CQL) get no column for them.
+    ...(dialect.noForeignKeys === true
+      ? []
+      : [
+          {
+            header: "foreign_key",
+            value: (row: number) => fkText(columns[row]),
+            ink: () => palette.accent,
+            choices: () => ({ options: fkChoices }),
+            commit: (row: number, value: string) => setColumnFk(row, value.trim().toUpperCase() === "NULL" ? "" : value),
+            nullable: true,
+            readOnly: (row: number) => fkLocked(columns[row]),
+            changed: (row: number) => fkChanged(columns[row]),
+            title: (row: number) => (fkLocked(columns[row]) ? t("복합 외래 키는 SQL로 변경하세요") : undefined),
+          },
+        ]),
   ];
 
   function fkChanged(column: ColumnDraft): boolean {
@@ -998,8 +1074,44 @@ export function StructurePanel({
               <section className="structure-pane">
                 <div className="structure-section-head">
                   <span className="structure-section-title">{t("DDL 미리보기")}</span>
+                  <span className="spacer" />
+                  <ClusterPicker clusters={clusters} cluster={cluster} onChange={setCluster} disabled={busy} inline />
                 </div>
                 <DdlPreview result={diff} />
+              </section>
+            ) : null}
+
+            {showProperties && properties.length > 0 && section === "columns" ? (
+              <section className="structure-pane">
+                <div className="structure-section-head">
+                  <span className="structure-section-title">{t("테이블 속성")}</span>
+                </div>
+                <table className="structure-properties">
+                  <tbody>
+                    {properties.map((property) => {
+                      const action = dialect.propertyAction?.(property, table) ?? null;
+                      return (
+                        <tr key={property.name}>
+                          <th>{t(property.name)}</th>
+                          <td>
+                            <code>{t(property.value)}</code>
+                            {action !== null ? (
+                              <button
+                                type="button"
+                                className="link-button structure-property-action"
+                                disabled={busy}
+                                title={t(action.title)}
+                                onClick={() => void runPropertyAction(action)}
+                              >
+                                {t(action.label)}
+                              </button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </section>
             ) : null}
 
@@ -1079,6 +1191,16 @@ export function StructurePanel({
               <PlusIcon size={11} />
               <span className="footer-label">{t("새 컬럼")}</span>
             </button>
+            {properties.length > 0 ? (
+              <button
+                type="button"
+                className={showProperties ? "footer-button active" : "footer-button"}
+                onClick={() => setShowProperties((value) => !value)}
+                title={t("엔진·정렬 키·파티션·TTL 같은 테이블 속성 보기")}
+              >
+                {t("속성")}
+              </button>
+            ) : null}
             <button
               type="button"
               className={showTriggers ? "footer-button active" : "footer-button"}

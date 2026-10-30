@@ -28,6 +28,9 @@ export interface PlanStage {
   // Shard name, for the plan of one shard.
   shard: string | null;
   children: PlanStage[];
+  // The stage's own fields as the server wrote them, its inputs left out
+  // (what the detail panel shows for a picked stage).
+  raw: BsonDocument;
 }
 
 export type PlanWarning =
@@ -139,6 +142,7 @@ function readStage(node: BsonDocument, shard: string | null): PlanStage {
     usedDisk: node.get("usedDisk") === true,
     shard,
     children: childPlans(node).map((c) => readStage(c.plan, c.shard)),
+    raw: new Map([...node].filter(([key]) => key !== "inputStage" && key !== "inputStages" && key !== "shards")),
   };
 }
 
@@ -192,6 +196,7 @@ export function summarizeExplain(raw: BsonDocument): PlanSummary {
         nReturned: num(s.get("nReturned")),
         timeMs: num(s.get("executionTimeMillisEstimate")),
         children: [root],
+        raw: s,
       };
     }
   }

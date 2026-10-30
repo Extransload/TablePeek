@@ -24,16 +24,30 @@ export interface Capabilities {
   databases: "switch" | "list" | "none";
   users: boolean;
   // How a query plan is read, or null when the engine has none to show.
-  explain: "pg-json" | "mysql-json" | "sqlite" | "mongo" | null;
+  explain: "pg-json" | "mysql-json" | "sqlite" | "mongo" | "es-profile" | "oracle" | "cql-trace" | "clickhouse" | null;
   // Row counts are exact rather than estimated.
   exact_count: boolean;
-  dump: "sql" | "ejson" | null;
+  dump: "sql" | "ejson" | "es-bulk" | null;
   import_formats: string[];
   export_formats: string[];
   sessions: { kill: boolean };
   validation: boolean;
   aggregation: boolean;
   indexes: { create: boolean; drop: boolean };
+  // A table's rows page by the server's paging token (CQL), not OFFSET;
+  // absent from older servers and engines that page by OFFSET. A far page
+  // is reached by the server walking the rows before it (/api/sql/skip).
+  cursor_paging?: boolean;
+  // An exact COUNT runs in steps the server splits (/api/sql/count), with
+  // progress and a stop between them.
+  count_steps?: boolean;
+  // Stopping a running statement ends the session (SQL Server; an Oracle
+  // session that can neither break the call nor cancel it from another
+  // session), so an open transaction rolls back: Stop asks first inside one.
+  cancel_ends_session?: boolean;
+  // A binary cell (Oracle BLOB, RAW) is read whole and replaced from bytes
+  // of any size through /api/sql/cell, past what the grid shows of it.
+  binary_cells?: boolean;
 }
 
 export type FieldType =
@@ -157,8 +171,8 @@ export interface EngineErrorHelp {
   rules?: ErrorRule[];
 }
 
-// The workbench a paradigm opens in.
-export type Workbench = "sql" | "document";
+// The workbench a paradigm opens in ("search": Elasticsearch / OpenSearch).
+export type Workbench = "sql" | "document" | "search";
 
 // What only the web knows about an engine.
 export interface EngineWebParts {

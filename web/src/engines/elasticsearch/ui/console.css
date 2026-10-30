@@ -1,0 +1,290 @@
+/* The Dev Tools console tab (ConsoleTab): the editor with its request lines
+   marked, the response beside it (below when narrow), the run list and the
+   status chips. Built on the app's editor-bar, data-toolbar, menu-panel and
+   the MongoDB history popover. */
+
+.mg-root.es-console {
+  flex-direction: row;
+}
+.mg-root.es-console.narrow {
+  flex-direction: column;
+}
+
+.es-console-editor {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 0;
+  flex-shrink: 0;
+  min-width: 220px;
+  min-height: 120px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.es-console-code {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.es-console-code > .mg-cm {
+  position: absolute;
+  inset: 0;
+}
+.es-console-count {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.es-console .editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.es-console .editor-bar button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+/* A request's method line in the editor. */
+.es-console-request {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent-line);
+}
+
+/* Recent requests open upward from the editor bar. */
+.editor-bar .menu-panel.mg-popover.es-console-hist {
+  top: auto;
+  bottom: calc(100% + 4px);
+  left: auto;
+  right: 0;
+}
+.mg-hist-item.es-console-hist-item {
+  padding-right: 8px;
+}
+.mg-hist-head button.es-console-hist-clear {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* ---- response ---- */
+
+.es-console-response {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.data-toolbar.es-console-bar {
+  border-bottom: 1px solid var(--line-soft);
+}
+.es-console-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.es-console-line {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.es-console-ms {
+  flex: none;
+  color: var(--muted);
+  font: 11px var(--mono);
+  white-space: nowrap;
+}
+
+.es-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  font: 600 11px var(--mono);
+  white-space: nowrap;
+}
+.es-status.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--ok);
+}
+.es-status.warn {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+.es-status.err {
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+}
+.es-status.info,
+.es-status.pending {
+  color: var(--muted);
+}
+.es-status.pending .spinner {
+  color: var(--accent);
+}
+
+.es-class {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.es-class.write {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  color: var(--warn);
+}
+.es-class.danger {
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  color: var(--error);
+}
+
+/* The requests of a run, each selectable. */
+.es-console-runs {
+  flex: none;
+  max-height: 35%;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  border-bottom: 1px solid var(--line-soft);
+  list-style: none;
+}
+button.es-console-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+button.es-console-run:hover {
+  background: var(--hover-fill);
+  box-shadow: none;
+}
+button.es-console-run.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.es-console-run-n {
+  flex: none;
+  min-width: 16px;
+  color: var(--faint);
+  font: 11px var(--mono);
+  text-align: right;
+}
+.es-console-run .es-console-line {
+  flex: 1;
+}
+
+.result-body.es-console-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.es-console-body > .es-console-reply {
+  position: absolute;
+  inset: 0;
+}
+.es-console-text {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 8px 12px;
+  overflow: auto;
+  color: var(--ink);
+  font: 12px/1.5 var(--mono);
+  white-space: pre;
+}
+.es-console-notice {
+  position: absolute;
+  inset: 0;
+  padding: 12px;
+  overflow: auto;
+}
+.es-console-notice > .error-notice,
+.es-console-notice.mg-syntax-error > .error-notice {
+  max-width: 760px;
+}
+.es-console-body > .panel-empty.es-console-hint {
+  position: absolute;
+  inset: 0;
+  font-size: 13px;
+}
+.es-console-stopped {
+  position: absolute;
+  inset: 0;
+  padding: 12px;
+  overflow: auto;
+  font-size: 12px;
+}
+.es-console-stopped > p {
+  margin: 0 0 8px;
+}
+.es-tasks-left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 760px;
+}
+.es-tasks-left h4 {
+  margin: 0 0 4px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.es-tasks-left p {
+  margin: 0 0 4px;
+}
+.es-tasks-left ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.es-tasks-running {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line-soft));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 6%, var(--panel));
+}
+.es-tasks-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.es-task-line {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
+}
+.es-task-desc {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

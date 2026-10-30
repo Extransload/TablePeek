@@ -8,7 +8,7 @@ import { useCallback, useId, useRef, useState } from "react";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, ColumnsIcon, HistoryIcon, SearchIcon, StarIcon } from "../../../components/icons";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
-import { t } from "../../../i18n";
+import { phrase, say, t, type Phrase } from "../../../i18n";
 import { Int32, bsonDoc, isDocument, type BsonDocument, type BsonValue } from "../bson";
 import type { CompletionContext, FieldStat } from "../complete";
 import { shellKey, toShell } from "../format";
@@ -54,7 +54,8 @@ export function normalizeQuery(q: Partial<Record<QueryKey, unknown>> | null | un
 
 export interface QueryError {
   key: QueryKey;
-  message: string;
+  // Translated where it shows, so it follows a language switch.
+  message: Phrase;
   // Position inside that box, for the underline.
   range: { from: number; to: number } | null;
 }
@@ -65,7 +66,7 @@ const LABELS: Record<QueryKey, string> = { filter: "필터", projection: "프로
 export function parseQuery(q: QueryText): { ok: true; value: DocQuery } | { ok: false; error: QueryError } {
   const filter = parseFilter(q.filter);
   if (!filter.ok) {
-    return { ok: false, error: { key: "filter", message: `${t(LABELS.filter)}: ${filter.error.message}`, range: { from: filter.error.from, to: filter.error.to } } };
+    return { ok: false, error: { key: "filter", message: phrase("{label}: {message}", { label: phrase(LABELS.filter), message: filter.error.message }), range: { from: filter.error.from, to: filter.error.to } } };
   }
   const docs: Partial<Record<"projection" | "sort", BsonDocument | null>> = {};
   for (const key of ["projection", "sort"] as const) {
@@ -76,10 +77,10 @@ export function parseQuery(q: QueryText): { ok: true; value: DocQuery } | { ok: 
     }
     const r = parseValue(text);
     if (!r.ok) {
-      return { ok: false, error: { key, message: `${t(LABELS[key])}: ${r.error.message}`, range: { from: r.error.from, to: r.error.to } } };
+      return { ok: false, error: { key, message: phrase("{label}: {message}", { label: phrase(LABELS[key]), message: r.error.message }), range: { from: r.error.from, to: r.error.to } } };
     }
     if (!isDocument(r.value)) {
-      return { ok: false, error: { key, message: t("{label}은(는) { … } 문서여야 합니다", { label: t(LABELS[key]) }), range: null } };
+      return { ok: false, error: { key, message: phrase("{label}은(는) { … } 문서여야 합니다", { label: phrase(LABELS[key]) }), range: null } };
     }
     docs[key] = r.value.size === 0 ? null : r.value;
   }
@@ -91,7 +92,7 @@ export function parseQuery(q: QueryText): { ok: true; value: DocQuery } | { ok: 
     }
     const n = Number(text);
     if (!Number.isInteger(n) || n < 0) {
-      return { ok: false, error: { key, message: t("{label}: 0 이상의 정수를 쓰세요", { label: t(LABELS[key]) }), range: null } };
+      return { ok: false, error: { key, message: phrase("{label}: 0 이상의 정수를 쓰세요", { label: phrase(LABELS[key]) }), range: null } };
     }
     numbers[key] = n;
   }
@@ -112,10 +113,10 @@ function parseOptions(q: QueryText): { ok: true; value: QueryOptions | null } | 
   const locale = q.locale.trim();
   const strength = q.strength.trim();
   if (strength !== "" && !/^[1-5]$/.test(strength)) {
-    return { ok: false, error: { key: "strength", message: t("강도는 1–5입니다"), range: null } };
+    return { ok: false, error: { key: "strength", message: phrase("강도는 1–5입니다"), range: null } };
   }
   if (locale === "" && strength !== "") {
-    return { ok: false, error: { key: "locale", message: t("collation 강도를 쓰려면 로캘을 고르세요"), range: null } };
+    return { ok: false, error: { key: "locale", message: phrase("collation 강도를 쓰려면 로캘을 고르세요"), range: null } };
   }
   if (locale !== "") {
     out.collation = strength === "" ? bsonDoc({ locale }) : bsonDoc({ locale, strength: new Int32(Number(strength)) });
@@ -124,10 +125,10 @@ function parseOptions(q: QueryText): { ok: true; value: QueryOptions | null } | 
   if (hint.startsWith("{")) {
     const r = parseValue(q.hint);
     if (!r.ok) {
-      return { ok: false, error: { key: "hint", message: `${t(LABELS.hint)}: ${r.error.message}`, range: { from: r.error.from, to: r.error.to } } };
+      return { ok: false, error: { key: "hint", message: phrase("{label}: {message}", { label: phrase(LABELS.hint), message: r.error.message }), range: { from: r.error.from, to: r.error.to } } };
     }
     if (!isDocument(r.value) || r.value.size === 0) {
-      return { ok: false, error: { key: "hint", message: t("힌트 키 문서에 인덱스 키를 쓰세요 (예: { status: 1 })"), range: null } };
+      return { ok: false, error: { key: "hint", message: phrase("힌트 키 문서에 인덱스 키를 쓰세요 (예: { status: 1 })"), range: null } };
     }
     out.hint = r.value;
   } else if (hint !== "") {
@@ -137,7 +138,7 @@ function parseOptions(q: QueryText): { ok: true; value: QueryOptions | null } | 
   if (time !== "") {
     const n = Number(time);
     if (!Number.isInteger(n) || n <= 0) {
-      return { ok: false, error: { key: "maxTimeMS", message: t("maxTimeMS: 1 이상의 정수(밀리초)를 쓰세요"), range: null } };
+      return { ok: false, error: { key: "maxTimeMS", message: phrase("maxTimeMS: 1 이상의 정수(밀리초)를 쓰세요"), range: null } };
     }
     out.maxTimeMS = n;
   }
@@ -415,7 +416,7 @@ export function QueryBar({ ns, namespace, query, onChange, optsOpen, onOptsOpenC
             <label className="mg-qlabel">{t("건너뛰기")}</label>
             <input
               className={`filter-value mg-q-num${invalid("skip")}`}
-              {...fieldErrorProps(errorId, error?.key === "skip" ? error.message : null)}
+              {...fieldErrorProps(errorId, error?.key === "skip" ? say(error.message) : null)}
               value={query.skip}
               placeholder="0"
               inputMode="numeric"
@@ -427,7 +428,7 @@ export function QueryBar({ ns, namespace, query, onChange, optsOpen, onOptsOpenC
             <label className="mg-qlabel">{t("개수")}</label>
             <input
               className={`filter-value mg-q-num${invalid("limit")}`}
-              {...fieldErrorProps(errorId, error?.key === "limit" ? error.message : null)}
+              {...fieldErrorProps(errorId, error?.key === "limit" ? say(error.message) : null)}
               value={query.limit}
               placeholder={t("없음")}
               inputMode="numeric"
@@ -442,7 +443,7 @@ export function QueryBar({ ns, namespace, query, onChange, optsOpen, onOptsOpenC
       </div>
       {/* Over what is below the bar, so the cards do not move. */}
       <div className={`mg-qerror${error !== null ? " on" : ""}`}>
-        <FieldError id={errorId} error={error?.message ?? null} />
+        <FieldError id={errorId} error={error === null ? null : say(error.message)} />
       </div>
     </div>
   );

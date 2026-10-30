@@ -12,6 +12,7 @@ import {
   GaugeIcon,
   ListIcon,
   ServerIcon,
+  ShieldIcon,
   StructureIcon,
   TableIcon,
 } from "./icons";
@@ -45,6 +46,14 @@ function tabIcon(tab: WorkbenchTab): ReactElement {
       return <EyeIcon {...props} />;
     case "gridfs":
       return <FolderIcon {...props} />;
+    case "searchIndex":
+      return <TableIcon {...props} />;
+    case "searchConsole":
+      return <CodeIcon {...props} />;
+    case "searchCluster":
+      return <GaugeIcon {...props} />;
+    case "searchSecurity":
+      return <ShieldIcon {...props} />;
   }
 }
 
@@ -74,6 +83,14 @@ function tabKindLabel(tab: WorkbenchTab): string {
       return t("변경 보기");
     case "gridfs":
       return "GridFS";
+    case "searchIndex":
+      return tab.target === "alias" ? t("별칭") : tab.target === "data_stream" ? t("데이터 스트림") : t("인덱스");
+    case "searchConsole":
+      return t("콘솔");
+    case "searchCluster":
+      return t("클러스터");
+    case "searchSecurity":
+      return t("보안");
   }
 }
 
@@ -113,6 +130,13 @@ function defaultTitle(title: string): string {
   }
   if (title === "서버 정보" || title === "Server info") {
     return t("서버 정보");
+  }
+  const searchConsole = /^(?:콘솔|Console) (\d+)$/.exec(title);
+  if (searchConsole) {
+    return t("콘솔 {n}", { n: searchConsole[1] });
+  }
+  if (title === "클러스터" || title === "Cluster") {
+    return t("클러스터");
   }
   const structure = /^(?:구조|Structure): (.+)$/.exec(title);
   if (structure) {

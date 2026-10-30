@@ -2,6 +2,7 @@ import { tableFromIPC } from "apache-arrow";
 import type { AppError } from "../errorHelp";
 import { WindowedRowSource, type ValueExpr } from "../grid/windowSource";
 import { t } from "../i18n";
+import { getSettings } from "../settings";
 
 export type SocketStatus = "connecting" | "open" | "closed";
 
@@ -27,6 +28,9 @@ export interface QueryMeta {
   // dropped on the server (they must load again).
   txEnded?: "committed" | "rolledback";
   invalidated?: boolean;
+  // Where the rest of the rows start, on an engine that pages by the
+  // server's token (capabilities.cursor_paging): sent back as `page`.
+  nextPage?: string;
 }
 
 export interface QueryResult {
@@ -44,8 +48,15 @@ export interface EditRequest {
   value: string | null;
   // Written by the database in place of `value`.
   expr?: ValueExpr;
+  // `value` is an amount the database adds to the column in one atomic
+  // write (a CQL counter's increment).
+  add?: boolean;
   row: number;
   col: number;
+  // Every column of the row as the grid last knew it (what it read, with
+  // what this apply already wrote): finds a row whose identity moved
+  // (ClickHouse after a merge), and is a counter's value before the change.
+  seen?: SeenValue[];
 }
 
 export interface EditResult {
@@ -73,6 +84,13 @@ export interface DeleteRowRequest {
   session: string;
   table: string;
   pk: { column: string; value: string | null }[];
+  // The row as the grid last knew it (see EditRequest.seen).
+  seen?: SeenValue[];
+}
+
+export interface SeenValue {
+  column: string;
+  value: string | null;
 }
 
 // One statement the server sent to the database, as the console shows it.
@@ -160,6 +178,7 @@ interface MetaMessage {
   in_tx?: boolean;
   tx?: "committed" | "rolledback";
   invalidate?: boolean;
+  next_page?: string;
 }
 
 interface WindowMessage {
@@ -414,8 +433,9 @@ export class TablePeekSocket {
     // history: file the run under this connection's history (editor runs only).
     // job: a background job's read, which runs beside the page's queries
     // (neither cancels the other) and whose rows the server keeps only until
-    // its source is disposed.
-    options: { maxRows: number; window: number; history?: boolean; job?: boolean },
+    // its source is disposed. page: the rows from where an earlier read of
+    // the same statement stopped (its meta's nextPage).
+    options: { maxRows: number; window: number; history?: boolean; job?: boolean; page?: string },
   ): Promise<QueryResult> {
     await this.connect();
     const ws = this.ws;
@@ -440,8 +460,12 @@ export class TablePeekSocket {
           sql,
           max_rows: options.maxRows,
           window: options.window,
+          // Settings' query time limit, which engines that take one per
+          // statement apply (ClickHouse's max_execution_time).
+          timeout_secs: getSettings().queryTimeout,
           ...(options.history === true ? { history: true } : {}),
           ...(job ? { job: true } : {}),
+          ...(options.page !== undefined ? { page: options.page } : {}),
         }),
       );
     });
@@ -466,6 +490,7 @@ export class TablePeekSocket {
       inTx: message.in_tx,
       txEnded: message.tx,
       invalidated: message.invalidate,
+      nextPage: message.next_page,
     };
     const source = new WindowedRowSource({
       columns: meta.columns,

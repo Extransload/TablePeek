@@ -26,6 +26,13 @@ interface FilterBarProps {
   // on `defaultColumn` when there is none; the owner clears it once handled.
   focusRequest?: number | null;
   defaultColumn?: string | null;
+  // The operators and AND/OR the engine takes (SqlDialect.filterOps,
+  // filterLogics); absent: all of them.
+  ops?: readonly FilterOp[];
+  logics?: readonly FilterLogic[];
+  // The clause the "allow filtering" switch appends (SqlDialect
+  // allowFilteringClause); absent: no switch.
+  allowFilteringClause?: string;
   onFocusHandled?(): void;
   onApply(next: FilterState): void;
   // The last condition removed: the table shows unfiltered and the bar closes.
@@ -35,6 +42,8 @@ interface FilterBarProps {
 // The column list's Raw SQL entry: no column can be named this.
 const RAW_SQL = "\u0000raw-sql";
 
+const ALL_LOGICS: readonly FilterLogic[] = ["AND", "OR"];
+
 let rowSeq = 0;
 
 function nextRowId(): string {
@@ -42,14 +51,18 @@ function nextRowId(): string {
   return `fr-${rowSeq}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function newRow(column: string): FilterRow {
-  return { id: nextRowId(), column, op: "=", value: "", enabled: true, applied: false };
+// A new condition: "=" where the engine takes it, else its first operator.
+function newRow(column: string, ops: readonly FilterOp[]): FilterRow {
+  return { id: nextRowId(), column, op: ops.includes("=") ? "=" : ops[0], value: "", enabled: true, applied: false };
 }
 
-function cloneFilter(filter: FilterState): FilterState {
+// The filter to edit, its operators and logic held to what the engine takes
+// (the first one in place of any other).
+function cloneFilter(filter: FilterState, ops: readonly FilterOp[], logics: readonly FilterLogic[]): FilterState {
   return {
-    logic: filter.logic,
-    rows: filter.rows.map((row) => ({ ...row })),
+    logic: logics.includes(filter.logic) ? filter.logic : logics[0],
+    rows: filter.rows.map((row) => ({ ...row, op: ops.includes(row.op) ? row.op : ops[0] })),
+    allowFiltering: filter.allowFiltering,
   };
 }
 
@@ -110,25 +123,31 @@ export function FilterBar({
   error = null,
   focusRequest,
   defaultColumn,
+  ops = FILTER_OPS,
+  logics = ALL_LOGICS,
+  allowFilteringClause,
   onFocusHandled,
   onApply,
   onEmptied,
 }: FilterBarProps) {
-  const [draft, setDraft] = useState<FilterState>(() => cloneFilter(filter));
+  const [draft, setDraft] = useState<FilterState>(() => cloneFilter(filter, ops, logics));
   const rowsRef = useRef<HTMLDivElement | null>(null);
   const [focusTick, setFocusTick] = useState(0);
   const [menu, setMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
   const errorId = useId();
+  // Apply All's logic, and a single condition's: AND unless the engine has none.
+  const defaultLogic: FilterLogic = logics.includes("AND") ? "AND" : logics[0];
+  const allowFiltering = allowFilteringClause !== undefined && filter.allowFiltering === true;
 
   useEffect(() => {
-    setDraft(cloneFilter(filter));
+    setDraft(cloneFilter(filter, ops, logics));
   }, [filter]);
 
   // The bar always holds a row to fill in.
   useEffect(() => {
     if (draft.rows.length === 0) {
       setDraft((prev) =>
-        prev.rows.length > 0 ? prev : { ...prev, rows: [newRow(defaultColumn ?? columns[0] ?? "")] },
+        prev.rows.length > 0 ? prev : { ...prev, rows: [newRow(defaultColumn ?? columns[0] ?? "", ops)] },
       );
     }
   }, [draft.rows.length]);
@@ -143,7 +162,7 @@ export function FilterBar({
     setDraft((prev) => {
       const column = defaultColumn ?? columns[0] ?? "";
       if (prev.rows.length === 0) {
-        return { ...prev, rows: [newRow(column)] };
+        return { ...prev, rows: [newRow(column, ops)] };
       }
       const [only] = prev.rows;
       const untouched = prev.rows.length === 1 && only.value === "" && !only.raw && only.applied === false;
@@ -180,11 +199,19 @@ export function FilterBar({
   }
 
   function applyRow(id: string): void {
-    onApply({ logic: "AND", rows: draft.rows.map((row) => ({ ...row, applied: row.id === id })) });
+    onApply({
+      logic: defaultLogic,
+      rows: draft.rows.map((row) => ({ ...row, applied: row.id === id })),
+      allowFiltering: filter.allowFiltering,
+    });
   }
 
   function applyAll(logic: FilterLogic): void {
-    onApply({ logic, rows: draft.rows.map((row) => ({ ...row, applied: row.enabled })) });
+    onApply({
+      logic,
+      rows: draft.rows.map((row) => ({ ...row, applied: row.enabled })),
+      allowFiltering: filter.allowFiltering,
+    });
   }
 
   function clear(): void {
@@ -229,7 +256,7 @@ export function FilterBar({
         ) {
           event.preventDefault();
           if (!running) {
-            applyAll("AND");
+            applyAll(defaultLogic);
           }
         }
       }}
@@ -275,7 +302,7 @@ export function FilterBar({
                   value={row.op}
                   onChange={(event) => patchRow(row.id, { op: event.target.value as FilterOp })}
                 >
-                  {FILTER_OPS.map((op) => (
+                  {ops.map((op) => (
                     <option key={op} value={op}>
                       {opLabel(op)}
                     </option>
@@ -346,6 +373,24 @@ export function FilterBar({
         </div>
       ) : null}
       <div className="filter-actions">
+        {allowFilteringClause !== undefined ? (
+          <span className="filter-allow">
+            <label title={t("데이터를 읽는 쿼리와 COUNT 끝에 {clause} 절을 붙입니다", { clause: allowFilteringClause })}>
+              <input
+                type="checkbox"
+                checked={allowFiltering}
+                disabled={running}
+                onChange={(event) => onApply({ ...filter, allowFiltering: event.target.checked })}
+              />
+              {allowFilteringClause}
+            </label>
+            {allowFiltering ? (
+              <span className="filter-allow-warning" role="note">
+                {t("테이블 전체(모든 파티션)를 훑어 읽으므로 느리거나 시간 초과로 실패할 수 있습니다")}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
         <button type="button" disabled={running} onClick={clear}>
           {t("필터 해제")}
         </button>
@@ -355,22 +400,24 @@ export function FilterBar({
             className="primary"
             disabled={running}
             title={t("체크한 조건을 모두 적용합니다 ({key})", { key: formatBinding("Mod+Enter") })}
-            onClick={() => applyAll("AND")}
+            onClick={() => applyAll(defaultLogic)}
           >
             {t("모두 적용")}
           </button>
-          <button
-            type="button"
-            className="primary filter-apply-more"
-            disabled={running}
-            aria-label={t("모두 적용 방식")}
-            onClick={(event) => {
-              const box = event.currentTarget.getBoundingClientRect();
-              setMenu(menu === null ? { x: box.left, y: box.bottom + 2, anchor: event.currentTarget } : null);
-            }}
-          >
-            <ChevronDownIcon size={10} />
-          </button>
+          {logics.length > 1 ? (
+            <button
+              type="button"
+              className="primary filter-apply-more"
+              disabled={running}
+              aria-label={t("모두 적용 방식")}
+              onClick={(event) => {
+                const box = event.currentTarget.getBoundingClientRect();
+                setMenu(menu === null ? { x: box.left, y: box.bottom + 2, anchor: event.currentTarget } : null);
+              }}
+            >
+              <ChevronDownIcon size={10} />
+            </button>
+          ) : null}
         </span>
       </div>
       {menu !== null ? (
@@ -378,10 +425,10 @@ export function FilterBar({
           x={menu.x}
           y={menu.y}
           anchor={menu.anchor}
-          items={[
-            { label: t("체크한 조건을 모두 AND로 적용"), onSelect: () => applyAll("AND") },
-            { label: t("체크한 조건을 모두 OR로 적용"), onSelect: () => applyAll("OR") },
-          ]}
+          items={logics.map((logic) => ({
+            label: logic === "AND" ? t("체크한 조건을 모두 AND로 적용") : t("체크한 조건을 모두 OR로 적용"),
+            onSelect: () => applyAll(logic),
+          }))}
           onClose={() => setMenu(null)}
         />
       ) : null}

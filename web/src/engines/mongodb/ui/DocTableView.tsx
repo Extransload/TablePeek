@@ -1,7 +1,7 @@
 // The ⊞ view of a collection tab (MONGODB.md §3.5): the page as a table on
 // the app's canvas grid, object and array fields opened as child tables
 // (`orders › items`), typed cell edits saved as dotted-path $set with the
-// conflict guard, and the detail panel on the right.
+// conflict guard, and the selected row in the app's detail panel.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { columnWidthsKey } from "../../../columnWidths";
@@ -11,14 +11,14 @@ import { TableGrid, type TableGridHandle } from "../../../components/TableGrid";
 import type { GridEditHandlers, GridSelection, SelectedRows, SortIndicator } from "../../../grid/CanvasGrid";
 import type { GridColumnSpec } from "../../../grid/columns";
 import type { RowSource } from "../../../grid/rowSource";
-import { t } from "../../../i18n";
+import { phraseError, t } from "../../../i18n";
 import { palette, type ValueKind } from "../../../palette";
 import { getSettings } from "../../../settings";
 import { Int32, deepEqual, isDocument, isNumber, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { preview, toShell } from "../format";
 import type { DocEdit } from "../guard";
 import { buildTable, cellPath, cellValue, sortRows, type DocTable, type TableColumn } from "../table";
-import { DocDetailPanel } from "./DocDetailPanel";
+import { DocDetailPanel, TableDetail, useDetailSlot } from "./DocDetailPanel";
 import { GridIcon } from "./icons";
 import type { DocTableViewProps, SaveEdits } from "./types";
 import { coerceInput, editText } from "./valueEdit";
@@ -150,12 +150,13 @@ export function DocTableView({
   sort,
   onSort,
   save,
-  panelOpen,
-  onPanelOpenChange,
   path,
   onPathChange,
+  facts,
+  typeLabel,
 }: DocTableViewProps) {
   const gridRef = useRef<TableGridHandle | null>(null);
+  const slot = useDetailSlot();
   const pathKey = path.join("\u0000");
   // Drilled levels sort their rows here; the top level sorts on the server.
   const [localSort, setLocalSort] = useState<{ pathKey: string; column: string; dir: 1 | -1 } | null>(null);
@@ -296,7 +297,7 @@ export function DocTableView({
     if (text !== null) {
       const coerced = coerceInput(text, editType(v, column));
       if ("error" in coerced) {
-        showError(row, col, coerced.error);
+        showError(row, col, phraseError(coerced.error));
         return;
       }
       value = coerced.value;
@@ -376,11 +377,11 @@ export function DocTableView({
           </span>
           <button
             type="button"
-            className={`icon-button mg-panel-toggle${panelOpen ? " active" : ""}`}
+            className={`icon-button mg-panel-toggle${slot.open ? " active" : ""}`}
             title={t("행 상세 패널 (⌘I)")}
             aria-label={t("행 상세 패널")}
-            aria-pressed={panelOpen}
-            onClick={() => onPanelOpenChange(!panelOpen)}
+            aria-pressed={slot.open}
+            onClick={() => slot.setOpen(!slot.open)}
           >
             <PanelIcon size={12} />
           </button>
@@ -407,7 +408,7 @@ export function DocTableView({
           ) : null}
         </div>
       </div>
-      {panelOpen ? <DocDetailPanel ns={ns} table={table} rows={selection} readOnly={readOnly} save={keptSave} onClose={() => onPanelOpenChange(false)} /> : null}
+      <DocDetailPanel>{(query) => <TableDetail ns={ns} table={table} rows={selection} readOnly={readOnly} save={keptSave} facts={facts} typeLabel={typeLabel} query={query} />}</DocDetailPanel>
       {cellError !== null ? (
         <div ref={cellErrorRef} className="mg-edit-error" style={{ left: cellError.left, top: cellError.top }}>
           <WriteErrorNotice error={cellError.error} onClose={() => setCellError(null)} />

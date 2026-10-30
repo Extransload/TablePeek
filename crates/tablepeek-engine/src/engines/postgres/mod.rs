@@ -6,11 +6,11 @@ use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use tablepeek_types::{
-    Capabilities, ConnConfig, DbObjects, EditTarget, EngineMeta, InsertValue, ObjectDefinition,
-    PkValue, PostgresConfig, Relation, ServerInfo, TableDetail, TableSchema,
+    Capabilities, CellRef, ConnConfig, DbObjects, EditTarget, EngineMeta, InsertValue,
+    ObjectDefinition, PkValue, PostgresConfig, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
-use crate::driver::{CancelRequest, Driver, SqlDriver, TxOp};
+use crate::driver::{numeric_session_id, CancelRequest, Driver, FileStream, SqlDriver, TxOp};
 use crate::postgres::{self as pg, PostgresInner};
 use crate::registry::{
     check_host, parse_descriptor, typed_config, ConfigProblem, DriverFactory, EngineDescriptor,
@@ -171,8 +171,8 @@ impl SqlDriver for PgDriver {
         pg::object_definition(&self.inner, kind, name).await
     }
 
-    async fn kill_session(&self, id: u64) -> Result<(), EngineError> {
-        pg::kill_session(&self.inner, id).await
+    async fn kill_session(&self, id: &str) -> Result<(), EngineError> {
+        pg::kill_session(&self.inner, numeric_session_id(id)?).await
     }
 
     async fn in_tx(&self) -> Result<bool, EngineError> {
@@ -181,5 +181,13 @@ impl SqlDriver for PgDriver {
 
     async fn tx(&self, op: TxOp) -> Result<(), EngineError> {
         pg::tx(&self.inner, op.statement()).await
+    }
+
+    async fn read_cell(&self, cell: &CellRef) -> Result<FileStream, EngineError> {
+        pg::cells::read_cell(self.inner.clone(), cell).await
+    }
+
+    async fn write_cell(&self, cell: &CellRef, data: FileStream) -> Result<u64, EngineError> {
+        pg::cells::write_cell(&self.inner, cell, data).await
     }
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes, humanizeElapsed } from "../format";
-import { t } from "../i18n";
+import { t, tServer } from "../i18n";
 import { confirmDialog } from "./ConfirmDialog";
 import { store, type ServerInfo, type ServerSession } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
@@ -58,7 +58,15 @@ function cardsOf(info: ServerInfo): InfoCard[] {
       : [{ name: t("호환 모드"), value: compatibility }]),
     { name: t("버전"), value: valueText(info.version), clamp: true },
     { name: t("데이터베이스"), value: valueText(info.database) },
-    ...(info.topology != null ? [{ name: t("구성"), value: t(TOPOLOGY_LABELS[info.topology] ?? info.topology) }] : []),
+    ...(info.topology != null
+      ? [
+          {
+            name: t("구성"),
+            // A known topology word, or a line the server wrote (a CQL cluster's).
+            value: TOPOLOGY_LABELS[info.topology] !== undefined ? t(TOPOLOGY_LABELS[info.topology]) : tServer(info.topology),
+          },
+        ]
+      : []),
     ...(info.host != null ? [{ name: t("호스트"), value: valueText(info.host) }] : []),
     { name: t("인코딩"), value: valueText(info.encoding) },
     { name: t("업타임"), value: valueText(info.uptime) },

@@ -7,7 +7,7 @@ import { useEffect, useState, type KeyboardEvent } from "react";
 import { fieldErrorProps } from "../../../components/ErrorNotice";
 import { Select } from "../../../components/Select";
 import { SuggestInput } from "../../../components/SuggestInput";
-import { t } from "../../../i18n";
+import { say, t } from "../../../i18n";
 import { isAbort, listIndexes, type Namespace } from "../api";
 import { MongoEditor } from "./MongoEditor";
 import type { QueryError, QueryKey, QueryText } from "./QueryBar";
@@ -61,7 +61,7 @@ export function QueryOptionsRow({ namespace, query, set, onRun, error, errorId }
   const hint = query.hint.trim();
   const keyMode = hint.startsWith("{");
   const invalid = (key: QueryKey) => (error?.key === key ? " invalid" : "");
-  const errorProps = (key: QueryKey) => fieldErrorProps(errorId, error?.key === key ? error.message : null);
+  const errorProps = (key: QueryKey) => fieldErrorProps(errorId, error?.key === key ? say(error.message) : null);
   const onEnter = (event: KeyboardEvent) => event.key === "Enter" && onRun();
 
   return (

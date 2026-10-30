@@ -66,8 +66,8 @@ export interface AppSettings {
   csvEncoding: CsvEncoding;
   // Rows a query run fetches at most.
   maxRows: number;
-  // Seconds a MongoDB query (its maxTimeMS) or a mongosh script may run;
-  // 0 for no limit.
+  // Seconds a MongoDB query (its maxTimeMS), a mongosh script or a ClickHouse
+  // statement (its max_execution_time) may run; 0 for no limit.
   queryTimeout: number;
   keymap: Keymap;
   // The keymap defaults this was saved under (see KEYMAP_VERSION).

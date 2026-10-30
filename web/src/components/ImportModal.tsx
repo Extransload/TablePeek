@@ -281,14 +281,16 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
   const included = sources.flatMap((_, col) => {
     if (createNew) {
       const column = newColumns[col];
-      return column.include ? [{ source: col, name: column.name, boolean: wantsBoolean(column.type, dialect) }] : [];
+      return column.include
+        ? [{ source: col, name: column.name, declared: column.type, boolean: wantsBoolean(column.type, dialect) }]
+        : [];
     }
     const name = mapping[col];
     if (name === null) {
       return [];
     }
     const declared = tableDetail?.columns.find((column) => column.name === name)?.decl_type ?? null;
-    return [{ source: col, name, boolean: wantsBoolean(declared, dialect) }];
+    return [{ source: col, name, declared, boolean: wantsBoolean(declared, dialect) }];
   });
 
   const modes: readonly InsertMode[] = createNew ? ["insert"] : dialect.insertModes;
@@ -424,13 +426,14 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
     setFailedRow(null);
     let create: string[] = [];
     if (createNew) {
-      const drafts: ColumnDraft[] = included.map((column) => ({
+      const drafts: ColumnDraft[] = included.map((column, index) => ({
         key: draftKey(),
         orig: null,
         name: column.name,
         type: newColumns[column.source].type,
         notNull: false,
-        pk: false,
+        // An engine whose tables must have a key (CQL) gets the first column.
+        pk: dialect.requiresPrimaryKey === true && index === 0,
         def: "",
       }));
       const made = createTableSql(dialect, destination, { columns: drafts, indexes: [], foreignKeys: [] });
@@ -445,14 +448,21 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
       spec: { dialect, table: destination, columns: included.map((column) => column.name), pk, mode: effectiveMode },
       create,
       rowCount: rows.length,
-      chunkRows: CHUNK_ROWS,
+      chunkRows: dialect.importChunkRows ?? CHUNK_ROWS,
+      values: (row) =>
+        included.map((column) => {
+          const value = rows[row][column.source];
+          const cell = value === "" && emptyAsNull ? null : value;
+          return column.boolean ? asBoolean(cell) : cell;
+        }),
       literals: (row) =>
         included.map((column) => {
           let value = rows[row][column.source];
           if (value === "" && emptyAsNull) {
             value = null;
           }
-          return importLiteral(column.boolean ? asBoolean(value) : value, dialect);
+          const cell = column.boolean ? asBoolean(value) : value;
+          return dialect.importLiteral?.(column.declared, cell) ?? importLiteral(cell, dialect);
         }),
     };
     setRunning({ done: 0, total: rows.length, locating: false, committing: false });
@@ -510,6 +520,7 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
             }
           },
           rollback: () => store.ownTx(conn, "rollback"),
+          transactional: store.transactional(conn),
         },
         job.signal,
         (done, locating = false) => {
@@ -541,6 +552,27 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
           "가져오기를 되돌리지 못했습니다. 트랜잭션이 열려 있거나 새 테이블이 남았을 수 있으니 확인하세요: {error}",
           { error: err.undoError },
         );
+      } else if (err instanceof ImportFailure && err.kept !== null) {
+        // No transaction undid anything: the rows before the failure stay.
+        const kept = err.kept.toLocaleString();
+        message = err.stopped
+          ? t("가져오기를 중지했습니다. 앞의 {count}행은 저장되었습니다.", { count: kept })
+          : err.row !== null
+            ? t("{where}에서 실패했습니다. 앞의 {count}행은 저장되었습니다: {error}", {
+                where: where(err.row),
+                count: kept,
+                error: err.message,
+              })
+            : t("가져오기에 실패했습니다. 앞의 {count}행은 저장되었습니다: {error}", { count: kept, error: err.message });
+        if (!err.stopped) {
+          at =
+            err.row !== null
+              ? t("{where}에서 실패했습니다. 앞의 {count}행은 저장되었습니다", { where: where(err.row), count: kept })
+              : t("가져오기에 실패했습니다. 앞의 {count}행은 저장되었습니다", { count: kept });
+        }
+        if (err.kept > 0) {
+          onImported(destination, createNew);
+        }
       } else if (err instanceof ImportFailure) {
         message = err.stopped
           ? t("가져오기를 중지했습니다. 테이블은 바뀌지 않았습니다.")
@@ -854,9 +886,11 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
                 ) : null}
               </div>
               <p className="helper">
-                {createNew && !dialect.ddlInTransaction
-                  ? t("MySQL은 CREATE TABLE을 트랜잭션 밖에서 실행합니다. 가져오기가 실패하거나 중지되면 만든 테이블을 지웁니다.")
-                  : t("모든 행을 한 트랜잭션으로 넣습니다. 실패하거나 중지하면 테이블은 그대로입니다.")}
+                {!store.transactional(conn)
+                  ? t("트랜잭션이 없는 엔진입니다. 실패하거나 중지하면 그 앞까지 넣은 행은 남습니다.")
+                  : createNew && !dialect.ddlInTransaction
+                    ? t("MySQL은 CREATE TABLE을 트랜잭션 밖에서 실행합니다. 가져오기가 실패하거나 중지되면 만든 테이블을 지웁니다.")
+                    : t("모든 행을 한 트랜잭션으로 넣습니다. 실패하거나 중지하면 테이블은 그대로입니다.")}
               </p>
             </section>
             <section className="export-section">

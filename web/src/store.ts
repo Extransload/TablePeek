@@ -5,14 +5,15 @@ import {
   TablePeekSocketError,
   type ConsoleUpdate,
   type QueryMeta,
+  type SeenValue,
 } from "./net/socket";
 import type { DefinitionKind } from "./sqlTools";
 import type { InstalledFont } from "./fonts";
 import { t } from "./i18n";
-import { appErrorFromBody, toAppError, type AppError } from "./errorHelp";
+import { appErrorFromBody, toAppError, type AppError, type UndoReport } from "./errorHelp";
 // The TX controls' failures belong to no tab: they go to the error toasts.
 import { notifyError } from "./components/ErrorNotice";
-import type { Capabilities, EngineDescriptor, FieldValue } from "./engines";
+import { capabilitiesOf, engineById, type Capabilities, type EngineDescriptor, type FieldValue } from "./engines";
 
 export interface EngineMeta {
   // The engine's id.
@@ -121,6 +122,9 @@ export interface TableDetail {
   ddl: string | null;
   // Absent from servers that predate it.
   triggers?: TableDetailTrigger[];
+  // How the table is stored, where the engine says more than its columns
+  // (ClickHouse's engine, ORDER BY, PARTITION BY, TTL); absent when nothing.
+  properties?: { name: string; value: string }[];
 }
 
 export interface ServerSession {
@@ -153,6 +157,13 @@ export interface ObjectList {
   triggers: string[];
   sequences: string[];
   procedures: string[];
+  // Left out by the server where the engine has none.
+  materialized_views?: string[];
+  dictionaries?: string[];
+  types?: string[];
+  aggregates?: string[];
+  synonyms?: string[];
+  packages?: string[];
 }
 
 export interface DefinitionDetail {
@@ -668,6 +679,9 @@ async function runQuery(
   ownerId?: string,
   // True for statements the user ran from the editor, which go into history.
   record = false,
+  // The rest of an earlier read's rows (QueryMeta.nextPage), on an engine
+  // that pages by the server's token.
+  page?: string,
 ): Promise<QueryOutcome> {
   inflight.add(conn);
   if (state.connId === conn) {
@@ -680,6 +694,7 @@ async function runQuery(
       maxRows,
       window: QUERY_WINDOW,
       history: record,
+      page,
     });
     const result: GridResult = { queryId, sql, meta, source, conn };
     resultCache.set(source, result);
@@ -855,6 +870,8 @@ async function runDetached(
   conn: string,
   sql: string,
   maxRows: number,
+  // See runQuery's page.
+  page?: string,
 ): Promise<{ meta: QueryMeta; source: WindowedRowSource }> {
   // While an import or restore holds the connection its rows aren't
   // committed yet: an export or backup would read them as if they were.
@@ -863,7 +880,7 @@ async function runDetached(
   }
   // A job's read: it runs beside the page's queries, and the server keeps its
   // rows only until the source is disposed.
-  return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW, job: true });
+  return ensureSocket().query(conn, sql, { maxRows, window: QUERY_WINDOW, job: true, page });
 }
 
 // DEFAULT or the current time for a cell, written by the database on apply.
@@ -885,6 +902,28 @@ function setCellExpr(row: number, col: number, staged: StagedExpr): boolean {
   }
   const key = rowKey(result, row);
   return key !== null && source.stageExpr(row, col, staged, key);
+}
+
+// An amount added to a stored row's counter on apply, in one write the
+// database applies atomically (CQL's c = c + n).
+function addToCell(row: number, col: number, amount: string): boolean {
+  const result = state.result;
+  if (!result || !result.meta.sourceTable) {
+    setState({ info: t("편집할 수 없는 결과입니다") });
+    return false;
+  }
+  if (stagingBlocked(result)) {
+    return false;
+  }
+  const source = result.source;
+  if (source.isDeleted(row)) {
+    return false;
+  }
+  if (source.isInserted(row)) {
+    return source.stageAdd(row, col, amount, null);
+  }
+  const key = rowKey(result, row);
+  return key !== null && source.stageAdd(row, col, amount, key);
 }
 
 // A staged cell back to what it was: an edited cell to its value, a new row's
@@ -925,6 +964,148 @@ function requireRow(rowsAffected: number): void {
   }
 }
 
+// Whether a connection's engine has transactions; `kind` (a result's
+// engine) answers for a connection not in front. CQL engines have none.
+function transactional(conn: string, kind?: string): boolean {
+  const meta = state.connId === conn ? state.meta : null;
+  const caps = meta !== null ? capabilitiesOf(meta) : kind !== undefined ? engineById(kind)?.capabilities : undefined;
+  return caps?.transactions !== "none";
+}
+
+// A change a transaction-less apply made, kept so a later failure can take
+// it back (compensating rollback, docs/ENGINES.md §4.1).
+type AppliedChange =
+  | { kind: "cell"; row: number; column: string; col: number; before: string | null; add?: string }
+  | { kind: "delete"; row: number; seen: SeenValue[] | null }
+  | { kind: "insert"; row: number; key: PkPair[] | null; values: SeenValue[] };
+
+// A row an apply is changing, as the database holds it now: the key it is
+// found by (null once the database picked a key value) and every column's
+// value (a column whose value only the database knows left out).
+interface LiveRow {
+  key: PkPair[] | null;
+  seen: SeenValue[] | null;
+}
+
+// Every column of a row as the grid read it, as text; null when its window
+// can't be read.
+async function seenOf(source: WindowedRowSource, columns: string[], row: number): Promise<SeenValue[] | null> {
+  try {
+    await source.ensureRow(row);
+  } catch {
+    return null;
+  }
+  const seen: SeenValue[] = [];
+  for (const [col, column] of columns.entries()) {
+    const value = source.baseCell(row, col, false);
+    if (value === undefined) {
+      return null;
+    }
+    seen.push({ column, value: cellToString(value) });
+  }
+  return seen;
+}
+
+// The row's values with `column` now `value`, or without it (undefined:
+// only the database knows what it became).
+function seenWith(seen: SeenValue[] | null, column: string, value: string | null | undefined): SeenValue[] | null {
+  if (seen === null) {
+    return null;
+  }
+  return value === undefined
+    ? seen.filter((entry) => entry.column !== column)
+    : seen.map((entry) => (entry.column === column ? { column, value } : entry));
+}
+
+// A counter's increment taken back: the same amount the other way.
+function negated(amount: string): string {
+  const text = amount.trim();
+  return text.startsWith("-") ? text.slice(1) : `-${text.replace(/^\+/, "")}`;
+}
+
+function changeLabel(change: AppliedChange): string {
+  switch (change.kind) {
+    case "cell":
+      return t("{row}행 {column}", { row: change.row + 1, column: change.column });
+    case "delete":
+      return t("{row}행 삭제", { row: change.row + 1 });
+    case "insert":
+      return t("추가한 {row}행", { row: change.row + 1 });
+  }
+}
+
+// Takes back, newest first, what a transaction-less apply wrote before a
+// statement failed: cells get their old values, deleted rows are inserted
+// again, new rows deleted. Answers what was undone and what is left, each
+// with why.
+async function undoApplied(
+  result: GridResult,
+  table: string,
+  changes: AppliedChange[],
+  live: Map<number, LiveRow>,
+): Promise<UndoReport> {
+  const sock = ensureSocket();
+  const meta = result.meta;
+  const pkNames = new Set(meta.pk ?? []);
+  const identity = new Set(engineById(meta.kind)?.sql?.rowIdentity ?? []);
+  const undone: string[] = [];
+  const left: UndoReport["left"] = [];
+  for (const change of [...changes].reverse()) {
+    const label = changeLabel(change);
+    try {
+      if (change.kind === "cell") {
+        const row = live.get(change.row);
+        if (row === undefined || row.key === null) {
+          throw new Error(t("키 값을 데이터베이스가 정해 이 행을 다시 찾을 수 없습니다"));
+        }
+        const outcome = await sock.edit(result.conn, {
+          session: result.queryId,
+          table,
+          pk: row.key,
+          column: change.column,
+          ...(change.add !== undefined ? { value: negated(change.add), add: true } : { value: change.before }),
+          row: change.row,
+          col: change.col,
+          ...(row.seen !== null ? { seen: row.seen } : {}),
+        });
+        requireRow(outcome.rowsAffected);
+        if (change.add === undefined) {
+          row.seen = seenWith(row.seen, change.column, change.before);
+          if (pkNames.has(change.column)) {
+            row.key = row.key.map((pair) =>
+              pair.column === change.column ? { column: change.column, value: change.before } : pair,
+            );
+          }
+        }
+      } else if (change.kind === "delete") {
+        if (change.seen === null) {
+          throw new Error(t("지운 행의 값을 읽지 못해 다시 넣을 수 없습니다"));
+        }
+        await sock.insertRow(result.conn, {
+          session: result.queryId,
+          table,
+          values: change.seen.filter((entry) => !identity.has(entry.column)),
+        });
+      } else {
+        if (change.key === null) {
+          throw new Error(t("키 값을 데이터베이스가 정해 새 행을 찾을 수 없습니다"));
+        }
+        const outcome = await sock.deleteRow(result.conn, {
+          session: result.queryId,
+          table,
+          pk: change.key.map((pair) => ({ column: pair.column, value: cellToString(pair.value) })),
+          seen: change.values,
+        });
+        requireRow(outcome.rowsAffected);
+      }
+      undone.push(label);
+    } catch (error) {
+      left.push({ change: label, reason: errorOf(error).message });
+    }
+  }
+  return { undone, left };
+}
+
 async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
   const source = result.source;
   const meta = result.meta;
@@ -939,10 +1120,16 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
   }
   const ops = source.pendingOps();
   const pkNames = new Set(meta.pk ?? []);
+  const identity = new Set(engineById(meta.kind)?.sql?.rowIdentity ?? []);
   const conn = result.conn;
   const sock = ensureSocket();
-  const ownTx = !(state.connId === conn && state.tx === "active");
+  // CQL and ClickHouse have no transactions: each change stands on its own,
+  // and is taken back by hand if a later one fails.
+  const txless = !transactional(conn, meta.kind);
+  const ownTx = !txless && !(state.connId === conn && state.tx === "active");
   const applied: { row: number; col: number; value: string | null }[] = [];
+  const changes: AppliedChange[] = [];
+  const live = new Map<number, LiveRow>();
   let expressions = false;
   let phase: "begin" | "write" | "commit" = "begin";
   // The row (and cell) being written when a statement failed.
@@ -954,7 +1141,11 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
     }
     phase = "write";
     for (const edit of ops.edits) {
-      let key = edit.key;
+      // The row as the database holds it, edit by edit: the key the next
+      // edit finds it by, and (without transactions) every value, which
+      // finds a row whose identity moved and lets a failure undo the edit.
+      const row: LiveRow = { key: edit.key, seen: txless ? await seenOf(source, meta.columns, edit.row) : null };
+      live.set(edit.row, row);
       // Key columns go last so the other edits still find the row by its
       // original key; a key set to DEFAULT or NOW() goes after those, since
       // only the database knows the key it leaves.
@@ -964,37 +1155,61 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
       for (const cell of cells) {
         const column = meta.columns[cell.col];
         at = { row: edit.row, col: cell.col };
+        const before = row.seen?.find((entry) => entry.column === column)?.value ?? cellToString(source.baseCell(edit.row, cell.col, false));
         const outcome = await sock.edit(conn, {
           session: result.queryId,
           table,
-          pk: key,
+          pk: row.key ?? edit.key,
           column,
           value: cell.value,
           ...(cell.expr !== undefined ? { expr: cell.expr } : {}),
+          ...(cell.add === true ? { add: true } : {}),
           row: edit.row,
           col: cell.col,
+          ...(row.seen !== null ? { seen: row.seen } : {}),
         });
         requireRow(outcome.rowsAffected);
-        // What DEFAULT or the time became is read back with the rows.
-        if (cell.expr !== undefined) {
+        if (txless) {
+          changes.push({
+            kind: "cell",
+            row: edit.row,
+            column,
+            col: cell.col,
+            before,
+            ...(cell.add === true && cell.value !== null ? { add: cell.value } : {}),
+          });
+        }
+        // What DEFAULT, the time or an increment became is read back with
+        // the rows.
+        if (cell.expr !== undefined || cell.add === true) {
           expressions = true;
+          row.seen = seenWith(row.seen, column, undefined);
+          if (pkNames.has(column)) {
+            row.key = null;
+          }
           continue;
         }
         applied.push({ row: edit.row, col: cell.col, value: cell.value });
-        if (pkNames.has(column)) {
-          key = key.map((pair) => (pair.column === column ? { column, value: cell.value } : pair));
+        row.seen = seenWith(row.seen, column, cell.value);
+        if (pkNames.has(column) && row.key !== null) {
+          row.key = row.key.map((pair) => (pair.column === column ? { column, value: cell.value } : pair));
         }
       }
     }
     // Deletes before inserts, so a deleted key can be re-used by a new row.
     for (const entry of ops.deletes) {
       at = { row: entry.row, col: null };
+      const seen = txless ? await seenOf(source, meta.columns, entry.row) : null;
       const change = await sock.deleteRow(conn, {
         session: result.queryId,
         table,
         pk: entry.key.map((pair) => ({ column: pair.column, value: cellToString(pair.value) })),
+        ...(seen !== null ? { seen } : {}),
       });
       requireRow(change.rowsAffected);
+      if (txless) {
+        changes.push({ kind: "delete", row: entry.row, seen });
+      }
     }
     const firstInserted = source.rowCount - ops.inserts.length;
     for (const [index, values] of ops.inserts.entries()) {
@@ -1008,6 +1223,21 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
           ...(entry.expr !== undefined ? { expr: entry.expr } : {}),
         })),
       });
+      if (txless) {
+        // The new row is found again by the values it was given; a key
+        // column the database fills in leaves it unfindable.
+        const given = values
+          .filter((entry) => entry.expr === undefined)
+          .map((entry) => ({ column: meta.columns[entry.col], value: entry.value }));
+        const keyNames = (meta.pk ?? []).filter((name) => !identity.has(name));
+        const key = keyNames.map((name) => given.find((entry) => entry.column === name) ?? null);
+        changes.push({
+          kind: "insert",
+          row: firstInserted + index,
+          key: keyNames.length > 0 && key.every((pair) => pair !== null) ? (key as PkPair[]) : null,
+          values: given,
+        });
+      }
     }
     at = null;
     if (ownTx) {
@@ -1036,7 +1266,11 @@ async function applyPending(result: GridResult): Promise<ApplyOutcome | null> {
         setState({ tx: "active" });
         message = { ...message, message: t("{message} — 롤백하지 못했습니다. 트랜잭션을 확인하세요.", { message: message.message }) };
       }
-    } else if (!ownTx && phase === "write") {
+    } else if (txless && phase === "write" && changes.length > 0) {
+      // No transaction to roll back: what went through is written back, and
+      // the error lists it (ErrorNotice shows the report under its title).
+      message = { ...message, undo: await undoApplied(result, table, changes, live) };
+    } else if (!ownTx && !txless && phase === "write") {
       message = {
         ...message,
         message: t("{message} — 일부 변경이 진행 중인 트랜잭션에 반영되었을 수 있습니다. 롤백 후 다시 적용하세요.", {
@@ -1191,6 +1425,10 @@ async function jobOnServer(conn: string, action: "start" | "end"): Promise<void>
 // (refused, the socket gone) may leave it open: it becomes the user's to
 // see in the TX controls and end there, once the job lets go.
 async function ownTx(conn: string, action: "begin" | "commit" | "rollback"): Promise<void> {
+  // Nothing to open or end where the engine has no transactions (CQL).
+  if (!transactional(conn)) {
+    return;
+  }
   const sock = ensureSocket();
   if (action === "begin") {
     await sock.begin(conn, true);
@@ -1572,6 +1810,54 @@ async function exec(conn: string, sql: string, options?: { history?: boolean; jo
   }
 }
 
+// How far one /api/sql/skip call walked a data tab's statement on the
+// server (engines that page by token): the token where it stopped (null:
+// the rows ended first), the rows it passed, and the tokens it noted at
+// multiples of the page size, as [row offset, token].
+export interface SkipOutcome {
+  page: string | null;
+  skipped: number;
+  marks: [number, string][];
+}
+
+// Passes `rows` rows of `sql` from `page` (row `offset` of it; none: the
+// first row) on the server, for a jump to a far page. One call works about
+// a second and a half; the caller calls again from where it stopped.
+async function skipRows(
+  conn: string,
+  sql: string,
+  from: { page?: string; offset: number },
+  rows: number,
+  markEvery: number,
+): Promise<SkipOutcome> {
+  if (inOwnTx(conn)) {
+    throw new Error(t(BUSY_ERROR));
+  }
+  return api<SkipOutcome>(`/api/sql/skip?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    body: JSON.stringify({ sql, page: from.page, offset: from.offset, rows, mark_every: markEvery }),
+  });
+}
+
+// One step of an exact count the server splits (capabilities.count_steps):
+// the rows of the parts counted this time, where the next step starts
+// (null: done) and how much of the whole is counted, 0 to 1.
+export interface CountStepResult {
+  rows: number;
+  cursor: string | null;
+  done: number;
+}
+
+async function countStep(conn: string, sql: string, cursor: string | null): Promise<CountStepResult> {
+  if (inOwnTx(conn)) {
+    throw new Error(t(BUSY_ERROR));
+  }
+  return api<CountStepResult>(`/api/sql/count?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    body: JSON.stringify({ sql, cursor }),
+  });
+}
+
 async function fetchDefinition(
   conn: string,
   kind: DefinitionKind,
@@ -1580,6 +1866,162 @@ async function fetchDefinition(
   return api<DefinitionDetail>(
     `/api/definition?kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}&conn=${encodeURIComponent(conn)}`,
   );
+}
+
+// What the database writes itself for a native export (see
+// SqlDialect.nativeExport): CSV with the page's options, or a JSON array.
+export interface NativeExportOptions {
+  format: "csv" | "json";
+  header: boolean;
+  delimiter: string;
+  crlf: boolean;
+  null_word: boolean;
+  // CSV: arrays, maps and tuples as JSON text, as the grid shows them.
+  nested_json: boolean;
+}
+
+// The line a native export that failed midway ends with (server.rs
+// EXPORT_ERROR_MARK), followed by the error as JSON.
+const EXPORT_ERROR_MARK = "\n__tablepeek_error__ ";
+
+// A read's whole result as the file the database writes, downloaded as it
+// streams; a failure midway, which ends the stream with the mark, throws.
+async function exportNative(
+  conn: string,
+  sql: string,
+  options: NativeExportOptions,
+  signal: AbortSignal,
+): Promise<Blob> {
+  const response = await serverFetch(`/api/sql/export?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    signal,
+    body: JSON.stringify({ sql, ...options }),
+  });
+  if (!response.ok) {
+    throw new ApiRequestError(appErrorFromBody(await response.json().catch(() => null), response.status));
+  }
+  const blob = await response.blob();
+  // The mark comes last; only the file's end is read for it.
+  const tail = await blob.slice(Math.max(0, blob.size - 8192)).text();
+  const at = tail.lastIndexOf(EXPORT_ERROR_MARK);
+  if (at >= 0) {
+    let body: unknown = null;
+    try {
+      body = JSON.parse(tail.slice(at + EXPORT_ERROR_MARK.length));
+    } catch {
+      body = null;
+    }
+    throw new ApiRequestError(appErrorFromBody(body, 500));
+  }
+  return blob;
+}
+
+// One cell of a saved row by its table's key, as /api/sql/cell names it.
+export interface CellRef {
+  table: string;
+  pk: PkPair[];
+  column: string;
+}
+
+// The shown result's cell as a CellRef: null unless it is a saved row of a
+// table with a key, loaded already.
+function binaryCellRef(row: number, col: number): CellRef | null {
+  const result = state.result;
+  const column = result?.meta.columns[col];
+  if (!result || !result.meta.sourceTable || column === undefined) {
+    return null;
+  }
+  if (result.source.isInserted(row) || result.source.isDeleted(row)) {
+    return null;
+  }
+  const pk = rowKey(result, row);
+  return pk === null ? null : { table: result.meta.sourceTable, pk, column };
+}
+
+// A binary cell's whole value (capabilities.binary_cells), read as the
+// server streams it; `onProgress` gets the bytes received so far. A stream
+// that breaks off throws rather than giving part of the value.
+async function readBinaryCell(
+  conn: string,
+  cell: CellRef,
+  onProgress: (received: number) => void,
+  signal: AbortSignal,
+): Promise<Blob> {
+  const response = await serverFetch(`/api/sql/cell?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    signal,
+    body: JSON.stringify(cell),
+  });
+  if (!response.ok) {
+    throw new ApiRequestError(appErrorFromBody(await response.json().catch(() => null), response.status));
+  }
+  const reader = response.body?.getReader();
+  if (reader === undefined) {
+    return response.blob();
+  }
+  const parts: Uint8Array[] = [];
+  let received = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      parts.push(value);
+      received += value.byteLength;
+      onProgress(received);
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
+    throw new ApiRequestError({ code: "network", message: t("값을 끝까지 받지 못했습니다") });
+  }
+  return new Blob(parts as BlobPart[], { type: "application/octet-stream" });
+}
+
+// Replaces a binary cell with `data`, which the browser sends from memory
+// or straight from the file as it uploads; `onProgress` gets the bytes sent
+// so far. Resolves to the rows changed.
+function writeBinaryCell(
+  conn: string,
+  cell: CellRef,
+  data: Blob,
+  onProgress: (sent: number) => void,
+  signal: AbortSignal,
+): Promise<number> {
+  // Executor form: the lib target (ES2022) has no Promise.withResolvers.
+  return new Promise<number>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(
+      "POST",
+      `/api/sql/cell/write?conn=${encodeURIComponent(conn)}&cell=${encodeURIComponent(JSON.stringify(cell))}`,
+    );
+    request.setRequestHeader("x-tablepeek-token", tokenValue);
+    request.setRequestHeader("content-type", "application/octet-stream");
+    request.upload.onprogress = (event) => onProgress(event.loaded);
+    request.onload = () => {
+      let body: unknown = null;
+      try {
+        body = JSON.parse(request.responseText);
+      } catch {
+        body = null;
+      }
+      if (request.status >= 200 && request.status < 300) {
+        const rows = body !== null && typeof body === "object" && "rows" in body ? body.rows : 0;
+        resolve(typeof rows === "number" ? rows : 0);
+      } else {
+        if (request.status === 401) {
+          serverRestarted();
+        }
+        reject(new ApiRequestError(appErrorFromBody(body, request.status)));
+      }
+    };
+    request.onerror = () => reject(networkError());
+    request.onabort = () => reject(new DOMException(t("취소했습니다"), "AbortError"));
+    signal.addEventListener("abort", () => request.abort(), { once: true });
+    request.send(data);
+  });
 }
 
 async function killSession(conn: string, sessionId: string): Promise<void> {
@@ -1801,6 +2243,7 @@ export const store = {
   cancelQuery,
   editCell,
   setCellExpr,
+  addToCell,
   revertCell,
   stageInsert,
   stageDelete,
@@ -1811,6 +2254,7 @@ export const store = {
   commitTx,
   rollbackTx,
   ownTx,
+  transactional,
   inOwnTx,
   claimConn,
   releaseConn,
@@ -1851,7 +2295,13 @@ export const store = {
   fetchDatabases,
   switchDatabase,
   exec,
+  skipRows,
+  countStep,
   fetchDefinition,
+  exportNative,
+  binaryCellRef,
+  readBinaryCell,
+  writeBinaryCell,
   killSession,
   fetchHistory,
   clearHistory,

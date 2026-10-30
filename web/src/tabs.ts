@@ -5,7 +5,9 @@ import type { WindowedRowSource } from "./grid/windowSource";
 import type { AnalysisState } from "./chartData";
 import type { AggDraft } from "./engines/mongodb/pipeline";
 import type { DocTabState } from "./engines/mongodb/ui/DocumentWorkbench";
-import { buildDataSql, buildWhere, firstRowsSql, type FilterState, type SortState } from "./dataQuery";
+import type { SearchTabState } from "./engines/elasticsearch/ui/SearchWorkbench";
+import type { SecuritySection, TargetKind } from "./engines/elasticsearch/ui/types";
+import { buildDataSql, filterKey, firstRowsSql, type FilterState, type SortState } from "./dataQuery";
 import { quoteIdent } from "./ddl";
 import { engineById, type SqlDialect } from "./engines";
 import { definitionTabTitle, type DefinitionKind } from "./sqlTools";
@@ -51,6 +53,11 @@ export interface DataTab {
   pkColumns?: string[];
   offset: number;
   pageSize: number;
+  // On an engine that pages by the server's token (cursor_paging): the
+  // tokens known for `sql`, by the row they lead to (a result's next page,
+  // the marks a far jump noted on the way). Any page starts from the
+  // nearest one at or before it; offset 0 needs none.
+  pageMarks?: PageMarks;
   view?: TableView;
   detail?: TableDetail;
   columns?: string[];
@@ -68,6 +75,13 @@ export interface DataTab {
   // The Chart or Pivot view in place of the Data view's grid, and how each
   // is set up.
   analysis?: AnalysisState;
+}
+
+// Paging tokens of one data statement, by the row offset each leads to.
+// Never changed in place: a tab gets a new map with the marks added.
+export interface PageMarks {
+  sql: string;
+  at: ReadonlyMap<number, string>;
 }
 
 export interface StructureTab {
@@ -160,6 +174,43 @@ export interface GridFsTab {
   bucket: string;
 }
 
+// An index, alias or data stream of a search connection (Elasticsearch,
+// OpenSearch); what it shows inside the workbench keeps per tab id.
+export interface SearchIndexTab {
+  id: string;
+  kind: "searchIndex";
+  title: string;
+  index: string;
+  target: TargetKind;
+  // The sub-tab, view and query last shown (restored after a reload).
+  search?: SearchTabState;
+}
+
+// A search connection's Dev Tools console: its requests as typed.
+export interface SearchConsoleTab {
+  id: string;
+  kind: "searchConsole";
+  title: string;
+  text: string;
+}
+
+// A search connection's 클러스터 tab (one per connection); the charts'
+// history lives with the open page, not in the saved tabs.
+export interface SearchClusterTab {
+  id: string;
+  kind: "searchCluster";
+  title: string;
+}
+
+// A search connection's 보안 tab (one per connection): users, roles, role
+// mappings and API keys; `section` is the one last shown.
+export interface SearchSecurityTab {
+  id: string;
+  kind: "searchSecurity";
+  title: string;
+  section: SecuritySection;
+}
+
 export type WorkbenchTab =
   | QueryTab
   | DataTab
@@ -172,7 +223,11 @@ export type WorkbenchTab =
   | MongoshTab
   | PerfTab
   | WatchTab
-  | GridFsTab;
+  | GridFsTab
+  | SearchIndexTab
+  | SearchConsoleTab
+  | SearchClusterTab
+  | SearchSecurityTab;
 
 export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<DataTab, "id" | "kind">> &
@@ -182,7 +237,10 @@ export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<DiagramTab, "id" | "kind">> &
   Partial<Omit<DefinitionTab, "id" | "kind">> &
   Partial<Omit<CollectionTab, "id" | "kind">> &
-  Partial<Omit<MongoshTab, "id" | "kind">>;
+  Partial<Omit<MongoshTab, "id" | "kind">> &
+  Partial<Omit<SearchIndexTab, "id" | "kind">> &
+  Partial<Omit<SearchConsoleTab, "id" | "kind">> &
+  Partial<Omit<SearchSecurityTab, "id" | "kind">>;
 
 export interface TabsState {
   tabs: WorkbenchTab[];
@@ -226,6 +284,23 @@ export function createWatchTab(db: string): WatchTab {
 
 export function createGridFsTab(db: string, bucket: string): GridFsTab {
   return { id: nextId(), kind: "gridfs", title: bucket, db, bucket };
+}
+
+export function createSearchIndexTab(index: string, target: TargetKind): SearchIndexTab {
+  return { id: nextId(), kind: "searchIndex", title: index, index, target };
+}
+
+// "콘솔 2": the smallest number the open console tabs leave free.
+export function createSearchConsoleTab(seq: number, text: string): SearchConsoleTab {
+  return { id: nextId(), kind: "searchConsole", title: t("콘솔 {n}", { n: seq }), text };
+}
+
+export function createSearchClusterTab(): SearchClusterTab {
+  return { id: nextId(), kind: "searchCluster", title: t("클러스터") };
+}
+
+export function createSearchSecurityTab(section: SecuritySection = "users"): SearchSecurityTab {
+  return { id: nextId(), kind: "searchSecurity", title: t("보안"), section };
 }
 
 // The number in a query tab's default name ("쿼리 3", "Query 3"); null for a
@@ -308,7 +383,7 @@ export function createDefinitionTab(obj: DefinitionKind, name: string): Definiti
 
 // The tab's count, only when it was taken under the filter it shows now.
 export function countFor(tab: DataTab, dialect: SqlDialect): number | null {
-  const key = buildWhere(tab.filter ?? null, dialect) ?? "";
+  const key = filterKey(tab.filter ?? null, dialect);
   return tab.count !== undefined && (tab.countFilter ?? "") === key ? tab.count : null;
 }
 

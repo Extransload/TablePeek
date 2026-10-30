@@ -11,7 +11,7 @@ import {
 import { t } from "../i18n";
 import { loadObjects, loadSchema, peekObjects, peekSchema } from "../schemaCache";
 import { store, type ObjectList, type TableDetail, type TableSchema } from "../store";
-import type { DefinitionKind } from "../sqlTools";
+import { opensData, type DefinitionKind } from "../sqlTools";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -61,8 +61,9 @@ interface SchemaSidebarProps {
   onOpenInEditor(table: string): void;
   onOpenStructure(table: string): void;
   onOpenOverview(): void;
-  // The ER diagram, centred on `table` when one is given.
-  onOpenDiagram(table?: string): void;
+  // The ER diagram, centred on `table` when one is given; absent where the
+  // engine has no foreign keys to draw (CQL).
+  onOpenDiagram?(table?: string): void;
   onOpenServer(): void;
   onOpenDefinition(kind: DefinitionKind, name: string): void;
   onTogglePin(table: string): void;
@@ -106,12 +107,18 @@ const COLUMN_LIST_EXTRA = 11;
 // A search expands every match to show its columns, unless that is too many.
 const AUTO_EXPAND_LIMIT = 30;
 
-const OBJECT_SECTIONS: { kind: DefinitionKind; label: string }[] = [
-  { kind: "view", label: "뷰" },
-  { kind: "function", label: "함수" },
-  { kind: "procedure", label: "프로시저" },
-  { kind: "trigger", label: "트리거" },
-  { kind: "sequence", label: "시퀀스" },
+const OBJECT_SECTIONS: { kind: DefinitionKind; key: keyof ObjectList; label: string }[] = [
+  { kind: "view", key: "views", label: "뷰" },
+  { kind: "materialized_view", key: "materialized_views", label: "구체화된 뷰" },
+  { kind: "dictionary", key: "dictionaries", label: "딕셔너리" },
+  { kind: "function", key: "functions", label: "함수" },
+  { kind: "procedure", key: "procedures", label: "프로시저" },
+  { kind: "trigger", key: "triggers", label: "트리거" },
+  { kind: "sequence", key: "sequences", label: "시퀀스" },
+  { kind: "type", key: "types", label: "타입" },
+  { kind: "aggregate", key: "aggregates", label: "집계 함수" },
+  { kind: "synonym", key: "synonyms", label: "동의어" },
+  { kind: "package", key: "packages", label: "패키지" },
 ];
 
 function errorOf(error: unknown, fallback: string): string {
@@ -350,18 +357,24 @@ export function SchemaSidebar({
       return objects;
     }
     const match = (name: string): number => fuzzyScore(name, query);
-    const pick = (names: string[]): string[] =>
-      names
+    const pick = (names: string[] | undefined): string[] =>
+      (names ?? [])
         .map((name) => ({ name, score: match(name) }))
         .filter((entry) => entry.score >= 0)
         .sort((a, b) => b.score - a.score)
         .map((entry) => entry.name);
     return {
       views: pick(objects.views),
+      materialized_views: pick(objects.materialized_views),
+      dictionaries: pick(objects.dictionaries),
       functions: pick(objects.functions),
       procedures: pick(objects.procedures),
       triggers: pick(objects.triggers),
       sequences: pick(objects.sequences),
+      types: pick(objects.types),
+      aggregates: pick(objects.aggregates),
+      synonyms: pick(objects.synonyms),
+      packages: pick(objects.packages),
     };
   }, [objects, query]);
 
@@ -634,7 +647,7 @@ export function SchemaSidebar({
       { label: t("새 탭에서 열기"), onSelect: () => onOpenDataNewTab(table) },
       { label: t("구조 보기"), onSelect: () => onOpenStructure(table) },
       { label: t("쿼리 편집기에서 열기"), onSelect: () => onOpenInEditor(table) },
-      { label: t("다이어그램에서 보기"), onSelect: () => onOpenDiagram(table) },
+      ...(onOpenDiagram === undefined ? [] : [{ label: t("다이어그램에서 보기"), onSelect: () => onOpenDiagram(table) }]),
       {
         label: pinnedSet.has(table) ? t("상단 고정 해제") : t("상단에 고정"),
         separatorBefore: true,
@@ -646,8 +659,11 @@ export function SchemaSidebar({
       { label: t("DROP 문 복사"), onSelect: act("copyDrop") },
       { label: t("TRUNCATE 문 복사"), onSelect: act("copyTruncate") },
       { label: t("Laravel 스키마 복사"), onSelect: act("copyLaravel") },
-      { label: t("이름 변경…"), separatorBefore: true, onSelect: act("rename") },
-      { label: t("테이블 복제…"), onSelect: act("duplicate") },
+      // Left out where the engine can't (CQL renames no table, copies none).
+      ...(dialect?.noTableRename === true ? [] : [{ label: t("이름 변경…"), separatorBefore: true, onSelect: act("rename") }]),
+      ...(dialect?.noTableCopy === true
+        ? []
+        : [{ label: t("테이블 복제…"), separatorBefore: dialect?.noTableRename === true, onSelect: act("duplicate") }]),
       ...(onExport !== undefined
         ? [
             { label: t("내보내기…"), separatorBefore: true, onSelect: () => onExport([table]) },
@@ -788,10 +804,10 @@ export function SchemaSidebar({
   }
 
   function objectIcon(kind: DefinitionKind): ReactElement {
-    if (kind === "view") {
+    if (opensData(kind)) {
       return <TableIcon size={10} />;
     }
-    if (kind === "function" || kind === "procedure") {
+    if (kind === "function" || kind === "procedure" || kind === "package") {
       return <CodeIcon size={10} />;
     }
     if (kind === "trigger") {
@@ -868,8 +884,8 @@ export function SchemaSidebar({
                 </>
               ))}
             {objectFiltered !== null &&
-              OBJECT_SECTIONS.map(({ kind, label }) => {
-                const names = objectFiltered[`${kind}s` as keyof ObjectList];
+              OBJECT_SECTIONS.map(({ kind, key: listKey, label }) => {
+                const names = objectFiltered[listKey] ?? [];
                 if (names.length === 0) {
                   return null;
                 }
@@ -899,28 +915,28 @@ export function SchemaSidebar({
                           role="button"
                           tabIndex={0}
                           title={
-                            kind === "view"
+                            opensData(kind)
                               ? `${name} — ${t("데이터 열기")}`
                               : `${name} — ${t("정의 보기")}`
                           }
                           onClick={(event) => {
-                            if (kind === "view" && (event.metaKey || event.ctrlKey)) {
+                            if (opensData(kind) && (event.metaKey || event.ctrlKey)) {
                               onOpenDataNewTab(name);
                               return;
                             }
-                            if (kind === "view") {
+                            if (opensData(kind)) {
                               onOpenData(name);
                             } else {
                               onOpenDefinition(kind, name);
                             }
                           }}
                           onDoubleClick={(event) => {
-                            if (kind === "view" && !event.metaKey && !event.ctrlKey) {
+                            if (opensData(kind) && !event.metaKey && !event.ctrlKey) {
                               onPinData(name);
                             }
                           }}
                           onAuxClick={(event) => {
-                            if (event.button === 1 && kind === "view") {
+                            if (event.button === 1 && opensData(kind)) {
                               event.preventDefault();
                               onOpenDataNewTab(name);
                             }
@@ -932,7 +948,7 @@ export function SchemaSidebar({
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
-                              if (kind === "view") {
+                              if (opensData(kind)) {
                                 // ⌘/Ctrl+Return keeps the tab, as on a table.
                                 if (event.metaKey || event.ctrlKey) {
                                   onPinData(name);
@@ -951,7 +967,7 @@ export function SchemaSidebar({
                           <span className="schema-object-name" title={name}>
                             {name}
                           </span>
-                          {kind === "view" ? (
+                          {opensData(kind) ? (
                             <button
                               type="button"
                               className="schema-row-action"
@@ -1002,7 +1018,7 @@ export function SchemaSidebar({
                 })();
               },
             },
-            ...(objectMenu.obj === "view" && onExport !== undefined
+            ...(opensData(objectMenu.obj) && onExport !== undefined
               ? [{ label: t("내보내기…"), separatorBefore: true, onSelect: () => onExport([objectMenu.name]) }]
               : []),
             {
@@ -1049,7 +1065,7 @@ export function SchemaSidebar({
               ],
             },
             { label: t("테이블 개요"), onSelect: onOpenOverview },
-            { label: t("ER 다이어그램"), onSelect: () => onOpenDiagram() },
+            ...(onOpenDiagram === undefined ? [] : [{ label: t("ER 다이어그램"), onSelect: () => onOpenDiagram() }]),
             { label: t("서버 정보"), onSelect: onOpenServer },
             { label: t("사용자 관리"), onSelect: onOpenUsers },
             {

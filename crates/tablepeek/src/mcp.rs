@@ -100,13 +100,14 @@ impl Mcp {
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": "tablepeek-mcp", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": "TablePeek의 활성 연결을 조회하고 읽기 전용 SQL이나 MongoDB 조회(find·aggregate·스키마 표본·인덱스)를 실행합니다. 쓰기는 TablePeek UI에서 수행하세요."
+            "instructions": "TablePeek의 활성 연결을 조회하고 읽기 전용 SQL, MongoDB 조회(find·aggregate·스키마 표본·인덱스), Elasticsearch·OpenSearch 검색(인덱스·매핑·Query DSL·SQL)을 실행합니다. 쓰기는 TablePeek UI에서 수행하세요."
         })
     }
 
     /// The tools for the connection a call goes to without its own `conn`
     /// (--conn, else the server's default): MongoDB's for a document store,
-    /// SQL's otherwise; both when that connection can't be told.
+    /// the search tools for a search engine, SQL's otherwise; all of them
+    /// when that connection can't be told.
     fn tools(&self) -> Value {
         let conns = self
             .get_with_query("/api/conns", &[], None)
@@ -124,10 +125,12 @@ impl Mcp {
         let mut tools = vec![list_connections_tool()];
         match paradigm {
             Some("document") => tools.extend(mongo_tools()),
+            Some("search") => tools.extend(search_tools()),
             Some(_) => tools.extend(sql_tools()),
             None => {
                 tools.extend(sql_tools());
                 tools.extend(mongo_tools());
+                tools.extend(search_tools());
             }
         }
         Value::Array(tools)
@@ -239,6 +242,63 @@ impl Mcp {
                 let coll = required_string(&args, "coll")?;
                 self.get_with_query("/api/doc/indexes", &[("db", db), ("coll", coll)], conn)
             }
+            "search_list_indices" => {
+                let hidden = args
+                    .get("include_hidden")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.get_with_query(
+                    "/api/search/indices",
+                    &[("hidden", if hidden { "true" } else { "false" })],
+                    conn,
+                )
+            }
+            "search_mapping" => {
+                let index = required_string(&args, "index")?;
+                self.get_with_query("/api/search/mapping", &[("index", index)], conn)
+            }
+            "search_query" => {
+                let index = required_string(&args, "index")?;
+                let mut body = Map::new();
+                for key in ["query", "aggs"] {
+                    if let Some(value) = json_arg(&args, key)? {
+                        body.insert(key.into(), value);
+                    }
+                }
+                let mut request = json!({
+                    "index": index,
+                    "body": body,
+                    "size": args.get("size").and_then(Value::as_u64).unwrap_or(10).min(SEARCH_SIZE_MAX),
+                    "track_total_hits": true,
+                });
+                if let Some(from) = args.get("from").and_then(Value::as_u64) {
+                    request["from"] = json!(from);
+                }
+                for key in ["sort", "source"] {
+                    if let Some(value) = json_arg(&args, key)? {
+                        request[key] = value;
+                    }
+                }
+                self.post_json("/api/search/search", &request, conn)
+            }
+            "search_sql" => {
+                let sql = required_string(&args, "sql")?;
+                if !is_read_only(sql) {
+                    return Ok(tool_error(
+                        "읽기 전용 SELECT/SHOW/DESCRIBE만 실행할 수 있습니다.",
+                    ));
+                }
+                let rows = args
+                    .get("max_rows")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(200)
+                    .clamp(1, 1000);
+                self.post_json(
+                    "/api/search/sql",
+                    &json!({ "query": sql, "fetch_size": rows }),
+                    conn,
+                )
+            }
             other => return Err((-32602, format!("알 수 없는 도구: {other}"))),
         };
         Ok(match result {
@@ -311,6 +371,8 @@ const MONGO_MAX_TIME_MS: u64 = 30_000;
 const MONGO_LIMIT_MAX: u64 = 100;
 /// The largest sample `mongo_schema` reads.
 const SCHEMA_SAMPLE_MAX: u64 = 200;
+/// The most hits `search_query` returns.
+const SEARCH_SIZE_MAX: u64 = 100;
 
 fn optional_string<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key)
@@ -667,6 +729,67 @@ fn mongo_tools() -> Vec<Value> {
     ]
 }
 
+fn search_tools() -> Vec<Value> {
+    let conn = || json!({ "type": "string", "description": CONN_DESCRIPTION });
+    vec![
+        json!({
+            "name": "search_list_indices",
+            "description": "Elasticsearch·OpenSearch 연결의 인덱스 목록(상태·문서 수·크기·별칭·데이터 스트림)을 반환합니다.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "include_hidden": { "type": "boolean", "description": "숨은 인덱스(.으로 시작하는 시스템 인덱스, 데이터 스트림의 인덱스) 포함" },
+                    "conn": conn()
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "search_mapping",
+            "description": "인덱스(별칭·패턴 가능)의 매핑(필드와 타입)을 반환합니다.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "index": { "type": "string" }, "conn": conn() },
+                "required": ["index"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "search_query",
+            "description": "Query DSL로 검색합니다 (읽기 전용, 최대 100건). 응답은 서버의 _search 응답 그대로(hits, aggregations).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "index": { "type": "string", "description": "인덱스, 별칭, 쉼표 목록 또는 패턴(logs-*)" },
+                    "query": { "type": "object", "description": "Query DSL의 query (생략하면 match_all)" },
+                    "aggs": { "type": "object" },
+                    "sort": { "type": "array" },
+                    "source": { "description": "_source 필터: true/false, 필드 목록, { includes, excludes }" },
+                    "from": { "type": "integer", "minimum": 0 },
+                    "size": { "type": "integer", "minimum": 0, "maximum": SEARCH_SIZE_MAX, "default": 10 },
+                    "conn": conn()
+                },
+                "required": ["index"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "search_sql",
+            "description": "SQL로 조회합니다 (Elasticsearch _sql, OpenSearch _plugins/_sql; 읽기 전용). 인덱스 이름에 -가 있으면 큰따옴표로 감싸세요.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sql": { "type": "string" },
+                    "max_rows": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 },
+                    "conn": conn()
+                },
+                "required": ["sql"],
+                "additionalProperties": false
+            }
+        }),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,6 +849,22 @@ mod tests {
         let mongo: Vec<Value> = mongo_tools();
         let mongo = tool_names(&Value::Array(mongo)).join(" ");
         assert!(!mongo.contains("tablepeek_query") && !mongo.contains("insert"));
+        assert!(names.contains("search_query") && names.contains("search_sql"));
+        let search = tool_names(&Value::Array(search_tools())).join(" ");
+        assert!(!search.contains("delete") && !search.contains("bulk"));
+    }
+
+    #[test]
+    fn search_sql_refuses_writes() {
+        let result = offline()
+            .call_tool(&json!({ "name": "search_sql", "arguments": {
+                "sql": "DELETE FROM \"shop-orders\" WHERE 1 = 1" } }))
+            .unwrap();
+        assert_eq!(result["isError"], json!(true), "{result}");
+        let err = offline()
+            .call_tool(&json!({ "name": "search_query", "arguments": {} }))
+            .unwrap_err();
+        assert_eq!(err.0, -32602);
     }
 
     #[test]

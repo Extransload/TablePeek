@@ -15,7 +15,7 @@ import { PlayIcon } from "../../../components/icons";
 import { ReviewModal } from "../../../components/ReviewModal";
 import { Select } from "../../../components/Select";
 import { Spinner } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { literal, phrase, say, t, type Phrase } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
 import * as api from "../api";
 import { Double, Int32, Int64, bsonDoc, compareForSort, fromEJSON, isDocument, parseJson, type BsonDocument, type BsonValue } from "../bson";
@@ -24,7 +24,8 @@ import { toShell, toShellPretty } from "../format";
 import { parseScript, statementAt, tokenize, type ParseResult, type ShellRequest } from "../shell/parse";
 import { review } from "../shell/safety";
 import { runScript, type ScriptError } from "../shell/script";
-import { CardView } from "./CardView";
+import { CardView, docKey } from "./CardView";
+import { DocDetail, DocDetailPanel, NothingSelected, useCollectionFacts } from "./DocDetailPanel";
 import { DocTableView } from "./DocTableView";
 import { JsonView, SyntaxErrorNotice } from "./JsonView";
 import { MongoEditor, type MongoEditorHandle } from "./MongoEditor";
@@ -43,20 +44,22 @@ const LIVE_OUTPUT_MS = 200;
 // What a script printed: text, or a value (printjson, a print of one
 // object, the final value).
 type ScriptOutput =
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; phrase?: Phrase }
   | { kind: "value"; value: BsonValue; from: "print" | "result"; coll: string | null; more: boolean }
-  | { kind: "note"; text: string };
+  | { kind: "note"; text: Phrase };
 
 interface ShellMessage {
   // The statement as written.
   source: string;
   ok: boolean;
   // The status, or why it did not run (cancelled).
-  text: string;
+  text: Phrase;
   // A statement that did not parse: the message and where, in `src`.
-  parse: { src: string; at: number; message: string } | null;
+  parse: { src: string; at: number; message: Phrase } | null;
   // The server's refusal (for the explained notice).
   error: unknown;
+  // Why a script stopped, turned into the notice's error where it shows.
+  script?: ScriptError;
   ms: number;
   // A script's output, in order (statements run one by one have none).
   outputs?: ScriptOutput[];
@@ -67,7 +70,7 @@ interface ShellResult {
   docs: BsonDocument[];
   // The collection they came from, when there is one.
   coll: string | null;
-  status: string;
+  status: Phrase;
   reply: BsonValue | null;
 }
 
@@ -107,10 +110,11 @@ function readsAsDocs(v: BsonValue): boolean {
 // with the script line it came from.
 function scriptErrorValue(e: ScriptError): unknown {
   const position = e.line === undefined ? undefined : { line: e.line, column: e.column };
+  const message = e.phrase !== undefined ? say(e.phrase) : e.message;
   if (e.code !== undefined) {
-    return new api.MongoError(e.code, e.message, { ...e.fields, position });
+    return new api.MongoError(e.code, message, { ...e.fields, position });
   }
-  return { code: "", message: e.safeMode ? e.message : `${e.name}: ${e.message}`, position };
+  return { code: "", message: e.safeMode ? message : `${e.name}: ${message}`, position };
 }
 
 // A count or size from the API as the BSON number mongosh would print.
@@ -134,7 +138,8 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
   const [collections, setCollections] = useState<string[]>([]);
   const [tablePath, setTablePath] = useState<string[]>([]);
   const [tableSort, setTableSort] = useState<BsonDocument | null>(null);
-  const [panelOpen, setPanelOpen] = useState(false);
+  // The card or JSON block in the app's detail panel, with the result it belongs to.
+  const [picked, setPicked] = useState<{ of: ShellResult; key: string } | null>(null);
   const [allOpen, setAllOpen] = useState(false);
   const [editorBasis, setEditorBasis] = useState<number | null>(null);
   const [pendingReview, setPendingReview] = useState<{ item: ReviewItem; resolve(ok: boolean): void } | null>(null);
@@ -204,70 +209,70 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
   const execute = async (req: ShellRequest, signal: AbortSignal): Promise<ShellResult> => {
     const dbName = req.kind === "use" ? dbRef.current : (req.db ?? dbRef.current);
     const ns = (coll: string): api.Namespace => ({ conn, db: dbName, coll });
-    const value = (v: BsonValue, status: string, coll: string | null = null): ShellResult => ({ docs: asDocs(v), coll, status, reply: v });
+    const value = (v: BsonValue, status: Phrase, coll: string | null = null): ShellResult => ({ docs: asDocs(v), coll, status, reply: v });
     switch (req.kind) {
       case "use":
         dbRef.current = req.db;
         onDbChange(req.db);
-        return { docs: [], coll: null, status: t("{db} 데이터베이스로 바꿨습니다", { db: req.db }), reply: null };
+        return { docs: [], coll: null, status: phrase("{db} 데이터베이스로 바꿨습니다", { db: req.db }), reply: null };
       case "show":
         if (req.what === "dbs") {
           const list = await api.listDatabases(conn, signal);
-          return value(list.map((d) => bsonDoc({ name: d.name, sizeOnDisk: num(d.sizeOnDisk), empty: d.empty })), t("데이터베이스 {count}개", { count: list.length }));
+          return value(list.map((d) => bsonDoc({ name: d.name, sizeOnDisk: num(d.sizeOnDisk), empty: d.empty })), phrase("데이터베이스 {count}개", { count: list.length }));
         } else {
           const list = await api.listCollections(conn, dbName, signal);
-          return value(list.map((c) => bsonDoc({ name: c.name, type: c.type, count: num(c.count) })), t("컬렉션 {count}개", { count: list.length }));
+          return value(list.map((c) => bsonDoc({ name: c.name, type: c.type, count: num(c.count) })), phrase("컬렉션 {count}개", { count: list.length }));
         }
       case "find": {
         const batch = await api.find(ns(req.coll), { filter: req.filter, projection: req.projection, sort: req.sort, skip: req.skip ?? undefined, limit: req.limit ?? SHELL_LIMIT, maxTimeMS }, signal);
-        return { docs: batch.docs, coll: req.coll, status: t("문서 {count}개", { count: batch.docs.length.toLocaleString() }), reply: null };
+        return { docs: batch.docs, coll: req.coll, status: phrase("문서 {count}개", { count: batch.docs.length.toLocaleString() }), reply: null };
       }
       case "findOne": {
         const batch = await api.find(ns(req.coll), { filter: req.filter, projection: req.projection, limit: 1, maxTimeMS }, signal);
-        return { docs: batch.docs, coll: req.coll, status: batch.docs.length === 0 ? "null" : t("문서 1개"), reply: batch.docs[0] ?? null };
+        return { docs: batch.docs, coll: req.coll, status: batch.docs.length === 0 ? literal("null") : phrase("문서 1개"), reply: batch.docs[0] ?? null };
       }
       case "countDocuments": {
         // An empty filter would be estimated; this one counts.
         const filter = req.filter.size === 0 ? bsonDoc({ _id: bsonDoc({ $exists: true }) }) : req.filter;
         const r = await api.count(ns(req.coll), filter, signal);
-        return value(num(r.count), r.count === null ? t("많음 (세는 데 시간이 너무 걸립니다)") : String(r.count), req.coll);
+        return value(num(r.count), r.count === null ? phrase("많음 (세는 데 시간이 너무 걸립니다)") : literal(String(r.count)), req.coll);
       }
       case "estimatedDocumentCount": {
         const r = await api.count(ns(req.coll), new Map(), signal);
-        return value(num(r.count), String(r.count ?? t("많음")), req.coll);
+        return value(num(r.count), r.count === null ? phrase("많음") : literal(String(r.count)), req.coll);
       }
       case "distinct": {
         const values = await api.distinct(ns(req.coll), req.key, req.filter, signal);
-        return value(values, t("값 {count}개", { count: values.length }), req.coll);
+        return value(values, phrase("값 {count}개", { count: values.length }), req.coll);
       }
       case "aggregate": {
         const batch = await api.aggregate(ns(req.coll), req.pipeline, maxTimeMS, signal);
-        return { docs: batch.docs, coll: req.coll, status: t("문서 {count}개", { count: batch.docs.length.toLocaleString() }), reply: null };
+        return { docs: batch.docs, coll: req.coll, status: phrase("문서 {count}개", { count: batch.docs.length.toLocaleString() }), reply: null };
       }
       case "insertOne":
       case "insertMany": {
         const ids = await api.insert(ns(req.coll), req.kind === "insertOne" ? [req.doc] : req.docs, signal);
-        return value(bsonDoc({ acknowledged: true, insertedIds: ids }), t("문서 {count}개를 넣었습니다", { count: ids.length }), req.coll);
+        return value(bsonDoc({ acknowledged: true, insertedIds: ids }), phrase("문서 {count}개를 넣었습니다", { count: ids.length }), req.coll);
       }
       case "updateOne":
       case "updateMany": {
         const many = req.kind === "updateMany";
         const r = await api.update(ns(req.coll), { filter: req.filter, update: req.update, many, upsert: req.upsert, confirmed: req.filter.size === 0 }, signal);
-        return value(bsonDoc({ acknowledged: true, matchedCount: num(r.matched), modifiedCount: num(r.modified) }), t("{matched}개 일치 · {modified}개 바꿈", { matched: r.matched, modified: r.modified }), req.coll);
+        return value(bsonDoc({ acknowledged: true, matchedCount: num(r.matched), modifiedCount: num(r.modified) }), phrase("{matched}개 일치 · {modified}개 바꿈", { matched: r.matched, modified: r.modified }), req.coll);
       }
       case "replaceOne": {
         const r = await api.replace(ns(req.coll), req.filter, req.replacement, req.filter.size === 0, signal);
-        return value(bsonDoc({ acknowledged: true, matchedCount: num(r.matched), modifiedCount: num(r.modified) }), t("{matched}개 일치 · {modified}개 바꿈", { matched: r.matched, modified: r.modified }), req.coll);
+        return value(bsonDoc({ acknowledged: true, matchedCount: num(r.matched), modifiedCount: num(r.modified) }), phrase("{matched}개 일치 · {modified}개 바꿈", { matched: r.matched, modified: r.modified }), req.coll);
       }
       case "deleteOne":
       case "deleteMany": {
         const many = req.kind === "deleteMany";
         const deleted = await api.remove(ns(req.coll), req.filter, many, req.filter.size === 0, signal);
-        return value(bsonDoc({ acknowledged: true, deletedCount: num(deleted) }), t("문서 {count}개를 지웠습니다", { count: deleted }), req.coll);
+        return value(bsonDoc({ acknowledged: true, deletedCount: num(deleted) }), phrase("문서 {count}개를 지웠습니다", { count: deleted }), req.coll);
       }
       case "createIndex": {
         const name = await api.createIndex(ns(req.coll), req.keys, req.options, signal);
-        return value(name, t("인덱스 {name}을(를) 만들었습니다", { name }), req.coll);
+        return value(name, phrase("인덱스 {name}을(를) 만들었습니다", { name }), req.coll);
       }
       case "dropIndex": {
         let name: string;
@@ -282,7 +287,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
           name = found.name;
         }
         await api.dropIndex(ns(req.coll), name, signal);
-        return value(bsonDoc({ ok: num(1) }), t("인덱스 {name}을(를) 지웠습니다", { name }), req.coll);
+        return value(bsonDoc({ ok: num(1) }), phrase("인덱스 {name}을(를) 지웠습니다", { name }), req.coll);
       }
       case "getIndexes": {
         const list = await api.listIndexes(ns(req.coll), signal);
@@ -298,17 +303,17 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
             return doc;
           }),
           coll: req.coll,
-          status: t("인덱스 {count}개", { count: list.length }),
+          status: phrase("인덱스 {count}개", { count: list.length }),
           reply: null,
         };
       }
       case "drop": {
         const r = await api.command(conn, dbName, bsonDoc({ drop: req.coll }), true, signal);
-        return value(r, t("{coll} 컬렉션을 지웠습니다", { coll: req.coll }), req.coll);
+        return value(r, phrase("{coll} 컬렉션을 지웠습니다", { coll: req.coll }), req.coll);
       }
       case "stats": {
         const r = await api.command(conn, dbName, req.coll === null ? bsonDoc({ dbStats: num(1) }) : bsonDoc({ collStats: req.coll }), false, signal);
-        return value(r, t("완료"), req.coll);
+        return value(r, phrase("완료"), req.coll);
       }
       case "explain": {
         const target = req.target;
@@ -316,7 +321,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
           target.kind === "find"
             ? await api.explain(ns(target.coll), { find: { filter: target.filter, projection: target.projection, sort: target.sort, skip: target.skip, limit: target.limit } }, req.verbosity, signal)
             : await api.explain(ns(target.coll), { aggregate: { pipeline: target.pipeline } }, req.verbosity, signal);
-        return value(r, t("실행 계획"), target.coll);
+        return value(r, phrase("실행 계획"), target.coll);
       }
     }
   };
@@ -337,14 +342,14 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     let lastDb = dbRef.current;
     for (const st of statements) {
       if (!st.req.ok) {
-        out.push({ source: st.source, ok: false, text: t("구문 오류"), parse: { src: all, at: st.req.error.from, message: st.req.error.message }, error: null, ms: 0 });
+        out.push({ source: st.source, ok: false, text: phrase("구문 오류"), parse: { src: all, at: st.req.error.from, message: st.req.error.message }, error: null, ms: 0 });
         setErrorRange({ from: st.req.error.from, to: st.req.error.to });
         break;
       }
       const req = st.req.value;
       const item = review(req, st.source, safeMode);
       if (item !== null && !(await ask(item))) {
-        out.push({ source: st.source, ok: false, text: t("실행을 취소했습니다"), parse: null, error: null, ms: 0 });
+        out.push({ source: st.source, ok: false, text: phrase("실행을 취소했습니다"), parse: null, error: null, ms: 0 });
         break;
       }
       const started = performance.now();
@@ -354,10 +359,10 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
         out.push({ source: st.source, ok: true, text: last.status, parse: null, error: null, ms: performance.now() - started });
       } catch (error) {
         if (api.isAbort(error)) {
-          out.push({ source: st.source, ok: false, text: t("취소했습니다"), parse: null, error: null, ms: performance.now() - started });
+          out.push({ source: st.source, ok: false, text: phrase("취소했습니다"), parse: null, error: null, ms: performance.now() - started });
           break;
         }
-        out.push({ source: st.source, ok: false, text: t("오류"), parse: null, error, ms: performance.now() - started });
+        out.push({ source: st.source, ok: false, text: phrase("오류"), parse: null, error, ms: performance.now() - started });
         break;
       }
     }
@@ -401,12 +406,12 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     let failure: ScriptError | null = null;
     let changed = false;
     const started = performance.now();
-    const message = (status: string, ok: boolean, error: unknown = null): ShellMessage => ({ source: code.trim(), ok, text: status, parse: null, error, ms: performance.now() - started, outputs: [...outputs] });
+    const message = (status: Phrase, ok: boolean, script?: ScriptError): ShellMessage => ({ source: code.trim(), ok, text: status, parse: null, error: null, script, ms: performance.now() - started, outputs: [...outputs] });
     const run = runScript({ code, conn, db: dbRef.current, safeMode, timeLimitMs: maxTimeMS ?? null, docLimit: SHELL_LIMIT, outputCap: OUTPUT_CAP }, (event) => {
       changed = true;
       switch (event.type) {
         case "print":
-          outputs.push({ kind: "text", text: event.text });
+          outputs.push({ kind: "text", text: event.text, phrase: event.phrase });
           break;
         case "value":
           outputs.push({ kind: "value", value: fromEJSON(parseJson(event.ejson)), from: event.from, coll: event.coll, more: event.more });
@@ -416,7 +421,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
           onDbChange(event.db);
           break;
         case "capped":
-          outputs.push({ kind: "note", text: t("출력이 {count}개를 넘어 이후 출력은 버렸습니다", { count: OUTPUT_CAP }) });
+          outputs.push({ kind: "note", text: phrase("출력이 {count}개를 넘어 이후 출력은 버렸습니다", { count: OUTPUT_CAP }) });
           break;
         case "error":
           failure = event.error;
@@ -424,11 +429,11 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
       }
     });
     scriptRef.current = run;
-    setMessages([message(t("실행 중…"), true)]);
+    setMessages([message(phrase("실행 중…"), true)]);
     const live = window.setInterval(() => {
       if (changed && scriptRef.current === run) {
         changed = false;
-        setMessages([message(t("실행 중…"), true)]);
+        setMessages([message(phrase("실행 중…"), true)]);
       }
     }, LIVE_OUTPUT_MS);
     const end = await run.finished;
@@ -441,13 +446,13 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     const error = failure as ScriptError | null;
     let done: ShellMessage;
     if (end === "done") {
-      done = message(t("스크립트를 실행했습니다"), true);
+      done = message(phrase("스크립트를 실행했습니다"), true);
     } else if (end === "stopped") {
-      done = message(t("멈췄습니다"), false);
+      done = message(phrase("멈췄습니다"), false);
     } else if (end === "timeout") {
-      done = message(t("실행 시간 제한({seconds}초)을 넘어 멈췄습니다", { seconds: Math.round((maxTimeMS ?? 0) / 1000) }), false);
+      done = message(phrase("실행 시간 제한({seconds}초)을 넘어 멈췄습니다", { seconds: Math.round((maxTimeMS ?? 0) / 1000) }), false);
     } else {
-      done = message(t("오류"), false, error === null ? null : scriptErrorValue(error));
+      done = message(phrase("오류"), false, error ?? undefined);
       if (error?.line !== undefined) {
         const lines = code.split("\n");
         const at = error.line - 1;
@@ -462,7 +467,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     for (const o of outputs) {
       if (o.kind === "value" && readsAsDocs(o.value)) {
         const docs = asDocs(o.value);
-        next.push({ docs, coll: o.coll, status: t("문서 {count}개", { count: `${docs.length.toLocaleString()}${o.more ? "+" : ""}` }), reply: null });
+        next.push({ docs, coll: o.coll, status: phrase("문서 {count}개", { count: `${docs.length.toLocaleString()}${o.more ? "+" : ""}` }), reply: null });
       }
     }
     setRunning(false);
@@ -567,6 +572,15 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
   }, [result, tableSort]);
 
   const readOnlyNs: api.Namespace = { conn, db, coll: result?.coll ?? "" };
+  // What the detail panel lists with nothing picked: the collection the result came from.
+  const facts = useCollectionFacts(readOnlyNs.coll !== "" ? readOnlyNs : null);
+  const pickedKey = picked !== null && picked.of === result ? picked.key : null;
+  const pickedAt = pickedKey === null ? -1 : docs.findIndex((doc, i) => docKey(doc, i) === pickedKey);
+  const pick = (key: string) => {
+    if (result !== null) {
+      setPicked({ of: result, key });
+    }
+  };
 
   const showChoice = (index: number) => {
     setResult(choices[index]);
@@ -582,7 +596,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
       if (o.kind !== "value") {
         return (
           <li key={i} className={o.kind === "note" ? "mg-script-note" : "mg-script-print"}>
-            {o.text}
+            {o.kind === "note" ? say(o.text) : o.phrase !== undefined ? say(o.phrase) : o.text}
           </li>
         );
       }
@@ -630,15 +644,15 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
             <li key={i} className={`result-message${m.ok ? "" : " failed"}`}>
               <div className="result-message-line">
                 <span className="result-message-label">{t("결과 {n}:", { n: i + 1 })}</span>
-                {m.ok ? <span>{m.text}</span> : <span className="result-message-error">{m.text}</span>}
+                {m.ok ? <span>{say(m.text)}</span> : <span className="result-message-error">{say(m.text)}</span>}
                 <span className="result-message-time">· {m.ms < 1000 ? `${Math.round(m.ms)} ms` : `${(m.ms / 1000).toFixed(2)} s`}</span>
               </div>
               <div className="mg-shell-source mono">
                 <ShellText text={m.source} />
               </div>
               {m.outputs !== undefined && m.outputs.length > 0 ? <ol className="mg-script-output">{scriptOutputs(m.outputs)}</ol> : null}
-              {m.parse !== null ? <SyntaxErrorNotice src={m.parse.src} message={m.parse.message} at={m.parse.at} context="shell" variant="block" /> : null}
-              {m.error !== null ? <ErrorNotice error={m.error} context="shell" engine="mongodb" /> : null}
+              {m.parse !== null ? <SyntaxErrorNotice src={m.parse.src} message={say(m.parse.message)} at={m.parse.at} context="shell" variant="block" /> : null}
+              {m.script !== undefined ? <ErrorNotice error={scriptErrorValue(m.script)} context="shell" engine="mongodb" /> : m.error !== null ? <ErrorNotice error={m.error} context="shell" engine="mongodb" /> : null}
             </li>
           ))}
         </ol>
@@ -650,9 +664,9 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
       </div>
     );
   } else if (view === "cards") {
-    body = <CardView docs={docs} offset={0} readOnly allOpen={allOpen} notify={notify} emptyText={t("결과 문서가 없습니다")} />;
+    body = <CardView docs={docs} offset={0} readOnly allOpen={allOpen} notify={notify} emptyText={t("결과 문서가 없습니다")} selected={pickedKey} onSelect={pick} />;
   } else if (view === "json") {
-    body = <JsonView docs={docs} offset={0} canonical={false} allFolded={!allOpen} readOnly notify={notify} emptyText={t("결과 문서가 없습니다")} />;
+    body = <JsonView docs={docs} offset={0} canonical={false} allFolded={!allOpen} readOnly notify={notify} emptyText={t("결과 문서가 없습니다")} selected={pickedKey} onSelect={pick} />;
   } else {
     body = (
       <DocTableView
@@ -663,8 +677,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
         sort={tableSort}
         onSort={setTableSort}
         save={async () => new Error(t("쿼리 결과는 읽기 전용입니다 — 컬렉션 탭에서 편집하세요"))}
-        panelOpen={panelOpen}
-        onPanelOpenChange={setPanelOpen}
+        facts={facts}
         path={tablePath}
         onPathChange={setTablePath}
       />
@@ -739,13 +752,13 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
               <Select className="mg-script-choice" value={choice} aria-label={t("보여 줄 출력")} onChange={(event) => showChoice(Number(event.target.value))}>
                 {choices.map((c, i) => (
                   <option key={i} value={i}>
-                    {t("출력 {n}", { n: i + 1 })} · {c.status}
+                    {t("출력 {n}", { n: i + 1 })} · {say(c.status)}
                   </option>
                 ))}
               </Select>
             ) : null}
             {messages.length > 0 ? (
-              <span className={`row-range result-bar-status${lastOk ? "" : " failed"}`}>{lastOk ? (result?.status ?? "") : (messages.find((m) => !m.ok)?.text ?? t("오류"))}</span>
+              <span className={`row-range result-bar-status${lastOk ? "" : " failed"}`}>{lastOk ? (result === null ? "" : say(result.status)) : say(messages.find((m) => !m.ok)?.text ?? phrase("오류"))}</span>
             ) : null}
           </div>
           <div className="footer-end">
@@ -762,7 +775,18 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
           ) : null}
         </div>
       </div>
-      {pendingReview !== null ? <ReviewModal mode={safeMode === 0 ? 1 : safeMode} items={[pendingReview.item]} txActive onRun={() => pendingReview.resolve(true)} onClose={() => pendingReview.resolve(false)} /> : null}
+      {pendingReview !== null ? <ReviewModal mode={safeMode === 0 ? 1 : safeMode} items={[pendingReview.item]} offerTx={false} onRun={() => pendingReview.resolve(true)} onClose={() => pendingReview.resolve(false)} /> : null}
+      {result !== null && view === "table" ? null : (
+        <DocDetailPanel>
+          {(query) =>
+            result !== null && (view === "cards" || view === "json") && pickedAt >= 0 ? (
+              <DocDetail ns={readOnlyNs.coll !== "" ? readOnlyNs : { ...readOnlyNs, coll: t("결과") }} doc={docs[pickedAt]} position={pickedAt} query={query} />
+            ) : (
+              <NothingSelected facts={facts} query={query} />
+            )
+          }
+        </DocDetailPanel>
+      )}
     </div>
   );
 }

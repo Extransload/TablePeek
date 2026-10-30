@@ -348,6 +348,10 @@ export interface EJSONTextOptions extends PrettyOptions {
   relaxed?: boolean;
   // 0 writes one compact line.
   indent?: number;
+  // With `relaxed`: every Int64 and numeric Decimal128 as a bare JSON number,
+  // however large (plain JSON documents of the search engines, read back
+  // exactly with parseJson's `bigints`).
+  exactNumbers?: boolean;
 }
 
 // Inline JSON for a wrapper such as { "$oid": "…" }.
@@ -364,7 +368,7 @@ function jsonInline(x: EJSON, compact: boolean): string {
     .join(comma)}}`;
 }
 
-function ejsonLeaf(v: BsonValue, relaxed: boolean, compact: boolean): string | null {
+function ejsonLeaf(v: BsonValue, relaxed: boolean, compact: boolean, exact: boolean): string | null {
   if (Array.isArray(v) || isDocument(v)) {
     return null;
   }
@@ -373,8 +377,13 @@ function ejsonLeaf(v: BsonValue, relaxed: boolean, compact: boolean): string | n
       case "Int32":
         return String(v.value);
       case "Int64":
-        if (v.value >= BigInt(Number.MIN_SAFE_INTEGER) && v.value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+        if (exact || (v.value >= BigInt(Number.MIN_SAFE_INTEGER) && v.value <= BigInt(Number.MAX_SAFE_INTEGER))) {
           return v.value.toString();
+        }
+        break;
+      case "Decimal128":
+        if (exact && /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(v.value)) {
+          return v.value;
         }
         break;
       case "Double":
@@ -395,19 +404,20 @@ function ejsonLeaf(v: BsonValue, relaxed: boolean, compact: boolean): string | n
   return jsonInline(toEJSON(v), compact);
 }
 
-function ejsonNotation(relaxed: boolean, compact: boolean): Notation {
-  return { leaf: (v) => ejsonLeaf(v, relaxed, compact), key: (key) => JSON.stringify(key), spaced: !compact };
+function ejsonNotation(relaxed: boolean, compact: boolean, exact = false): Notation {
+  return { leaf: (v) => ejsonLeaf(v, relaxed, compact, exact), key: (key) => JSON.stringify(key), spaced: !compact };
 }
 
 // Extended JSON text. Canonical by default (what the server exchanges);
 // with `indent: 0` a single compact line.
 export function ejsonText(v: BsonValue, options: EJSONTextOptions = {}): string {
   const relaxed = options.relaxed ?? false;
+  const exact = relaxed && options.exactNumbers === true;
   const indent = options.indent ?? 2;
   if (indent === 0) {
-    return inlineText(v, Infinity, ejsonNotation(relaxed, true)) ?? "";
+    return inlineText(v, Infinity, ejsonNotation(relaxed, true, exact)) ?? "";
   }
-  const text = prettyText(v, 0, ejsonNotation(relaxed, false), prettyView(v, options));
+  const text = prettyText(v, 0, ejsonNotation(relaxed, false, exact), prettyView(v, options));
   return indent === 2 ? text : text.replace(/^((?: {2})+)/gm, (lead: string) => " ".repeat((lead.length / 2) * indent));
 }
 

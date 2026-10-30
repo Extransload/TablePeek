@@ -414,10 +414,9 @@ mod tests {
 
         let mut data = envelope.clone();
         let text = data["data"].as_str().unwrap().to_string();
-        let flipped = if text.starts_with('A') {
-            format!("B{}", &text[1..])
-        } else {
-            format!("A{}", &text[1..])
+        let flipped = match text.strip_prefix('A') {
+            Some(rest) => format!("B{rest}"),
+            None => format!("A{}", &text[1..]),
         };
         data["data"] = json!(flipped);
         assert_eq!(

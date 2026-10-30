@@ -11,7 +11,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
 import { LoadingState, Spinner } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { phrase, say, t, type Phrase } from "../../../i18n";
 import { aggregate, command, isAbort, listCollections, toNumber, type Namespace } from "../api";
 import { Int32, bsonDoc, isDocument, type BsonDocument } from "../bson";
 import { sampleFields, type CompletionContext } from "../complete";
@@ -94,7 +94,7 @@ function textOf(validator: BsonDocument | null): string {
 }
 
 // The editor text as a validator document; null for an empty editor.
-function parseRule(text: string): { ok: true; value: BsonDocument | null } | { ok: false; message: string; from: number; to: number } {
+function parseRule(text: string): { ok: true; value: BsonDocument | null } | { ok: false; message: Phrase; from: number; to: number } {
   if (text.trim() === "") {
     return { ok: true, value: null };
   }
@@ -103,7 +103,7 @@ function parseRule(text: string): { ok: true; value: BsonDocument | null } | { o
     return { ok: false, message: r.error.message, from: r.error.from, to: r.error.to };
   }
   if (!isDocument(r.value)) {
-    return { ok: false, message: t("검증 규칙은 { … } 문서여야 합니다"), from: 0, to: text.length };
+    return { ok: false, message: phrase("검증 규칙은 { … } 문서여야 합니다"), from: 0, to: text.length };
   }
   return { ok: true, value: r.value };
 }
@@ -297,7 +297,7 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
 
   let result;
   if (!rule.ok) {
-    result = <SyntaxErrorNotice src={text} message={rule.message} at={rule.from} context="structure" />;
+    result = <SyntaxErrorNotice src={text} message={say(rule.message)} at={rule.from} context="structure" />;
   } else if (rule.value === null) {
     result = <div className="panel-empty">{t("규칙을 쓰면 표본 문서가 통과하는지 바로 보여 줍니다")}</div>;
   } else if (preview === null) {

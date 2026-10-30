@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { rowWindowSql } from "../dataQuery";
+import { capabilitiesOf } from "../engines";
 import { createTableSql, dependencyOrder, draftsFromDetail, dumpIndexSql, foreignKeySql, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
 import { declaredAs } from "../grid/columns";
@@ -129,6 +130,9 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
         }
       }
       const keysAfter = includeDdl && !dialect.keysInCreate;
+      // The engine pages by the server's token: a table's rows come a page at
+      // a time, each from where the last stopped, in no key order or OFFSET.
+      const cursor = capabilitiesOf(meta)?.cursor_paging === true;
       if (dialect.dumpBefore !== undefined) {
         parts.push(dialect.dumpBefore, "");
       }
@@ -165,16 +169,21 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
         if (includeData) {
           const pkIndex = detail.indexes.find((index) => index.primary);
           const pk = pkIndex?.columns ?? detail.columns.filter((c) => c.pk).map((c) => c.name);
-          const order = pk.length > 0 ? pk.map((name) => quoteIdent(dialect, name)).join(", ") : null;
+          const order =
+            pk.length > 0 && dialect.keyOrder !== false ? pk.map((name) => quoteIdent(dialect, name)).join(", ") : null;
           const binary = (columns: string[]) => declaredAs("binary", columns, detail, dialect);
-          if (order === null) {
+          const declared = (columns: string[]) =>
+            columns.map((name) => detail.columns.find((column) => column.name === name)?.decl_type ?? null);
+          if (order === null && !cursor) {
             // No key to page by, and a table's order can change between two
             // reads: one read, so no row is skipped or copied twice.
             const detached = await store.runDetached(conn, `SELECT * FROM ${quoteIdent(dialect, table)}`, TABLE_ROW_CAP);
             try {
               const rows = await collectRows(detached.source);
               if (rows.length > 0) {
-                parts.push(toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns)));
+                parts.push(
+                  toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns), declared(detached.meta.columns)),
+                );
               }
               job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: rows.length.toLocaleString() })}`);
               if (detached.meta.truncated) {
@@ -186,6 +195,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
           } else {
             let offset = 0;
             let copied = 0;
+            let page: string | undefined;
             for (;;) {
               if (copied >= TABLE_ROW_CAP) {
                 parts.push(
@@ -193,18 +203,24 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
                 );
                 break;
               }
-              const sql = `SELECT * FROM ${quoteIdent(dialect, table)} ${rowWindowSql(dialect, order, PAGE_SIZE, offset)}`;
-              const detached = await store.runDetached(conn, sql, PAGE_SIZE);
+              const sql =
+                order === null || cursor
+                  ? `SELECT * FROM ${quoteIdent(dialect, table)}`
+                  : `SELECT * FROM ${quoteIdent(dialect, table)} ${rowWindowSql(dialect, order, PAGE_SIZE, offset)}`;
+              const detached = await store.runDetached(conn, sql, PAGE_SIZE, page);
               try {
                 const rows = await collectRows(detached.source);
                 if (rows.length === 0) {
                   break;
                 }
-                parts.push(toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns)));
+                parts.push(
+                  toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns), declared(detached.meta.columns)),
+                );
                 copied += rows.length;
                 offset += rows.length;
                 job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: copied.toLocaleString() })}`);
-                if (rows.length < PAGE_SIZE) {
+                page = detached.meta.nextPage;
+                if (cursor ? page === undefined : rows.length < PAGE_SIZE) {
                   break;
                 }
               } finally {

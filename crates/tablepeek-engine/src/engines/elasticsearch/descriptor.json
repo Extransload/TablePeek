@@ -1,0 +1,238 @@
+{
+  "id": "elasticsearch",
+  "aliases": [
+    "es"
+  ],
+  "label": "Elasticsearch",
+  "paradigm": "search",
+  "family": "elasticsearch",
+  "transport": "server",
+  "default_port": 9200,
+  "url_schemes": [],
+  "error_code_prefix": "es",
+  "capabilities": {
+    "language": "es-dsl",
+    "objects": [
+      "index",
+      "alias",
+      "data_stream"
+    ],
+    "schema": "declared",
+    "edit_by_key": true,
+    "transactions": "none",
+    "foreign_keys": false,
+    "ddl": false,
+    "databases": "none",
+    "users": false,
+    "explain": "es-profile",
+    "exact_count": true,
+    "dump": "es-bulk",
+    "import_formats": [
+      "ndjson",
+      "json",
+      "csv"
+    ],
+    "export_formats": [
+      "ndjson",
+      "json",
+      "csv"
+    ],
+    "sessions": {
+      "kill": true
+    },
+    "validation": false,
+    "aggregation": true,
+    "indexes": {
+      "create": false,
+      "drop": false
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "url",
+        "type": "uri",
+        "label": "URL",
+        "schemes": [
+          "http",
+          "https"
+        ],
+        "fills_others": true,
+        "placeholder": "https://… (붙여 넣으면 나머지 칸을 채움)"
+      },
+      {
+        "key": "cloud_id",
+        "type": "text",
+        "label": "Cloud ID",
+        "advanced": true,
+        "placeholder": "(선택) Elastic Cloud 배포의 Cloud ID"
+      },
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "required_unless": "url",
+        "default": "127.0.0.1"
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "default": 9200
+      },
+      {
+        "key": "auth",
+        "type": "select",
+        "label": "인증 방식",
+        "default": "basic",
+        "options": [
+          {
+            "value": "none",
+            "label": "없음"
+          },
+          {
+            "value": "basic",
+            "label": "사용자·비밀번호"
+          },
+          {
+            "value": "api_key",
+            "label": "API 키"
+          },
+          {
+            "value": "bearer",
+            "label": "Bearer 토큰"
+          }
+        ]
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자",
+        "required_to_connect": true,
+        "visible_when": {
+          "auth": [
+            "basic"
+          ]
+        },
+        "placeholder": "elastic"
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호",
+        "visible_when": {
+          "auth": [
+            "basic",
+            "api_key",
+            "bearer"
+          ]
+        },
+        "variants": [
+          {
+            "when": {
+              "auth": [
+                "api_key"
+              ]
+            },
+            "label": "API 키",
+            "placeholder": "인코딩된 키 또는 id:api_key"
+          },
+          {
+            "when": {
+              "auth": [
+                "bearer"
+              ]
+            },
+            "label": "토큰"
+          }
+        ]
+      },
+      {
+        "key": "tls",
+        "type": "toggle",
+        "label": "TLS",
+        "description": "HTTPS로 접속",
+        "default": false
+      },
+      {
+        "key": "tls_ca_file",
+        "type": "file",
+        "label": "CA 인증서",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_fingerprint",
+        "type": "text",
+        "label": "인증서 지문 (SHA-256)",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        },
+        "placeholder": "(선택) CA 대신 이 지문의 인증서를 믿음"
+      },
+      {
+        "key": "tls_client_cert",
+        "type": "file",
+        "label": "클라이언트 인증서",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_client_key",
+        "type": "file",
+        "label": "클라이언트 키",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_skip_verify",
+        "type": "toggle",
+        "label": "인증서 검사 안 함",
+        "description": "개발용: 서버 인증서를 검사하지 않음",
+        "default": false,
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "path_prefix",
+        "type": "text",
+        "label": "경로 접두어",
+        "advanced": true,
+        "placeholder": "(선택) 프록시 뒤의 경로, 예: /es"
+      },
+      {
+        "key": "sniff",
+        "type": "toggle",
+        "label": "다른 노드로 넘어가기",
+        "description": "클러스터의 노드 목록(_nodes/http)을 읽어 두고, 이 주소가 응답하지 않으면 다른 노드로 보냄 (Cloud ID·경로 접두어가 있으면 쓰지 않음)",
+        "default": true,
+        "advanced": true
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {port}",
+    "detail": "{user}@{host}:{port}"
+  }
+}

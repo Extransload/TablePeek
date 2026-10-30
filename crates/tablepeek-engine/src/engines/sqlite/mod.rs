@@ -8,11 +8,11 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use serde_json::Value;
 use tablepeek_types::{
-    Capabilities, ConnConfig, DbObjects, EditTarget, EngineMeta, InsertValue, ObjectDefinition,
-    PkValue, Relation, ServerInfo, TableDetail, TableSchema,
+    Capabilities, CellRef, ConnConfig, DbObjects, EditTarget, EngineMeta, InsertValue,
+    ObjectDefinition, PkValue, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
-use crate::driver::{CancelRequest, Driver, SqlDriver, TxOp};
+use crate::driver::{CancelRequest, Driver, FileStream, SqlDriver, TxOp};
 use crate::registry::{parse_descriptor, ConfigProblem, DriverFactory, EngineDescriptor, NetRoute};
 use crate::sql_log::{Dialect, SqlLog};
 use crate::{EngineError, QueryData, SqliteInner};
@@ -190,7 +190,7 @@ impl SqlDriver for SqliteDriver {
             .await
     }
 
-    async fn kill_session(&self, _id: u64) -> Result<(), EngineError> {
+    async fn kill_session(&self, _id: &str) -> Result<(), EngineError> {
         Err(EngineError::BadRequest(
             "이 엔진은 세션 종료를 지원하지 않습니다".into(),
         ))
@@ -232,5 +232,13 @@ impl SqlDriver for SqliteDriver {
             Ok(())
         })
         .await
+    }
+
+    async fn read_cell(&self, cell: &CellRef) -> Result<FileStream, EngineError> {
+        crate::sqlite_cells::read_cell(self.inner.clone(), cell).await
+    }
+
+    async fn write_cell(&self, cell: &CellRef, data: FileStream) -> Result<u64, EngineError> {
+        crate::sqlite_cells::write_cell(self.inner.clone(), cell, data).await
     }
 }

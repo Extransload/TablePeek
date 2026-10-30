@@ -11,7 +11,7 @@ import { PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../component
 import { Select } from "../../../components/Select";
 import { Spinner } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
-import { t } from "../../../i18n";
+import { phrase, say, t, type Phrase } from "../../../i18n";
 import { MongoError, createSearchIndex, dropSearchIndex, isAbort, listSearchIndexes, updateSearchIndex, type Namespace, type SearchIndexInfo } from "../api";
 import { Int32, bsonDoc, type BsonDocument } from "../bson";
 import { shellCollection, toShell, toShellPretty } from "../format";
@@ -232,12 +232,12 @@ function SearchIndexDialog({
 
   const parsed = useMemo(() => parseDocText(text, false), [text]);
 
-  const plan = useMemo((): { command: string; definition: BsonDocument } | { error: string } => {
+  const plan = useMemo((): { command: string; definition: BsonDocument } | { error: Phrase } => {
     if (creating && name.trim() === "") {
-      return { error: t("이름을 쓰세요") };
+      return { error: phrase("이름을 쓰세요") };
     }
     if (!parsed.ok) {
-      return { error: t("정의: {message}", { message: parsed.message }) };
+      return { error: phrase("정의: {message}", { message: parsed.message }) };
     }
     const coll = shellCollection(ns.coll);
     if (creating) {
@@ -358,7 +358,7 @@ function SearchIndexDialog({
       <div className="mg-form-label">{t("정의 (mongosh 표기 또는 JSON)")}</div>
       <MongoEditor value={text} onChange={(value) => { setText(value); setFailure(null); }} role="doc" className="mg-admin-editor mg-search-editor" error={parsed.ok ? null : { from: parsed.from, to: parsed.to }} onRun={() => void submit()} ariaLabel={t("검색 인덱스 정의")} />
       {creating ? null : <div className="panel-dim">{t("고치면 새 정의로 다시 만드는 동안에도 이전 정의로 조회할 수 있습니다.")}</div>}
-      <CommandPreview command={"error" in plan ? null : plan.command} problem={"error" in plan ? plan.error : null} />
+      <CommandPreview command={"error" in plan ? null : plan.command} problem={"error" in plan ? say(plan.error) : null} />
       <Failure error={failure} />
     </AdminModal>
   );

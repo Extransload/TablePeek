@@ -753,7 +753,9 @@ export function ConnectModal({
         text: t(
           engine.workbench === "document"
             ? "연결 성공 · {driver} · 컬렉션 {tables}개 · {ms}ms"
-            : "연결 성공 · {driver} · 테이블 {tables}개 · {ms}ms",
+            : engine.workbench === "search"
+              ? "연결 성공 · {driver} · 인덱스 {tables}개 · {ms}ms"
+              : "연결 성공 · {driver} · 테이블 {tables}개 · {ms}ms",
           {
             driver: engine.label,
             tables: result.tables,

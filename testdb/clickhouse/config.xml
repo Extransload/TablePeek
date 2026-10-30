@@ -1,0 +1,38 @@
+<!--
+  The test server's settings beside the image's own: HTTPS on 8443 with the
+  throwaway certificate testdb/x509/gen.sh writes (the PEM holds the
+  certificate and its key), and caches and memory kept small, for a Docker
+  machine that runs several test servers at once.
+-->
+<clickhouse>
+    <https_port>8443</https_port>
+    <openSSL>
+        <server>
+            <certificateFile>/certs/server.pem</certificateFile>
+            <privateKeyFile>/certs/server.pem</privateKeyFile>
+            <verificationMode>none</verificationMode>
+            <loadDefaultCAFile>false</loadDefaultCAFile>
+            <cacheSessions>true</cacheSessions>
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+        </server>
+    </openSSL>
+    <!-- Below the container's 1 GB cap, so the server refuses a query before the kernel kills it. -->
+    <max_server_memory_usage>734003200</max_server_memory_usage>
+    <mark_cache_size>67108864</mark_cache_size>
+    <uncompressed_cache_size>67108864</uncompressed_cache_size>
+    <index_mark_cache_size>16777216</index_mark_cache_size>
+    <mmap_cache_size>64</mmap_cache_size>
+    <compiled_expression_cache_size>16777216</compiled_expression_cache_size>
+    <!-- The system log tables write constantly and are no use here. -->
+    <query_thread_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <metric_log remove="1"/>
+    <trace_log remove="1"/>
+    <text_log remove="1"/>
+    <latency_log remove="1"/>
+    <error_log remove="1"/>
+    <query_metric_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <opentelemetry_span_log remove="1"/>
+</clickhouse>

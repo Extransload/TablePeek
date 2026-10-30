@@ -24,6 +24,9 @@ export interface CellMenuTarget {
   views?: ContextMenuItem[];
   // Absent when the cell can't be changed here.
   edit?(): void;
+  // Absent unless every selected column adds rather than sets (CQL
+  // counters): stages an amount each selected cell adds when applied.
+  addTo?(): void;
   // Absent when none of the selected cells can be changed here.
   setValue?(value: CellValueChoice): void;
   // The values every selected cell can take.
@@ -84,6 +87,9 @@ export function cellMenuItems(target: CellMenuTarget): ContextMenuItem[] {
   items.push({ label: "Quick Look", separatorBefore: true, onSelect: target.quickLook }, ...(target.views ?? []));
   if (target.edit !== undefined) {
     items.push({ label: t("이 셀 편집"), separatorBefore: true, onSelect: target.edit });
+  }
+  if (target.addTo !== undefined) {
+    items.push({ label: t("더할 값…"), separatorBefore: target.edit === undefined, onSelect: target.addTo });
   }
   const setValue = target.setValue;
   if (setValue !== undefined) {

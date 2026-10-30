@@ -1,7 +1,8 @@
 // The 인덱스 sub-tab (MONGODB.md §3.6): the collection's indexes with their
 // keys (↑ ascending, ↓ descending), options, size and use count, a create
 // dialog that shows the command it will send, and drop with confirmation.
-// Below them, the Atlas Search indexes (SearchIndexesSection).
+// Below them, the Atlas Search indexes (SearchIndexesSection). An index
+// picked in the list shows in the app's detail panel.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
@@ -10,11 +11,13 @@ import { Select } from "../../../components/Select";
 import { LoadingState, Spinner } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { phrase, say, t, type Phrase } from "../../../i18n";
 import { createIndex, dropIndex, isAbort, listIndexes, type IndexInfo, type Namespace } from "../api";
 import { Int32, isNumber, type BsonDocument } from "../bson";
 import { shellCollection, toShell } from "../format";
 import { parseFilter } from "../shell/parse";
+import { DocDetailPanel, FactsList, NothingSelected, type Fact } from "./DocDetailPanel";
+import { arrowStep, selectsItem } from "./selection";
 import { ShellText } from "./ShellText";
 import { SearchIndexesSection } from "./SearchIndexesSection";
 import type { IndexCreateRequest, IndexesPanelProps } from "./types";
@@ -75,13 +78,39 @@ function IndexFlags({ index }: { index: IndexInfo }) {
   return flags.length > 0 ? <>{flags}</> : <span className="panel-dim">—</span>;
 }
 
-export function IndexesPanel({ ns, readOnly, fields, createRequest, host, onChanged }: IndexesPanelProps) {
+// An index as the detail panel lists it, by the server's option names.
+function indexFacts(ix: IndexInfo): Fact[] {
+  const facts: Fact[] = [{ name: "key", value: toShell(ix.key) }];
+  if (ix.unique) {
+    facts.push({ name: "unique", value: "true" });
+  }
+  if (ix.sparse) {
+    facts.push({ name: "sparse", value: "true" });
+  }
+  if (ix.expireAfterSeconds !== undefined) {
+    facts.push({ name: "expireAfterSeconds", value: String(ix.expireAfterSeconds) });
+  }
+  if (ix.partialFilterExpression !== undefined) {
+    facts.push({ name: "partialFilterExpression", value: toShell(ix.partialFilterExpression) });
+  }
+  if (ix.size !== undefined) {
+    facts.push({ name: "size", value: formatBytes(ix.size) });
+  }
+  if (ix.ops !== undefined) {
+    facts.push({ name: "$indexStats.accesses.ops", value: ix.ops.toLocaleString() });
+  }
+  return facts;
+}
+
+export function IndexesPanel({ ns, readOnly, fields, createRequest, host, facts, onChanged }: IndexesPanelProps) {
   const [indexes, setIndexes] = useState<IndexInfo[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [reloadSeq, setReloadSeq] = useState(0);
   // The create dialog, with its starting keys.
   const [creating, setCreating] = useState<{ keys: BsonDocument | null } | null>(null);
   const [dropping, setDropping] = useState<string | null>(null);
+  // The index in the detail panel, by name.
+  const [picked, setPicked] = useState<string | null>(null);
 
   useEffect(() => {
     const ctl = new AbortController();
@@ -129,6 +158,14 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, onChan
 
   const total = indexes?.reduce((sum, ix) => sum + (ix.size ?? 0), 0) ?? 0;
   const sized = indexes?.some((ix) => ix.size !== undefined) ?? false;
+  const pickedIndex = picked === null ? undefined : indexes?.find((ix) => ix.name === picked);
+  const pickAt = (table: HTMLTableElement | null, at: number) => {
+    const ix = indexes?.[at];
+    if (ix !== undefined) {
+      setPicked(ix.name);
+      table?.tBodies[0]?.rows[at]?.scrollIntoView({ block: "nearest" });
+    }
+  };
 
   return (
     <div className="mg-pane mg-indexes">
@@ -158,7 +195,17 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, onChan
           <LoadingState />
         ) : (
           <section className="structure-section">
-            <table className="panel-table mg-struct-table mg-ix-table">
+            <table
+              className="panel-table mg-struct-table mg-ix-table mg-pick-table"
+              tabIndex={-1}
+              onKeyDown={(event) => {
+                const next = arrowStep(event, indexes.length, indexes.findIndex((ix) => ix.name === picked));
+                if (next !== null) {
+                  event.preventDefault();
+                  pickAt(event.currentTarget, next);
+                }
+              }}
+            >
               <thead>
                 <tr>
                   <th>{t("이름")}</th>
@@ -170,8 +217,17 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, onChan
                 </tr>
               </thead>
               <tbody>
-                {indexes.map((ix) => (
-                  <tr key={ix.name}>
+                {indexes.map((ix, at) => (
+                  <tr
+                    key={ix.name}
+                    className={ix.name === picked ? "selected" : undefined}
+                    onClick={(event) => {
+                      if (selectsItem(event.target)) {
+                        pickAt(null, at);
+                        event.currentTarget.closest("table")?.focus({ preventScroll: true });
+                      }
+                    }}
+                  >
                     <td className="mono">{ix.name}</td>
                     <td>
                       <KeyChips keys={ix.key} />
@@ -214,6 +270,15 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, onChan
           }}
         />
       ) : null}
+      <DocDetailPanel>
+        {(query) =>
+          pickedIndex !== undefined ? (
+            <FactsList key={pickedIndex.name} title={<span className="mg-detail-path mono">{pickedIndex.name}</span>} facts={indexFacts(pickedIndex)} query={query} />
+          ) : (
+            <NothingSelected facts={facts} query={query} empty={t("선택된 인덱스가 없습니다")} />
+          )
+        }
+      </DocDetailPanel>
     </div>
   );
 }
@@ -262,7 +327,7 @@ function CreateIndexDialog({
   const nextId = useRef(rows.length);
 
   // The command as it will be sent, or why it cannot be.
-  const spec = useMemo((): { keys: BsonDocument; options: BsonDocument } | { error: string } => {
+  const spec = useMemo((): { keys: BsonDocument; options: BsonDocument } | { error: Phrase } => {
     const keys: BsonDocument = new Map();
     for (const row of rows) {
       const field = row.field.trim();
@@ -283,14 +348,14 @@ function CreateIndexDialog({
     if (ttlOn) {
       const seconds = Number(ttl);
       if (!Number.isInteger(seconds) || seconds < 0) {
-        return { error: t("TTL은 0 이상의 정수(초)여야 합니다") };
+        return { error: phrase("TTL은 0 이상의 정수(초)여야 합니다") };
       }
       options.set("expireAfterSeconds", new Int32(seconds));
     }
     if (partial.trim() !== "") {
       const parsed = parseFilter(partial);
       if (!parsed.ok) {
-        return { error: t("부분 인덱스 조건: {message}", { message: parsed.error.message }) };
+        return { error: phrase("부분 인덱스 조건: {message}", { message: parsed.error.message }) };
       }
       options.set("partialFilterExpression", parsed.value);
     }
@@ -301,7 +366,7 @@ function CreateIndexDialog({
     "error" in spec
       ? null
       : `${shellCollection(ns.coll)}.createIndex(${toShell(spec.keys)}${spec.options.size > 0 ? `, ${toShell(spec.options)}` : ""})`;
-  const problem = "error" in spec ? spec.error : spec.keys.size === 0 ? t("필드를 하나 이상 고르세요") : null;
+  const problem = "error" in spec ? say(spec.error) : spec.keys.size === 0 ? t("필드를 하나 이상 고르세요") : null;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {

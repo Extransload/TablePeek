@@ -11,14 +11,14 @@
 // also accepts relaxed and legacy forms so pasted text works; `toEJSON`
 // always writes canonical form.
 
-import { t } from "../../i18n";
+import { phrase, phraseError, say, type Phrase } from "../../i18n";
 
 export class ObjectId {
   readonly type = "ObjectId" as const;
   readonly hex: string;
   constructor(hex: string) {
     if (!/^[0-9a-fA-F]{24}$/.test(hex)) {
-      throw new Error(t("ObjectId는 16진수 24자리여야 합니다: {text}", { text: hex }));
+      throw phraseError(phrase("ObjectId는 16진수 24자리여야 합니다: {text}", { text: hex }));
     }
     this.hex = hex.toLowerCase();
   }
@@ -41,7 +41,7 @@ export class Int32 {
   readonly value: number;
   constructor(value: number) {
     if (!Number.isInteger(value) || value < -2147483648 || value > 2147483647) {
-      throw new Error(t("Int32 범위를 벗어난 값입니다: {text}", { text: value }));
+      throw phraseError(phrase("Int32 범위를 벗어난 값입니다: {text}", { text: value }));
     }
     // -0 is not an integer value BSON can hold.
     this.value = value === 0 ? 0 : value;
@@ -59,10 +59,10 @@ export class Int64 {
     try {
       big = typeof value === "bigint" ? value : BigInt(typeof value === "number" ? value : value.trim());
     } catch {
-      throw new Error(t("Int64로 읽을 수 없는 값입니다: {text}", { text: String(value) }));
+      throw phraseError(phrase("Int64로 읽을 수 없는 값입니다: {text}", { text: String(value) }));
     }
     if (big < INT64_MIN || big > INT64_MAX) {
-      throw new Error(t("Int64 범위를 벗어난 값입니다: {text}", { text: String(value) }));
+      throw phraseError(phrase("Int64 범위를 벗어난 값입니다: {text}", { text: String(value) }));
     }
     this.value = big;
   }
@@ -82,11 +82,11 @@ export class Decimal128 {
   constructor(value: string) {
     const text = value.trim();
     if (!DECIMAL_TEXT.test(text)) {
-      throw new Error(t("Decimal128로 읽을 수 없는 값입니다: {text}", { text: value }));
+      throw phraseError(phrase("Decimal128로 읽을 수 없는 값입니다: {text}", { text: value }));
     }
     const digits = text.replace(/[eE].*$/, "").replace(/[^0-9]/g, "").replace(/^0+/, "");
     if (digits.length > 34) {
-      throw new Error(t("Decimal128은 유효 숫자 34자리까지입니다: {text}", { text: value }));
+      throw phraseError(phrase("Decimal128은 유효 숫자 34자리까지입니다: {text}", { text: value }));
     }
     this.value = text;
   }
@@ -120,19 +120,19 @@ export class Binary {
     readonly subType: number,
   ) {
     if (!Number.isInteger(subType) || subType < 0 || subType > 255) {
-      throw new Error(t("Binary 하위 타입은 0–255입니다: {text}", { text: subType }));
+      throw phraseError(phrase("Binary 하위 타입은 0–255입니다: {text}", { text: subType }));
     }
   }
   static fromUuid(text: string): Binary {
     const hex = text.replace(/-/g, "");
     if (!/^[0-9a-fA-F]{32}$/.test(hex)) {
-      throw new Error(t("UUID 형식이 아닙니다: {text}", { text }));
+      throw phraseError(phrase("UUID 형식이 아닙니다: {text}", { text }));
     }
     return new Binary(hexToBase64(hex), 4);
   }
   static fromHex(hex: string, subType = 0): Binary {
     if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex)) {
-      throw new Error(t("16진수 바이트가 아닙니다: {text}", { text: hex }));
+      throw phraseError(phrase("16진수 바이트가 아닙니다: {text}", { text: hex }));
     }
     return new Binary(hexToBase64(hex), subType);
   }
@@ -163,7 +163,7 @@ export class BsonRegex {
     options = "",
   ) {
     if (!/^[ilmsux]*$/.test(options)) {
-      throw new Error(t("정규식 옵션은 i, l, m, s, u, x만 쓸 수 있습니다: {text}", { text: options }));
+      throw phraseError(phrase("정규식 옵션은 i, l, m, s, u, x만 쓸 수 있습니다: {text}", { text: options }));
     }
     this.options = [...new Set(options)].sort().join("");
   }
@@ -177,7 +177,7 @@ export class Timestamp {
   constructor(seconds: number, ordinal: number) {
     for (const part of [seconds, ordinal]) {
       if (!Number.isInteger(part) || part < 0 || part > 0xffffffff) {
-        throw new Error(t("Timestamp 값은 0–4294967295 정수입니다: {text}", { text: part }));
+        throw phraseError(phrase("Timestamp 값은 0–4294967295 정수입니다: {text}", { text: part }));
       }
     }
     this.t = seconds;
@@ -289,11 +289,15 @@ export function fromEJSON(json: unknown): BsonValue {
   if (typeof json === "number") {
     return relaxedNumber(json);
   }
+  // A whole number past 2^53, read exactly (`parseJson` with `bigints`).
+  if (typeof json === "bigint") {
+    return json >= INT64_MIN && json <= INT64_MAX ? new Int64(json) : new Decimal128(json.toString());
+  }
   if (Array.isArray(json)) {
     return json.map(fromEJSON);
   }
   if (typeof json !== "object") {
-    throw new Error(t("Extended JSON 값이 아닙니다: {text}", { text: String(json) }));
+    throw phraseError(phrase("Extended JSON 값이 아닙니다: {text}", { text: String(json) }));
   }
   const record = json as Record<string, unknown>;
   const entries = jsonKeys(record).map((key): [string, unknown] => [key, record[key]]);
@@ -323,7 +327,7 @@ function fromWrapper(obj: object, entries: [string, unknown][]): BsonValue | und
   const x = one === null ? undefined : entries[0][1];
   const str = (v: unknown, what: string): string => {
     if (typeof v !== "string") {
-      throw new Error(t("{name} 값은 문자열이어야 합니다", { name: what }));
+      throw phraseError(phrase("{name} 값은 문자열이어야 합니다", { name: what }));
     }
     return v;
   };
@@ -369,7 +373,7 @@ function fromWrapper(obj: object, entries: [string, unknown][]): BsonValue | und
   if (hasExactKeys(obj, ["$code", "$scope"])) {
     const scope = fromEJSON(obj.$scope);
     if (!isDocument(scope)) {
-      throw new Error(t("$scope 값은 문서여야 합니다"));
+      throw phraseError(phrase("$scope 값은 문서여야 합니다"));
     }
     return new Code(str(obj.$code, "$code"), scope);
   }
@@ -392,7 +396,7 @@ function hasExactKeys(v: unknown, want: string[]): v is Record<string, unknown> 
 function parseDoubleText(text: string): number {
   const n = Number(text);
   if (Number.isNaN(n) && text.trim() !== "NaN") {
-    throw new Error(t("Double로 읽을 수 없는 값입니다: {text}", { text }));
+    throw phraseError(phrase("Double로 읽을 수 없는 값입니다: {text}", { text }));
   }
   return n;
 }
@@ -401,7 +405,7 @@ function dateFromEJSON(x: unknown): BsonDate {
   if (typeof x === "string") {
     const ms = Date.parse(x);
     if (Number.isNaN(ms)) {
-      throw new Error(t("날짜로 읽을 수 없습니다: {text}", { text: x }));
+      throw phraseError(phrase("날짜로 읽을 수 없습니다: {text}", { text: x }));
     }
     return new BsonDate(ms);
   }
@@ -411,7 +415,7 @@ function dateFromEJSON(x: unknown): BsonDate {
   if (hasExactKeys(x, ["$numberLong"]) && typeof x.$numberLong === "string") {
     return new BsonDate(new Int64(x.$numberLong).value);
   }
-  throw new Error(t("$date 값을 읽을 수 없습니다"));
+  throw phraseError(phrase("$date 값을 읽을 수 없습니다"));
 }
 
 // Canonical Extended JSON for a value, to be written with `stringifyJson`
@@ -524,25 +528,32 @@ export function jsonKeys(obj: object): string[] {
 
 // A JSON text that does not parse; `offset` is where reading stopped.
 export class JsonSyntaxError extends SyntaxError {
+  // The message as a phrase, translated where it shows.
+  readonly phrase: Phrase;
   constructor(readonly offset: number) {
-    super(t("JSON을 읽을 수 없습니다 ({offset}번째 글자)", { offset: offset + 1 }));
+    const p = phrase("JSON을 읽을 수 없습니다 ({offset}번째 글자)", { offset: offset + 1 });
+    super(say(p));
+    this.phrase = p;
   }
 }
 
 // `JSON.parse` that keeps key order: objects with index-like keys record
 // their written order (read it with `jsonKeys`; `fromEJSON` does). Text
 // without such keys goes straight to JSON.parse. Bad text throws
-// `JsonSyntaxError`.
-export function parseJson(text: string): unknown {
+// `JsonSyntaxError`. With `bigints`, whole numbers beyond 2^53 come back
+// as exact `bigint`s instead of rounded doubles (documents of the search
+// engines, whose longs are plain JSON numbers).
+export function parseJson(text: string, options: { bigints?: boolean } = {}): unknown {
+  const bigints = options.bigints === true && /\d{16}/.test(text);
   // An index-like key is digits, each written plainly or as \u003X.
-  if (!/"\d+"\s*:|\\u003\d/.test(text)) {
+  if (!bigints && !/"\d+"\s*:|\\u003\d/.test(text)) {
     try {
       return JSON.parse(text);
     } catch {
       // Read again below for the error's position.
     }
   }
-  const reader = new JsonReader(text);
+  const reader = new JsonReader(text, bigints);
   const value = reader.value();
   reader.end();
   return value;
@@ -552,7 +563,10 @@ class JsonReader {
   private pos = 0;
   private static readonly NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
 
-  constructor(private readonly text: string) {}
+  constructor(
+    private readonly text: string,
+    private readonly bigints = false,
+  ) {}
 
   value(): unknown {
     this.space();
@@ -576,7 +590,8 @@ class JsonReader {
       this.fail();
     }
     this.pos += m[0].length;
-    return Number(m[0]);
+    const n = Number(m[0]);
+    return this.bigints && !Number.isSafeInteger(n) && /^-?\d+$/.test(m[0]) ? BigInt(m[0]) : n;
   }
 
   end(): void {
@@ -710,7 +725,8 @@ function writeJson(value: unknown, gap: string, at: string): string | undefined 
     value = value.toJSON();
   }
   if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
+    // An exact whole number (see parseJson's `bigints`), written as digits.
+    return typeof value === "bigint" ? value.toString() : JSON.stringify(value);
   }
   // A document must go through toEJSON first; written as is it would be `{}`.
   if (value instanceof Map) {

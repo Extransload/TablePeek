@@ -1,0 +1,400 @@
+{"create": {}}
+{"@timestamp": "2024-06-01T00:07:00Z", "event": "checkout", "customer_no": 103, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T00:14:00Z", "event": "cart", "customer_no": 190, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T00:21:00Z", "event": "cart", "customer_no": 160, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T00:28:00Z", "event": "view", "customer_no": 108, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T00:35:00Z", "event": "cart", "customer_no": 125, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T00:42:00Z", "event": "view", "customer_no": 187, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T00:49:00Z", "event": "cart", "customer_no": 9, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T00:56:00Z", "event": "view", "customer_no": 196, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:03:00Z", "event": "view", "customer_no": 126, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:10:00Z", "event": "login", "customer_no": 185, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:17:00Z", "event": "cart", "customer_no": 100, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:24:00Z", "event": "view", "customer_no": 77, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:31:00Z", "event": "login", "customer_no": 150, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:38:00Z", "event": "view", "customer_no": 107, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:45:00Z", "event": "login", "customer_no": 180, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:52:00Z", "event": "cart", "customer_no": 19, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T01:59:00Z", "event": "view", "customer_no": 41, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:06:00Z", "event": "cart", "customer_no": 167, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:13:00Z", "event": "view", "customer_no": 84, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:20:00Z", "event": "cart", "customer_no": 191, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:27:00Z", "event": "view", "customer_no": 188, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:34:00Z", "event": "cart", "customer_no": 144, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:41:00Z", "event": "view", "customer_no": 136, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:48:00Z", "event": "checkout", "customer_no": 71, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T02:55:00Z", "event": "checkout", "customer_no": 133, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:02:00Z", "event": "checkout", "customer_no": 135, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:09:00Z", "event": "cart", "customer_no": 188, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:16:00Z", "event": "login", "customer_no": 152, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:23:00Z", "event": "checkout", "customer_no": 195, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:30:00Z", "event": "login", "customer_no": 126, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:37:00Z", "event": "cart", "customer_no": 4, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:44:00Z", "event": "login", "customer_no": 70, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:51:00Z", "event": "login", "customer_no": 139, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T03:58:00Z", "event": "view", "customer_no": 52, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:05:00Z", "event": "login", "customer_no": 167, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:12:00Z", "event": "checkout", "customer_no": 155, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:19:00Z", "event": "checkout", "customer_no": 7, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:26:00Z", "event": "cart", "customer_no": 91, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:33:00Z", "event": "view", "customer_no": 177, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:40:00Z", "event": "checkout", "customer_no": 114, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:47:00Z", "event": "login", "customer_no": 156, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T04:54:00Z", "event": "login", "customer_no": 55, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:01:00Z", "event": "view", "customer_no": 133, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:08:00Z", "event": "view", "customer_no": 39, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:15:00Z", "event": "view", "customer_no": 33, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:22:00Z", "event": "checkout", "customer_no": 32, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:29:00Z", "event": "login", "customer_no": 81, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:36:00Z", "event": "view", "customer_no": 73, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:43:00Z", "event": "cart", "customer_no": 111, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:50:00Z", "event": "view", "customer_no": 134, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T05:57:00Z", "event": "login", "customer_no": 199, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:04:00Z", "event": "checkout", "customer_no": 108, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:11:00Z", "event": "login", "customer_no": 124, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:18:00Z", "event": "cart", "customer_no": 114, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:25:00Z", "event": "checkout", "customer_no": 109, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:32:00Z", "event": "login", "customer_no": 51, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:39:00Z", "event": "checkout", "customer_no": 26, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:46:00Z", "event": "cart", "customer_no": 93, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T06:53:00Z", "event": "login", "customer_no": 99, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:00:00Z", "event": "view", "customer_no": 37, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:07:00Z", "event": "checkout", "customer_no": 15, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:14:00Z", "event": "login", "customer_no": 173, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:21:00Z", "event": "view", "customer_no": 127, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:28:00Z", "event": "cart", "customer_no": 124, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:35:00Z", "event": "cart", "customer_no": 39, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:42:00Z", "event": "cart", "customer_no": 178, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:49:00Z", "event": "view", "customer_no": 193, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T07:56:00Z", "event": "login", "customer_no": 45, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:03:00Z", "event": "view", "customer_no": 135, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:10:00Z", "event": "cart", "customer_no": 81, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:17:00Z", "event": "checkout", "customer_no": 165, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:24:00Z", "event": "login", "customer_no": 154, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:31:00Z", "event": "login", "customer_no": 9, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:38:00Z", "event": "checkout", "customer_no": 184, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:45:00Z", "event": "cart", "customer_no": 32, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:52:00Z", "event": "view", "customer_no": 146, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T08:59:00Z", "event": "checkout", "customer_no": 6, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:06:00Z", "event": "view", "customer_no": 192, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:13:00Z", "event": "checkout", "customer_no": 72, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:20:00Z", "event": "cart", "customer_no": 77, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:27:00Z", "event": "cart", "customer_no": 97, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:34:00Z", "event": "checkout", "customer_no": 43, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:41:00Z", "event": "login", "customer_no": 110, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:48:00Z", "event": "checkout", "customer_no": 76, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T09:55:00Z", "event": "login", "customer_no": 6, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:02:00Z", "event": "view", "customer_no": 62, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:09:00Z", "event": "view", "customer_no": 155, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:16:00Z", "event": "view", "customer_no": 66, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:23:00Z", "event": "view", "customer_no": 121, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:30:00Z", "event": "view", "customer_no": 72, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:37:00Z", "event": "cart", "customer_no": 186, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:44:00Z", "event": "checkout", "customer_no": 92, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:51:00Z", "event": "checkout", "customer_no": 110, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T10:58:00Z", "event": "login", "customer_no": 44, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:05:00Z", "event": "cart", "customer_no": 186, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:12:00Z", "event": "checkout", "customer_no": 169, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:19:00Z", "event": "login", "customer_no": 81, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:26:00Z", "event": "checkout", "customer_no": 114, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:33:00Z", "event": "view", "customer_no": 181, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:40:00Z", "event": "cart", "customer_no": 49, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:47:00Z", "event": "checkout", "customer_no": 7, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T11:54:00Z", "event": "login", "customer_no": 156, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:01:00Z", "event": "view", "customer_no": 191, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:08:00Z", "event": "cart", "customer_no": 23, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:15:00Z", "event": "login", "customer_no": 64, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:22:00Z", "event": "cart", "customer_no": 138, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:29:00Z", "event": "view", "customer_no": 51, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:36:00Z", "event": "view", "customer_no": 151, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:43:00Z", "event": "checkout", "customer_no": 191, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:50:00Z", "event": "checkout", "customer_no": 29, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T12:57:00Z", "event": "cart", "customer_no": 5, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:04:00Z", "event": "view", "customer_no": 42, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:11:00Z", "event": "view", "customer_no": 126, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:18:00Z", "event": "view", "customer_no": 124, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:25:00Z", "event": "view", "customer_no": 34, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:32:00Z", "event": "cart", "customer_no": 176, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:39:00Z", "event": "view", "customer_no": 29, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:46:00Z", "event": "checkout", "customer_no": 120, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T13:53:00Z", "event": "login", "customer_no": 13, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:00:00Z", "event": "cart", "customer_no": 81, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:07:00Z", "event": "view", "customer_no": 142, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:14:00Z", "event": "cart", "customer_no": 21, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:21:00Z", "event": "checkout", "customer_no": 74, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:28:00Z", "event": "login", "customer_no": 177, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:35:00Z", "event": "login", "customer_no": 1, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:42:00Z", "event": "login", "customer_no": 13, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:49:00Z", "event": "view", "customer_no": 56, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T14:56:00Z", "event": "cart", "customer_no": 173, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:03:00Z", "event": "view", "customer_no": 39, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:10:00Z", "event": "view", "customer_no": 177, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:17:00Z", "event": "view", "customer_no": 19, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:24:00Z", "event": "login", "customer_no": 57, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:31:00Z", "event": "cart", "customer_no": 115, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:38:00Z", "event": "checkout", "customer_no": 185, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:45:00Z", "event": "login", "customer_no": 116, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:52:00Z", "event": "login", "customer_no": 143, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T15:59:00Z", "event": "view", "customer_no": 193, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:06:00Z", "event": "cart", "customer_no": 48, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:13:00Z", "event": "checkout", "customer_no": 188, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:20:00Z", "event": "checkout", "customer_no": 23, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:27:00Z", "event": "login", "customer_no": 102, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:34:00Z", "event": "view", "customer_no": 53, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:41:00Z", "event": "checkout", "customer_no": 179, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:48:00Z", "event": "checkout", "customer_no": 96, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T16:55:00Z", "event": "checkout", "customer_no": 17, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:02:00Z", "event": "checkout", "customer_no": 177, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:09:00Z", "event": "checkout", "customer_no": 130, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:16:00Z", "event": "cart", "customer_no": 107, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:23:00Z", "event": "checkout", "customer_no": 181, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:30:00Z", "event": "view", "customer_no": 91, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:37:00Z", "event": "checkout", "customer_no": 68, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:44:00Z", "event": "checkout", "customer_no": 180, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:51:00Z", "event": "cart", "customer_no": 108, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T17:58:00Z", "event": "login", "customer_no": 55, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:05:00Z", "event": "cart", "customer_no": 134, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:12:00Z", "event": "view", "customer_no": 170, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:19:00Z", "event": "view", "customer_no": 197, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:26:00Z", "event": "checkout", "customer_no": 25, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:33:00Z", "event": "cart", "customer_no": 55, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:40:00Z", "event": "cart", "customer_no": 26, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:47:00Z", "event": "login", "customer_no": 179, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T18:54:00Z", "event": "cart", "customer_no": 50, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:01:00Z", "event": "login", "customer_no": 136, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:08:00Z", "event": "checkout", "customer_no": 178, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:15:00Z", "event": "login", "customer_no": 143, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:22:00Z", "event": "cart", "customer_no": 104, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:29:00Z", "event": "cart", "customer_no": 44, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:36:00Z", "event": "login", "customer_no": 58, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:43:00Z", "event": "login", "customer_no": 162, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:50:00Z", "event": "login", "customer_no": 16, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T19:57:00Z", "event": "checkout", "customer_no": 186, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:04:00Z", "event": "checkout", "customer_no": 150, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:11:00Z", "event": "cart", "customer_no": 48, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:18:00Z", "event": "view", "customer_no": 44, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:25:00Z", "event": "login", "customer_no": 132, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:32:00Z", "event": "view", "customer_no": 86, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:39:00Z", "event": "view", "customer_no": 85, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:46:00Z", "event": "login", "customer_no": 171, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T20:53:00Z", "event": "view", "customer_no": 99, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:00:00Z", "event": "cart", "customer_no": 187, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:07:00Z", "event": "view", "customer_no": 43, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:14:00Z", "event": "view", "customer_no": 47, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:21:00Z", "event": "cart", "customer_no": 145, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:28:00Z", "event": "checkout", "customer_no": 164, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:35:00Z", "event": "view", "customer_no": 132, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:42:00Z", "event": "checkout", "customer_no": 62, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:49:00Z", "event": "checkout", "customer_no": 78, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T21:56:00Z", "event": "cart", "customer_no": 171, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:03:00Z", "event": "view", "customer_no": 5, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:10:00Z", "event": "checkout", "customer_no": 94, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:17:00Z", "event": "login", "customer_no": 147, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:24:00Z", "event": "login", "customer_no": 132, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:31:00Z", "event": "login", "customer_no": 64, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:38:00Z", "event": "checkout", "customer_no": 188, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:45:00Z", "event": "view", "customer_no": 107, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:52:00Z", "event": "view", "customer_no": 140, "message": "login ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T22:59:00Z", "event": "cart", "customer_no": 171, "message": "item added"}
+{"create": {}}
+{"@timestamp": "2024-06-01T23:06:00Z", "event": "login", "customer_no": 119, "message": "page viewed"}
+{"create": {}}
+{"@timestamp": "2024-06-01T23:13:00Z", "event": "login", "customer_no": 125, "message": "payment ok"}
+{"create": {}}
+{"@timestamp": "2024-06-01T23:20:00Z", "event": "checkout", "customer_no": 29, "message": "payment ok"}

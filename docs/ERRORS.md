@@ -41,6 +41,7 @@ REST와 WebSocket 오류는 지금처럼 `{ code, message }`이고, 알 수 있�
 ## 3. 웹 구성
 
 - `ErrorNotice`: `block`(패널·대화상자), `compact`(좁은 자리), `banner`(그리드·결과 위 겹침 띠). 제목 · 원인 한 줄 · 고칠 방법(맥락에 맞는 것만) · 동작 버튼(다시 시도, 규칙의 원클릭 수정, 호출 쪽 동작) · "자세히"(코드·위치·원문, 복사).
+- 되돌리기 보고(`AppError.undo = { undone: string[], left: [{ change, reason }] }`): 트랜잭션이 없는 엔진에서 적용이 중간에 실패해 웹이 앞의 변경을 되돌리면(docs/ENGINES.md §4.1), `ErrorNotice`가 모든 모양(`banner` 포함)에서 제목 바로 아래에 짧은 목록으로 보인다. 한 줄 요약("앞서 적용한 변경 N개를 되돌렸습니다" 또는 "…N개는 남았습니다. 새로고침해 확인하세요"), 되돌리지 못한 변경(오류 색, 이유와 함께)이 먼저, 되돌린 변경이 그 뒤. 길면 목록만 스크롤되고, 복사하면 함께 들어간다. "자세히"에 접지 않는다.
 - `FieldError`: 칸 아래 한 줄. 입력에 `aria-invalid`, `aria-describedby`.
 - 오류 토스트: `notify`와 따로 `notifyError(error, { retry? })`. 빨간색, 닫을 때까지, 복사.
 - `explainError(error, context)`: `context`는 `"connect" | "editor" | "data" | "import" | "export" | "structure" | "document" | "shell" | "aggregation" | …`. 규칙의 고칠 방법은 맞는 맥락에서만 나온다. 엔진별 규칙은 `engines/<id>/`에 둔다.

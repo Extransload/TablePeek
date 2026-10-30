@@ -1,0 +1,300 @@
+/* The 클러스터 tab: the cluster card, the live charts (the MongoDB 성능 tab's
+   mg-perf-* classes), and the nodes, shards, tasks and hot-threads
+   sections. Health colours: green → --ok, yellow → --warn, red → --error. */
+
+.es-cl-name {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.es-cl-health {
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  text-transform: uppercase;
+}
+.es-cl-health.green {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+.es-cl-health.yellow {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+.es-cl-health.red {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
+}
+.es-cl-health-text {
+  text-transform: uppercase;
+}
+.es-cl-health-text.green {
+  color: var(--ok) !important;
+}
+.es-cl-health-text.yellow {
+  color: var(--warn) !important;
+}
+.es-cl-health-text.red {
+  color: var(--error) !important;
+}
+.es-cl-warn {
+  color: var(--warn) !important;
+}
+.es-cl-bad {
+  color: var(--error) !important;
+}
+
+.es-cl-overview {
+  margin-bottom: 12px;
+}
+.es-cl-overview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 4px;
+}
+.es-cl-overview-name {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+.es-cl-overview-head .panel-dim {
+  font-size: 11px;
+}
+.es-cl-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.es-cl-tag.warn {
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--line-soft));
+  color: var(--warn);
+}
+.es-cl-tag.current {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft));
+  color: var(--ink);
+}
+.es-cl-conn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+.es-cl-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.es-cl-dot.green {
+  background: var(--ok);
+}
+.es-cl-dot.yellow {
+  background: var(--warn);
+}
+.es-cl-dot.red {
+  background: var(--error);
+}
+.es-cl-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px 16px;
+  padding: 8px 14px 12px;
+}
+.es-cl-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.es-cl-stat span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.es-cl-stat b {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* Percentages in the nodes table. */
+.es-cl-pct {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.es-cl-pct .mono {
+  min-width: 34px;
+  text-align: right;
+}
+.es-cl-bar {
+  position: relative;
+  width: 64px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line-soft);
+}
+.es-cl-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.es-cl-bar-fill.warn {
+  background: var(--warn);
+}
+.es-cl-bar-fill.crit {
+  background: var(--error);
+}
+.es-cl-master {
+  margin-right: 5px;
+  color: var(--warn);
+}
+
+/* Section toolbars. */
+.mg-perf-section .structure-section-head input.es-cl-filter {
+  width: 200px;
+  height: 26px;
+}
+.es-cl-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+/* Shards grouped by index. */
+.es-cl-shards {
+  max-height: 460px;
+}
+.es-cl-group td {
+  background: color-mix(in srgb, var(--head) 18%, var(--panel));
+}
+.es-cl-group.red td {
+  background: color-mix(in srgb, var(--error) 8%, var(--panel));
+}
+.es-cl-group.yellow td {
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+}
+.es-cl-table td.es-cl-group-cell {
+  max-width: 420px;
+}
+.es-cl-group-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.es-cl-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--muted);
+}
+.es-cl-toggle:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+.es-cl-toggle svg {
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.es-cl-toggle.open svg {
+  transform: rotate(90deg);
+}
+.es-cl-link {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.es-cl-link:hover {
+  text-decoration: underline;
+}
+.es-cl-shard-num {
+  padding-left: 50px !important;
+  color: var(--muted);
+}
+.es-cl-shard.unassigned td {
+  background: color-mix(in srgb, var(--error) 6%, transparent);
+}
+.es-cl-state {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  color: var(--muted);
+  font: 10.5px var(--mono);
+  line-height: 18px;
+}
+.es-cl-state.started {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--ok);
+}
+.es-cl-state.relocating,
+.es-cl-state.initializing {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
+}
+.es-cl-state.unassigned {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+  font-weight: 600;
+}
+.es-cl-reason {
+  font: 11px var(--mono);
+}
+.es-cl-prirep {
+  color: var(--muted);
+  font-size: 11px;
+}
+.es-cl-prirep.primary {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Hot threads. */
+.es-cl-hot {
+  max-height: 420px;
+  margin: 0;
+  padding: 10px 14px;
+  overflow: auto;
+  background: var(--bg);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre;
+}

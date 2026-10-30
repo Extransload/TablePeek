@@ -567,6 +567,20 @@ input.mg-pop-search {
 .mg-card.dirty {
   border-color: color-mix(in srgb, var(--warn) 55%, var(--line-soft));
 }
+/* The card (or JSON block) the detail panel shows. */
+.mg-card.selected {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 1px var(--accent-line), var(--shadow-1);
+}
+.mg-card.selected .mg-card-head {
+  background: var(--accent-soft);
+  border-top-left-radius: 11px;
+  border-top-right-radius: 11px;
+}
+.mg-cards:focus,
+.mg-jdocs:focus {
+  outline: none;
+}
 .mg-card-head {
   display: flex;
   align-items: center;
@@ -918,6 +932,10 @@ input.mg-f-input.invalid {
 .mg-jdoc.editing {
   border-color: var(--accent-line);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.mg-jdoc.selected:not(.editing) {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 1px var(--accent-line);
 }
 .mg-jdoc-no {
   position: absolute;

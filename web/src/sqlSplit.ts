@@ -6,7 +6,7 @@ export interface SqlRange {
   from: number;
   // Its first character that isn't a comment.
   codeFrom: number;
-  // Just past its ";", or the end of the text.
+  // Just past its ";" (or the "/" of the line ending it), or the end of the text.
   to: number;
   // The statement itself, trimmed, without the ";".
   text: string;
@@ -14,8 +14,9 @@ export interface SqlRange {
 
 // What the engine's SQL allows, which decides what ends a statement:
 // # comments, backslash escapes and /*! code */ are MySQL's, [names] SQL
-// Server's and SQLite's, $tag$ bodies and E'…' strings PostgreSQL's. Each
-// dialect has its own (SqlDialect.lexing).
+// Server's and SQLite's, $tag$ bodies and E'…' strings PostgreSQL's, "/"
+// lines and q'[…]' strings Oracle's. Each dialect has its own
+// (SqlDialect.lexing).
 export interface Lexing {
   hashComments: boolean;
   backslashEscapes: boolean;
@@ -23,6 +24,17 @@ export interface Lexing {
   dollarQuotes: boolean;
   executableComments: boolean;
   escapeStrings: boolean;
+  // A line holding just "/" ends any statement, and is the only end of a
+  // PL/SQL unit (BEGIN or DECLARE blocks, CREATE PROCEDURE, PACKAGE, …),
+  // whose ;s are its own and whose text keeps its final END;. Absent: no.
+  slashBlocks?: boolean;
+  // q'[…]' and nq'…' strings, closed by the delimiter's pair and a quote.
+  qQuotes?: boolean;
+  // `//` starts a comment to the end of the line (CQL). Absent: no.
+  slashComments?: boolean;
+  // BEGIN [UNLOGGED | COUNTER] BATCH … APPLY BATCH is one statement whose
+  // ;s are its own (CQL). Absent: no.
+  batchBlocks?: boolean;
 }
 
 // With no connection to say: everything, as before.
@@ -61,11 +73,57 @@ const END_NAMED = new Set(["CASE", "TRY", "CATCH"]);
 const WORD = /[A-Za-z_][A-Za-z0-9_$]*/y;
 const DOLLAR_TAG = /\$[A-Za-z0-9_]*\$/y;
 const BLANK = /\s/;
+// The start of a PL/SQL unit, as SQL*Plus reads one: it runs to a "/" line.
+const PLSQL_UNIT =
+  /(?:BEGIN|DECLARE|CREATE\s+(?:OR\s+REPLACE\s+)?(?:AND\s+(?:RESOLVE|COMPILE)\s+)?(?:NOFORCE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TRIGGER|TYPE|LIBRARY|JAVA))\b/iy;
+const Q_CLOSERS: Record<string, string> = { "[": "]", "{": "}", "(": ")", "<": ">" };
+
+// Whether the "/" at `at` is alone on its line (blanks aside), as SQL*Plus
+// ends a PL/SQL unit, or any statement, with.
+export function loneSlashAt(input: string, at: number): boolean {
+  if (input[at] !== "/") {
+    return false;
+  }
+  const lineStart = input.lastIndexOf("\n", at - 1) + 1;
+  const lineEnd = input.indexOf("\n", at);
+  return input.slice(lineStart, at).trim() === "" && input.slice(at + 1, lineEnd < 0 ? input.length : lineEnd).trim() === "";
+}
+
+// Oracle's q'[…]' text (nq'…' too) starting at `at`: where its body starts
+// and what closes it (the delimiter, or its pair, then a quote); null when
+// none starts there.
+export function qQuoteAt(input: string, at: number): { body: number; close: string } | null {
+  const q = input[at] === "n" || input[at] === "N" ? at + 1 : at;
+  if ((input[q] !== "q" && input[q] !== "Q") || input[q + 1] !== "'" || /[A-Za-z0-9_$#]/.test(input[at - 1] ?? "")) {
+    return null;
+  }
+  const open = input[q + 2];
+  if (open === undefined || BLANK.test(open)) {
+    return null;
+  }
+  return { body: q + 3, close: `${Q_CLOSERS[open] ?? open}'` };
+}
+
+// Whether a statement is a PL/SQL unit, for a dialect ending those with "/".
+function isPlsqlUnit(text: string, at: number, lex: Lexing): boolean {
+  if (lex.slashBlocks !== true) {
+    return false;
+  }
+  PLSQL_UNIT.lastIndex = at;
+  return PLSQL_UNIT.test(text);
+}
+
+// A statement as a script file writes it: with its ";", or a PL/SQL unit
+// (where the dialect ends those with a "/" line) as it is, then that line.
+export function scriptStatement(statement: string, dialect: SqlDialect): string {
+  return isPlsqlUnit(statement, 0, dialect.lexing) ? `${statement}\n/` : `${statement};`;
+}
 
 // Statements split on ";" outside quotes, comments and BEGIN … END bodies
 // (triggers, procedures), with their places. A stretch holding only comments
 // isn't a statement: it would run as nothing, or fail. MySQL's /*! … */ is
-// code, which mysqldump writes its SET and CREATE VIEW statements in.
+// code, which mysqldump writes its SET and CREATE VIEW statements in. Where
+// "/" lines end statements (Oracle), a PL/SQL unit ends only at one.
 export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] {
   const lex = lexingFor(dialect);
   const ranges: SqlRange[] = [];
@@ -73,6 +131,8 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
   let codeStart = -1;
   // The blocks open at this point, innermost last: a BEGIN body or a CASE.
   const open: ("BEGIN" | "CASE")[] = [];
+  // The statement is a PL/SQL unit: its ;s don't end it.
+  let unit = false;
   let index = 0;
   const length = input.length;
 
@@ -83,6 +143,7 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
     start = -1;
     codeStart = -1;
     open.length = 0;
+    unit = false;
   }
 
   // Marks where a statement begins (its first non-blank character), and
@@ -93,6 +154,7 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
     }
     if (code && codeStart < 0) {
       codeStart = at;
+      unit = isPlsqlUnit(input, at, lex);
     }
   }
 
@@ -111,7 +173,11 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
     while (at < length) {
       if (BLANK.test(input[at])) {
         at += 1;
-      } else if (input.startsWith("--", at) || (input[at] === "#" && lex.hashComments)) {
+      } else if (
+        input.startsWith("--", at) ||
+        (input[at] === "#" && lex.hashComments) ||
+        (lex.slashComments === true && input.startsWith("//", at))
+      ) {
         const end = input.indexOf("\n", at);
         at = end < 0 ? length : end;
       } else if (input.startsWith("/*", at)) {
@@ -133,7 +199,7 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
     const ch = input[index];
     const next = index + 1 < length ? input[index + 1] : "";
 
-    if ((ch === "-" && next === "-") || (ch === "#" && lex.hashComments)) {
+    if ((ch === "-" && next === "-") || (ch === "#" && lex.hashComments) || (ch === "/" && next === "/" && lex.slashComments === true)) {
       begin(index, false);
       const end = input.indexOf("\n", index);
       index = end < 0 ? length : end;
@@ -146,6 +212,20 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
       const end = input.indexOf("*/", index + 2);
       index = end < 0 ? length : end + 2;
       continue;
+    }
+    if (ch === "/" && lex.slashBlocks === true && loneSlashAt(input, index)) {
+      flush(index, index + 1);
+      index += 1;
+      continue;
+    }
+    if (lex.qQuotes === true && /[nNqQ]/.test(ch)) {
+      const q = qQuoteAt(input, index);
+      if (q !== null) {
+        begin(index, true);
+        const end = input.indexOf(q.close, q.body);
+        index = end < 0 ? length : end + q.close.length;
+        continue;
+      }
     }
     if (ch === "'" || ch === '"' || ch === "`") {
       begin(index, true);
@@ -189,7 +269,7 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
       }
     }
     if (ch === ";") {
-      if (open.length > 0) {
+      if (open.length > 0 || unit) {
         index += 1;
         continue;
       }
@@ -203,6 +283,11 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
       const word = WORD.exec(input)?.[0] ?? ch;
       const upper = word.toUpperCase();
       const after = index + word.length;
+      // A PL/SQL unit's words don't matter: only a "/" line ends it.
+      if (unit) {
+        index = after;
+        continue;
+      }
       // @end, NEW.end, :begin, #case… are names, not keywords; lbl:BEGIN
       // is a label and its block.
       const before = input[index - 1] ?? "";
@@ -217,9 +302,14 @@ export function splitSqlRanges(input: string, dialect?: SqlDialect): SqlRange[] 
         if (next.word !== "" && input[colon] === ":" && input[colon + 1] !== ":" && input[colon + 1] !== "=") {
           next = nextWord(colon + 1);
         }
-        if (next.word === "NOT" ? nextWord(next.end).word === "ATOMIC" : BLOCK_STARTERS.has(next.word)) {
+        const batch =
+          lex.batchBlocks === true &&
+          (next.word === "BATCH" || ((next.word === "UNLOGGED" || next.word === "COUNTER") && nextWord(next.end).word === "BATCH"));
+        if (batch || (next.word === "NOT" ? nextWord(next.end).word === "ATOMIC" : BLOCK_STARTERS.has(next.word))) {
           open.push("BEGIN");
         }
+      } else if (upper === "APPLY" && lex.batchBlocks === true && nextWord(after).word === "BATCH") {
+        open.pop();
       } else if (upper === "CASE") {
         open.push("CASE");
       } else if (upper === "END") {

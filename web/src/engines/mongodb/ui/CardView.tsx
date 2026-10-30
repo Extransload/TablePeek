@@ -4,18 +4,20 @@
 // box is the edit target, the type label opens the type menu, a key is
 // renamed by double-clicking it; the draft is saved as one guarded
 // updateOne (see useDocEdits). `DocFields` is the card body alone, which
-// the table view's detail panel reuses.
+// the app's detail panel reuses. A click on a card's head or the arrow keys
+// pick the card the detail panel shows.
 
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon } from "../../../components/icons";
-import { t } from "../../../i18n";
+import { phrase, say, t, type Phrase } from "../../../i18n";
 import { deepEqual, isDocument, stringifyJson, toEJSON, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
-import { VIEW_LIMITS, preview, toShell, truncation } from "../format";
+import { VIEW_LIMITS, ejsonText, preview, toShell, truncation } from "../format";
 import { valueAt, type DocEdit } from "../guard";
 import { BracesIcon, CloneIcon } from "./icons";
+import { arrowStep, selectsItem } from "./selection";
 import { ShellText } from "./ShellText";
 import { EDIT_TYPES, coerceInput, convertType, editText, valueText } from "./valueEdit";
 import { WriteErrorNotice, validationProblems } from "./writeErrors";
@@ -206,17 +208,22 @@ export interface DocFieldsProps {
   // Above the rows (the card head).
   head?: ReactNode;
   className?: string;
+  // The type shown beside a value instead of its BSON type name (a search
+  // index's mapping type: keyword, long, date…); null keeps the BSON name.
+  // `path` is dotted, with array positions.
+  typeLabel?(path: string, value: BsonValue): string | null;
 }
 
 interface Editing {
   path: string;
   mode: "value" | "key";
-  error: string | null;
+  // Translated where it shows, so it follows a language switch.
+  error: Phrase | null;
   // A brand-new field: after naming it, edit its value.
   fresh: boolean;
 }
 
-export function DocFields({ doc, readOnly = false, filter = "", allOpen = false, onSave, onDirtyChange, head, className }: DocFieldsProps) {
+export function DocFields({ doc, readOnly = false, filter = "", allOpen = false, onSave, onDirtyChange, head, className, typeLabel }: DocFieldsProps) {
   // The draft keeps the document it started from, so a page reload under
   // an unsaved draft does not change what the save is guarded against.
   const [draft, setDraft] = useState<{ base: BsonDocument; value: BsonDocument } | null>(null);
@@ -298,11 +305,11 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
     }
     if (name !== "" && name !== key) {
       if (parent.has(name)) {
-        setEditing((e) => (e === null ? e : { ...e, error: t("이미 있는 필드 이름입니다: {name}", { name }) }));
+        setEditing((e) => (e === null ? e : { ...e, error: phrase("이미 있는 필드 이름입니다: {name}", { name }) }));
         return;
       }
       if (name.startsWith("$") || name.includes(".")) {
-        setEditing((e) => (e === null ? e : { ...e, error: t("필드 이름에는 $로 시작하거나 .을 넣을 수 없습니다") }));
+        setEditing((e) => (e === null ? e : { ...e, error: phrase("필드 이름에는 $로 시작하거나 .을 넣을 수 없습니다") }));
         return;
       }
       mutate((d) => {
@@ -437,10 +444,11 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       const open = container && isOpen(path);
       const editingThis = editing !== null && editing.path === path;
       const type = typeName(v);
+      const shownType = typeLabel?.(path, v) ?? type;
       const errorId = `${idBase}-err-${encodeURIComponent(path)}`;
       const keyEl =
         editingThis && editing.mode === "key" ? (
-          <InlineInput key="k" initial={key} className="key" error={editing.error} errorId={errorId} onCommit={(text) => commitKey(path, text, editing.fresh)} onCancel={() => setEditing(null)} />
+          <InlineInput key="k" initial={key} className="key" error={editing.error === null ? null : say(editing.error)} errorId={errorId} onCommit={(text) => commitKey(path, text, editing.fresh)} onCancel={() => setEditing(null)} />
         ) : inArray ? (
           <span className="mg-f-key idx">{key}</span>
         ) : (
@@ -473,7 +481,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
           </span>
         );
       } else if (editingThis && editing.mode === "value") {
-        valEl = <InlineInput initial={editText(v)} className={`t-${type}`} error={editing.error} errorId={errorId} onCommit={(text) => commitValue(path, text)} onCancel={() => setEditing(null)} />;
+        valEl = <InlineInput initial={editText(v)} className={`t-${type}`} error={editing.error === null ? null : say(editing.error)} errorId={errorId} onCommit={(text) => commitValue(path, text)} onCancel={() => setEditing(null)} />;
       } else {
         valEl = <span className={`mg-f-val t-${type}`}>{valueText(v)}</span>;
       }
@@ -482,14 +490,14 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
           type="button"
           className="mg-f-type"
           disabled={!editable}
-          title={editable ? t("타입 바꾸기") : type}
+          title={editable ? `${t("타입 바꾸기")} (${type})` : type}
           onClick={(event) => {
             event.stopPropagation();
             const r = event.currentTarget.getBoundingClientRect();
             setTypeMenu({ x: r.left, y: r.bottom + 2, path });
           }}
         >
-          {type}
+          {shownType}
         </button>
       );
       const acts = ro ? null : (
@@ -512,7 +520,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       );
       // A value the input refused, else what the last save's validation
       // said about this field.
-      const problem = editingThis && editing.error !== null ? editing.error : (problems.get(path) ?? null);
+      const problem = editingThis && editing.error !== null ? say(editing.error) : (problems.get(path) ?? null);
       const fieldError = problem !== null ? <FieldError id={errorId} error={problem} /> : null;
       // The whole box (or nested row) answers a click: a value is edited, an
       // object or array opens and closes.
@@ -651,9 +659,20 @@ export interface CardViewProps {
   // How many cards hold unsaved changes.
   onDirtyCount?(count: number): void;
   emptyText?: string;
+  // Plain JSON documents (the search engines): copy as JSON, edit as JSON.
+  json?: boolean;
+  // More in a card's head after the `_id` (a search hit's score and index).
+  headExtra?(doc: BsonDocument): ReactNode;
+  // See DocFieldsProps.typeLabel.
+  typeLabel?(path: string, value: BsonValue): string | null;
+  // The card shown in the app's detail panel (its docKey), picked by a click
+  // on a card's head or the arrow keys; omitted where nothing is picked.
+  selected?: string | null;
+  onSelect?(key: string): void;
 }
 
-export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, onClone, onDelete, notify, onDirtyCount, emptyText }: CardViewProps) {
+export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, onClone, onDelete, notify, onDirtyCount, emptyText, json = false, headExtra, typeLabel, selected = null, onSelect }: CardViewProps) {
+  const listRef = useRef<HTMLDivElement | null>(null);
   const dirtyKeys = useRef(new Set<string>());
   const countRef = useRef(onDirtyCount);
   countRef.current = onDirtyCount;
@@ -665,20 +684,48 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
       </div>
     );
   }
+  const keys = docs.map((doc, i) => docKey(doc, offset + i));
+  const pick = (index: number) => {
+    const key = keys[index];
+    if (key !== undefined && onSelect !== undefined) {
+      onSelect(key);
+      listRef.current?.children[index]?.scrollIntoView({ block: "nearest" });
+    }
+  };
   return (
-    <div className="mg-cards" tabIndex={-1}>
+    <div
+      ref={listRef}
+      className="mg-cards"
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        const next = onSelect === undefined ? null : arrowStep(event, keys.length, selected === null ? -1 : keys.indexOf(selected));
+        if (next !== null) {
+          event.preventDefault();
+          pick(next);
+        }
+      }}
+    >
       {docs.map((doc, i) => {
-        const key = docKey(doc, offset + i);
+        const key = keys[i];
         const id = doc.get("_id");
         const editable = !readOnly && id !== undefined && onSave !== undefined;
         const head = (
-          <div className="mg-card-head">
+          <div
+            className="mg-card-head"
+            onClick={(event) => {
+              if (onSelect !== undefined && selectsItem(event.target)) {
+                pick(i);
+                listRef.current?.focus({ preventScroll: true });
+              }
+            }}
+          >
             <span className="mg-doc-no">#{(offset + i + 1).toLocaleString()}</span>
             {id !== undefined ? <ShellText className="mg-doc-id" text={toShell(id)} /> : null}
+            {headExtra?.(doc)}
             <span className="spacer" />
             <span className="mg-card-actions">
               {editable && onEditJson ? (
-                <button type="button" className="icon-text-button" title={t("셸 형식 JSON으로 편집 (replaceOne)")} onClick={() => onEditJson(doc)}>
+                <button type="button" className="icon-text-button" title={json ? t("JSON으로 편집") : t("셸 형식 JSON으로 편집 (replaceOne)")} onClick={() => onEditJson(doc)}>
                   <BracesIcon size={10} />
                   JSON
                 </button>
@@ -692,10 +739,10 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
               <button
                 type="button"
                 className="icon-text-button"
-                title={t("Extended JSON으로 복사")}
+                title={json ? t("JSON으로 복사") : t("Extended JSON으로 복사")}
                 onClick={() => {
-                  void writeClipboard(stringifyJson(toEJSON(doc), 2), notify);
-                  notify(t("Extended JSON으로 복사했습니다"));
+                  void writeClipboard(json ? ejsonText(doc, { relaxed: true, exactNumbers: true }) : stringifyJson(toEJSON(doc), 2), notify);
+                  notify(json ? t("JSON으로 복사했습니다") : t("Extended JSON으로 복사했습니다"));
                 }}
               >
                 <CopyIcon size={10} />
@@ -717,6 +764,8 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
             readOnly={!editable}
             allOpen={allOpen}
             head={head}
+            className={key === selected ? "selected" : undefined}
+            typeLabel={typeLabel}
             onSave={editable && onSave ? (edits) => onSave(doc, edits) : undefined}
             onDirtyChange={(dirty) => {
               const had = dirtyKeys.current.has(key);

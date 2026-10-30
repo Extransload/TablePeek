@@ -25,6 +25,7 @@
     "schema": "declared",
     "edit_by_key": true,
     "transactions": "always",
+    "binary_cells": true,
     "foreign_keys": true,
     "ddl": true,
     "databases": "switch",

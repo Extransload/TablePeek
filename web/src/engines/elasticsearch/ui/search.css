@@ -1,0 +1,218 @@
+/* The search workbench (Elasticsearch / OpenSearch): what the MongoDB
+   document styles (mongodb.css) don't already cover. */
+
+/* ---- query bar ---- */
+
+.es-qbar .filter-row.es-qdsl-row {
+  align-items: flex-start;
+}
+.es-qbar .es-qdsl-row .mg-qlabel {
+  padding-top: 6px;
+  min-width: 34px;
+}
+.es-qdsl {
+  flex: 1;
+  min-width: 0;
+  height: 140px;
+  min-height: 60px;
+  max-height: 60vh;
+  resize: vertical;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.es-qdsl:focus-within {
+  border-color: var(--accent);
+}
+.es-qdsl.invalid {
+  border-color: color-mix(in srgb, var(--error) 70%, var(--line));
+}
+.es-qdsl > .mg-cm {
+  height: 100%;
+}
+.es-qbar .mg-qlabel {
+  min-width: 34px;
+}
+
+/* ---- stats chips and hits ---- */
+
+.es-health {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font: 600 10.5px/16px var(--mono);
+  text-transform: lowercase;
+}
+.es-health-green {
+  background: color-mix(in srgb, var(--ok, #3fb950) 18%, transparent);
+  color: var(--ok, #3fb950);
+}
+.es-health-yellow {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+.es-health-red {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
+}
+.es-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.es-badge-warn {
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--line));
+  color: var(--warn);
+}
+.es-hit-index,
+.es-hit-score {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--hover-fill);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+.es-hit-hl {
+  min-width: 0;
+  margin-left: 8px;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- dialogs ---- */
+
+.es-doc-modal {
+  width: min(760px, 92vw);
+}
+.es-doc-where {
+  margin-left: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.es-doc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.es-doc-editor {
+  height: min(420px, 55vh);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.es-doc-editor > .mg-cm {
+  height: 100%;
+}
+.es-byquery-modal {
+  width: min(780px, 94vw);
+}
+.es-byquery-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 70vh;
+  overflow: auto;
+}
+.es-byquery-count {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 22px;
+}
+.es-warn {
+  color: var(--warn);
+  font-size: 11.5px;
+}
+.es-field-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.es-byquery-editor {
+  height: 110px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.es-byquery-editor.small {
+  height: 64px;
+}
+.es-byquery-editor > .mg-cm {
+  height: 100%;
+}
+.es-byquery-opts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+.es-inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.es-inline-field input {
+  width: 90px;
+  height: 26px;
+}
+.es-byquery-command,
+.es-confirm-pre {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.es-byquery-sample {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.es-byquery-sample pre {
+  margin: 0;
+  overflow: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.es-byquery-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.es-failure {
+  color: var(--error);
+  font-size: 11px;
+}
+
+/* ---- sidebar ---- */
+
+/* An index's health, where the other engines' rows show a table icon. */
+.es-side-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 3px 0 2px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.es-side-dot.green {
+  background: var(--ok, #3fb950);
+}
+.es-side-dot.yellow {
+  background: var(--warn);
+}
+.es-side-dot.red {
+  background: var(--error);
+}
+/* A closed index. */
+.schema-table-row.es-dim .schema-table-name {
+  color: var(--faint);
+}

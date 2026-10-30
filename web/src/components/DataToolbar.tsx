@@ -63,7 +63,7 @@ function NumBox({ value, min, max, disabled, title, onCommit }: NumBoxProps) {
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           event.preventDefault();
-          commit();
+          // Leaving the box commits it: once, not again on the blur.
           (event.target as HTMLInputElement).blur();
         }
       }}
@@ -76,6 +76,9 @@ interface PageSizeMenuProps {
   running: boolean;
   counting: boolean;
   hasMeta: boolean;
+  // Pages come by the server's token: OFFSET is reached by the server
+  // walking the rows before it, which the footer shows.
+  cursorPaging: boolean;
   onLimit(limit: number): void;
   onOffset(offset: number): void;
   onCount(): void;
@@ -83,7 +86,7 @@ interface PageSizeMenuProps {
 
 // LIMIT, OFFSET and an exact COUNT, kept behind the page size so the footer
 // stays one quiet line.
-function PageSizeMenu({ tab, running, counting, hasMeta, onLimit, onOffset, onCount }: PageSizeMenuProps) {
+function PageSizeMenu({ tab, running, counting, hasMeta, cursorPaging, onLimit, onOffset, onCount }: PageSizeMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dismiss = useCallback(() => setOpen(false), []);
@@ -114,9 +117,22 @@ function PageSizeMenu({ tab, running, counting, hasMeta, onLimit, onOffset, onCo
               onCommit={onLimit}
             />
           </label>
-          <label className="page-size" title={t("시작 행 (OFFSET)")}>
+          <label
+            className="page-size"
+            title={cursorPaging ? t("시작 행 (OFFSET) · 서버가 앞의 행을 건너뛰어 갑니다") : t("시작 행 (OFFSET)")}
+          >
             OFFSET
-            <NumBox value={tab.offset} min={0} disabled={running} title="OFFSET" onCommit={onOffset} />
+            <NumBox
+              value={tab.offset}
+              min={0}
+              disabled={running}
+              title="OFFSET"
+              onCommit={(offset) => {
+                // The footer shows the way there (and its stop) once the menu is out of the way.
+                setOpen(false);
+                onOffset(offset);
+              }}
+            />
           </label>
           <button
             type="button"
@@ -139,6 +155,14 @@ export interface DataTotal {
   exact: boolean;
 }
 
+// A far page reached, or rows counted, in steps on the server: how far it
+// got (0 to 1, null when unknown) and its stop.
+export interface DataProgress {
+  label: string;
+  fraction: number | null;
+  onCancel(): void;
+}
+
 interface DataTabToolbarProps {
   tab: DataTab;
   // The Data | Structure | Index switch, which leads the footer.
@@ -148,9 +172,14 @@ interface DataTabToolbarProps {
   filterHint?: string;
   total: DataTotal | null;
   running: boolean;
+  // The engine pages by the server's token (capabilities.cursor_paging):
+  // Next follows the last result's token, Prev goes back along the tab's.
+  cursorPaging: boolean;
   // The rows are on their way (a run, or an open about to start one).
   loading: boolean;
   counting: boolean;
+  // A walk to a far page or a count in steps running for this tab.
+  progress: DataProgress | null;
   filterOpen: boolean;
   columnsOpen: boolean;
   // The column list, opened over its button.
@@ -192,8 +221,10 @@ export function DataTabToolbar({
   filterHint,
   total,
   running,
+  cursorPaging,
   loading,
   counting,
+  progress,
   filterOpen,
   columnsOpen,
   columnsPicker,
@@ -214,8 +245,16 @@ export function DataTabToolbar({
   const page = Math.floor(Math.max(0, tab.offset) / size) + 1;
   const pages = total !== null ? Math.max(1, Math.ceil(total.rows / size)) : null;
   const fullPage = hasMeta && (meta.rowCount >= size || meta.truncated);
+  const busy = running || progress !== null;
   const nextEnabled =
-    hasMeta && !running && (total !== null && total.exact && pages !== null ? page < pages : fullPage);
+    hasMeta &&
+    !busy &&
+    (cursorPaging
+      ? meta.nextPage !== undefined && !(total !== null && total.exact && tab.offset + meta.rowCount >= total.rows)
+      : total !== null && total.exact && pages !== null
+        ? page < pages
+        : fullPage);
+  const prevEnabled = hasMeta && !busy && tab.offset !== 0;
   return (
     <>
       <div className="footer-start">
@@ -232,7 +271,18 @@ export function DataTabToolbar({
         </button>
       </div>
       <div className="footer-middle">
-        {hasMeta && tab.error !== undefined && tab.errorFrom !== "apply" ? (
+        {progress !== null ? (
+          <span className="row-range step-progress" role="status" aria-live="polite">
+            <Spinner size={10} />
+            <span>{progress.label}</span>
+            {progress.fraction !== null ? (
+              <progress className="step-progress-bar" max={1} value={progress.fraction} />
+            ) : null}
+            <button type="button" className="footer-button" onClick={progress.onCancel} title={t("중지")}>
+              {t("중지")}
+            </button>
+          </span>
+        ) : hasMeta && tab.error !== undefined && tab.errorFrom !== "apply" ? (
           // A failed reload or filter: the rows shown are the last ones read,
           // so neither their place nor a total is known.
           <span className="row-range stale" title={t("다시 불러오지 못해 이전 결과를 보여 주고 있습니다")}>
@@ -242,7 +292,7 @@ export function DataTabToolbar({
           <button
             type="button"
             className="row-range"
-            disabled={running || counting}
+            disabled={busy || counting}
             onClick={onCount}
             title={t("정확한 행 수 세기")}
           >
@@ -286,9 +336,10 @@ export function DataTabToolbar({
         </button>
         <PageSizeMenu
           tab={tab}
-          running={running}
+          running={busy}
           counting={counting}
           hasMeta={hasMeta}
+          cursorPaging={cursorPaging}
           onLimit={onLimit}
           onOffset={onOffset}
           onCount={onCount}
@@ -296,7 +347,7 @@ export function DataTabToolbar({
         <span className="page-nav">
           <button
             type="button"
-            disabled={running || !hasMeta || tab.offset === 0}
+            disabled={!prevEnabled}
             onClick={onPrev}
             title={t("이전 페이지")}
             aria-label={t("이전 페이지")}

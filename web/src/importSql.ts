@@ -50,13 +50,30 @@ export interface InsertSpec {
   mode: InsertMode;
 }
 
-// One INSERT for rows of literals, with the collision clause the mode asks for.
+// One INSERT for rows of literals, with the collision clause the mode asks
+// for; where VALUES takes one row, an INSERT per row in one statement: the
+// dialect's batch (CQL's BEGIN BATCH), else a PL/SQL block (Oracle).
 export function insertStatement(spec: InsertSpec, rows: string[][]): string {
   const { dialect, mode } = spec;
   const column = (name: string): string => quoteName(dialect, name);
   const head = mode === "replace" ? dialect.replaceInto : "INSERT INTO";
+  const into = `${head} ${quoteIdent(dialect, spec.table)} (${spec.columns.map(column).join(", ")}) VALUES`;
+  // An engine that upserts a row at a time (Oracle's MERGE).
+  const upsertRow = mode === "upsert" ? dialect.upsertRow : undefined;
+  if (upsertRow !== undefined) {
+    const table = quoteIdent(dialect, spec.table);
+    const merges = rows.map((row) => upsertRow(table, spec.columns.map(column), spec.pk.map(column), row));
+    if (merges.length === 1) {
+      return merges[0];
+    }
+    return dialect.batchStatements?.(merges) ?? `BEGIN\n${merges.map((merge) => `  ${merge};`).join("\n")}\nEND;`;
+  }
+  if (dialect.singleRowValues === true && rows.length > 1) {
+    const inserts = rows.map((row) => `${into} (${row.join(", ")})`);
+    return dialect.batchStatements?.(inserts) ?? `BEGIN\n${inserts.map((insert) => `  ${insert};`).join("\n")}\nEND;`;
+  }
   const values = rows.map((row) => `  (${row.join(", ")})`).join(",\n");
-  let sql = `${head} ${quoteIdent(dialect, spec.table)} (${spec.columns.map(column).join(", ")}) VALUES\n${values}`;
+  let sql = `${into}\n${values}`;
   if (mode !== "upsert") {
     return sql;
   }
@@ -96,15 +113,21 @@ export interface ImportPlan {
   rowCount: number;
   // A row's values as literals, made when its chunk is sent.
   literals(row: number): string[];
+  // The same row's values as the file gave them, for an engine that takes
+  // a chunk in a data format of its own (SqlDialect.insertRows).
+  values?(row: number): unknown[];
   chunkRows: number;
 }
 
-// The statements run, on the connection's own session.
+// The statements run, on the connection's own session. `transactional`:
+// the engine has transactions, so a failed import is rolled back; without
+// them (CQL) the rows before a failure stay.
 export interface ImportSession {
   exec(sql: string): Promise<void>;
   begin(): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
+  transactional: boolean;
 }
 
 export interface ImportProgress {
@@ -124,6 +147,9 @@ export class ImportFailure extends Error {
   // The database's own error for the failing row (its SQLSTATE, column, …),
   // when there was one.
   readonly source: unknown;
+  // On an engine without transactions, how many rows went in and stay
+  // (the ones before the failing row, or before the stop); null otherwise.
+  readonly kept: number | null;
 
   constructor(
     message: string,
@@ -132,6 +158,7 @@ export class ImportFailure extends Error {
     undoError: string | null = null,
     outcomeUnknown = false,
     source: unknown = undefined,
+    kept: number | null = null,
   ) {
     super(message);
     this.row = row;
@@ -139,6 +166,7 @@ export class ImportFailure extends Error {
     this.undoError = undoError;
     this.outcomeUnknown = outcomeUnknown;
     this.source = source;
+    this.kept = kept;
   }
 }
 
@@ -151,6 +179,17 @@ function messageOf(error: unknown): string {
 }
 
 function chunkSql(plan: ImportPlan, from: number, to: number): string {
+  const { dialect } = plan.spec;
+  const values = plan.values;
+  // Plain inserts go in the engine's own format, read by the column types.
+  if (dialect.insertRows !== undefined && values !== undefined && plan.spec.mode === "insert") {
+    const rows: unknown[][] = [];
+    for (let row = from; row < to; row += 1) {
+      rows.push(values(row));
+    }
+    const columns = plan.spec.columns.map((name) => quoteName(dialect, name));
+    return dialect.insertRows(quoteIdent(dialect, plan.spec.table), columns, rows);
+  }
   const rows: string[][] = [];
   for (let row = from; row < to; row += 1) {
     rows.push(plan.literals(row));
@@ -171,6 +210,9 @@ export async function runImport(
   signal: AbortSignal,
   onProgress: ImportProgress,
 ): Promise<void> {
+  if (!session.transactional) {
+    return runWithoutTransaction(plan, session, signal, onProgress);
+  }
   const { dialect } = plan.spec;
   // MySQL commits around DDL, so its CREATE TABLE can't be part of the
   // transaction; it runs first, and the table goes again if the import doesn't.
@@ -335,4 +377,42 @@ async function locate(
     }
   }
   return none;
+}
+
+// Without transactions (CQL) the rows go in chunk by chunk and stay. A
+// failed chunk is tried again a row at a time, which names the failing row
+// (writing the same rows twice changes nothing: CQL's INSERT overwrites);
+// the rows before it stay, and the failure says how many.
+async function runWithoutTransaction(
+  plan: ImportPlan,
+  session: ImportSession,
+  signal: AbortSignal,
+  onProgress: ImportProgress,
+): Promise<void> {
+  for (const statement of plan.create) {
+    await session.exec(statement);
+  }
+  for (let from = 0; from < plan.rowCount; from += plan.chunkRows) {
+    if (signal.aborted) {
+      throw new ImportFailure("stopped", null, true, null, false, undefined, from);
+    }
+    const to = Math.min(plan.rowCount, from + plan.chunkRows);
+    try {
+      await session.exec(chunkSql(plan, from, to));
+    } catch (error) {
+      if (signal.aborted) {
+        throw new ImportFailure("stopped", null, true, null, false, undefined, from);
+      }
+      onProgress(from, true);
+      for (let row = from; row < to; row += 1) {
+        try {
+          await session.exec(insertStatement(plan.spec, [plan.literals(row)]));
+        } catch (rowError) {
+          throw new ImportFailure(messageOf(rowError), row, false, null, false, rowError, row);
+        }
+      }
+      throw new ImportFailure(messageOf(error), from, false, null, false, error, from);
+    }
+    onProgress(to);
+  }
 }

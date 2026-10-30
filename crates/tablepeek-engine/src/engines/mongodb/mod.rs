@@ -17,6 +17,8 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_credential_types::Credentials;
 use futures_util::TryStreamExt;
 use mongodb::bson::{doc, Bson, Document};
 use mongodb::options::{
@@ -437,6 +439,92 @@ fn uri_option(uri: &str, name: &str) -> Option<String> {
     })
 }
 
+/// The access key, secret and session token a MONGODB-AWS connection
+/// string carries.
+#[derive(Default)]
+struct AwsKeys {
+    key: Option<String>,
+    secret: Option<String>,
+    token: Option<String>,
+}
+
+/// A MONGODB-AWS connection string without its keys, and the keys. The
+/// driver warns that keys in the string (and the AWS_SESSION_TOKEN
+/// property) go away in its 4.0, so they reach it as a credential provider
+/// instead. Any other string is left as it is.
+fn take_aws_keys(uri: &str) -> (String, AwsKeys) {
+    let mut keys = AwsKeys::default();
+    let aws = uri_option(uri, "authMechanism")
+        .is_some_and(|mechanism| mechanism.eq_ignore_ascii_case("MONGODB-AWS"));
+    let Some(scheme_end) = uri.find("://").filter(|_| aws).map(|at| at + 3) else {
+        return (uri.to_string(), keys);
+    };
+    let rest = &uri[scheme_end..];
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let hosts = match authority.rsplit_once('@') {
+        Some((userinfo, hosts)) => {
+            let (key, secret) = match userinfo.split_once(':') {
+                Some((key, secret)) => (key, Some(secret)),
+                None => (userinfo, None),
+            };
+            keys.key = (!key.is_empty()).then(|| percent_decode(key));
+            keys.secret = secret.map(percent_decode);
+            hosts
+        }
+        None => authority,
+    };
+    let mut clean = format!("{}{hosts}", &uri[..scheme_end]);
+    let tail = &rest[authority_end..];
+    let Some((path, query)) = tail.split_once('?') else {
+        clean.push_str(tail);
+        return (clean, keys);
+    };
+    clean.push_str(path);
+    let mut pairs = Vec::new();
+    for pair in query.split('&') {
+        match pair.split_once('=') {
+            Some((name, value)) if name.eq_ignore_ascii_case("authMechanismProperties") => {
+                // The driver decodes the whole value, then splits it.
+                let decoded = percent_decode(value);
+                let others: Vec<&str> = decoded
+                    .split(',')
+                    .filter(|property| match property.split_once(':') {
+                        Some(("AWS_SESSION_TOKEN", token)) => {
+                            keys.token = Some(token.to_string());
+                            false
+                        }
+                        _ => true,
+                    })
+                    .collect();
+                if !others.is_empty() {
+                    pairs.push(format!("{name}={}", uri_encode(&others.join(","))));
+                }
+            }
+            _ => pairs.push(pair.to_string()),
+        }
+    }
+    if !pairs.is_empty() {
+        clean.push('?');
+        clean.push_str(&pairs.join("&"));
+    }
+    (clean, keys)
+}
+
+/// `text` for a connection string's option value: all but letters, digits
+/// and `-._~:,` percent-encoded.
+fn uri_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~:,".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// Turns a driver error into the engine's: the server's code, codeName,
 /// message and errInfo where it gave them (`mongo_11000` reaches the page);
 /// for a connection that failed, one line saying why (a wrong password, no
@@ -796,7 +884,14 @@ impl MongoDriver {
         settings: &Settings,
         srv_seeds: Option<Option<std::net::SocketAddr>>,
     ) -> Result<ClientOptions, EngineError> {
-        let mut options = match given(&settings.uri) {
+        let (uri, uri_keys) = match given(&settings.uri) {
+            Some(uri) => {
+                let (clean, keys) = take_aws_keys(uri);
+                (Some(clean), keys)
+            }
+            None => (None, AwsKeys::default()),
+        };
+        let mut options = match uri.as_deref() {
             Some(uri) if srv_seeds.is_some() && uri.starts_with("mongodb+srv://") => {
                 let nameserver = srv_seeds.flatten();
                 let seeds = route::seed_list(uri, nameserver).await?;
@@ -816,6 +911,12 @@ impl MongoDriver {
         let bad = |message: &str| EngineError::BadRequest(message.into());
         // Fields typed in the form win over the connection string's.
         let mut credential = options.credential.take().unwrap_or_default();
+        // A key the connection string gave stands where the driver would
+        // have put it, for the choices below to take or drop.
+        if uri_keys.key.is_some() {
+            credential.username = uri_keys.key;
+            credential.password = uri_keys.secret;
+        }
         let user = given(&settings.user).map(str::to_string);
         let password = given(&settings.password).map(str::to_string);
         let mut properties = credential.mechanism_properties.take().unwrap_or_default();
@@ -825,10 +926,7 @@ impl MongoDriver {
             }
         };
         match auth {
-            Auth::None | Auth::Password | Auth::X509 | Auth::Ldap => {}
-            Auth::Aws => {
-                set_property("AWS_SESSION_TOKEN", given(&settings.aws_session_token));
-            }
+            Auth::None | Auth::Password | Auth::X509 | Auth::Ldap | Auth::Aws => {}
             Auth::Kerberos => {
                 set_property("SERVICE_NAME", given(&settings.kerberos_service_name));
                 set_property("SERVICE_REALM", given(&settings.kerberos_service_realm));
@@ -916,21 +1014,27 @@ impl MongoDriver {
                 credential.mechanism_properties = None;
             }
             // A key and its secret, or none at all: the environment's
-            // credentials or the role the machine runs as.
+            // credentials or the role the machine runs as. The key goes to
+            // the driver as this client's own credential provider, never
+            // as a user and password (or the AWS_SESSION_TOKEN property):
+            // those the driver warns are gone in its 4.0, and nothing
+            // reaches the process environment another connection reads.
             Auth::Aws => {
-                if user.is_some() {
-                    credential.username = user;
-                }
-                if password.is_some() {
-                    credential.password = password;
-                }
-                if credential.username.is_some() && credential.password.is_none() {
-                    return Err(bad("AWS 비밀 액세스 키를 입력하세요"));
-                }
-                if credential.username.is_none() {
-                    // The environment brings its own session token too.
-                    credential.password = None;
-                    credential.mechanism_properties = None;
+                let key = user.or(credential.username.take());
+                let secret = password.or(credential.password.take());
+                credential.mechanism_properties = None;
+                if let Some(key) = key {
+                    let Some(secret) = secret else {
+                        return Err(bad("AWS 비밀 액세스 키를 입력하세요"));
+                    };
+                    // The environment brings its own session token, so the
+                    // form's (or the string's) goes only with a key.
+                    let token = given(&settings.aws_session_token)
+                        .map(str::to_string)
+                        .or(uri_keys.token);
+                    credential.aws_credential_provider = Some(SharedCredentialsProvider::new(
+                        Credentials::new(key, secret, token, None, "TablePeek"),
+                    ));
                 }
                 credential.mechanism = Some(AuthMechanism::MongoDbAws);
                 credential.source = Some("$external".into());
@@ -1518,6 +1622,34 @@ mod tests {
             .is_err());
     }
 
+    #[test]
+    fn aws_keys_leave_the_connection_string() {
+        let (clean, keys) = take_aws_keys(
+            "mongodb+srv://AKIA:se%40cret@a.example.com/db?authMechanism=MONGODB-AWS\
+             &authMechanismProperties=FOO:a%20b,AWS_SESSION_TOKEN:tok&tls=true",
+        );
+        assert_eq!(
+            clean,
+            "mongodb+srv://a.example.com/db?authMechanism=MONGODB-AWS\
+             &authMechanismProperties=FOO:a%20b&tls=true"
+        );
+        assert_eq!(keys.key.as_deref(), Some("AKIA"));
+        assert_eq!(keys.secret.as_deref(), Some("se@cret"));
+        assert_eq!(keys.token.as_deref(), Some("tok"));
+        // Only the token: the property goes, the rest stays.
+        let (clean, keys) = take_aws_keys(
+            "mongodb://db?authMechanismProperties=AWS_SESSION_TOKEN%3Atok&authMechanism=mongodb-aws",
+        );
+        assert_eq!(clean, "mongodb://db?authMechanism=mongodb-aws");
+        assert!(keys.key.is_none() && keys.secret.is_none());
+        assert_eq!(keys.token.as_deref(), Some("tok"));
+        // Another mechanism's user and password are not keys.
+        let scram = "mongodb://app:pw@db/?authMechanism=SCRAM-SHA-256";
+        let (clean, keys) = take_aws_keys(scram);
+        assert_eq!(clean, scram);
+        assert!(keys.key.is_none() && keys.token.is_none());
+    }
+
     /// The driver options `value` gives, before any tunnel.
     async fn options(value: Value) -> Result<ClientOptions, EngineError> {
         let settings = settings(&DESCRIPTOR, &config(value)).unwrap();
@@ -1552,21 +1684,60 @@ mod tests {
             Err(EngineError::BadRequest(message)) if message == "LDAP 비밀번호를 입력하세요"
         ));
 
-        // AWS with a key: the key, its secret and the session token.
-        let keyed = options(json!({
-            "host": "db", "auth": "aws", "user": "AKIA1", "password": "secret",
-            "aws_session_token": "token"
+        // AWS with a key: the key, its secret and the session token, all
+        // in the client's own credential provider; no user, password or
+        // AWS_SESSION_TOKEN property for the driver to warn about.
+        async fn keys(
+            credential: &mongodb::options::Credential,
+        ) -> (String, String, Option<String>) {
+            use aws_credential_types::provider::ProvideCredentials;
+            let provided = credential
+                .aws_credential_provider
+                .as_ref()
+                .expect("no credential provider")
+                .provide_credentials()
+                .await
+                .unwrap();
+            (
+                provided.access_key_id().to_string(),
+                provided.secret_access_key().to_string(),
+                provided.session_token().map(str::to_string),
+            )
+        }
+        let keyed = credential(
+            options(json!({
+                "host": "db", "auth": "aws", "user": "AKIA1", "password": "secret",
+                "aws_session_token": "token"
+            }))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(keyed.mechanism, Some(AuthMechanism::MongoDbAws));
+        assert_eq!(keyed.source.as_deref(), Some("$external"));
+        assert!(keyed.username.is_none() && keyed.password.is_none());
+        assert!(keyed.mechanism_properties.is_none());
+        assert_eq!(
+            keys(&keyed).await,
+            ("AKIA1".into(), "secret".into(), Some("token".into()))
+        );
+        // The connection string's key, secret and token the same way, the
+        // string's other options kept.
+        let from_uri = options(json!({
+            "uri": "mongodb://AKIA2:s%2Fcret@db/app?authMechanism=MONGODB-AWS\
+                    &authMechanismProperties=AWS_SESSION_TOKEN:t%2Bk&appName=peek",
+            "auth": "aws"
         }))
         .await
         .unwrap();
+        assert_eq!(from_uri.app_name.as_deref(), Some("peek"));
+        assert_eq!(from_uri.default_database.as_deref(), Some("app"));
+        let from_uri = credential(from_uri);
+        assert!(from_uri.username.is_none() && from_uri.password.is_none());
+        assert!(from_uri.mechanism_properties.is_none());
         assert_eq!(
-            property(&keyed, "AWS_SESSION_TOKEN"),
-            Some(Bson::from("token"))
+            keys(&from_uri).await,
+            ("AKIA2".into(), "s/cret".into(), Some("t+k".into()))
         );
-        let keyed = credential(keyed);
-        assert_eq!(keyed.mechanism, Some(AuthMechanism::MongoDbAws));
-        assert_eq!(keyed.username.as_deref(), Some("AKIA1"));
-        assert_eq!(keyed.password.as_deref(), Some("secret"));
         // Without one: nothing but the mechanism, even a stale token.
         let ambient = credential(
             options(json!({
@@ -1578,6 +1749,7 @@ mod tests {
         assert_eq!(ambient.mechanism, Some(AuthMechanism::MongoDbAws));
         assert!(ambient.username.is_none() && ambient.password.is_none());
         assert!(ambient.mechanism_properties.is_none());
+        assert!(ambient.aws_credential_provider.is_none());
         assert!(matches!(
             options(json!({ "host": "db", "auth": "aws", "user": "AKIA1" })).await,
             Err(EngineError::BadRequest(_))

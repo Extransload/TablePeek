@@ -1,0 +1,62 @@
+# oracledb 26.0.0-beta.5 (https://github.com/oracle/rust-oracledb, crates.io
+# release of the same version), vendored with small changes TablePeek needs;
+# everything else is the published source. Tests, examples and the
+# test-schema binaries are left out. The changes, each marked "TablePeek:" in
+# the source (client/mod.rs, client/capabilities.rs, messages/connect.rs,
+# transport.rs, connection/, config/):
+#
+# 1. Out-of-band breaks, as python-oracledb's thin mode does
+#    (src/oracledb/impl/thin/protocol.pyx `_break_external`,
+#    messages/connect.pyx, capabilities.pyx): the connect packet offers
+#    GSO_CAN_RECV_ATTENTION with CONNECT_FLAGS_CHECK_OOB, the accept's
+#    protocol options are read, the OOB check (urgent byte + RESET marker)
+#    runs after accept, and a RESET_OOB control packet turns them off.
+#    `Connection::break_handle()` gives a `BreakHandle` whose `break_call()`
+#    sends one byte of TCP urgent data from any thread while a call waits
+#    (socket2); the call fails with ORA-01013 and the session stays. A break
+#    sent too late is completed at the end of the call (INTERRUPT marker,
+#    then the server's reset) so it never reaches the next call. Unlike
+#    python-oracledb this also runs over TCPS (verified on 23ai).
+# 2. `reset()` takes the marker that started it: after a server-side break
+#    (ALTER SYSTEM CANCEL SQL) the first marker already is the reset, and
+#    waiting for another one hung forever.
+# 3. `Config::set_address_route`: dial a descriptor address (HOST, PORT)
+#    through another socket address (a tunnel's local end) while TLS still
+#    verifies the certificate against HOST.
+
+[package]
+name = "oracledb"
+version = "26.0.0-beta.5"
+authors = ["Oracle and/or its affiliates"]
+keywords = ["oracle", "database"]
+description = "Lightweight driver for Oracle Database"
+repository = "https://github.com/oracle/rust-oracledb"
+license = "UPL-1.0 OR Apache-2.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+
+[features]
+arrow = ["dep:arrow-array", "dep:arrow-schema"]
+
+[dependencies]
+aes = "0.9.1"
+arrow-array = { version = "59.1.0", optional = true }
+arrow-schema = { version = "59.1.0", optional = true }
+base16ct = { version = "1.0.0", features = ["alloc"] }
+base64ct = { version = "1.8.3", features = ["alloc"] }
+cbc = "0.2.1"
+chrono = "0.4.45"
+pbkdf2 = "0.13.0"
+pkcs8 = { version = "0.11.0", features = ["pem", "encryption"] }
+rand = "0.10.2"
+rustls = "0.23.42"
+sha2 = "0.11.0"
+# TablePeek: TCP urgent data for out-of-band breaks.
+socket2 = "0.6.5"
+uuid = { version = "1.24.0", features = ["v4"] }
+webpki-roots = "1.0.8"
+whoami = "2.1.2"
+
+[lib]
+doctest = false

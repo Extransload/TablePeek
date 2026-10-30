@@ -668,3 +668,261 @@ mod http_tests {
         assert!(error.contains("사용자와 비밀번호"));
     }
 }
+
+/// ClickHouse (`make test-db ENGINE=clickhouse`) through the server's own
+/// tunnels, by the name it has on the test network: the SSH server forwards
+/// to it, an HTTP proxy stand-in resolves it, and HTTPS checks that name
+/// against the server's certificate (testdb/clickhouse/gen.sh).
+#[cfg(test)]
+mod clickhouse_tests {
+    use super::*;
+    use tablepeek_engine::registry;
+
+    const NAME: &str = "clickhouse.tablepeek.test";
+
+    fn enabled() -> bool {
+        std::env::var("TABLEPEEK_TEST_CLICKHOUSE").is_ok()
+    }
+
+    fn testdb(path: &str) -> String {
+        format!("{}/../../testdb/{path}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn ssh() -> SshConfig {
+        SshConfig {
+            host: "127.0.0.1".into(),
+            port: 2223,
+            user: "tablepeek".into(),
+            password: None,
+            private_key_path: Some(testdb("ssh/id_ed25519")),
+        }
+    }
+
+    fn config(host: &str, port: u16, tls: bool) -> tablepeek_types::ConnConfig {
+        let serde_json::Value::Object(config) = serde_json::json!({
+            "host": host, "port": port, "user": "tablepeek",
+            "password": "tablepeek_test_pw", "database": "tablepeek_test",
+            "tls": tls, "tls_ca_file": if tls { testdb("x509/ca.pem") } else { String::new() }
+        }) else {
+            unreachable!()
+        };
+        config
+    }
+
+    /// Connects through the tunnel on `local_port` and reads one row.
+    async fn reach(host: &str, port: u16, tls: bool, local_port: u16) -> Result<(), String> {
+        let net = NetRoute::Via {
+            host: "127.0.0.1".into(),
+            port: local_port,
+        };
+        let engine = tablepeek_engine::Engine::open_demo(1).unwrap();
+        let meta = engine
+            .swap_to(
+                registry::factory("clickhouse").unwrap(),
+                &config(host, port, tls),
+                &net,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        assert_eq!(meta.kind, "clickhouse");
+        let data = engine
+            .query("SELECT currentDatabase()", 10)
+            .await
+            .map_err(|err| err.to_string())?;
+        assert_eq!(data.row_count, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ssh_tunnel_reaches_http_and_checks_the_https_name() {
+        if !enabled() {
+            return;
+        }
+        let http = open(&ssh(), NAME, 8123).await.expect("SSH 터널 실패");
+        reach(NAME, 8123, false, http.local_port)
+            .await
+            .expect("SSH 터널을 통한 HTTP 연결 실패");
+
+        let https = open(&ssh(), NAME, 8443).await.expect("SSH 터널 실패");
+        reach(NAME, 8443, true, https.local_port)
+            .await
+            .expect("SSH 터널을 통한 HTTPS 연결 실패");
+        // The same server under a name its certificate doesn't have.
+        let error = reach("other.tablepeek.test", 8443, true, https.local_port)
+            .await
+            .expect_err("인증서에 없는 이름이 통과했습니다");
+        assert!(error.contains("TLS"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn http_proxy_tunnel_keeps_the_https_name() {
+        if !enabled() {
+            return;
+        }
+        // A proxy that knows the server's name, as one inside its network
+        // would: CONNECT to it reaches the HTTPS port Docker publishes.
+        let proxy = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = proxy.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut buffer = [0u8; 512];
+                    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read = stream.read(&mut buffer).await.unwrap();
+                        if read == 0 {
+                            return;
+                        }
+                        head.extend_from_slice(&buffer[..read]);
+                    }
+                    let text = String::from_utf8_lossy(&head);
+                    assert!(
+                        text.starts_with(&format!("CONNECT {NAME}:8443 HTTP/1.1")),
+                        "{text}"
+                    );
+                    let mut upstream = TcpStream::connect(("127.0.0.1", 18443)).await.unwrap();
+                    stream
+                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+                });
+            }
+        });
+        let config = HttpTunnelConfig {
+            host: "127.0.0.1".into(),
+            port: proxy_port,
+            username: None,
+            password: None,
+        };
+        let tunnel = open_http(&config, NAME, 8443).await.unwrap();
+        reach(NAME, 8443, true, tunnel.local_port)
+            .await
+            .expect("HTTP 프록시를 통한 HTTPS 연결 실패");
+        let error = reach("other.tablepeek.test", 8443, true, tunnel.local_port)
+            .await
+            .expect_err("인증서에 없는 이름이 통과했습니다");
+        assert!(error.contains("TLS"), "{error}");
+    }
+}
+
+/// Oracle (`make test-db ENGINE=oracle`) through the SSH server, by the name
+/// it has on the test network (oracle: 1521 TCP, 2484 TCPS): connect strings
+/// with one address get a local end, ones with several get the tunnel and
+/// open a local end per address; TCPS through a local end checks the
+/// certificate against the server's own name (oracle is in it, the
+/// container's other name is not).
+#[cfg(test)]
+mod oracle_tests {
+    use super::*;
+    use tablepeek_engine::registry::{self, TunnelTarget};
+
+    fn testdb(path: &str) -> String {
+        format!("{}/../../testdb/{path}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// A wallet folder holding the test CA as its ewallet.pem.
+    fn wallet() -> String {
+        let dir =
+            std::env::temp_dir().join(format!("tablepeek-oracle-tunnel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ewallet.pem");
+        std::fs::copy(testdb("x509/ca.pem"), &file).unwrap();
+        file.to_string_lossy().into_owned()
+    }
+
+    /// Connects with `fields` the way the server does (the engine says where
+    /// the tunnel leads) and returns how the session reached the server.
+    async fn reach(fields: serde_json::Value) -> Result<(TunnelTarget, String), String> {
+        let ssh = SshConfig {
+            host: "127.0.0.1".into(),
+            port: 2223,
+            user: "tablepeek".into(),
+            password: None,
+            private_key_path: Some(testdb("ssh/id_ed25519")),
+        };
+        let serde_json::Value::Object(mut config) = serde_json::json!({
+            "user": "tablepeek", "password": "tablepeek_test_pw"
+        }) else {
+            unreachable!()
+        };
+        config.extend(fields.as_object().unwrap().clone());
+        let factory = registry::factory("oracle").unwrap();
+        let target = factory
+            .tunnel_target(&config)
+            .map_err(|problem| problem.message)?;
+        let route = match &target {
+            TunnelTarget::Address(host, port) => Route::One(open(&ssh, host, *port).await?),
+            TunnelTarget::Members => Route::Members(Arc::new(SshForwarder::open(&ssh).await?)),
+        };
+        let engine = tablepeek_engine::Engine::open_demo(1).unwrap();
+        engine
+            .swap_to(factory, &config, &route.net())
+            .await
+            .map_err(|err| err.to_string())?;
+        let data = engine
+            .query(
+                "SELECT SYS_CONTEXT('USERENV', 'NETWORK_PROTOCOL') FROM dual",
+                1,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        let protocol = data.rows_json()[0][0]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        Ok((target, protocol))
+    }
+
+    #[tokio::test]
+    async fn ssh_tunnel_carries_connect_strings_and_tcps() {
+        if std::env::var("TABLEPEEK_TEST_ORACLE").is_err() {
+            return;
+        }
+        let wallet = wallet();
+        // Host and port, TCPS.
+        let (target, protocol) = reach(serde_json::json!({
+            "host": "oracle", "port": 2484, "database": "FREEPDB1", "tls": true, "wallet_file": wallet
+        }))
+        .await
+        .expect("SSH 터널을 통한 TCPS 연결 실패");
+        assert_eq!(target, TunnelTarget::Address("oracle".into(), 2484));
+        assert_eq!(protocol, "tcps");
+        // Easy Connect: one address, one local end.
+        let (target, protocol) = reach(serde_json::json!({
+            "connect_mode": "descriptor", "connect_string": "tcps://oracle:2484/FREEPDB1", "wallet_file": wallet
+        }))
+        .await
+        .expect("SSH 터널을 통한 Easy Connect 연결 실패");
+        assert_eq!(target, TunnelTarget::Address("oracle".into(), 2484));
+        assert_eq!(protocol, "tcps");
+        // A descriptor whose first address only fails over to the second:
+        // each gets its own local end through the tunnel.
+        let (target, protocol) = reach(serde_json::json!({
+            "connect_mode": "descriptor", "wallet_file": wallet,
+            "connect_string": "(DESCRIPTION=(FAILOVER=ON)(ADDRESS_LIST=\
+                (ADDRESS=(PROTOCOL=TCP)(HOST=nowhere.invalid)(PORT=1521))\
+                (ADDRESS=(PROTOCOL=TCPS)(HOST=oracle)(PORT=2484)))\
+                (CONNECT_DATA=(SERVICE_NAME=FREEPDB1)))"
+        }))
+        .await
+        .expect("SSH 터널을 통한 여러 주소 연결 실패");
+        assert_eq!(target, TunnelTarget::Members);
+        assert_eq!(protocol, "tcps");
+        // The same server by a name its certificate doesn't carry: refused,
+        // though the local end (127.0.0.1) is in the certificate.
+        let refused = reach(serde_json::json!({
+            "connect_mode": "descriptor", "wallet_file": wallet,
+            "connect_string": "tcps://tablepeek-testdb-oracle-1:2484/FREEPDB1"
+        }))
+        .await
+        .expect_err("인증서에 없는 이름으로 TCPS 연결이 되었습니다");
+        assert!(refused.contains("TLS"), "{refused}");
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&wallet).parent().unwrap());
+    }
+}

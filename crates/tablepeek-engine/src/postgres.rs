@@ -28,6 +28,8 @@ use crate::{
     humanize_uptime_ko, not_hex, postgres_message, real_json, EngineError, QueryData,
 };
 
+pub(crate) mod cells;
+
 pub struct PostgresInner {
     client: Arc<tokio::sync::Mutex<Client>>,
     cancel: tokio_postgres::CancelToken,
@@ -303,14 +305,25 @@ impl PostgresInner {
 }
 
 fn tls_connector(config: &PostgresConfig) -> Result<MakeRustlsConnect, EngineError> {
+    let client_config = rustls_client_config(
+        config.ssl_root_cert.as_deref(),
+        config.ssl_client_cert.as_deref(),
+        config.ssl_client_key.as_deref(),
+    )?;
+    Ok(MakeRustlsConnect::new(client_config))
+}
+
+/// A TLS client trusting the CA file at `root_cert` (the system's roots
+/// without one), presenting the client certificate and key when both are
+/// given. Shared by the engines that speak rustls directly.
+pub(crate) fn rustls_client_config(
+    root_cert: Option<&str>,
+    client_cert: Option<&str>,
+    client_key: Option<&str>,
+) -> Result<rustls::ClientConfig, EngineError> {
     crate::ensure_crypto_provider();
     let mut roots = RootCertStore::empty();
-    if let Some(path) = config
-        .ssl_root_cert
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
+    if let Some(path) = root_cert.map(str::trim).filter(|path| !path.is_empty()) {
         let mut reader = BufReader::new(File::open(path).map_err(|err| {
             EngineError::BadRequest(format!("TLS CA 인증서를 열 수 없습니다({path}): {err}"))
         })?);
@@ -341,16 +354,8 @@ fn tls_connector(config: &PostgresConfig) -> Result<MakeRustlsConnect, EngineErr
 
     let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
     let client_config = match (
-        config
-            .ssl_client_cert
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty()),
-        config
-            .ssl_client_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty()),
+        client_cert.map(str::trim).filter(|path| !path.is_empty()),
+        client_key.map(str::trim).filter(|path| !path.is_empty()),
     ) {
         (Some(cert_path), Some(key_path)) => {
             let mut cert_reader = BufReader::new(File::open(cert_path).map_err(|err| {
@@ -393,7 +398,7 @@ fn tls_connector(config: &PostgresConfig) -> Result<MakeRustlsConnect, EngineErr
             ));
         }
     };
-    Ok(MakeRustlsConnect::new(client_config))
+    Ok(client_config)
 }
 
 pub(crate) async fn connect(
@@ -639,6 +644,7 @@ pub(crate) async fn query(
         // Booleans arrive as true and false.
         column_kinds: Vec::new(),
         rows_affected,
+        next_page: None,
     })
 }
 
@@ -712,34 +718,48 @@ pub(crate) async fn edit(inner: &PostgresInner, target: &EditTarget) -> Result<u
     if target.expr.is_none() {
         params.push(bound_text(&column_type, target.value.clone())?);
     }
-    let mut sql = format!(
-        "UPDATE {table} SET {} = {} WHERE ",
+    let (condition, keys) = key_condition(&client, &table, &target.pk, params.len() + 1).await?;
+    params.extend(keys);
+    let sql = format!(
+        "UPDATE {table} SET {} = {} WHERE {condition}",
         quote_ident(&target.column),
         value_sql(target.expr, 1, &column_type)
     );
-    for (index, pk) in target.pk.iter().enumerate() {
-        if index > 0 {
-            sql.push_str(" AND ");
-        }
-        let pk_type = column_type_of(&client, &table, &pk.column).await?;
-        params.push(bound_text(&pk_type, pk_value_string(&pk.value))?);
-        let position = params.len();
-        if pk.value.is_null() {
-            sql.push_str(&format!(
-                "{} IS NOT DISTINCT FROM (${position}::text)::{pk_type}",
-                quote_ident(&pk.column)
-            ));
-        } else {
-            sql.push_str(&format!(
-                "{} = (${position}::text)::{pk_type}",
-                quote_ident(&pk.column)
-            ));
-        }
-    }
 
     let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
     let changed = client.change(&sql, &refs).await?;
     Ok(changed)
+}
+
+/// The WHERE condition naming one row by its key, each value bound as text
+/// from `$first` on and cast to its column's type; those values in order.
+async fn key_condition(
+    client: &PgConn<'_>,
+    table: &str,
+    pk: &[PkValue],
+    first: usize,
+) -> Result<(String, Vec<Option<String>>), EngineError> {
+    let mut condition = String::new();
+    let mut params = Vec::with_capacity(pk.len());
+    for (index, key) in pk.iter().enumerate() {
+        if index > 0 {
+            condition.push_str(" AND ");
+        }
+        let key_type = column_type_of(client, table, &key.column).await?;
+        params.push(bound_text(&key_type, pk_value_string(&key.value))?);
+        let position = first + index;
+        let compare = if key.value.is_null() {
+            "IS NOT DISTINCT FROM"
+        } else {
+            "="
+        };
+        let _ = write!(
+            condition,
+            "{} {compare} (${position}::text)::{key_type}",
+            quote_ident(&key.column)
+        );
+    }
+    Ok((condition, params))
 }
 
 pub(crate) async fn insert_row(
@@ -787,27 +807,8 @@ pub(crate) async fn delete_row(
     let client = inner.conn().await;
     let table_ref = qualified_from_display(table);
     check_key(&client, &table_ref, pk).await?;
-    let mut sql = format!("DELETE FROM {table_ref} WHERE ");
-    let mut params: Vec<Option<String>> = Vec::with_capacity(pk.len());
-    for (index, condition) in pk.iter().enumerate() {
-        if index > 0 {
-            sql.push_str(" AND ");
-        }
-        let pk_type = column_type_of(&client, &table_ref, &condition.column).await?;
-        let position = index + 1;
-        if condition.value.is_null() {
-            sql.push_str(&format!(
-                "{} IS NOT DISTINCT FROM (${position}::text)::{pk_type}",
-                quote_ident(&condition.column)
-            ));
-        } else {
-            sql.push_str(&format!(
-                "{} = (${position}::text)::{pk_type}",
-                quote_ident(&condition.column)
-            ));
-        }
-        params.push(bound_text(&pk_type, pk_value_string(&condition.value))?);
-    }
+    let (condition, params) = key_condition(&client, &table_ref, pk, 1).await?;
+    let sql = format!("DELETE FROM {table_ref} WHERE {condition}");
     let refs: Vec<&dyn PgParam> = params.iter().map(|param| param as &dyn PgParam).collect();
     let changed = client.change(&sql, &refs).await?;
     Ok(changed)
@@ -926,9 +927,20 @@ async fn table_detail_in(
     let oid: u32 = row.get(0);
     let qualified_ref = qualified(&schema_name, &table_name);
 
-    let mut columns = client
-        .query(COLUMN_SQL, &[&qualified_ref])
-        .await?
+    // By the oid, not the name: a table dropped from here on leaves the
+    // queries empty rather than failing them.
+    let column_rows = match client.query(COLUMN_SQL, &[&oid]).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            recover(client, fenced).await;
+            return Err(if relation_gone(client, oid).await {
+                EngineError::TableNotFound
+            } else {
+                err.into()
+            });
+        }
+    };
+    let mut columns = column_rows
         .iter()
         .map(|col| ColumnSchema {
             name: col.get(0),
@@ -1202,6 +1214,11 @@ async fn table_detail_in(
     })
     .collect();
 
+    // Dropped while the lookups ran: what they found is not the table.
+    if relation_gone(client, oid).await {
+        return Err(EngineError::TableNotFound);
+    }
+
     Ok(TableDetail {
         name: display_name(&schema_name, &table_name),
         row_count_estimate,
@@ -1215,7 +1232,17 @@ async fn table_detail_in(
         foreign_keys,
         triggers,
         schema: Some(schema_name.clone()),
+        properties: Vec::new(),
     })
+}
+
+/// Whether the relation `oid` is gone, dropped since it was looked up. A
+/// failed check says no, leaving what led here to speak for itself.
+async fn relation_gone(client: &PgConn<'_>, oid: u32) -> bool {
+    client
+        .query_opt("SELECT 1 FROM pg_class WHERE oid = $1", &[&oid])
+        .await
+        .is_ok_and(|row| row.is_none())
 }
 
 pub(crate) async fn server_info(inner: &PostgresInner) -> Result<ServerInfo, EngineError> {
@@ -1410,6 +1437,7 @@ pub(crate) async fn objects(
         triggers: sort_dedup(triggers),
         sequences: sort_dedup(sequences),
         procedures: sort_dedup(procedures),
+        ..DbObjects::default()
     })
 }
 
@@ -1795,7 +1823,7 @@ const COLUMN_SQL: &str = "SELECT a.attname,
             pg_get_expr(d.adbin, d.adrelid)
      FROM pg_attribute a
      LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-     WHERE a.attrelid = $1::text::regclass
+     WHERE a.attrelid = $1
        AND a.attnum > 0
        AND NOT a.attisdropped
      ORDER BY a.attnum";

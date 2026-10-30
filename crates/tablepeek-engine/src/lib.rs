@@ -19,15 +19,18 @@ use tablepeek_types::{
     Relation, ServerInfo, TableDetail, TableSchema, TriggerInfo, ValueExpr,
 };
 
+mod cells;
 pub mod driver;
 pub mod engines;
 mod mssql;
 mod mysql;
 mod postgres;
 pub mod registry;
+pub mod search;
 mod source_cache;
 pub mod sql_log;
 mod sql_parse;
+mod sqlite_cells;
 pub use sql_parse::is_read_only;
 
 use driver::{CancelRequest, DocumentDriver, Driver, SqlDriver, TxOp};
@@ -322,6 +325,11 @@ pub struct QueryData {
     /// changed, as the database reports it. None for one that returns rows,
     /// or where the driver doesn't say (SQL Server's query stream).
     pub rows_affected: Option<u64>,
+    /// Where the rest of the rows start, for an engine that pages by its
+    /// database's token (`capabilities.cursor_paging`): passed back to
+    /// `SqlDriver::query_from` with the same statement. None once the rows
+    /// are all read, and on every other engine.
+    pub next_page: Option<String>,
 }
 
 impl QueryData {
@@ -338,6 +346,7 @@ impl QueryData {
             pk: None,
             column_kinds: Vec::new(),
             rows_affected: None,
+            next_page: None,
         }
     }
 
@@ -801,6 +810,21 @@ impl DocumentSession<'_> {
     }
 }
 
+/// The search side of the connection open now, held for one operation;
+/// like a document operation it moves the epoch before and after.
+pub struct SearchSession<'a> {
+    driver: Arc<dyn Driver>,
+    _finished: EpochBump<'a>,
+}
+
+impl SearchSession<'_> {
+    pub fn ops(&self) -> &dyn search::SearchDriver {
+        self.driver
+            .search()
+            .expect("checked when the session was made")
+    }
+}
+
 /// The SQL side of `driver`, or the error a SQL operation meets on an engine
 /// of another paradigm.
 fn sql_of(driver: &Arc<dyn Driver>) -> Result<&dyn SqlDriver, EngineError> {
@@ -949,6 +973,17 @@ impl Engine {
     }
 
     pub async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
+        self.query_page(sql, max_rows, None).await
+    }
+
+    /// `query`, or with `page` its rows from where an earlier read of the
+    /// same statement stopped (`QueryData::next_page`).
+    pub async fn query_page(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        page: Option<&str>,
+    ) -> Result<QueryData, EngineError> {
         // Before and after: meta read while the statement runs is stale once
         // it finishes, even if the query future is dropped midway.
         self.epoch.fetch_add(1, Ordering::SeqCst);
@@ -958,7 +993,50 @@ impl Engine {
         if let Ok(mut active) = self.active.lock() {
             *active = Some(driver.clone());
         }
-        let result = sql_driver.query(sql, max_rows).await;
+        let result = match page {
+            Some(page) => sql_driver.query_from(sql, max_rows, page).await,
+            None => sql_driver.query(sql, max_rows).await,
+        };
+        if let Ok(mut active) = self.active.lock() {
+            *active = None;
+        }
+        result
+    }
+
+    /// Passes rows of `sql` without returning them (`SqlDriver::skip_rows`):
+    /// a jump to a far page where pages follow the server's token. Cancels
+    /// reach it as they reach a query.
+    pub async fn skip_rows(
+        &self,
+        sql: &str,
+        skip: &driver::SkipRequest,
+        budget: std::time::Duration,
+    ) -> Result<driver::SkipOutcome, EngineError> {
+        let driver = self.driver()?;
+        let sql_driver = sql_of(&driver)?;
+        if let Ok(mut active) = self.active.lock() {
+            *active = Some(driver.clone());
+        }
+        let result = sql_driver.skip_rows(sql, skip, budget).await;
+        if let Ok(mut active) = self.active.lock() {
+            *active = None;
+        }
+        result
+    }
+
+    /// One part of a count done in parts (`SqlDriver::count_step`).
+    pub async fn count_step(
+        &self,
+        sql: &str,
+        cursor: Option<&str>,
+        budget: std::time::Duration,
+    ) -> Result<driver::CountStep, EngineError> {
+        let driver = self.driver()?;
+        let sql_driver = sql_of(&driver)?;
+        if let Ok(mut active) = self.active.lock() {
+            *active = Some(driver.clone());
+        }
+        let result = sql_driver.count_step(sql, cursor, budget).await;
         if let Ok(mut active) = self.active.lock() {
             *active = None;
         }
@@ -977,6 +1055,23 @@ impl Engine {
         }
         self.epoch.fetch_add(1, Ordering::SeqCst);
         Ok(DocumentSession {
+            driver,
+            _finished: EpochBump(&self.epoch),
+        })
+    }
+
+    /// The search operations of the connection open now, or the error an
+    /// engine of another paradigm gives.
+    pub fn search(&self) -> Result<SearchSession<'_>, EngineError> {
+        let driver = self.driver()?;
+        if driver.search().is_none() {
+            return Err(EngineError::Unsupported(format!(
+                "{}에서는 검색 엔진 작업을 할 수 없습니다",
+                registry::label(driver.id())
+            )));
+        }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        Ok(SearchSession {
             driver,
             _finished: EpochBump(&self.epoch),
         })
@@ -1073,6 +1168,22 @@ impl Engine {
         sql_of(&driver)?.edit(target).await
     }
 
+    /// An edit with the row as the grid last knew it (`SqlDriver::edit_seen`).
+    pub async fn edit_seen(
+        &self,
+        target: &EditTarget,
+        seen: &[PkValue],
+    ) -> Result<u64, EngineError> {
+        let driver = self.driver()?;
+        sql_of(&driver)?.edit_seen(target, seen).await
+    }
+
+    /// An amount added to a column in one atomic write (`SqlDriver::edit_add`).
+    pub async fn edit_add(&self, target: &EditTarget) -> Result<u64, EngineError> {
+        let driver = self.driver()?;
+        sql_of(&driver)?.edit_add(target).await
+    }
+
     pub async fn insert_row(
         &self,
         table: &str,
@@ -1111,6 +1222,17 @@ impl Engine {
         sql_of(&driver)?.delete_row(table, pk).await
     }
 
+    /// A delete with the row as the grid last knew it.
+    pub async fn delete_row_seen(
+        &self,
+        table: &str,
+        pk: &[PkValue],
+        seen: &[PkValue],
+    ) -> Result<u64, EngineError> {
+        let driver = self.driver()?;
+        sql_of(&driver)?.delete_row_seen(table, pk, seen).await
+    }
+
     pub async fn table_detail(&self, name: &str) -> Result<TableDetail, EngineError> {
         let driver = self.driver()?;
         sql_of(&driver)?.table_detail(name).await
@@ -1134,13 +1256,55 @@ impl Engine {
         sql_of(&driver)?.object_definition(kind, name).await
     }
 
+    /// Ends a server session; on a search engine, cancels the task `id`
+    /// names (its sessions are the running tasks).
     pub async fn kill_session(&self, id: &str) -> Result<(), EngineError> {
-        let numeric: u64 = id
-            .trim()
-            .parse()
-            .map_err(|_| EngineError::BadRequest("세션 ID가 올바르지 않습니다".into()))?;
         let driver = self.driver()?;
-        sql_of(&driver)?.kill_session(numeric).await
+        if let Some(search) = driver.search() {
+            return search.cancel_task(id).await.map(|_| ());
+        }
+        sql_of(&driver)?.kill_session(id).await
+    }
+
+    /// The page's query time limit for the statements it sends from now on
+    /// (see `SqlDriver::set_query_timeout`); nothing on engines without SQL.
+    pub fn set_query_timeout(&self, secs: u64) {
+        if let Ok(driver) = self.driver() {
+            if let Some(sql) = driver.sql() {
+                sql.set_query_timeout(secs);
+            }
+        }
+    }
+
+    /// The read `sql`'s whole result as a file the database writes (see
+    /// `SqlDriver::export_native`). It runs beside the page's statements.
+    pub async fn export_native(
+        &self,
+        sql: &str,
+        export: &driver::NativeExport,
+    ) -> Result<driver::FileStream, EngineError> {
+        let driver = self.driver()?;
+        sql_of(&driver)?.export_native(sql, export).await
+    }
+
+    /// One binary cell's whole value (see `SqlDriver::read_cell`).
+    pub async fn read_cell(
+        &self,
+        cell: &tablepeek_types::CellRef,
+    ) -> Result<driver::FileStream, EngineError> {
+        let driver = self.driver()?;
+        sql_of(&driver)?.read_cell(cell).await
+    }
+
+    /// Replaces one binary cell with streamed bytes (see
+    /// `SqlDriver::write_cell`).
+    pub async fn write_cell(
+        &self,
+        cell: &tablepeek_types::CellRef,
+        data: driver::FileStream,
+    ) -> Result<u64, EngineError> {
+        let driver = self.driver()?;
+        sql_of(&driver)?.write_cell(cell, data).await
     }
 
     pub async fn begin_tx(&self) -> Result<(), EngineError> {
@@ -1431,6 +1595,7 @@ fn run_query_sync(
         // structure is known; the result alone doesn't say.
         column_kinds: Vec::new(),
         rows_affected,
+        next_page: None,
     })
 }
 
@@ -2195,6 +2360,7 @@ fn table_detail_sync(inner: &SqliteInner, name: &str) -> Result<TableDetail, Eng
         triggers,
         ddl,
         schema: None,
+        properties: Vec::new(),
     })
 }
 
@@ -2245,10 +2411,8 @@ fn objects_sync(inner: &SqliteInner, include_system: bool) -> Result<DbObjects, 
     }
     Ok(DbObjects {
         views,
-        functions: Vec::new(),
         triggers,
-        sequences: Vec::new(),
-        procedures: Vec::new(),
+        ..DbObjects::default()
     })
 }
 
@@ -3350,6 +3514,84 @@ mod tests {
             ssl_client_cert: None,
             ssl_client_key: None,
         })
+    }
+
+    // A table dropped while its structure is read, by the user in another
+    // session, comes back as TableNotFound, never as the server's error for
+    // a relation that no longer exists; the other catalog reads beside the
+    // DDL go through.
+    #[tokio::test]
+    async fn postgres_table_detail_of_a_table_dropped_meanwhile_is_not_found() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let reader = Engine::open_demo(1).unwrap();
+        reader.swap_to_postgres(&config).await.unwrap();
+        let writer = Engine::open_demo(1).unwrap();
+        writer.swap_to_postgres(&config).await.unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let ddl = tokio::spawn({
+            let stop = stop.clone();
+            let rounds = rounds.clone();
+            async move {
+                while !stop.load(Ordering::SeqCst) {
+                    for sql in [
+                        "DROP TABLE IF EXISTS tp_pg_churn",
+                        "CREATE TABLE tp_pg_churn (id INT NOT NULL PRIMARY KEY, \
+                         note VARCHAR(20))",
+                        "ALTER TABLE tp_pg_churn ADD extra INT NULL",
+                        "CREATE INDEX tp_pg_churn_note ON tp_pg_churn (note) INCLUDE (extra)",
+                        "ALTER TABLE tp_pg_churn DROP COLUMN extra",
+                    ] {
+                        if writer.execute(sql, 1).await.is_err() {
+                            break;
+                        }
+                    }
+                    rounds.fetch_add(1, Ordering::SeqCst);
+                }
+                let _ = writer.execute("DROP TABLE IF EXISTS tp_pg_churn", 1).await;
+            }
+        });
+
+        let started = std::time::Instant::now();
+        let mut reads = 0usize;
+        let outcome: Result<(), String> = async {
+            while started.elapsed() < std::time::Duration::from_secs(6) {
+                reader
+                    .schema(false)
+                    .await
+                    .map_err(|err| format!("schema: {err}"))?;
+                reader
+                    .relations(false)
+                    .await
+                    .map_err(|err| format!("relations: {err}"))?;
+                for _ in 0..5 {
+                    match reader.table_detail("tp_pg_churn").await {
+                        Ok(_) | Err(EngineError::TableNotFound) => {}
+                        Err(err) => return Err(format!("table_detail: {err}")),
+                    }
+                }
+                reads += 1;
+            }
+            Ok(())
+        }
+        .await;
+        stop.store(true, Ordering::SeqCst);
+        ddl.await.unwrap();
+        if let Err(err) = outcome {
+            panic!(
+                "{err} (after {reads} reads, {} DDL rounds)",
+                rounds.load(Ordering::SeqCst)
+            );
+        }
+        assert!(
+            rounds.load(Ordering::SeqCst) > 0,
+            "no DDL ran beside the reads"
+        );
     }
 
     #[tokio::test]
@@ -4691,12 +4933,14 @@ mod tests {
         assert!(err.is_interrupted(), "err = {err}");
     }
 
-    // SQL Server's catalog views lock the same system rows that DDL in another
-    // session of the database takes, so a schema read running beside another
-    // test's CREATE or DROP TABLE is picked as a deadlock victim (error 1205),
-    // whatever the tables are called. The tests that use the server take turns;
-    // the guard is held until the test ends.
-    static MSSQL_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    // DDL in one session of a SQL Server database locks system rows that
+    // another session's catalog reads under READ COMMITTED (the key checks
+    // before a write) and its own DDL take too, so one test's CREATE or DROP
+    // TABLE can make another's statement a deadlock victim (error 1205),
+    // whatever the tables are called; mssql_catalog_reads_survive_concurrent_ddl
+    // churns DDL on purpose. The tests that use the server take turns; the
+    // guard is held until the test ends.
+    pub(crate) static MSSQL_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn mssql_config() -> Option<(
         tablepeek_types::MssqlConfig,
@@ -5086,6 +5330,123 @@ mod tests {
 
         let check = engine.execute("SELECT 1 AS one", 1).await.unwrap();
         assert_eq!(check.rows[0][0], Value::from(1));
+    }
+
+    // The sidebar and completion reload the catalog while the user changes
+    // tables in another session: the reads must neither fail as a deadlock
+    // victim (error 1205) nor take an open transaction down with them.
+    #[tokio::test]
+    async fn mssql_catalog_reads_survive_concurrent_ddl() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let Some((config, _turn)) = mssql_config().await else {
+            return;
+        };
+        let reader = Engine::open_demo(1).unwrap();
+        reader.swap_to_mssql(&config).await.unwrap();
+        let writer = Engine::open_demo(1).unwrap();
+        writer.swap_to_mssql(&config).await.unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let ddl = tokio::spawn({
+            let stop = stop.clone();
+            let rounds = rounds.clone();
+            async move {
+                while !stop.load(Ordering::SeqCst) {
+                    // The writer may be the victim too; the next round starts
+                    // over from the DROP.
+                    for sql in [
+                        "DROP TABLE IF EXISTS tp_churn",
+                        "CREATE TABLE tp_churn (id INT NOT NULL PRIMARY KEY, \
+                         note NVARCHAR(20), ref INT)",
+                        "ALTER TABLE tp_churn ADD extra INT NULL",
+                        "CREATE INDEX tp_churn_note ON tp_churn (note) INCLUDE (extra)",
+                        "ALTER TABLE tp_churn ADD CONSTRAINT tp_churn_ref \
+                         FOREIGN KEY (ref) REFERENCES users (id)",
+                        "ALTER TABLE tp_churn DROP COLUMN extra",
+                    ] {
+                        if writer.execute(sql, 1).await.is_err() {
+                            break;
+                        }
+                    }
+                    rounds.fetch_add(1, Ordering::SeqCst);
+                }
+                let _ = writer.execute("DROP TABLE IF EXISTS tp_churn", 1).await;
+            }
+        });
+
+        let started = std::time::Instant::now();
+        let mut reads = 0usize;
+        let outcome: Result<(), String> = async {
+            while started.elapsed() < std::time::Duration::from_secs(6) {
+                let in_tx = reads % 2 == 1;
+                if in_tx {
+                    reader
+                        .begin_tx()
+                        .await
+                        .map_err(|err| format!("BEGIN: {err}"))?;
+                }
+                reader
+                    .meta(false)
+                    .await
+                    .map_err(|err| format!("meta: {err}"))?;
+                reader
+                    .schema(false)
+                    .await
+                    .map_err(|err| format!("schema: {err}"))?;
+                reader
+                    .relations(false)
+                    .await
+                    .map_err(|err| format!("relations: {err}"))?;
+                reader
+                    .objects(false)
+                    .await
+                    .map_err(|err| format!("objects: {err}"))?;
+                reader
+                    .table_detail("users")
+                    .await
+                    .map_err(|err| format!("table_detail users: {err}"))?;
+                match reader.table_detail("tp_churn").await {
+                    Ok(_) | Err(EngineError::TableNotFound) => {}
+                    Err(err) => return Err(format!("table_detail tp_churn: {err}")),
+                }
+                // The catalog reads' READ UNCOMMITTED ends with them: the
+                // user's statements still run under READ COMMITTED (2).
+                let level = reader
+                    .execute(
+                        "SELECT transaction_isolation_level FROM sys.dm_exec_sessions \
+                         WHERE session_id = @@SPID",
+                        1,
+                    )
+                    .await
+                    .map_err(|err| format!("isolation level: {err}"))?;
+                if level.rows[0][0] != 2 {
+                    return Err(format!("isolation level {}", level.rows[0][0]));
+                }
+                if in_tx {
+                    reader
+                        .commit_tx()
+                        .await
+                        .map_err(|err| format!("COMMIT: {err}"))?;
+                }
+                reads += 1;
+            }
+            Ok(())
+        }
+        .await;
+        stop.store(true, Ordering::SeqCst);
+        ddl.await.unwrap();
+        if let Err(err) = outcome {
+            panic!(
+                "{err} (after {reads} reads, {} DDL rounds)",
+                rounds.load(Ordering::SeqCst)
+            );
+        }
+        assert!(
+            rounds.load(Ordering::SeqCst) > 0,
+            "no DDL ran beside the reads"
+        );
     }
 
     #[tokio::test]

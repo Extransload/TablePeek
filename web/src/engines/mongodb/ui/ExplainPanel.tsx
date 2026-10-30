@@ -1,7 +1,8 @@
 // The 실행 계획 sub-tab (MONGODB.md §3.7): the query bar's find run with
 // explain("executionStats") on the server, shown as the stage tree with each
 // stage's counts, the totals and warnings beside it, the raw output on
-// demand, and an index suggestion that opens the create dialog.
+// demand, and an index suggestion that opens the create dialog. A stage
+// picked in the tree shows in the app's detail panel.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice } from "../../../components/ErrorNotice";
@@ -13,7 +14,9 @@ import type { BsonDocument } from "../bson";
 import { shellCursorOptions } from "../codegen";
 import { summarizeExplain, suggestIndex, type PlanStage, type PlanSummary } from "../explain";
 import { shellCollection, toShell, toShellPretty } from "../format";
+import { DocDetailPanel, ItemDetail, NothingSelected } from "./DocDetailPanel";
 import { PlanIcon } from "./icons";
+import { arrowStep } from "./selection";
 import { ShellText } from "./ShellText";
 import type { DocQuery, ExplainPanelProps } from "./types";
 import "./panels.css";
@@ -61,7 +64,7 @@ function count(n: number | null): string {
   return n === null ? "—" : n.toLocaleString();
 }
 
-function StageBox({ stage }: { stage: PlanStage }) {
+function StageBox({ stage, selected, onSelect }: { stage: PlanStage; selected: boolean; onSelect(): void }) {
   const facts: { key: string; value: string; warn?: boolean }[] = [];
   if (stage.shard !== null) {
     facts.push({ key: t("샤드"), value: stage.shard });
@@ -109,7 +112,7 @@ function StageBox({ stage }: { stage: PlanStage }) {
   const tone = stage.stage === "COLLSCAN" || stage.stage === "SORT" ? " warn" : Object.hasOwn(OK_STAGES, stage.stage) ? " ok" : "";
   const text = STAGE_TEXT[stage.stage];
   return (
-    <div className={`mg-pstage${tone}`}>
+    <div className={`mg-pstage${tone}${selected ? " selected" : ""}`} onClick={onSelect}>
       <div className="mg-pstage-head">
         <span className="mg-pstage-name mono">{stage.stage}</span>
         <span className="panel-dim">{text !== undefined ? t(text) : ""}</span>
@@ -126,12 +129,11 @@ function StageBox({ stage }: { stage: PlanStage }) {
   );
 }
 
-// A stage above its inputs: results flow up from the leaves. The 집계 tab
-// shows a pipeline's plan with it too.
-export function StageTree({ stage }: { stage: PlanStage }) {
+// A stage above its inputs: results flow up from the leaves.
+function StageTree({ stage, selected, onSelect }: { stage: PlanStage; selected: PlanStage | null; onSelect(stage: PlanStage): void }) {
   return (
     <div className="mg-pnode">
-      <StageBox stage={stage} />
+      <StageBox stage={stage} selected={stage === selected} onSelect={() => onSelect(stage)} />
       {stage.children.length > 0 ? (
         <div className="mg-pchildren">
           {stage.children.map((child, i) => (
@@ -139,13 +141,54 @@ export function StageTree({ stage }: { stage: PlanStage }) {
               <div className="mg-parrow" aria-hidden="true">
                 ▲
               </div>
-              <StageTree stage={child} />
+              <StageTree stage={child} selected={selected} onSelect={onSelect} />
             </div>
           ))}
         </div>
       ) : null}
     </div>
   );
+}
+
+function stagesInOrder(stage: PlanStage, out: PlanStage[] = []): PlanStage[] {
+  out.push(stage);
+  for (const child of stage.children) {
+    stagesInOrder(child, out);
+  }
+  return out;
+}
+
+// The plan's stage tree; a click on a stage, or the arrow keys (top to
+// bottom), picks it for the detail panel.
+export function PlanTree({ root, selected, onSelect }: { root: PlanStage; selected: PlanStage | null; onSelect(stage: PlanStage): void }) {
+  return (
+    <div
+      className="mg-ptree"
+      tabIndex={-1}
+      onClick={(event) => {
+        if (event.target instanceof Element && event.target.closest(".mg-pstage") !== null) {
+          event.currentTarget.focus({ preventScroll: true });
+        }
+      }}
+      onKeyDown={(event) => {
+        const order = stagesInOrder(root);
+        const next = arrowStep(event, order.length, selected === null ? -1 : order.indexOf(selected));
+        if (next !== null) {
+          event.preventDefault();
+          onSelect(order[next]);
+          event.currentTarget.querySelectorAll(".mg-pstage")[next]?.scrollIntoView({ block: "nearest" });
+        }
+      }}
+    >
+      <StageTree stage={root} selected={selected} onSelect={onSelect} />
+    </div>
+  );
+}
+
+// A picked stage in the detail panel: its fields as the server wrote them.
+export function StageDetail({ stage, query }: { stage: PlanStage; query: string }) {
+  const text = STAGE_TEXT[stage.stage];
+  return <ItemDetail key={stage.stage} title={stage.stage} note={text !== undefined ? t(text) : undefined} doc={stage.raw} query={query} />;
 }
 
 export function Summary({ summary, query, coll, onCreateIndex }: { summary: PlanSummary; query: DocQuery; coll: string; onCreateIndex(keys: BsonDocument): void }) {
@@ -224,12 +267,14 @@ interface Explained {
 }
 const lastExplained = new Map<string, Explained>();
 
-export function ExplainPanel({ ns, query, active, runSeq, onCreateIndex }: ExplainPanelProps) {
+export function ExplainPanel({ ns, facts, query, active, runSeq, onCreateIndex }: ExplainPanelProps) {
   const key = `${ns.conn}\u0000${ns.db}\u0000${ns.coll}`;
   const [shown, setShown] = useState<Explained | null>(() => lastExplained.get(key) ?? null);
   const [loading, setLoading] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [ownSeq, setOwnSeq] = useState(0);
+  // The stage in the detail panel, with the plan it belongs to.
+  const [picked, setPicked] = useState<{ of: Outcome; stage: PlanStage } | null>(null);
   const q = "error" in query ? null : query;
   const command = q === null ? null : findCommand(ns.coll, q);
   // Read when a run starts, so typing in the query bar never starts one.
@@ -300,6 +345,7 @@ export function ExplainPanel({ ns, query, active, runSeq, onCreateIndex }: Expla
   const outcome = shown?.outcome ?? null;
   // The query bar no longer says what the plan on show explains.
   const stale = shown !== null && command !== shown.command;
+  const pickedStage = picked !== null && picked.of === outcome ? picked.stage : null;
 
   let body;
   if (outcome === null) {
@@ -318,7 +364,7 @@ export function ExplainPanel({ ns, query, active, runSeq, onCreateIndex }: Expla
       <div className="mg-explain-grid">
         <div className="mg-ptree-wrap">
           <div className="mg-ptree-title panel-dim">{t("위에서 아래로: 결과 ← 입력")}</div>
-          {outcome.summary.root !== null ? <StageTree stage={outcome.summary.root} /> : <div className="panel-empty">{t("계획에 단계가 없습니다")}</div>}
+          {outcome.summary.root !== null ? <PlanTree root={outcome.summary.root} selected={pickedStage} onSelect={(stage) => setPicked({ of: outcome, stage })} /> : <div className="panel-empty">{t("계획에 단계가 없습니다")}</div>}
         </div>
         <Summary summary={outcome.summary} query={outcome.query} coll={ns.coll} onCreateIndex={onCreateIndex} />
       </div>
@@ -358,6 +404,7 @@ export function ExplainPanel({ ns, query, active, runSeq, onCreateIndex }: Expla
         </button>
       </div>
       <div className="mg-explain-body">{body}</div>
+      <DocDetailPanel>{(search) => (pickedStage !== null ? <StageDetail stage={pickedStage} query={search} /> : <NothingSelected facts={facts} query={search} empty={t("선택된 단계가 없습니다")} />)}</DocDetailPanel>
     </div>
   );
 }

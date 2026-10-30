@@ -310,6 +310,9 @@ pub enum LogParam {
     Bool(bool),
     Text(String),
     Blob(Vec<u8>),
+    /// A value already written as the dialect's own literal (a CQL
+    /// collection or UDT), shown as it is.
+    Literal(String),
 }
 
 /// Placeholder, quoting, comment and literal rules of the SQL a driver sends.
@@ -324,6 +327,16 @@ pub enum Dialect {
     MySql,
     /// `@PN`; '…', "…" and […] quoting; text as N'…'.
     Mssql,
+    /// No placeholders (values are written in); '…', "…" and `…` with
+    /// backslash escapes, $tag$…$tag$ heredocs, `#` comments before a space
+    /// or `!`.
+    ClickHouse,
+    /// Cassandra's CQL: `?`; '…' and "…" quoting, $$…$$ bodies, `//`
+    /// comments; blobs as 0x….
+    Cql,
+    /// `:N` and `:name`; '…' and q'[…]' literals, "…" names; binary as
+    /// HEXTORAW('…').
+    Oracle,
 }
 
 /// `sql` with its placeholders replaced by `params` as SQL literals, for
@@ -345,7 +358,7 @@ pub fn inline_params(sql: &str, params: &[LogParam], dialect: Dialect) -> String
             continue;
         }
         let placeholder = match bytes[i] {
-            b'?' if matches!(dialect, Dialect::Sqlite | Dialect::MySql) => {
+            b'?' if matches!(dialect, Dialect::Sqlite | Dialect::MySql | Dialect::Cql) => {
                 match digits(bytes, i + 1).filter(|_| dialect == Dialect::Sqlite) {
                     Some((number, end)) => {
                         positional = positional.max(number);
@@ -358,6 +371,13 @@ pub fn inline_params(sql: &str, params: &[LogParam], dialect: Dialect) -> String
                 }
             }
             b'$' if dialect == Dialect::Postgres && !ident_before(bytes, i) => digits(bytes, i + 1),
+            b':' if dialect == Dialect::Oracle
+                && !ident_before(bytes, i)
+                && (i == 0 || bytes[i - 1] != b':') =>
+            {
+                digits(bytes, i + 1)
+                    .filter(|(_, end)| !bytes.get(*end).is_some_and(|b| is_ident(*b)))
+            }
             b'@' if dialect == Dialect::Mssql
                 && matches!(bytes.get(i + 1), Some(b'P' | b'p'))
                 && !ident_before(bytes, i)
@@ -398,19 +418,41 @@ fn span_at(bytes: &[u8], i: usize, dialect: Dialect) -> Option<(Span, usize)> {
     match bytes[i] {
         b'\'' => {
             // PostgreSQL reads backslash escapes only in E'…' strings.
-            let backslash = dialect == Dialect::MySql
+            let backslash = matches!(dialect, Dialect::MySql | Dialect::ClickHouse)
                 || (dialect == Dialect::Postgres
                     && i > 0
                     && matches!(bytes[i - 1], b'E' | b'e')
                     && !ident_before(bytes, i - 1));
             Some((Span::Literal, skip_quoted(bytes, i, b'\'', backslash)))
         }
+        // Oracle's q'[…]' and Nq'[…]': no quote inside needs doubling.
+        b'q' | b'Q'
+            if dialect == Dialect::Oracle && next == Some(b'\'') && !ident_before(bytes, i) =>
+        {
+            Some((Span::Literal, q_quote_end(bytes, i)))
+        }
+        b'N' | b'n'
+            if dialect == Dialect::Oracle
+                && matches!(next, Some(b'q' | b'Q'))
+                && bytes.get(i + 2) == Some(&b'\'')
+                && !ident_before(bytes, i) =>
+        {
+            Some((Span::Literal, q_quote_end(bytes, i + 1)))
+        }
         b'"' if dialect == Dialect::MySql => {
             Some((Span::Literal, skip_quoted(bytes, i, b'"', true)))
         }
+        b'"' if dialect == Dialect::ClickHouse => {
+            Some((Span::Identifier, skip_quoted(bytes, i, b'"', true)))
+        }
         b'"' => Some((Span::Identifier, skip_quoted(bytes, i, b'"', false))),
-        b'`' if matches!(dialect, Dialect::Sqlite | Dialect::MySql) => {
-            Some((Span::Identifier, skip_quoted(bytes, i, b'`', false)))
+        b'`' if matches!(
+            dialect,
+            Dialect::Sqlite | Dialect::MySql | Dialect::ClickHouse
+        ) =>
+        {
+            let backslash = dialect == Dialect::ClickHouse;
+            Some((Span::Identifier, skip_quoted(bytes, i, b'`', backslash)))
         }
         b'[' if matches!(dialect, Dialect::Sqlite | Dialect::Mssql) => {
             Some((Span::Identifier, skip_quoted(bytes, i, b']', false)))
@@ -423,8 +465,18 @@ fn span_at(bytes: &[u8], i: usize, dialect: Dialect) -> Option<(Span, usize)> {
             Some((Span::Comment, line_end(bytes, i)))
         }
         b'#' if dialect == Dialect::MySql => Some((Span::Comment, line_end(bytes, i))),
+        b'#' if dialect == Dialect::ClickHouse && matches!(next, Some(b' ' | b'!')) => {
+            Some((Span::Comment, line_end(bytes, i)))
+        }
         b'/' if next == Some(b'*') => Some((Span::Comment, block_comment_end(bytes, i))),
-        b'$' if dialect == Dialect::Postgres && !ident_before(bytes, i) => {
+        b'/' if next == Some(b'/') && dialect == Dialect::Cql => {
+            Some((Span::Comment, line_end(bytes, i)))
+        }
+        b'$' if matches!(
+            dialect,
+            Dialect::Postgres | Dialect::ClickHouse | Dialect::Cql
+        ) && !ident_before(bytes, i) =>
+        {
             dollar_quote_end(bytes, i).map(|end| (Span::Literal, end))
         }
         _ => None,
@@ -433,14 +485,19 @@ fn span_at(bytes: &[u8], i: usize, dialect: Dialect) -> Option<(Span, usize)> {
 
 fn ends_in_line_comment(sql: &str, dialect: Dialect) -> bool {
     let bytes = sql.as_bytes();
-    let hashes = dialect == Dialect::MySql && bytes.contains(&b'#');
-    if !hashes && !bytes.windows(2).any(|pair| pair == b"--") {
+    let hashes = matches!(dialect, Dialect::MySql | Dialect::ClickHouse) && bytes.contains(&b'#');
+    let slashes = dialect == Dialect::Cql && bytes.windows(2).any(|pair| pair == b"//");
+    if !hashes && !slashes && !bytes.windows(2).any(|pair| pair == b"--") {
         return false;
     }
     let mut i = 0;
     while i < bytes.len() {
         match span_at(bytes, i, dialect) {
-            Some((Span::Comment, end)) if end == bytes.len() && bytes[i] != b'/' => return true,
+            Some((Span::Comment, end))
+                if end == bytes.len() && bytes.get(i..i + 2) != Some(b"/*".as_slice()) =>
+            {
+                return true
+            }
             Some((_, end)) => i = end,
             None => i += 1,
         }
@@ -554,6 +611,13 @@ fn redact_secrets(sql: &str, dialect: Dialect) -> Option<String> {
                 at += 2;
             }
             match word(at).as_deref() {
+                // Oracle's password is a name: IDENTIFIED BY "pw" or bare pw.
+                Some("BY") if dialect == Dialect::Oracle => match tokens.get(at + 1) {
+                    Some(Token::Word(start, end) | Token::Literal(start, end)) => {
+                        Some((*start, *end))
+                    }
+                    _ => None,
+                },
                 Some("BY" | "AS") => value(at + 1),
                 _ => None,
             }
@@ -850,6 +914,29 @@ fn dollar_quote_end(bytes: &[u8], start: usize) -> Option<usize> {
     )
 }
 
+// Past an Oracle q-quoted string opened at `start` (the q of q'[…]'): the
+// character after the quote opens it, and its closing partner ([ ], { },
+// ( ), < >, else the same character) followed by a quote ends it.
+fn q_quote_end(bytes: &[u8], start: usize) -> usize {
+    let Some(&open) = bytes.get(start + 2) else {
+        return bytes.len();
+    };
+    let close = match open {
+        b'[' => b']',
+        b'{' => b'}',
+        b'(' => b')',
+        b'<' => b'>',
+        other => other,
+    };
+    let body = start + 3;
+    bytes
+        .get(body..)
+        .unwrap_or_default()
+        .windows(2)
+        .position(|pair| pair[0] == close && pair[1] == b'\'')
+        .map_or(bytes.len(), |offset| body + offset + 2)
+}
+
 fn render(param: &LogParam, dialect: Dialect) -> String {
     match param {
         LogParam::Null => "NULL".into(),
@@ -858,8 +945,8 @@ fn render(param: &LogParam, dialect: Dialect) -> String {
         LogParam::Float(value) if value.is_finite() => value.to_string(),
         LogParam::Float(value) => quote_text(&value.to_string(), dialect),
         LogParam::Bool(value) => match (dialect, value) {
-            (Dialect::Postgres, true) => "TRUE".into(),
-            (Dialect::Postgres, false) => "FALSE".into(),
+            (Dialect::Postgres | Dialect::Cql, true) => "TRUE".into(),
+            (Dialect::Postgres | Dialect::Cql, false) => "FALSE".into(),
             (_, true) => "1".into(),
             (_, false) => "0".into(),
         },
@@ -868,15 +955,17 @@ fn render(param: &LogParam, dialect: Dialect) -> String {
             let hex: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
             match dialect {
                 Dialect::Postgres => format!("'\\x{hex}'::bytea"),
-                Dialect::Mssql => format!("0x{hex}"),
-                Dialect::Sqlite | Dialect::MySql => format!("X'{hex}'"),
+                Dialect::Mssql | Dialect::Cql => format!("0x{hex}"),
+                Dialect::Oracle => format!("HEXTORAW('{hex}')"),
+                Dialect::Sqlite | Dialect::MySql | Dialect::ClickHouse => format!("X'{hex}'"),
             }
         }
+        LogParam::Literal(text) => text.clone(),
     }
 }
 
 fn quote_text(text: &str, dialect: Dialect) -> String {
-    let escaped = if dialect == Dialect::MySql {
+    let escaped = if matches!(dialect, Dialect::MySql | Dialect::ClickHouse) {
         text.replace('\\', "\\\\").replace('\'', "''")
     } else {
         text.replace('\'', "''")

@@ -402,7 +402,7 @@ services:
   # testdb/ssh (no password), TCP forwarding on.
   sshd:
     image: lscr.io/linuxserver/openssh-server:latest
-    profiles: [mongodb-rs]
+    profiles: [mongodb-rs, scylladb-cluster, clickhouse, oracle]
     environment:
       USER_NAME: tablepeek
       PUBLIC_KEY_FILE: /keys/id_ed25519.pub
@@ -497,6 +497,411 @@ services:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 2s
       retries: 60
+
+  # ClickHouse over HTTP (18123) and HTTPS (18443, with the certificate
+  # testdb/clickhouse/gen.sh writes for localhost and its name on the test
+  # network, clickhouse.tablepeek.test; CA testdb/x509/ca.pem). The SSH
+  # server above reaches it by that name for the tunnel tests. The user
+  # tablepeek may manage access, so the sessions and users screens have
+  # something to do. Seeded by its init scripts on first start:
+  # tablepeek_test for the engine tests, shop for trying the app.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    profiles: [clickhouse]
+    mem_limit: 1g
+    environment:
+      CLICKHOUSE_USER: tablepeek
+      CLICKHOUSE_PASSWORD: tablepeek_test_pw
+      CLICKHOUSE_DB: tablepeek_test
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    networks:
+      default:
+        aliases: [clickhouse.tablepeek.test]
+    ports:
+      - "127.0.0.1:18123:8123"
+      - "127.0.0.1:18443:8443"
+    volumes:
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/tablepeek.xml:ro
+      - ./clickhouse/certs:/certs:ro
+      - ./clickhouse.sql:/docker-entrypoint-initdb.d/10-tests.sql:ro
+      - ./clickhouse-shop.sql:/docker-entrypoint-initdb.d/20-shop.sql:ro
+    healthcheck:
+      # Healthy once the shop seed (whose dictionary comes last) is in.
+      test: ["CMD", "clickhouse-client", "--user", "tablepeek", "--password", "tablepeek_test_pw", "--query", "SELECT throwIf(count() = 0) FROM system.dictionaries WHERE database = 'shop'"]
+      interval: 2s
+      retries: 90
+
+  # Two ClickHouse servers as one cluster, tp_cluster: one shard with both
+  # as replicas, ClickHouse Keeper inside ch-node1. HTTP on 18124 and 18125,
+  # user tablepeek / tablepeek_test_pw; nothing seeded. For ON CLUSTER.
+  ch-node1:
+    image: clickhouse/clickhouse-server:25.8
+    profiles: [clickhouse-cluster]
+    hostname: ch-node1
+    mem_limit: 768m
+    environment: &ch-node
+      CLICKHOUSE_USER: tablepeek
+      CLICKHOUSE_PASSWORD: tablepeek_test_pw
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CH_REPLICA: ch-node1
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    ports:
+      - "127.0.0.1:18124:8123"
+    volumes:
+      - ./clickhouse/cluster/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      - ./clickhouse/cluster/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "tablepeek", "--password", "tablepeek_test_pw", "--query", "SELECT throwIf(count() = 0) FROM system.zookeeper WHERE path = '/'"]
+      interval: 2s
+      retries: 90
+
+  ch-node2:
+    image: clickhouse/clickhouse-server:25.8
+    profiles: [clickhouse-cluster]
+    hostname: ch-node2
+    mem_limit: 768m
+    environment:
+      <<: *ch-node
+      CH_REPLICA: ch-node2
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    ports:
+      - "127.0.0.1:18125:8123"
+    volumes:
+      - ./clickhouse/cluster/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+    depends_on:
+      ch-node1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "tablepeek", "--password", "tablepeek_test_pw", "--query", "SELECT throwIf(count() = 0) FROM system.zookeeper WHERE path = '/'"]
+      interval: 2s
+      retries: 90
+
+  # Elasticsearch 8 with security on (user elastic / tablepeek_test_pw) and
+  # HTTP TLS off, on 9201. Heap 512 MB, machine learning off. Seeded by
+  # `make test-db` (testdb/search-shop.sh): the shop indices, aliases and a
+  # data stream. The node publishes 127.0.0.1:9201 as its HTTP address, so
+  # the node list a connection reads (`_nodes/http`) can be reached.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
+    profiles: [elasticsearch]
+    mem_limit: 1200m
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      ELASTIC_PASSWORD: tablepeek_test_pw
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      xpack.ml.enabled: "false"
+      ingest.geoip.downloader.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      http.publish_host: 127.0.0.1
+      http.publish_port: "9201"
+    ports:
+      - "127.0.0.1:9201:9200"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:tablepeek_test_pw 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 3s
+      retries: 60
+      start_period: 20s
+
+  # The same with HTTPS on 9203: a node certificate for localhost and
+  # 127.0.0.1 signed by the test CA (testdb/x509/ca.pem, made by
+  # testdb/elasticsearch-tls/gen.sh), client certificates optional and a
+  # PKI realm that maps testdb/x509/client.pem (CN=tablepeek-client) to
+  # superuser beside the native one.
+  elasticsearch-tls:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
+    profiles: [elasticsearch-tls]
+    mem_limit: 1200m
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      ELASTIC_PASSWORD: tablepeek_test_pw
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.http.ssl.certificate: certs/node.crt
+      xpack.security.http.ssl.key: certs/node.key
+      xpack.security.http.ssl.certificate_authorities: certs/ca.pem
+      xpack.security.http.ssl.client_authentication: optional
+      xpack.security.transport.ssl.enabled: "false"
+      xpack.security.authc.realms.native.native1.order: "0"
+      xpack.security.authc.realms.pki.pki1.order: "1"
+      # The PKI realm needs more than the basic license.
+      xpack.license.self_generated.type: trial
+      xpack.ml.enabled: "false"
+      ingest.geoip.downloader.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      http.publish_host: 127.0.0.1
+      http.publish_port: "9203"
+    ports:
+      - "127.0.0.1:9203:9200"
+    volumes:
+      - ./:/seed:ro
+      - ./elasticsearch-tls/certs:/usr/share/elasticsearch/config/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf --cacert config/certs/ca.pem -u elastic:tablepeek_test_pw 'https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 3s
+      retries: 60
+      start_period: 20s
+
+  # Elasticsearch 7.9 (no point in time: exports and the cursor-less paths
+  # read by scroll), security on, HTTP on 9204.
+  elasticsearch-7:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.9.3
+    profiles: [elasticsearch-7]
+    mem_limit: 1200m
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      ELASTIC_PASSWORD: tablepeek_test_pw
+      xpack.security.enabled: "true"
+      # API keys are off by default before 8.0.
+      xpack.security.authc.api_key.enabled: "true"
+      xpack.ml.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      http.publish_host: 127.0.0.1
+      http.publish_port: "9204"
+    ports:
+      - "127.0.0.1:9204:9200"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:tablepeek_test_pw 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 3s
+      retries: 60
+      start_period: 20s
+
+  # Elasticsearch 6.8, the last with mapping types (the seed's indices are
+  # made typeless, as `_doc`), security on (basic license), HTTP on 9206.
+  # Only an x86-64 image exists: it runs emulated on ARM machines.
+  elasticsearch-6:
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.8.23
+    platform: linux/amd64
+    profiles: [elasticsearch-6]
+    # Emulation (x86-64 on ARM) needs room beyond the 512 MB heap.
+    mem_limit: 1600m
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      ELASTIC_PASSWORD: tablepeek_test_pw
+      xpack.security.enabled: "true"
+      xpack.security.authc.api_key.enabled: "true"
+      xpack.ml.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      http.publish_host: 127.0.0.1
+      http.publish_port: "9206"
+      # API keys need more than 6.8's basic license.
+      xpack.license.self_generated.type: trial
+    ports:
+      - "127.0.0.1:9206:9200"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:tablepeek_test_pw 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 5s
+      retries: 60
+      start_period: 60s
+
+  # OpenSearch 2 with its security plugin's demo setup: HTTPS on 9202 with a
+  # self-signed certificate (the tests pin its fingerprint or skip the
+  # check) and admin / TablePeek_test_pw1. Heap 512 MB. Seeded like
+  # elasticsearch.
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    profiles: [opensearch]
+    mem_limit: 1200m
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: TablePeek_test_pw1
+      plugins.ml_commons.only_run_on_ml_node: "true"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      http.publish_host: 127.0.0.1
+      http.publish_port: "9202"
+    ports:
+      - "127.0.0.1:9202:9200"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -skf -u admin:TablePeek_test_pw1 'https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 3s
+      retries: 80
+      start_period: 30s
+
+  # OpenSearch 1.3 (no point in time before 2.4) with the demo security
+  # setup of its day: HTTPS on 9205, admin / admin.
+  opensearch-1:
+    image: opensearchproject/opensearch:1.3.20
+    profiles: [opensearch-1]
+    mem_limit: 1200m
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      http.publish_host: 127.0.0.1
+      http.publish_port: "9205"
+    ports:
+      - "127.0.0.1:9205:9200"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -skf -u admin:admin 'https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 3s
+      retries: 80
+      start_period: 30s
+
+  # OpenSearch 3.9 with the demo security setup and API keys (3.7 and
+  # later) switched on: testdb/opensearch-3/config.yml is the image's
+  # security config with `api_tokens.enabled: true`. HTTPS on 9207,
+  # admin / TablePeek_test_pw1.
+  opensearch-3:
+    image: opensearchproject/opensearch:3.9.0
+    profiles: [opensearch-3]
+    mem_limit: 1400m
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: TablePeek_test_pw1
+      plugins.ml_commons.only_run_on_ml_node: "true"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      http.publish_host: 127.0.0.1
+      http.publish_port: "9207"
+    ports:
+      - "127.0.0.1:9207:9200"
+    volumes:
+      - ./:/seed:ro
+      - ./opensearch-3/config.yml:/usr/share/opensearch/config/opensearch-security/config.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -skf -u admin:TablePeek_test_pw1 'https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 3s
+      retries: 80
+      start_period: 30s
+
+  # Cassandra 5 with logins on (cassandra / cassandra, and the seed's
+  # tablepeek / tablepeek_test_pw), Java UDFs and materialized views
+  # enabled, on 9043. Heap 512 MB. Seeded by `make test-db`
+  # (cassandra-keyspaces.cql, cassandra-shop.cql, cassandra-extras.cql).
+  # Run one CQL server at a time: both are heavy.
+  cassandra:
+    image: cassandra:5
+    profiles: [cassandra]
+    mem_limit: 1200m
+    # Two CPUs and bounded off-heap memory: on a many-core machine the JVM
+    # would size thread pools, GC threads and direct buffers past the cap.
+    cpus: 2
+    environment:
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+      JVM_EXTRA_OPTS: -XX:MaxDirectMemorySize=128m -Xss256k -XX:ParallelGCThreads=2 -XX:ConcGCThreads=1 -XX:MaxMetaspaceSize=192m
+      CASSANDRA_CLUSTER_NAME: tablepeek
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        sed -i
+        -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+        -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/'
+        -e 's/^user_defined_functions_enabled:.*/user_defined_functions_enabled: true/'
+        -e 's/^materialized_views_enabled:.*/materialized_views_enabled: true/'
+        /etc/cassandra/cassandra.yaml
+        && exec docker-entrypoint.sh cassandra -f
+    ports:
+      - "127.0.0.1:9043:9042"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "cqlsh", "-u", "cassandra", "-p", "cassandra", "-e", "SELECT release_version FROM system.local"]
+      interval: 5s
+      retries: 60
+      start_period: 40s
+
+  # ScyllaDB on one shard with 512 MB, logins on and Lua UDFs, on 9044.
+  # Recent ScyllaDB makes no default superuser: `make test-db` seeds over
+  # the maintenance socket (/var/lib/scylla/cql.m, no login), which makes
+  # the tablepeek / tablepeek_test_pw superuser (scylladb-keyspaces.cql),
+  # then cassandra-shop.cql and scylladb-extras.cql.
+  scylladb:
+    image: scylladb/scylla:latest
+    profiles: [scylladb]
+    mem_limit: 1g
+    command:
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --overprovisioned
+      - "1"
+      - --developer-mode
+      - "1"
+      - --authenticator
+      - PasswordAuthenticator
+      - --authorizer
+      - CassandraAuthorizer
+      - --experimental-features
+      - udf
+      - --enable-user-defined-functions
+      - "true"
+    ports:
+      - "127.0.0.1:9044:9042"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "cqlsh", "/var/lib/scylla/cql.m", "-e", "SELECT release_version FROM system.local"]
+      interval: 5s
+      retries: 60
+      start_period: 30s
+
+  # A two-node ScyllaDB cluster (256 MB each) reached only through the SSH
+  # server above, for tunnels that must lead to every node. `make test-db
+  # ENGINE=scylladb-cluster` seeds it like scylladb, on scylla-a.
+  scylla-a: &scylla-node
+    image: scylladb/scylla:latest
+    profiles: [scylladb-cluster]
+    mem_limit: 600m
+    command: [--seeds, scylla-a, --smp, "1", --memory, 256M, --overprovisioned, "1", --developer-mode, "1", --authenticator, PasswordAuthenticator, --authorizer, CassandraAuthorizer, --experimental-features, udf, --enable-user-defined-functions, "true"]
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "cqlsh", "/var/lib/scylla/cql.m", "-e", "SELECT release_version FROM system.local"]
+      interval: 5s
+      retries: 60
+      start_period: 30s
+  scylla-b:
+    <<: *scylla-node
+    depends_on:
+      scylla-a:
+        condition: service_healthy
+
+  # Oracle Database 23ai Free (the slim image with a ready-made database;
+  # native arm64 too) on 15210, service FREEPDB1. `make test-db` first
+  # shrinks its SGA and PGA to fit the cap (oracle-memory.sql, one restart),
+  # then seeds the TABLEPEEK schema the tests read (oracle.sql) and the SHOP
+  # sample (oracle-shop.sql) as SYS (password Oracle_test_pw1), and opens a
+  # TCPS listener on 15211 with the wallet oracle-wallet.sh made
+  # (oracle-tls.sh; certificate for localhost and 127.0.0.1 from x509/).
+  oracle:
+    image: gvenzl/oracle-free:23-slim-faststart
+    profiles: [oracle]
+    mem_limit: 2500m
+    environment:
+      ORACLE_PASSWORD: Oracle_test_pw1
+    ports:
+      - "127.0.0.1:15210:1521"
+      - "127.0.0.1:15211:2484"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 5s
+      retries: 60
+      start_period: 20s
 
 # The keytab the KDC writes for the Kerberos test server.
 volumes:

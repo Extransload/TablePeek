@@ -744,7 +744,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
           )}
         </Section>
       </div>
-      {pendingReview !== null ? <ReviewModal mode={safeMode === 0 ? 1 : safeMode} items={[pendingReview.item]} txActive onRun={() => pendingReview.resolve(true)} onClose={() => pendingReview.resolve(false)} /> : null}
+      {pendingReview !== null ? <ReviewModal mode={safeMode === 0 ? 1 : safeMode} items={[pendingReview.item]} offerTx={false} onRun={() => pendingReview.resolve(true)} onClose={() => pendingReview.resolve(false)} /> : null}
     </div>
   );
 }

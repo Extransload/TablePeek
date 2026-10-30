@@ -2,17 +2,39 @@ import { firstRowsSql } from "./dataQuery";
 import { quoteIdent } from "./ddl";
 import type { SqlDialect } from "./engines/sqlDialect";
 import { t } from "./i18n";
-import { escapeString, lexingFor } from "./sqlSplit";
+import { escapeString, lexingFor, qQuoteAt } from "./sqlSplit";
 
-export type DefinitionKind = "view" | "function" | "procedure" | "trigger" | "sequence";
+export type DefinitionKind =
+  | "view"
+  | "materialized_view"
+  | "dictionary"
+  | "function"
+  | "procedure"
+  | "trigger"
+  | "sequence"
+  | "type"
+  | "aggregate"
+  | "synonym"
+  | "package";
 
 export const DEFINITION_KIND_LABELS: Record<DefinitionKind, string> = {
   view: "뷰",
+  materialized_view: "구체화된 뷰",
+  dictionary: "딕셔너리",
   function: "함수",
   procedure: "프로시저",
   trigger: "트리거",
   sequence: "시퀀스",
+  type: "타입",
+  aggregate: "집계 함수",
+  synonym: "동의어",
+  package: "패키지",
 };
+
+// Kinds whose rows open in a data tab, as a table's do.
+export function opensData(kind: DefinitionKind): boolean {
+  return kind === "view" || kind === "materialized_view" || kind === "dictionary";
+}
 
 export function definitionTabTitle(kind: DefinitionKind, name: string): string {
   return `${t(DEFINITION_KIND_LABELS[kind])} ${t("정의")}: ${name}`;
@@ -42,14 +64,22 @@ const SESSION_KEYWORDS = new Set([
 ]);
 const DML = /\b(insert|update|delete|merge|replace)\b/i;
 
+// Oracle's q'[…]' text, as sqlSplit's qQuoteAt reads it.
+const Q_QUOTED = /(?<![\w$#])[nN]?[qQ]'(?:\[[\s\S]*?\]|\{[\s\S]*?\}|\([\s\S]*?\)|<[\s\S]*?>|(\S)[\s\S]*?\1)'/g;
+
 // Comments and quoted text can't trigger or hide keywords.
 // # starts a comment only in MySQL (and when the engine isn't known); in
 // PostgreSQL it's an operator and in SQL Server a temporary table's name.
+// Oracle's q'[…]' text goes first, before the plain quotes misread it.
 function scanText(sql: string, dialect?: SqlDialect): string {
-  const hashComments = lexingFor(dialect).hashComments;
-  return sql
+  const lex = lexingFor(dialect);
+  let text = sql
     .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(hashComments ? /(--|#)[^\n]*/g : /--[^\n]*/g, " ")
+    .replace(lex.hashComments ? /(--|#)[^\n]*/g : /--[^\n]*/g, " ");
+  if (lex.slashComments === true) {
+    text = text.replace(/\/\/[^\n]*/g, " ");
+  }
+  return (lex.qQuotes === true ? text.replace(Q_QUOTED, "''") : text)
     .replace(/'(?:[^'\\]|\\.|'')*'/g, "''")
     .replace(/"(?:[^"]|"")*"/g, '""')
     .replace(/`[^`]*`/g, "``")
@@ -68,7 +98,18 @@ export function changesSchema(sql: string, dialect?: SqlDialect): boolean {
 export function classifyStatement(sql: string, dialect?: SqlDialect): ReviewItem | null {
   const scan = scanText(sql, dialect);
   const keyword = (/^([a-z]+)/i.exec(scan)?.[1] ?? "").toLowerCase();
-  if (keyword === "" || SESSION_KEYWORDS.has(keyword)) {
+  // Oracle's BEGIN opens a PL/SQL block, which runs code, not a transaction;
+  // CQL's BEGIN … BATCH writes every statement in it.
+  const lex = lexingFor(dialect);
+  const block = keyword === "begin" && (lex.slashBlocks === true || lex.batchBlocks === true);
+  // PL/SQL runs whatever its statements do: read them.
+  if (lex.slashBlocks === true && PLSQL_STARTS.has(keyword)) {
+    return classifyPlsql(sql, scan, keyword);
+  }
+  // cqlsh's commands (CONSISTENCY, SERIAL CONSISTENCY, TRACING) set the
+  // session; LIST ROLES and LIST PERMISSIONS read.
+  const cqlSession = lex.batchBlocks === true && ["consistency", "serial", "tracing", "list"].includes(keyword);
+  if (keyword === "" || cqlSession || (SESSION_KEYWORDS.has(keyword) && !block)) {
     return null;
   }
   const item = (severity: ReviewItem["severity"], reason: string): ReviewItem => ({
@@ -81,8 +122,10 @@ export function classifyStatement(sql: string, dialect?: SqlDialect): ReviewItem
     return scan.includes("=") ? item("write", "설정을 변경합니다") : null;
   }
   if (keyword === "with" || keyword === "explain") {
-    // WITH ... DELETE, and EXPLAIN ANALYZE, actually run the data change.
-    const runs = keyword === "with" || /^explain\s+(\(.*?\)\s*)?analy[sz]e\b/i.test(scan);
+    // WITH ... DELETE, and EXPLAIN ANALYZE, actually run the data change; so
+    // does CQL's EXPLAIN, which traces the statement as it runs.
+    const runs =
+      keyword === "with" || lex.batchBlocks === true || /^explain\s+(\(.*?\)\s*)?analy[sz]e\b/i.test(scan);
     return runs && DML.test(scan) ? item("write", "데이터를 변경합니다") : null;
   }
   if (READ_KEYWORDS.has(keyword)) {
@@ -111,6 +154,76 @@ export function classifyStatement(sql: string, dialect?: SqlDialect): ReviewItem
     default:
       return item("write", "데이터나 스키마를 변경합니다");
   }
+}
+
+// What opens PL/SQL in an Oracle script: a block, or a procedure called by
+// CALL or SQL*Plus's EXEC.
+const PLSQL_STARTS = new Set(["begin", "declare", "call", "exec", "execute"]);
+
+// Built-ins a block may call without changing anything.
+const PLSQL_READ_CALLS = /^(dbms_output|dbms_application_info)\.|^(dbms_session|dbms_lock)\.sleep$|^raise_application_error$/;
+
+// Words that only steer a block (or declare in it): what follows the last
+// of them in a piece is the statement.
+const PLSQL_FLOW = /^(begin|declare|then|else|loop|exception|is|as)$/;
+const PLSQL_SKIP = new Set([
+  "end", "if", "elsif", "null", "return", "exit", "continue", "goto", "raise", "open", "fetch", "close",
+  "cursor", "type", "subtype", "pragma", "procedure", "function", "while", "for", "case", "when",
+]);
+
+// A PL/SQL block (or CALL/EXEC) judged by the statements in it, as each
+// would be on its own: the most dangerous one decides. Dynamic SQL and
+// calls to procedures other than read-only built-ins can't be read, so they
+// count as writes (EXECUTE IMMEDIATE, which may drop or alter, as danger).
+function classifyPlsql(sql: string, scan: string, keyword: string): ReviewItem | null {
+  const item = (severity: ReviewItem["severity"], reason: string, word: string): ReviewItem => ({
+    sql,
+    keyword: word.toUpperCase(),
+    severity,
+    reason,
+  });
+  if (keyword !== "begin" && keyword !== "declare") {
+    const callee = (/^\w+\s+([\w$#."]+)/.exec(scan)?.[1] ?? "").replace(/"/g, "").toLowerCase();
+    return PLSQL_READ_CALLS.test(callee) ? null : item("write", "프로시저를 호출합니다 (무엇을 바꾸는지 알 수 없습니다)", keyword);
+  }
+  let found: ReviewItem | null = null;
+  for (const piece of scan.split(";")) {
+    // The statement after the block's last steering word (THEN, LOOP, …).
+    const words = piece.trim().split(/\s+/);
+    let start = 0;
+    words.forEach((word, at) => {
+      if (PLSQL_FLOW.test(word.toLowerCase())) {
+        start = at + 1;
+      }
+    });
+    const statement = words.slice(start).join(" ").trim();
+    const first = (/^([a-z_]+)/i.exec(statement)?.[1] ?? "").toLowerCase();
+    if (first === "" || PLSQL_SKIP.has(first)) {
+      continue;
+    }
+    let next: ReviewItem | null = null;
+    if (first === "select") {
+      next = /\bfor\s+update\b/i.test(statement) ? item("write", "행을 잠급니다", first) : null;
+    } else if (first === "execute" || /^dbms_sql\./i.test(statement)) {
+      next = item("danger", "동적 SQL을 실행합니다 (무엇을 바꾸는지 알 수 없습니다)", "execute");
+    } else if (["update", "delete", "insert", "merge", "drop", "truncate", "alter", "create"].includes(first)) {
+      next = classifyStatement(statement);
+    } else if (["commit", "rollback", "savepoint"].includes(first)) {
+      next = item("write", "트랜잭션을 끝냅니다", first);
+    } else if (!statement.includes(":=")) {
+      // A call (proc(…), pkg.proc) or a declaration (n NUMBER): a call is
+      // a name followed by its arguments or nothing.
+      const call = /^([\w$#."]+)\s*(\(|$)/.exec(statement);
+      const callee = (call?.[1] ?? "").replace(/"/g, "").toLowerCase();
+      if (call !== null && !PLSQL_READ_CALLS.test(callee)) {
+        next = item("write", "프로시저를 호출합니다 (무엇을 바꾸는지 알 수 없습니다)", callee);
+      }
+    }
+    if (next !== null && (found === null || (found.severity === "write" && next.severity === "danger"))) {
+      found = { ...next, sql };
+    }
+  }
+  return found;
 }
 
 export function reviewStatements(statements: string[], mode: SafeMode, dialect?: SqlDialect): ReviewItem[] {
@@ -160,6 +273,13 @@ export interface Snippet {
 
 export function snippetList(table: string, explainPrefix: string, dialect: SqlDialect): Snippet[] {
   const quoted = quoteIdent(dialect, table);
+  if (dialect.snippets !== undefined) {
+    return [
+      { name: dialect.firstRowsName, sql: firstRowsSql(dialect, quoted) },
+      ...dialect.snippets(quoted),
+      { name: "EXPLAIN", sql: `${explainPrefix}SELECT * FROM ${quoted};` },
+    ];
+  }
   return [
     { name: dialect.firstRowsName, sql: firstRowsSql(dialect, quoted) },
     { name: "COUNT", sql: `SELECT count(*) FROM ${quoted};` },
@@ -306,6 +426,17 @@ function chunkSql(sql: string, dialect?: SqlDialect): SqlChunk[] {
       if (tag !== undefined) {
         const end = sql.indexOf(tag, index + tag.length);
         const stop = end < 0 ? len : end + tag.length;
+        flushText();
+        chunks.push({ kind: "string", text: sql.slice(index, stop) });
+        index = stop;
+        continue;
+      }
+    }
+    if (lex.qQuotes === true && /[nNqQ]/.test(ch)) {
+      const q = qQuoteAt(sql, index);
+      if (q !== null) {
+        const end = sql.indexOf(q.close, q.body);
+        const stop = end < 0 ? len : end + q.close.length;
         flushText();
         chunks.push({ kind: "string", text: sql.slice(index, stop) });
         index = stop;

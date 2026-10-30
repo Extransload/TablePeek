@@ -1,0 +1,137 @@
+{
+  "id": "clickhouse",
+  "aliases": [
+    "ch"
+  ],
+  "label": "ClickHouse",
+  "paradigm": "sql",
+  "family": "clickhouse",
+  "transport": "server",
+  "default_port": 8123,
+  "url_schemes": [
+    "clickhouse",
+    "ch"
+  ],
+  "error_code_prefix": "clickhouse",
+  "capabilities": {
+    "language": "sql",
+    "objects": [
+      "table",
+      "view",
+      "materialized_view",
+      "dictionary",
+      "function"
+    ],
+    "schema": "declared",
+    "edit_by_key": true,
+    "transactions": "none",
+    "foreign_keys": false,
+    "ddl": true,
+    "databases": "switch",
+    "users": true,
+    "explain": "clickhouse",
+    "exact_count": true,
+    "dump": "sql",
+    "import_formats": [
+      "csv",
+      "json",
+      "sql"
+    ],
+    "export_formats": [
+      "csv",
+      "json",
+      "sql",
+      "xlsx"
+    ],
+    "sessions": {
+      "kill": true
+    },
+    "validation": false,
+    "aggregation": false,
+    "indexes": {
+      "create": true,
+      "drop": true
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "required": true,
+        "placeholder": "호스트 또는 연결 URL 붙여넣기",
+        "default": "127.0.0.1"
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "required": true,
+        "default": 8123
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자",
+        "default": "default"
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호"
+      },
+      {
+        "key": "database",
+        "type": "text",
+        "label": "데이터베이스",
+        "default": "default"
+      },
+      {
+        "key": "tls",
+        "type": "toggle",
+        "label": "HTTPS",
+        "description": "HTTPS로 접속 (보통 포트 8443)",
+        "default": false
+      },
+      {
+        "key": "tls_ca_file",
+        "type": "file",
+        "label": "CA 인증서",
+        "placeholder": "시스템 인증서 대신 쓸 CA (PEM)",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_skip_verify",
+        "type": "toggle",
+        "label": "인증서 검증 끄기",
+        "description": "자체 서명 인증서를 확인 없이 받아들임",
+        "default": false,
+        "advanced": true,
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "cluster",
+        "type": "text",
+        "label": "ON CLUSTER",
+        "placeholder": "클러스터 이름 (system.clusters)",
+        "description": "앱이 만드는 구조 변경(CREATE, ALTER, DROP, TRUNCATE, RENAME)을 이 클러스터의 모든 서버에서 실행. 문장마다 바꿀 수 있음",
+        "advanced": true
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {database}",
+    "detail": "{user}@{host}:{port}/{database}"
+  }
+}

@@ -25,6 +25,8 @@ use crate::{
     shown_hex_bytes, EngineError, QueryData,
 };
 
+pub(crate) mod cells;
+
 /// A SELECT's table as information_schema names it (schema, table) and its
 /// primary key columns; None when information_schema has no such table.
 type Source = Option<(String, String, Vec<String>)>;
@@ -660,6 +662,7 @@ pub(crate) async fn query(
         pk,
         column_kinds,
         rows_affected: read.rows_affected,
+        next_page: None,
     })
 }
 
@@ -1162,6 +1165,7 @@ pub(crate) async fn table_detail(
         foreign_keys,
         triggers,
         schema: Some(canonical_schema.clone()),
+        properties: Vec::new(),
     })
 }
 
@@ -1320,6 +1324,7 @@ pub(crate) async fn objects(
         triggers,
         sequences: Vec::new(),
         procedures,
+        ..DbObjects::default()
     })
 }
 

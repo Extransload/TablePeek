@@ -172,9 +172,10 @@ pub(crate) fn tx_controls(sql: &str, dialect: Dialect) -> Vec<TxControl> {
         let ends = matches!(lexeme, Lexeme::End) || lexemes.peek().is_none();
         if ends && !head.is_empty() {
             classify(&head, dialect, &mut controls);
-            // PostgreSQL runs one statement per query, `;`s of a BEGIN ATOMIC
-            // body included; a MySQL routine's body runs only when called.
-            if dialect == Dialect::Postgres || defines_routine(&head) {
+            // PostgreSQL and Oracle run one statement per query, `;`s of a
+            // BEGIN ATOMIC body or a PL/SQL block included; a MySQL
+            // routine's body runs only when called.
+            if matches!(dialect, Dialect::Postgres | Dialect::Oracle) || defines_routine(&head) {
                 break;
             }
             head.clear();
@@ -238,6 +239,19 @@ fn control_of(head: &[String], dialect: Dialect) -> Option<TxControl> {
             "CREATE" | "ALTER" | "DROP" | "RENAME" | "TRUNCATE" | "GRANT" | "REVOKE" | "LOCK"
             | "ANALYZE" | "OPTIMIZE" | "REPAIR" | "FLUSH" | "INSTALL" | "UNINSTALL",
         ) => TxControl::ImplicitCommit,
+        (Dialect::Oracle, "COMMIT") => TxControl::Commit,
+        (Dialect::Oracle, "ROLLBACK") if to_savepoint => TxControl::RollbackToSavepoint,
+        (Dialect::Oracle, "ROLLBACK") => TxControl::Rollback,
+        (Dialect::Oracle, "SET") if word(1) == Some("TRANSACTION") => TxControl::Begin,
+        // Session and system settings commit nothing; every other DDL
+        // commits the open transaction first.
+        (Dialect::Oracle, "ALTER") if matches!(word(1), Some("SESSION" | "SYSTEM")) => return None,
+        (
+            Dialect::Oracle,
+            "CREATE" | "ALTER" | "DROP" | "RENAME" | "TRUNCATE" | "GRANT" | "REVOKE" | "COMMENT"
+            | "ANALYZE" | "AUDIT" | "NOAUDIT" | "PURGE" | "FLASHBACK" | "ASSOCIATE"
+            | "DISASSOCIATE",
+        ) => TxControl::ImplicitCommit,
         _ => return None,
     };
     Some(control)
@@ -286,8 +300,11 @@ pub fn is_read_only(sql: &str) -> bool {
 }
 
 const READ_ONLY_PREFIXES: [&str; 6] = ["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"];
-const FORBIDDEN_WORDS: [&str; 7] = [
-    "INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "DROP", "ALTER",
+// CQL's EXPLAIN (TablePeek's tracing) runs the statement it names, so the
+// words that change schema, rights or rows anywhere make it a write.
+const FORBIDDEN_WORDS: [&str; 12] = [
+    "INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
+    "REVOKE", "BATCH",
 ];
 
 fn contains_word(text: &str, word: &str) -> bool {

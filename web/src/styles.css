@@ -1260,7 +1260,8 @@ select {
   display: inline-flex;
 }
 
-.filter-apply-all button:first-child {
+/* Square where the AND/OR menu joins it; alone (one logic) it stays round. */
+.filter-apply-all button:first-child:not(:only-child) {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
@@ -1272,6 +1273,28 @@ select {
   border-left: 1px solid color-mix(in srgb, var(--accent-contrast, #fff) 30%, transparent);
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
+}
+
+/* The "allow filtering" switch (CQL's ALLOW FILTERING) at the left of the
+   actions, its warning beside it while it is on. */
+.filter-allow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-right: auto;
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.filter-allow label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.filter-allow-warning {
+  color: var(--warn);
 }
 
 .result-action {
@@ -4370,6 +4393,42 @@ textarea:focus-visible {
   text-align: center;
 }
 
+/* The engine's storage settings, one per line: name, then its value as SQL. */
+.structure-properties {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.structure-properties th {
+  width: 1%;
+  padding: 4px 12px;
+  color: var(--muted);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.structure-properties td {
+  padding: 4px 12px 4px 0;
+  word-break: break-word;
+}
+
+.structure-properties code {
+  font-family: var(--mono);
+}
+
+/* A property's one-click change (SqlDialect.propertyAction), after its value. */
+.structure-property-action {
+  margin-left: 10px;
+}
+
+/* ON CLUSTER in the head of the structure tab's DDL preview. */
+.cluster-picker.inline {
+  flex: none;
+}
+
 .appbar {
   gap: 4px;
   height: 46px;
@@ -4485,13 +4544,14 @@ textarea:focus-visible {
 }
 
 /* Drag handle on the sidebar's right edge. Negative margins give it a wide
-   grab area without taking any width from the layout. */
+   grab area without taking any width from the layout; the area reaches into
+   the content side so it never covers the sidebar's own scrollbar. */
 .sidebar-splitter {
   position: relative;
   z-index: 3;
   flex: none;
   width: 8px;
-  margin: 0 -5px 0 -3px;
+  margin: 0 -7px 0 -1px;
   cursor: col-resize;
   touch-action: none;
   outline: none;
@@ -4502,7 +4562,7 @@ textarea:focus-visible {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 2px;
+  left: 0;
   width: 2px;
   border-radius: 1px;
   background: transparent;
@@ -4515,14 +4575,15 @@ textarea:focus-visible {
   background: var(--accent);
 }
 
-/* Drag handle on the row detail panel's left edge, straddling the border
-   without taking width from the layout. */
+/* Drag handle on the row detail panel's left edge, without taking width from
+   the layout. The grab area reaches into the panel, not over the grid's
+   vertical scrollbar next to it. */
 .detail-splitter {
   position: relative;
   z-index: 6;
   flex: none;
   width: 8px;
-  margin: 0 -3px 0 -5px;
+  margin: 0 -7px 0 -1px;
   cursor: col-resize;
   touch-action: none;
   outline: none;
@@ -4533,7 +4594,7 @@ textarea:focus-visible {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 4px;
+  left: 0;
   width: 2px;
   border-radius: 1px;
   background: transparent;
@@ -6180,6 +6241,7 @@ button.error-notice-icon-button:last-child {
 
 .error-notice-cause,
 .error-notice-fixes,
+.error-notice-undo,
 .error-notice-actions,
 .error-notice-raw {
   margin: 0;
@@ -6197,14 +6259,27 @@ button.error-notice-icon-button:last-child {
   font-weight: 600;
 }
 
-.error-notice-fixes ul {
+.error-notice-fixes ul,
+.error-notice-undo ul {
   margin: 0;
   padding-left: 16px;
   color: var(--muted);
 }
 
-.error-notice-fixes li + li {
+.error-notice-fixes li + li,
+.error-notice-undo li + li {
   margin-top: 2px;
+}
+
+/* A transaction-less apply's undo report (AppError.undo): a short list,
+   scrolled when long; what couldn't be undone first, in the error colour. */
+.error-notice-undo ul {
+  max-height: 8em;
+  overflow: auto;
+}
+
+.error-notice-undo-left {
+  color: var(--error);
 }
 
 .error-notice-actions {
@@ -6345,6 +6420,21 @@ button.error-notice-icon-button:last-child {
   background: color-mix(in srgb, var(--error) 12%, var(--panel));
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
   animation: tablepeek-fade-in var(--motion-fast) ease-out both;
+}
+
+/* With a dialog open the stack moves to the top edge and stays short, so a
+   toast never lies over the dialog's footer buttons (dialogs are centred
+   and end in their actions). It still sits above the backdrop, so it can
+   be read, copied and closed. */
+body:has(.modal-backdrop, .palette-backdrop) .error-toasts {
+  top: 12px;
+  bottom: auto;
+  max-height: min(40vh, 380px);
+  overflow-y: auto;
+}
+
+body:has(.modal-backdrop, .palette-backdrop) .error-toasts > .error-notice {
+  max-height: min(22vh, 180px);
 }
 
 /* A problem with one field's value, under the field. */
@@ -8797,6 +8887,30 @@ input.structure-name:disabled {
   opacity: 1;
 }
 
+/* A far page jump or a count the server does in steps: its progress and stop. */
+.data-toolbar .step-progress {
+  color: var(--ink);
+}
+
+.data-toolbar .step-progress-bar {
+  width: 72px;
+  height: 4px;
+  border: 0;
+  border-radius: 2px;
+  background: var(--hover-fill);
+  accent-color: var(--accent);
+}
+
+.data-toolbar .step-progress-bar::-webkit-progress-bar {
+  border-radius: 2px;
+  background: var(--hover-fill);
+}
+
+.data-toolbar .step-progress-bar::-webkit-progress-value {
+  border-radius: 2px;
+  background: var(--accent);
+}
+
 .page-label {
   min-width: 34px;
   text-align: center;
@@ -9519,6 +9633,56 @@ button.result-set.failed .result-set-status {
 
 .job-bar-fill.cancelled {
   background: var(--faint);
+}
+
+/* A binary cell's whole value: download, or replace from text, hex or a file. */
+.binary-cell-modal {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.binary-cell-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.binary-cell-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.binary-cell-label {
+  min-width: 48px;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.binary-cell-text {
+  min-height: 120px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.binary-cell-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 120px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  text-align: center;
+}
+
+.binary-cell-drop.dragging {
+  border-color: var(--accent);
+  color: var(--ink);
 }
 
 @media (max-width: 640px) {

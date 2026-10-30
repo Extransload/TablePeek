@@ -781,7 +781,7 @@ export function SettingsModal({
                   }
                 />
               </SettingsField>
-              <SettingsField label={t("쿼리 시간 제한(초)")} hint={t("MongoDB 쿼리와 mongosh 스크립트에 쓰입니다. 0이면 제한이 없습니다.")}>
+              <SettingsField label={t("쿼리 시간 제한(초)")} hint={t("MongoDB 쿼리, mongosh 스크립트, ClickHouse 문장에 쓰입니다. 0이면 제한이 없습니다.")}>
                 <input
                   type="number"
                   min={0}

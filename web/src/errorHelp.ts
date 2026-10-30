@@ -1,5 +1,5 @@
 import { engineById, engines, type EngineErrorHelp, type ErrorHint } from "./engines";
-import { t } from "./i18n";
+import { phraseOf, say, t } from "./i18n";
 
 // Turns raw driver and server errors into an explanation a person can act
 // on: what happened, the likely cause, and what to try. Rules match the
@@ -23,6 +23,14 @@ export interface AppError {
   details?: unknown;
   // The driver's full original text.
   raw?: string;
+  // What a transaction-less apply took back after this failure, and what it
+  // couldn't (store.ts undoApplied): shown as a short list under the title.
+  undo?: UndoReport;
+}
+
+export interface UndoReport {
+  undone: string[];
+  left: { change: string; reason: string }[];
 }
 
 // Where the error is shown; a rule offers only the fixes that make sense there
@@ -309,7 +317,7 @@ const RULES: ErrorRule[] = [
   // ── Logging in ────────────────────────────────────────────────────
   {
     match: /password has expired|must reset your password/i,
-    code: /ERROR (?:1820|1862)\b/,
+    code: /ERROR (?:1820|1862)\b|ORA-28001\b/,
     help: () => ({
       title: t("비밀번호가 만료되었습니다"),
       cause: t("서버가 이 계정의 비밀번호를 바꾸기 전까지 다른 작업을 막고 있습니다."),
@@ -369,7 +377,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /Access denied for user '([^']*)'@'([^']*)' \(using password|password authentication failed for user "([^"]+)"|Login failed for user '([^']*)'/,
-    code: /ERROR 1045\b|\[SQLSTATE 28P01\]|code: 18456\b/,
+    code: /ERROR 1045\b|\[SQLSTATE 28P01\]|code: 18456\b|ORA-01017\b/,
     help: (found, situation) => {
       const user = pick(found, 1, 3, 4);
       const fixes = [t("사용자 이름과 비밀번호를 다시 확인하세요. 대소문자를 구분합니다.")];
@@ -407,7 +415,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /Too many connections|too many clients|remaining connection slots/i,
-    code: /ERROR 1040\b|\[SQLSTATE 53300\]/,
+    code: /ERROR 1040\b|\[SQLSTATE 53300\]|ORA-00018\b/,
     help: () => ({
       title: t("서버의 최대 접속 수를 넘었습니다"),
       fixes: [
@@ -470,7 +478,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /permission denied for (\w+) ([^\s[]+)|The (\w+) permission was denied on the object '([^']+)'|permission was denied/i,
-    code: /\[SQLSTATE 42501\]|code: (?:229|230|262|297)\b/,
+    code: /\[SQLSTATE 42501\]|code: (?:229|230|262|297)\b|ORA-01031\b/,
     help: (found) => {
       const name = pick(found, 2, 4);
       return {
@@ -485,7 +493,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /--read-only option|read-only transaction|super-read-only|attempt to write a readonly database/i,
-    code: /ERROR (?:1290|1792)\b|\[SQLSTATE 25006\]/,
+    code: /ERROR (?:1290|1792)\b|\[SQLSTATE 25006\]|ORA-16000\b/,
     help: () => ({
       title: t("읽기 전용이라 변경할 수 없습니다"),
       cause: t(
@@ -500,7 +508,7 @@ const RULES: ErrorRule[] = [
   // ── Query errors ──────────────────────────────────────────────────
   {
     match: /canceling statement due to user request|Query execution was interrupted/,
-    code: /ERROR 1317\b/,
+    code: /ERROR 1317\b|ORA-01013\b/,
     help: () => ({
       title: t("쿼리 실행을 취소했습니다"),
       fixes: [],
@@ -508,7 +516,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /statement timeout|maximum statement execution time exceeded/i,
-    code: /ERROR 3024\b/,
+    code: /ERROR 3024\b|DPI-1067\b/,
     help: () => ({
       title: t("쿼리 실행 시간 제한을 넘었습니다"),
       fixes: [
@@ -519,7 +527,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /Deadlock found|deadlock detected|was deadlocked/i,
-    code: /ERROR 1213\b|\[SQLSTATE 40P01\]/,
+    code: /ERROR 1213\b|\[SQLSTATE 40P01\]|ORA-00060\b/,
     help: () => ({
       title: t("교착 상태(데드락)로 쿼리가 취소되었습니다"),
       cause: t("두 작업이 서로 상대가 잠근 데이터를 기다리다가, 서버가 한쪽을 취소했습니다."),
@@ -531,7 +539,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /Lock wait timeout exceeded|could not obtain lock|database is locked|lock timeout/i,
-    code: /ERROR 1205\b|\[SQLSTATE 55P03\]/,
+    code: /ERROR 1205\b|\[SQLSTATE 55P03\]|ORA-(?:00054|30006)\b/,
     help: () => ({
       title: t("다른 작업이 같은 데이터를 잠그고 있습니다"),
       fixes: [
@@ -543,7 +551,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /You have an error in your SQL syntax[\s\S]*?near '([\s\S]*?)' at line (\d+)|syntax error at or near "([^"]*)"|Incorrect syntax near (?:the keyword )?'([^']*)'|near "([^"]*)": syntax error/,
-    code: /ERROR 1064\b|\[SQLSTATE 42601\]|code: (?:102|156)\b/,
+    code: /ERROR 1064\b|\[SQLSTATE 42601\]|code: (?:102|156)\b|ORA-00(?:90[0-35-7]|91[17]|92[1368]|93[36])\b/,
     help: (found, situation) => {
       const near = pick(found, 1, 3, 4, 5).trim().split("\n")[0].slice(0, 60);
       const fixes = [t("쉼표, 괄호, 따옴표의 짝이 맞는지 확인하세요.")];
@@ -565,7 +573,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /Table '([^']+)' doesn't exist|(?:relation|table) "([^"]+)" does not exist|no such table: (\S+)|Invalid object name '([^']+)'/,
-    code: /ERROR 1146\b|\[SQLSTATE 42P01\]|code: 208\b/,
+    code: /ERROR 1146\b|\[SQLSTATE 42P01\]|code: 208\b|ORA-00942\b/,
     help: (found, situation) => {
       const fixes: string[] = [];
       if (writingSql(situation)) {
@@ -609,7 +617,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /(?:database|relation|schema|role|type|function|index|view) "([^"]+)" already exists|Can't create database '([^']+)'; database exists|Table '([^']+)' already exists|There is already an object named '([^']+)'|Database '([^']+)' already exists|table (\S+) already exists/,
-    code: /\[SQLSTATE 42(?:P04|P06|P07|710|723)\]|ERROR (?:1007|1050)\b|code: (?:1801|2714)\b/,
+    code: /\[SQLSTATE 42(?:P04|P06|P07|710|723)\]|ERROR (?:1007|1050)\b|code: (?:1801|2714)\b|ORA-00955\b/,
     help: (found, situation) => {
       const name = unquote(pick(found, 1, 2, 3, 4, 5, 6));
       const fixes = [t("다른 이름을 쓰거나, 이미 있는 것을 그대로 쓰세요.")];
@@ -789,7 +797,7 @@ const RULES: ErrorRule[] = [
   },
   {
     match: /division by zero|Divide by zero/i,
-    code: /\[SQLSTATE 22012\]/,
+    code: /\[SQLSTATE 22012\]|ORA-01476\b/,
     help: () => ({
       title: t("0으로 나눌 수 없습니다"),
       fixes: [t("NULLIF(분모, 0)처럼 분모가 0일 때를 처리하세요.")],
@@ -806,6 +814,7 @@ const RULES: ErrorRule[] = [
   {
     network: true,
     match: /Connection refused|actively refused|ECONNREFUSED|os error (?:61|111|10061)\b|\(연결 거부\)/i,
+    code: /ORA-12541\b/,
     help: (_found, situation) => ({
       title: t("DB 서버에 연결할 수 없습니다 (연결 거부)"),
       cause: t("그 주소와 포트에서 기다리는 DB 서버가 없습니다."),
@@ -820,6 +829,7 @@ const RULES: ErrorRule[] = [
   {
     network: true,
     match: /failed to lookup address|Name or service not known|nodename nor servname|No such host is known|getaddrinfo|dns error|Temporary failure in name resolution|호스트를 찾을 수 없습니다/i,
+    code: /ORA-12545\b/,
     help: () => ({
       title: t("호스트 이름을 찾을 수 없습니다"),
       fixes: [
@@ -831,6 +841,7 @@ const RULES: ErrorRule[] = [
   {
     network: true,
     match: /timed out|deadline has elapsed|os error (?:60|110|10060)\b|응답하지 않습니다 \(시간 초과\)/i,
+    code: /ORA-12170\b/,
     help: () => ({
       title: t("서버가 응답하지 않습니다 (시간 초과)"),
       cause: t("요청이 서버에 닿지 않거나 답이 오지 않았습니다. 방화벽·보안 그룹이 막고 있거나 VPN이 필요할 때 흔합니다."),
@@ -852,6 +863,7 @@ const RULES: ErrorRule[] = [
   {
     network: true,
     match: /Connection reset|Broken pipe|connection closed|unexpected end of file|UnexpectedEof|os error (?:32|54|104)\b/i,
+    code: /ORA-031(?:13|14|35)\b/,
     help: () => ({
       title: t("서버와의 연결이 끊어졌습니다"),
       cause: t("서버가 연결을 닫았습니다. 서버 재시작, 오래 쉬던 연결의 시간 초과, 또는 SSL 설정 불일치가 원인일 수 있습니다."),
@@ -889,7 +901,8 @@ const UNKNOWN_ERROR = "알 수 없는 오류가 발생했습니다";
 
 // Any thrown value or server reply as an AppError. Error objects keep the
 // server's fields when they carry them as properties (ApiRequestError,
-// MongoError, TablePeekSocketError).
+// MongoError, TablePeekSocketError); one thrown with a phrase reads in the
+// current language.
 export function toAppError(error: unknown, fallback?: string): AppError {
   if (typeof error === "string") {
     return { code: "", message: error };
@@ -898,9 +911,10 @@ export function toAppError(error: unknown, fallback?: string): AppError {
     return { code: "", message: fallback ?? t(UNKNOWN_ERROR) };
   }
   const fields = error as Record<string, unknown>;
+  const spoken = phraseOf(error);
   const result: AppError = {
     code: typeof fields.code === "string" ? fields.code : "",
-    message: typeof fields.message === "string" && fields.message !== "" ? fields.message : (fallback ?? t(UNKNOWN_ERROR)),
+    message: spoken !== null ? say(spoken) : typeof fields.message === "string" && fields.message !== "" ? fields.message : (fallback ?? t(UNKNOWN_ERROR)),
   };
   if (typeof fields.sqlstate === "string" && fields.sqlstate !== "") {
     result.sqlstate = fields.sqlstate;
@@ -925,6 +939,10 @@ export function toAppError(error: unknown, fallback?: string): AppError {
   }
   if (typeof fields.raw === "string" && fields.raw !== "") {
     result.raw = fields.raw;
+  }
+  const undo = fields.undo as UndoReport | undefined;
+  if (undo !== undefined && undo !== null && Array.isArray(undo.undone) && Array.isArray(undo.left)) {
+    result.undo = undo;
   }
   return result;
 }
@@ -952,10 +970,16 @@ export function isAppServerDown(error: unknown): boolean {
   return trimmed === APP_SERVER_DOWN || trimmed === t(APP_SERVER_DOWN);
 }
 
-// The engine an error code belongs to: "postgres_error", "mongo_11000".
+// The engine an error code belongs to: "postgres_error", "mongo_11000", or
+// an engine's own prefix ("cql_2200": Cassandra's and ScyllaDB's).
 function engineOfCode(error: AppError): string | null {
-  const prefix = /^([a-z]+)_(?:error|\d+)$/.exec(error.code)?.[1];
-  const engine = prefix !== undefined ? (engineById(prefix) ?? engineById(`${prefix}db`)) : undefined;
+  const prefix = /^([a-z]+)_(?:error|\d+|[0-9A-F]{4})$/.exec(error.code)?.[1];
+  const engine =
+    prefix !== undefined
+      ? (engineById(prefix) ??
+        engineById(`${prefix}db`) ??
+        engines().find((candidate) => candidate.error_code_prefix === prefix))
+      : undefined;
   if (engine !== undefined) {
     return engine.id;
   }
@@ -978,6 +1002,8 @@ function codeTags(error: AppError, engineId: string | null): string {
       tags.push(`(code: ${number}, state:)`);
     } else if (engineId === "mongodb") {
       tags.push(`mongo_${number}`);
+    } else if (engineId === "oracle") {
+      tags.push(`ORA-${String(number).padStart(5, "0")}`);
     }
   }
   if (error.code_name !== undefined) {

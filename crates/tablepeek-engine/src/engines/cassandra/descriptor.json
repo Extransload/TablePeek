@@ -1,0 +1,183 @@
+{
+  "id": "cassandra",
+  "aliases": [],
+  "label": "Cassandra",
+  "paradigm": "sql",
+  "family": "cql",
+  "transport": "server",
+  "default_port": 9042,
+  "url_schemes": [
+    "cassandra"
+  ],
+  "error_code_prefix": "cql",
+  "capabilities": {
+    "language": "cql",
+    "objects": [
+      "table",
+      "materialized_view",
+      "type",
+      "function",
+      "aggregate",
+      "trigger"
+    ],
+    "schema": "declared",
+    "edit_by_key": true,
+    "transactions": "none",
+    "foreign_keys": false,
+    "ddl": true,
+    "databases": "switch",
+    "users": true,
+    "explain": "cql-trace",
+    "exact_count": false,
+    "dump": "sql",
+    "import_formats": [
+      "csv",
+      "json",
+      "sql"
+    ],
+    "export_formats": [
+      "csv",
+      "json",
+      "sql",
+      "xlsx"
+    ],
+    "sessions": {
+      "kill": false
+    },
+    "validation": false,
+    "aggregation": false,
+    "indexes": {
+      "create": true,
+      "drop": true
+    },
+    "cursor_paging": true,
+    "count_steps": true
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "required": true,
+        "placeholder": "호스트 또는 연결 URL 붙여넣기",
+        "default": "127.0.0.1"
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "required": true,
+        "default": 9042
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자",
+        "placeholder": "인증을 켠 클러스터에서만"
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호"
+      },
+      {
+        "key": "database",
+        "type": "text",
+        "label": "키스페이스",
+        "placeholder": "비우면 모든 키스페이스"
+      },
+      {
+        "key": "consistency",
+        "type": "select",
+        "label": "일관성 수준",
+        "default": "LOCAL_ONE",
+        "options": [
+          "ONE",
+          "LOCAL_ONE",
+          "TWO",
+          "THREE",
+          "QUORUM",
+          "LOCAL_QUORUM",
+          "EACH_QUORUM",
+          "ALL",
+          "ANY",
+          "SERIAL",
+          "LOCAL_SERIAL"
+        ]
+      },
+      {
+        "key": "serial_consistency",
+        "type": "select",
+        "label": "직렬 일관성 수준",
+        "default": "SERIAL",
+        "advanced": true,
+        "options": [
+          "SERIAL",
+          "LOCAL_SERIAL"
+        ]
+      },
+      {
+        "key": "datacenter",
+        "type": "text",
+        "label": "로컬 데이터센터",
+        "placeholder": "비우면 드라이버가 고름",
+        "advanced": true
+      },
+      {
+        "key": "lwt_checks",
+        "type": "toggle",
+        "label": "편집 충돌 검사",
+        "description": "셀 편집·행 추가·삭제를 IF EXISTS / IF NOT EXISTS 조건으로 보냄 (경량 트랜잭션)",
+        "default": true,
+        "advanced": true
+      },
+      {
+        "key": "tls",
+        "type": "toggle",
+        "label": "TLS",
+        "description": "TLS로 암호화",
+        "default": false
+      },
+      {
+        "key": "tls_ca_file",
+        "type": "file",
+        "label": "CA 인증서",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_cert_file",
+        "type": "file",
+        "label": "클라이언트 인증서",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_key_file",
+        "type": "file",
+        "label": "클라이언트 키",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {database}",
+    "detail": "{user}@{host}:{port}/{database}"
+  }
+}

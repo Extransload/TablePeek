@@ -3,8 +3,9 @@
 
 import type { SafeMode } from "../../../sqlTools";
 import type { Namespace, QueryOptions } from "../api";
-import type { BsonDocument } from "../bson";
+import type { BsonDocument, BsonValue } from "../bson";
 import type { DocEdit } from "../guard";
+import type { Fact } from "./DocDetailPanel";
 
 // Saves `edits` made to `original` (a document as loaded) with the conflict
 // guard of MONGODB.md §4. Resolves to null once saved (or once the conflict
@@ -36,7 +37,7 @@ export interface DocHost {
   safeMode: SafeMode;
 }
 
-// The ⊞ table view and, beside it, the detail panel.
+// The ⊞ table view; what it has selected goes to the app's detail panel.
 export interface DocTableViewProps {
   ns: Namespace;
   // The page as loaded (the originals edits are guarded against).
@@ -52,14 +53,16 @@ export interface DocTableViewProps {
   sort: BsonDocument | null;
   onSort(sort: BsonDocument | null): void;
   save: SaveEdits;
-  // The detail panel (⌘I); the workbench owns the toggle so its toolbar
-  // button and the shortcut agree.
-  panelOpen: boolean;
-  onPanelOpenChange(open: boolean): void;
+  // The facts the detail panel lists with no row selected (a collection's
+  // sizes and indexes; the search workbench gives an index's); null while
+  // they load or where there are none.
+  facts: Fact[] | null;
   // Field drill path, kept by the workbench per collection tab so switching
   // views and pages keeps it; [] is the top level.
   path: string[];
   onPathChange(path: string[]): void;
+  // The detail panel's type labels (see DocFieldsProps.typeLabel).
+  typeLabel?(path: string, value: BsonValue): string | null;
 }
 
 // A prefilled create dialog (from the explain view's suggestion). `seq`
@@ -78,12 +81,16 @@ export interface IndexesPanelProps {
   // first.
   createRequest: IndexCreateRequest | null;
   host: DocHost;
+  // What the detail panel lists with no index picked.
+  facts: Fact[] | null;
   // Called after an index was made or dropped (stats chips refresh).
   onChanged(): void;
 }
 
 export interface ExplainPanelProps {
   ns: Namespace;
+  // What the detail panel lists with no stage picked.
+  facts: Fact[] | null;
   // The query bar's current state, or the message of why it does not parse.
   query: DocQuery | { error: string };
   // explain("executionStats") runs the query, so it never runs on typing:

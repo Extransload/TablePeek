@@ -153,6 +153,9 @@ export interface GridEditHandlers {
   onCommit(row: number, col: number, value: string | null): void;
   onCancel?(): void;
   canEdit?(row: number, col: number): boolean;
+  // Why a cell can't be edited, shown as its tooltip (a key column the
+  // engine can't change).
+  lockedTitle?(row: number, col: number): string | undefined;
   choices?(row: number, col: number): CellChoices | null;
   // The text the editor opens with, when it isn't the cell's text (a value
   // shown in a short form, a missing value shown as a mark).
@@ -2291,9 +2294,11 @@ export class CanvasGrid {
       row = this.hitRow(p.y);
     }
     const src = this.source;
-    if (src && src.cellTitle) {
+    const lockedTitle = this.editable?.lockedTitle;
+    if (src && (src.cellTitle || lockedTitle)) {
       const col = row === null ? null : this.hitCol(p.x);
-      const title = row === null || col === null ? undefined : src.cellTitle(row, col);
+      const title =
+        row === null || col === null ? undefined : (src.cellTitle?.(row, col) ?? lockedTitle?.(row, col));
       if (this.canvas.title !== (title ?? "")) {
         this.canvas.title = title ?? "";
       }

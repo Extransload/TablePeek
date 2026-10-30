@@ -1,6 +1,7 @@
-/* The table view with its detail panel, the 인덱스 and 실행 계획 sub-tabs
-   of a MongoDB collection tab. Built on the app's variables and classes
-   (row-detail, field-search, panel-table, info-cards, modal). */
+/* The table view, the document views' half of the app's detail panel, the
+   인덱스 and 실행 계획 sub-tabs of a MongoDB collection tab. Built on the
+   app's variables and classes (row-detail, field-search, panel-table,
+   info-cards, modal). */
 
 /* ---- ⊞ table view ---- */
 
@@ -105,7 +106,7 @@ button.mg-crumb:disabled {
   cursor: default;
 }
 
-/* ---- detail panel (table view only) ---- */
+/* ---- detail panel (the app's right-hand column, DocDetailPanel) ---- */
 
 .mg-detail {
   min-height: 0;
@@ -193,6 +194,36 @@ button.mg-crumb:disabled {
   height: auto;
   padding: 18px 0 6px;
   font-size: 13px;
+}
+.mg-detail-note {
+  color: var(--muted);
+  font-weight: 400;
+}
+.mg-detail-foot {
+  display: flex;
+  padding: 6px 2px;
+}
+
+/* Items picked for the detail panel: index and file rows, plan stages,
+   schema fields, change events. */
+.mg-pick-table tbody tr.selected > td {
+  background: var(--accent-soft);
+}
+.mg-pick-table:focus,
+.mg-ptree:focus,
+.mg-schema-list:focus {
+  outline: none;
+}
+.mg-pstage.selected {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+.mg-sfield.selected {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+.mg-watch-event.selected > .mg-watch-row {
+  background: var(--accent-soft);
 }
 
 /* ---- shared bar of the 인덱스 and 실행 계획 tabs ---- */

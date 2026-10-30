@@ -74,13 +74,18 @@ export function splitList(text: string): string[] {
     .filter((part) => part !== "");
 }
 
+// DEFAULT comes before NOT NULL: standard SQL's order, and the only one
+// Oracle takes.
 export function columnDef(dialect: SqlDialect, column: ColumnDraft): string {
-  const parts = [quoteName(dialect, column.name), column.type.trim()];
-  if (column.notNull) {
-    parts.push("NOT NULL");
+  if (dialect.columnDef !== undefined) {
+    return dialect.columnDef(column);
   }
+  const parts = [quoteName(dialect, column.name), column.type.trim()];
   if (column.def.trim() !== "") {
     parts.push(`DEFAULT ${column.def.trim()}`);
+  }
+  if (column.notNull) {
+    parts.push("NOT NULL");
   }
   return parts.join(" ");
 }
@@ -117,14 +122,16 @@ export function draftsFromDetail(detail: TableDetail): StructureDraft {
   };
 }
 
-export function emptyDrafts(): StructureDraft {
+// A new table's draft: an `id` key column of `keyType` (the engine's own
+// spelling of an integer where INTEGER isn't one, as on CQL).
+export function emptyDrafts(keyType = "INTEGER"): StructureDraft {
   return {
     columns: [
       {
         key: draftKey(),
         orig: null,
         name: "id",
-        type: "INTEGER",
+        type: keyType,
         notNull: true,
         pk: true,
         def: "",
@@ -195,6 +202,9 @@ function pkIdentity(columns: ColumnDraft[]): string {
 }
 
 export function indexSql(dialect: SqlDialect, table: string, index: IndexDraft): string {
+  if (dialect.createIndex !== undefined) {
+    return dialect.createIndex(table, index);
+  }
   return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteIdent(dialect, index.name)} ON ${quoteIdent(dialect, table)} (${splitList(
     index.columns,
   )
@@ -415,7 +425,7 @@ export function createTableSql(
   for (const fk of draft.foreignKeys) {
     body.push(fkClause(dialect, fk));
   }
-  const suffix = dialect.tableOptions?.(options) ?? "";
+  const suffix = dialect.tableOptions?.(options) ?? dialect.tableSuffix?.(draft) ?? "";
   const statements = [
     `CREATE TABLE ${quoteIdent(dialect, table)} (\n  ${body.join(",\n  ")}\n)${suffix}`,
   ];

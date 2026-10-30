@@ -2,3 +2,9 @@
 web/node_modules
 web/dist
 .omc/
+web/tsconfig.tsbuildinfo
+prototypes/
+# The OpenSearch test server's certificate, copied out by `make test-db`.
+/testdb/opensearch/
+# The vendored Oracle driver, when its own tests run alone (make test-oracle-oob).
+/crates/vendor/oracledb/Cargo.lock

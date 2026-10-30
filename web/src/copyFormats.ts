@@ -14,11 +14,13 @@ export interface CopyTable {
   rows: unknown[][];
 }
 
-// The table an INSERT copy writes into, and which copied columns hold bytes.
+// The table an INSERT copy writes into, which copied columns hold bytes, and
+// their declared types (see toSqlInserts).
 export interface InsertTarget {
   table: string;
   dialect: SqlDialect;
   binary?: boolean[];
+  declared?: (string | null)[];
 }
 
 // A cell as a copy takes it. For SQL (`keywords`) a staged DEFAULT or NOW()
@@ -115,7 +117,9 @@ export function formatCopy(format: CopyFormat, table: CopyTable, target: InsertT
     case "csvHeader":
       return toCsv(columns, rows, { header: true, bom: false });
     case "insert":
-      return target === null ? "" : toSqlInserts(target.table, columns, rows, target.dialect, target.binary);
+      return target === null
+        ? ""
+        : toSqlInserts(target.table, columns, rows, target.dialect, target.binary, target.declared);
   }
 }
 

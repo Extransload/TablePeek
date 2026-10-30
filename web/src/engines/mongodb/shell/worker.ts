@@ -13,7 +13,7 @@
 // Writes safe mode would ask about are refused with a message saying how to
 // run them, since a script cannot stop for a dialog.
 
-import { setLanguage, t } from "../../../i18n";
+import { phrase, phraseError, phraseOf, say, setLanguage, type Phrase } from "../../../i18n";
 import {
   Binary,
   BsonDate,
@@ -155,8 +155,13 @@ class MongoServerError extends Error {
   readonly codeName?: string;
   readonly status: number;
   readonly fields: Record<string, unknown>;
-  constructor(status: number, appCode: string, message: string, fields: Record<string, unknown>) {
-    super(message);
+  // The message as a phrase when the app wrote it (not the server).
+  readonly phrase?: Phrase;
+  constructor(status: number, appCode: string, message: string | Phrase, fields: Record<string, unknown>) {
+    super(typeof message === "string" ? message : say(message));
+    if (typeof message !== "string") {
+      this.phrase = message;
+    }
     this.name = "MongoServerError";
     this.status = status;
     this.appCode = appCode;
@@ -171,10 +176,11 @@ class MongoServerError extends Error {
 
 // A write safe mode asks about: a script cannot ask, so it stops here.
 class SafeModeError extends Error {
+  readonly phrase: Phrase;
   constructor(what: string) {
-    super(
-      t("안전 모드: 스크립트 안의 {what}은(는) 확인 없이 실행하지 않습니다. 이 문장만 따로 실행하면(⌘↩) 확인 창에서 실행할 수 있고, 안전 모드를 끄면 스크립트에서도 바로 실행됩니다.", { what }),
-    );
+    const p = phrase("안전 모드: 스크립트 안의 {what}은(는) 확인 없이 실행하지 않습니다. 이 문장만 따로 실행하면(⌘↩) 확인 창에서 실행할 수 있고, 안전 모드를 끄면 스크립트에서도 바로 실행됩니다.", { what });
+    super(say(p));
+    this.phrase = p;
     this.name = "SafeModeError";
   }
 }
@@ -193,7 +199,7 @@ function request(method: "GET" | "POST" | "DELETE", route: string, query: Record
   try {
     apply(xhrSend, xhr, [body === undefined ? null : stringifyJson(body)]);
   } catch {
-    throw new MongoServerError(0, "network", t("서버에 연결할 수 없습니다"), {});
+    throw new MongoServerError(0, "network", phrase("서버에 연결할 수 없습니다"), {});
   }
   const status = apply(xhrStatus, xhr, []) as number;
   const text = apply(xhrResponseText, xhr, []) as string;
@@ -204,7 +210,7 @@ function request(method: "GET" | "POST" | "DELETE", route: string, query: Record
     json = null;
   }
   if (status === 0) {
-    throw new MongoServerError(0, "network", t("서버에 연결할 수 없습니다"), {});
+    throw new MongoServerError(0, "network", phrase("서버에 연결할 수 없습니다"), {});
   }
   if (status < 200 || status >= 300) {
     const raw = json !== null && typeof json === "object" ? (json as Record<string, unknown>) : {};
@@ -285,7 +291,7 @@ function toBson(v: unknown, seen: Set<object> = new Set()): BsonValue | undefine
   }
   if (obj instanceof Date) {
     if (Number.isNaN(obj.getTime())) {
-      throw new TypeError(t("잘못된 날짜(Invalid Date)는 저장할 수 없습니다"));
+      throw phraseError(phrase("잘못된 날짜(Invalid Date)는 저장할 수 없습니다"), TypeError);
     }
     return BsonDate.fromDate(obj);
   }
@@ -294,10 +300,10 @@ function toBson(v: unknown, seen: Set<object> = new Set()): BsonValue | undefine
   }
   const kind = (obj as Record<symbol, unknown>)[SHELL_KIND];
   if (kind !== undefined) {
-    throw new TypeError(t("{kind}은(는) 값으로 쓸 수 없습니다", { kind: String(kind) }));
+    throw phraseError(phrase("{kind}은(는) 값으로 쓸 수 없습니다", { kind: String(kind) }), TypeError);
   }
   if (seen.has(obj)) {
-    throw new TypeError(t("순환 참조가 있는 값은 BSON으로 바꿀 수 없습니다"));
+    throw phraseError(phrase("순환 참조가 있는 값은 BSON으로 바꿀 수 없습니다"), TypeError);
   }
   seen.add(obj);
   try {
@@ -334,7 +340,7 @@ function docArg(v: unknown, what: string, fallback?: BsonDocument): BsonDocument
   }
   const b = toBson(v);
   if (b === undefined || !isDocument(b)) {
-    throw new TypeError(t("{what}은(는) 문서({ … })여야 합니다", { what }));
+    throw phraseError(phrase("{what}은(는) 문서({ … })여야 합니다", { what }), TypeError);
   }
   return b;
 }
@@ -491,7 +497,7 @@ function hintArg(v: unknown): BsonValue {
 function countArg(v: unknown, what: string): number {
   const n = typeof v === "number" ? v : v instanceof Int32 || v instanceof Double ? v.value : v instanceof Int64 ? Number(v.value) : NaN;
   if (!Number.isInteger(n) || n < 0) {
-    throw new TypeError(t("{what}에는 0 이상의 정수를 주세요", { what }));
+    throw phraseError(phrase("{what}에는 0 이상의 정수를 주세요", { what }), TypeError);
   }
   return n;
 }
@@ -557,7 +563,7 @@ abstract class Cursor {
 
   protected change(): this {
     if (this.started) {
-      throw new Error(t("읽기 시작한 커서는 바꿀 수 없습니다"));
+      throw phraseError(phrase("읽기 시작한 커서는 바꿀 수 없습니다"));
     }
     return this;
   }
@@ -572,7 +578,7 @@ abstract class Cursor {
 
   next(): unknown {
     if (!this.hasNext()) {
-      throw new Error(t("커서에 더 읽을 문서가 없습니다"));
+      throw phraseError(phrase("커서에 더 읽을 문서가 없습니다"));
     }
     let doc = toJs(this.buffer.shift()!);
     for (const fn of this.maps) {
@@ -604,7 +610,7 @@ abstract class Cursor {
 
   map(fn: (doc: unknown) => unknown): this {
     if (typeof fn !== "function") {
-      throw new TypeError(t("map에는 함수를 주세요"));
+      throw phraseError(phrase("map에는 함수를 주세요"), TypeError);
     }
     this.maps.push(fn);
     return this;
@@ -807,7 +813,7 @@ function explainVerbosity(v: unknown): string {
   if (typeof v === "string" && VERBOSITIES.includes(v)) {
     return v;
   }
-  throw new TypeError(t("explain의 상세도는 {list} 중 하나입니다", { list: VERBOSITIES.join(", ") }));
+  throw phraseError(phrase("explain의 상세도는 {list} 중 하나입니다", { list: VERBOSITIES.join(", ") }), TypeError);
 }
 
 // An exact count; an empty filter would be estimated, so it becomes one
@@ -816,7 +822,7 @@ function countDocuments(db: string, coll: string, filter: BsonDocument, o: { hin
   const exact = filter.size === 0 ? new Map([["_id", new Map([["$exists", true]])]]) : filter;
   const r = postDoc("count", { db, coll, filter: toEJSON(exact as BsonDocument), ...readOptions(o) }) as { count: unknown };
   if (r.count === null || r.count === undefined) {
-    throw new MongoServerError(200, "mongo_50", t("세는 데 시간이 너무 걸려 멈췄습니다"), {});
+    throw new MongoServerError(200, "mongo_50", phrase("세는 데 시간이 너무 걸려 멈췄습니다"), {});
   }
   return numberOf(r.count);
 }
@@ -899,7 +905,7 @@ class Collection {
 
   distinct(key: unknown, filter?: unknown): unknown[] {
     if (typeof key !== "string") {
-      throw new TypeError(t("distinct에는 필드 이름을 주세요"));
+      throw phraseError(phrase("distinct에는 필드 이름을 주세요"), TypeError);
     }
     const r = postDoc("distinct", { db: this._db, coll: this._name, key, filter: toEJSON(docArg(filter, "filter", new Map())) }) as { values?: unknown[] };
     return (r.values ?? []).map((x) => toJs(bsonOf(x)));
@@ -925,7 +931,7 @@ class Collection {
 
   insertMany(docs: unknown, options?: unknown): unknown {
     if (!Array.isArray(docs)) {
-      throw new TypeError(t("insertMany에는 문서 배열을 주세요"));
+      throw phraseError(phrase("insertMany에는 문서 배열을 주세요"), TypeError);
     }
     const list = docs.map((d) => docArg(d, "document"));
     if (safeMode !== 0) {
@@ -968,7 +974,7 @@ class Collection {
     const f = docArg(filter, "filter");
     const doc = docArg(replacement, "replacement");
     if (upsertOf(options)) {
-      throw new TypeError(t("replaceOne의 upsert는 지원하지 않습니다 — updateOne(…, { upsert: true })를 쓰세요"));
+      throw phraseError(phrase("replaceOne의 upsert는 지원하지 않습니다 — updateOne(…, { upsert: true })를 쓰세요"), TypeError);
     }
     const confirmed = confirmWrite({ kind: "replaceOne", coll: this._name, filter: f, replacement: doc, upsert: false, db: null }, "replaceOne");
     const r = postDoc("replace", { db: this._db, coll: this._name, filter: toEJSON(f), replacement: toEJSON(doc), confirmed: confirmed || undefined }) as { matched?: number; modified?: number };
@@ -1015,7 +1021,7 @@ class Collection {
       const list = request("GET", "indexes", { db: this._db, coll: this._name }) as unknown[];
       const found = list.map(bsonOf).find((ix) => isDocument(ix) && toShell(ix.get("key") ?? null) === spec);
       if (found === undefined || !isDocument(found)) {
-        throw new MongoServerError(400, "index_not_found", t("이 키의 인덱스가 없습니다: {key}", { key: spec }), {});
+        throw new MongoServerError(400, "index_not_found", phrase("이 키의 인덱스가 없습니다: {key}", { key: spec }), {});
       }
       name = String(found.get("name"));
     }
@@ -1078,14 +1084,14 @@ class Database {
 
   getSiblingDB(name: unknown): unknown {
     if (typeof name !== "string" || !DB_NAME.test(name)) {
-      throw new TypeError(t("데이터베이스 이름이 올바르지 않습니다: {name}", { name: String(name) }));
+      throw phraseError(phrase("데이터베이스 이름이 올바르지 않습니다: {name}", { name: String(name) }), TypeError);
     }
     return dbProxy(name);
   }
 
   getCollection(name: unknown): Collection {
     if (typeof name !== "string" || name === "") {
-      throw new TypeError(t("컬렉션 이름을 문자열로 주세요"));
+      throw phraseError(phrase("컬렉션 이름을 문자열로 주세요"), TypeError);
     }
     return collectionProxy(this._name, name);
   }
@@ -1122,7 +1128,7 @@ class Database {
 
   createCollection(name: unknown, options?: unknown): unknown {
     if (typeof name !== "string" || name === "") {
-      throw new TypeError(t("컬렉션 이름을 문자열로 주세요"));
+      throw phraseError(phrase("컬렉션 이름을 문자열로 주세요"), TypeError);
     }
     return this.runCommand(new Map<string, BsonValue>([["create", name], ...docArg(options, "options", new Map())]));
   }
@@ -1148,11 +1154,12 @@ function dbProxy(name: string): Database {
 // Both print what they did, as mongosh does, wherever they stand.
 function use(name: unknown): void {
   if (typeof name !== "string" || !DB_NAME.test(name)) {
-    throw new TypeError(t("데이터베이스 이름이 올바르지 않습니다: {name}", { name: String(name) }));
+    throw phraseError(phrase("데이터베이스 이름이 올바르지 않습니다: {name}", { name: String(name) }), TypeError);
   }
   (globalThis as Record<string, unknown>).db = dbProxy(name);
   emit({ type: "use", db: name });
-  emit({ type: "print", text: t("{db} 데이터베이스로 바꿨습니다", { db: name }) });
+  const switched = phrase("{db} 데이터베이스로 바꿨습니다", { db: name });
+  emit({ type: "print", text: say(switched), phrase: switched });
 }
 
 function showWhat(what: unknown): void {
@@ -1172,7 +1179,7 @@ function showWhat(what: unknown): void {
       });
       break;
     default:
-      throw new TypeError(t("show {what}은(는) 지원하지 않습니다 — show dbs, show collections를 쓰세요", { what: String(what) }));
+      throw phraseError(phrase("show {what}은(는) 지원하지 않습니다 — show dbs, show collections를 쓰세요", { what: String(what) }), TypeError);
   }
   showValue(list, "print");
 }
@@ -1209,7 +1216,7 @@ function numberText(v: unknown, what: string): string {
   if (v instanceof Int32 || v instanceof Double || v instanceof Int64 || v instanceof Decimal128) {
     return String(v.value);
   }
-  throw new TypeError(t("{what}에는 숫자나 숫자 문자열을 주세요", { what }));
+  throw phraseError(phrase("{what}에는 숫자나 숫자 문자열을 주세요", { what }), TypeError);
 }
 
 function isoDate(text?: unknown): Date {
@@ -1224,7 +1231,7 @@ function isoDate(text?: unknown): Date {
   const zoned = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) || !/T|\d{2}:\d{2}/.test(s) ? s : `${s}Z`;
   const date = new Date(zoned);
   if (Number.isNaN(date.getTime())) {
-    throw new TypeError(t("ISODate로 읽을 수 없는 날짜입니다: {text}", { text: s }));
+    throw phraseError(phrase("ISODate로 읽을 수 없는 날짜입니다: {text}", { text: s }), TypeError);
   }
   return date;
 }
@@ -1424,18 +1431,19 @@ function scriptPosition(error: unknown): { line?: number; column?: number } {
 
 function describe(error: unknown): ScriptError {
   if (error instanceof MongoServerError) {
-    return { name: error.name, message: error.message, code: error.appCode, fields: error.fields, status: error.status, ...scriptPosition(error) };
+    return { name: error.name, message: error.message, phrase: error.phrase, code: error.appCode, fields: error.fields, status: error.status, ...scriptPosition(error) };
   }
   if (error instanceof SafeModeError) {
-    return { name: error.name, message: error.message, safeMode: true, ...scriptPosition(error) };
+    return { name: error.name, message: error.message, phrase: error.phrase, safeMode: true, ...scriptPosition(error) };
   }
   if (error instanceof SyntaxError) {
-    return { name: error.name, message: error.message, syntax: !scriptPosition(error).line };
+    return { name: error.name, message: error.message, phrase: phraseOf(error) ?? undefined, syntax: !scriptPosition(error).line };
   }
   if (error instanceof Error) {
-    return { name: error.name, message: error.message, ...scriptPosition(error) };
+    return { name: error.name, message: error.message, phrase: phraseOf(error) ?? undefined, ...scriptPosition(error) };
   }
-  return { name: "Error", message: t("스크립트가 오류 아닌 값을 던졌습니다: {value}", { value: printText(error) }) };
+  const p = phrase("스크립트가 오류 아닌 값을 던졌습니다: {value}", { value: printText(error) });
+  return { name: "Error", message: say(p), phrase: p };
 }
 
 function run(start: ScriptStart): void {

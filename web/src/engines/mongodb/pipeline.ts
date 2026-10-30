@@ -3,7 +3,7 @@
 // the round trip with the whole pipeline as one text, the mongosh code, and
 // the pipelines saved per collection in localStorage.
 
-import { t } from "../../i18n";
+import { phrase, type Phrase } from "../../i18n";
 import { isDocument, type BsonDocument, type BsonValue } from "./bson";
 import { STAGES, type FieldStat } from "./complete";
 import { shellCollection, shellKey, toShell, toShellPretty } from "./format";
@@ -98,7 +98,7 @@ export type StageCheck = { ok: true; stage: BsonDocument } | { ok: false; error:
 // One card as the stage document it sends, or why its text does not parse.
 export function parseStage(stage: Stage): StageCheck {
   if (stage.text.trim() === "") {
-    return { ok: false, error: { message: t("단계 내용이 비었습니다"), from: 0, to: 0 } };
+    return { ok: false, error: { message: phrase("단계 내용이 비었습니다"), from: 0, to: 0 } };
   }
   const parsed = parseValue(stage.text);
   if (!parsed.ok) {
@@ -109,7 +109,7 @@ export function parseStage(stage: Stage): StageCheck {
 
 // The stages that are on, as the pipeline to send, or the first that does
 // not parse.
-export function buildPipeline(stages: Stage[]): { ok: true; pipeline: BsonDocument[] } | { ok: false; index: number; message: string } {
+export function buildPipeline(stages: Stage[]): { ok: true; pipeline: BsonDocument[] } | { ok: false; index: number; message: Phrase } {
   const pipeline: BsonDocument[] = [];
   for (const [index, stage] of stages.entries()) {
     if (!stage.on) {
@@ -117,7 +117,7 @@ export function buildPipeline(stages: Stage[]): { ok: true; pipeline: BsonDocume
     }
     const checked = parseStage(stage);
     if (!checked.ok) {
-      return { ok: false, index, message: t("{n}단계 {op}: {message}", { n: index + 1, op: stage.op, message: checked.error.message }) };
+      return { ok: false, index, message: phrase("{n}단계 {op}: {message}", { n: index + 1, op: stage.op, message: checked.error.message }) };
     }
     pipeline.push(checked.stage);
   }
@@ -146,7 +146,7 @@ export function stagesFromText(text: string, previous: Stage[]): { ok: true; sta
   }
   const whole = { from: 0, to: text.length };
   if (!Array.isArray(parsed.value)) {
-    return { ok: false, error: { message: t("파이프라인은 [ … ] 배열이어야 합니다"), ...whole } };
+    return { ok: false, error: { message: phrase("파이프라인은 [ … ] 배열이어야 합니다"), ...whole } };
   }
   const off = new Set<string>();
   for (const stage of previous) {
@@ -159,7 +159,7 @@ export function stagesFromText(text: string, previous: Stage[]): { ok: true; sta
   for (const [i, value] of parsed.value.entries()) {
     const keys = isDocument(value) ? [...value.keys()] : [];
     if (!isDocument(value) || keys.length !== 1 || !keys[0].startsWith("$")) {
-      return { ok: false, error: { message: t("{n}번째 단계는 { $단계: … } 하나여야 합니다", { n: i + 1 }), ...whole } };
+      return { ok: false, error: { message: phrase("{n}번째 단계는 { $단계: … } 하나여야 합니다", { n: i + 1 }), ...whole } };
     }
     stages.push(newStage(keys[0], toShellPretty(value.get(keys[0]) ?? null), !off.has(toShell(value))));
   }

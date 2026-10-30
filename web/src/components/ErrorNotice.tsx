@@ -8,7 +8,7 @@ import {
   type ErrorAction,
   type ErrorContext,
 } from "../errorHelp";
-import { t, tServer } from "../i18n";
+import { getLanguage, t, tServer } from "../i18n";
 import { AlertIcon, CheckIcon, CloseIcon, CopyIcon } from "./icons";
 
 // Every error the app shows goes through here (docs/ERRORS.md §3): a box
@@ -100,7 +100,9 @@ export function ErrorNotice({
   actions,
   onClose,
 }: ErrorNoticeProps) {
-  const appError = useMemo(() => toAppError(error), [error]);
+  // Written again after a language switch (a phrased error, the explanation).
+  const language = getLanguage();
+  const appError = useMemo(() => toAppError(error), [error, language]);
   const help = useMemo(() => explainError(appError, context, engine), [appError, context, engine]);
   // The copy button's last outcome, shown for a moment.
   const [copy, setCopy] = useState<"done" | "failed" | null>(null);
@@ -127,9 +129,44 @@ export function ErrorNotice({
   const extra = detailsText(appError.details);
   const hasDetails = help !== null || rows.length > 0 || extra !== "" || original.trim() !== title;
   const fix = help?.action !== undefined ? onFix?.[help.action] : undefined;
-  const copyText = [title, help?.cause, ...rows.map(([label, value]) => `${label}: ${value}`), original, extra]
+  const undo = appError.undo;
+  const undoLines =
+    undo === undefined
+      ? []
+      : [
+          ...undo.undone.map((change) => `${t("되돌림")}: ${change}`),
+          ...undo.left.map((entry) => `${t("남음")}: ${entry.change} — ${tServer(entry.reason)}`),
+        ];
+  const copyText = [title, help?.cause, ...undoLines, ...rows.map(([label, value]) => `${label}: ${value}`), original, extra]
     .filter((part) => part !== undefined && part !== "")
     .join("\n");
+
+  // What a transaction-less apply took back after the failure, and what is
+  // left as it was written: always in view, every variant.
+  const undoReport =
+    undo !== undefined ? (
+      <div className={undo.left.length === 0 ? "error-notice-undo" : "error-notice-undo partial"}>
+        <span className="error-notice-label">
+          {undo.left.length === 0
+            ? t("트랜잭션이 없어 앞서 적용한 변경 {count}개를 되돌렸습니다", { count: undo.undone.length })
+            : t("트랜잭션이 없어 앞서 적용한 변경을 되돌렸지만 {count}개는 남았습니다. 새로고침해 확인하세요", {
+                count: undo.left.length,
+              })}
+        </span>
+        <ul>
+          {undo.left.map((entry) => (
+            <li key={`left:${entry.change}`} className="error-notice-undo-left">
+              {t("남음")}: {entry.change} — {tServer(entry.reason)}
+            </li>
+          ))}
+          {undo.undone.map((change) => (
+            <li key={`undone:${change}`}>
+              {t("되돌림")}: {change}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
 
   const fixes =
     help !== null && help.fixes.length > 0 ? (
@@ -197,6 +234,7 @@ export function ErrorNotice({
           </button>
         ) : null}
       </div>
+      {undoReport}
       {!banner && help?.cause !== undefined ? <p className="error-notice-cause">{help.cause}</p> : null}
       {!banner ? fixes : null}
       {!banner ? buttons : null}

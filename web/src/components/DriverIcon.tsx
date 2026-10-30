@@ -6,6 +6,7 @@ import { DatabaseIcon } from "./icons";
  * Database marks shown as small colored badges; each engine's mark lives in its
  * folder (web/src/engines/<id>/icon.ts).
  * - PostgreSQL, SQLite, CockroachDB: Simple Icons 16.35.0 (CC0-1.0), https://simpleicons.org
+ * - Oracle: Simple Icons 13 (CC0-1.0), https://simpleicons.org
  * - MySQL, SQL Server: Devicon 2.17.0 (MIT), https://devicon.dev
  * The logos are trademarks of their owners and are used only to label the database type.
  *

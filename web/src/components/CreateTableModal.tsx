@@ -3,6 +3,7 @@ import { createTableSql, emptyDrafts, type StructureDraft } from "../ddl";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { t } from "../i18n";
 import { store, type EngineMeta } from "../store";
+import { ClusterPicker, onCluster, useCluster } from "./ClusterPicker";
 import { ColumnsEditor, DdlPreview, IndexesEditor } from "./DraftEditors";
 import { ErrorNotice, FieldError } from "./ErrorNotice";
 
@@ -20,7 +21,7 @@ function errorOf(error: unknown, fallback: string): string {
 
 export function CreateTableModal({ conn, dialect, meta, onClose, onCreated }: CreateTableModalProps) {
   const [name, setName] = useState("");
-  const [draft, setDraft] = useState<StructureDraft>(() => emptyDrafts());
+  const [draft, setDraft] = useState<StructureDraft>(() => emptyDrafts(dialect.newKeyType));
   const [preview, setPreview] = useState(false);
   const [engine, setEngine] = useState("InnoDB");
   const [charset, setCharset] = useState("utf8mb4");
@@ -29,19 +30,21 @@ export function CreateTableModal({ conn, dialect, meta, onClose, onCreated }: Cr
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { clusters, cluster, setCluster } = useCluster(conn, dialect);
 
   const result = useMemo(() => {
     if (name.trim() === "") {
       return { statements: [], errors: [t("테이블 이름을 입력하세요")] };
     }
-    return createTableSql(dialect, name.trim(), draft, {
+    const made = createTableSql(dialect, name.trim(), draft, {
       engine,
       charset,
       collation,
       rowFormat,
       comment,
     });
-  }, [dialect, name, draft, engine, charset, collation, rowFormat, comment]);
+    return { ...made, statements: onCluster(dialect, made.statements, cluster) };
+  }, [dialect, name, draft, engine, charset, collation, rowFormat, comment, cluster]);
 
   async function run(): Promise<void> {
     if (result.errors.length > 0 || result.statements.length === 0) {
@@ -82,6 +85,7 @@ export function CreateTableModal({ conn, dialect, meta, onClose, onCreated }: Cr
               onChange={(event) => setName(event.target.value)}
             />
           </label>
+          <ClusterPicker clusters={clusters} cluster={cluster} onChange={setCluster} disabled={busy} />
           {dialect.tableOptions !== undefined ? (
             <>
               <div className="create-inline">
@@ -129,6 +133,8 @@ export function CreateTableModal({ conn, dialect, meta, onClose, onCreated }: Cr
             <div className="section-title">{t("컬럼")}</div>
             <ColumnsEditor
               columns={draft.columns}
+              noConstraints={dialect.fixedColumns === true}
+              newType={dialect.newColumnType}
               onChange={(columns) => setDraft({ ...draft, columns })}
             />
           </section>

@@ -13,7 +13,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ReviewModal } from "../../../components/ReviewModal";
 import { Select } from "../../../components/Select";
 import { Spinner } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { phrase, say, t, type Phrase } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
 import { count, find, isAbort, remove, update, updatePreview, type CountResult, type Namespace, type QueryOptions, type UpdatePreview } from "../api";
 import { bsonDoc, deepEqual, isDocument, type BsonDocument, type BsonValue } from "../bson";
@@ -55,7 +55,7 @@ const SAMPLE_SIZES = [5, 10, 20];
 // How long typing pauses before the count and the preview run again.
 const DEBOUNCE_MS = 500;
 
-type Checked<T> = { ok: true; value: T } | { ok: false; message: string; range: { from: number; to: number } | null };
+type Checked<T> = { ok: true; value: T } | { ok: false; message: Phrase; range: { from: number; to: number } | null };
 
 // The update editor's text as what `update` sends, or why it cannot go.
 function checkUpdate(kind: UpdateKind, text: string): Checked<BsonDocument | BsonDocument[]> {
@@ -66,28 +66,28 @@ function checkUpdate(kind: UpdateKind, text: string): Checked<BsonDocument | Bso
   const v = r.value;
   if (kind === "pipeline") {
     if (!Array.isArray(v) || v.length === 0 || !v.every(isDocument)) {
-      return { ok: false, message: t("[ { $set: { … } } ]처럼 단계의 배열을 쓰세요"), range: null };
+      return { ok: false, message: phrase("[ { $set: { … } } ]처럼 단계의 배열을 쓰세요"), range: null };
     }
     for (const stage of v) {
       const [name, body] = [...stage][0] ?? [];
       if (stage.size !== 1 || name === undefined || !name.startsWith("$")) {
-        return { ok: false, message: t("단계마다 { $set: { … } }처럼 연산자 하나를 쓰세요"), range: null };
+        return { ok: false, message: phrase("단계마다 { $set: { … } }처럼 연산자 하나를 쓰세요"), range: null };
       }
       if (isDocument(body) && body.size === 0) {
-        return { ok: false, message: t("{op}에 필드를 하나 이상 쓰세요", { op: name }), range: null };
+        return { ok: false, message: phrase("{op}에 필드를 하나 이상 쓰세요", { op: name }), range: null };
       }
     }
     return { ok: true, value: v };
   }
   if (!isDocument(v) || v.size === 0) {
-    return { ok: false, message: t("{ $set: { … } }처럼 연산자 문서를 쓰세요"), range: null };
+    return { ok: false, message: phrase("{ $set: { … } }처럼 연산자 문서를 쓰세요"), range: null };
   }
   for (const [op, body] of v) {
     if (!op.startsWith("$")) {
-      return { ok: false, message: t("{key}: 수정은 $set·$inc 같은 연산자로 씁니다 (문서를 통째로 바꾸지 않습니다)", { key: op }), range: null };
+      return { ok: false, message: phrase("{key}: 수정은 $set·$inc 같은 연산자로 씁니다 (문서를 통째로 바꾸지 않습니다)", { key: op }), range: null };
     }
     if (isDocument(body) && body.size === 0) {
-      return { ok: false, message: t("{op}에 필드를 하나 이상 쓰세요", { op }), range: null };
+      return { ok: false, message: phrase("{op}에 필드를 하나 이상 쓰세요", { op }), range: null };
     }
   }
   return { ok: true, value: v };
@@ -346,7 +346,7 @@ export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, op
       : updateDoc.ok
         ? `${target}.updateMany(${toShell(filter.value)}, ${toShell(updateDoc.value)}${optionsArg})`
         : null;
-  const problem = !filter.ok ? t("필터: {message}", { message: filter.error.message }) : mode === "update" && !updateDoc.ok ? t("수정 내용: {message}", { message: updateDoc.message }) : null;
+  const problem = !filter.ok ? t("필터: {message}", { message: say(filter.error.message) }) : mode === "update" && !updateDoc.ok ? t("수정 내용: {message}", { message: say(updateDoc.message) }) : null;
 
   // What safe mode asks about, as elsewhere for these commands: an empty
   // filter always (mode 1 and 2), any bulk write in mode 2.
@@ -523,7 +523,7 @@ export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, op
           ariaLabel={t("필터")}
           placeholder={t("비워 두면 모든 문서")}
         />
-        {!filter.ok ? <SyntaxErrorNotice src={filterText} message={filter.error.message} at={filter.error.from} context="document" /> : null}
+        {!filter.ok ? <SyntaxErrorNotice src={filterText} message={say(filter.error.message)} at={filter.error.from} context="document" /> : null}
       </div>
       <div className="mg-bulk-count" role="status" aria-live="polite">
         <span className="mg-form-label">{mode === "delete" ? t("지울 문서") : t("영향받는 문서")}</span>
@@ -562,7 +562,7 @@ export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, op
             error={updateDoc.ok ? null : updateDoc.range}
             ariaLabel={t("수정 내용")}
           />
-          {!updateDoc.ok && updateDoc.range !== null ? <SyntaxErrorNotice src={updateText} message={updateDoc.message} at={updateDoc.range.from} context="document" /> : null}
+          {!updateDoc.ok && updateDoc.range !== null ? <SyntaxErrorNotice src={updateText} message={say(updateDoc.message)} at={updateDoc.range.from} context="document" /> : null}
         </div>
       ) : null}
       <CommandPreview command={command} problem={problem} />
@@ -590,7 +590,7 @@ export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, op
       {failure !== null ? <WriteErrorNotice error={failure} variant="block" /> : null}
       {/* Over this dialog, not inside its scrolling body. */}
       {review !== null
-        ? createPortal(<ReviewModal mode={safeMode === 0 ? 1 : safeMode} items={[review.item]} txActive onRun={() => review.resolve(true)} onClose={() => review.resolve(false)} />, document.body)
+        ? createPortal(<ReviewModal mode={safeMode === 0 ? 1 : safeMode} items={[review.item]} offerTx={false} onRun={() => review.resolve(true)} onClose={() => review.resolve(false)} />, document.body)
         : null}
     </AdminModal>
   );

@@ -12,7 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Select } from "../../../components/Select";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { getLanguage, say, t } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { collStats, createCollection, dropCollection, dropDatabase, listCollections, renameCollection, type CollStats, type CollectionInfo } from "../api";
 import { Int32, Int64, bsonDoc, isDocument, type BsonDocument } from "../bson";
@@ -100,6 +100,9 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
 
   const target = dbName.trim();
   const collName = name.trim();
+  // The plan's messages are written in the current language; a switch
+  // writes them again.
+  const language = getLanguage();
   const plan = useMemo((): { options: BsonDocument; command: string } | { error: string } => {
     const problem = databaseNameProblem(target) ?? collectionNameProblem(collName);
     if (problem !== null) {
@@ -122,7 +125,7 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
       }
       const parsed = parseValue(pipelineText);
       if (!parsed.ok) {
-        return { error: t("파이프라인: {message}", { message: parsed.error.message }) };
+        return { error: t("파이프라인: {message}", { message: say(parsed.error.message) }) };
       }
       if (!Array.isArray(parsed.value) || !parsed.value.every(isDocument)) {
         return { error: t("파이프라인은 단계 문서의 배열이어야 합니다") };
@@ -181,7 +184,7 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
     if (kind !== "view" && validatorOn) {
       const parsed = parseValue(validatorText);
       if (!parsed.ok) {
-        return { error: t("검증 규칙: {message}", { message: parsed.error.message }) };
+        return { error: t("검증 규칙: {message}", { message: say(parsed.error.message) }) };
       }
       if (!isDocument(parsed.value)) {
         return { error: t("검증 규칙은 문서여야 합니다") };
@@ -201,7 +204,7 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
       command = `${base}.createCollection(${JSON.stringify(collName)}${options.size > 0 ? `, ${toShellPretty(options)}` : ""})`;
     }
     return { options, command };
-  }, [target, collName, kind, viewOn, pipelineText, cappedSize, cappedMax, timeField, metaField, granularity, expire, locale, strength, clustered, validatorOn, validatorText, validationLevel, validationAction]);
+  }, [target, collName, kind, viewOn, pipelineText, cappedSize, cappedMax, timeField, metaField, granularity, expire, locale, strength, clustered, validatorOn, validatorText, validationLevel, validationAction, language]);
 
   const submit = async () => {
     if (busy || "error" in plan) {

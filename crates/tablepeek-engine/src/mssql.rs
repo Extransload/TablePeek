@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -317,13 +317,31 @@ fn log_param(param: &dyn ToSql) -> LogParam {
 
 const CONNECT_INFO_SQL: &str = "SELECT @@SPID, DB_NAME(), ISNULL(SCHEMA_NAME(), 'dbo')";
 
-const TABLE_LIST_SQL: &str = "SELECT s.name, t.name
+/// A catalog query run under READ UNCOMMITTED. Under READ COMMITTED it waits
+/// on the system rows another session's uncommitted DDL holds, and since the
+/// two take them in different orders, one of them, mostly the reader, is
+/// picked as a deadlock victim (error 1205). The SET lasts only as long as
+/// the sp_executesql call the driver sends it in: the session's own level,
+/// and a transaction open on it, are left as they were.
+macro_rules! catalog_sql {
+    ($sql:literal) => {
+        concat!("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\n", $sql)
+    };
+}
+
+// After catalog_sql!, which it uses.
+pub(crate) mod cells;
+
+const TABLE_LIST_SQL: &str = catalog_sql!(
+    "SELECT s.name, t.name
      FROM sys.tables t
      JOIN sys.schemas s ON s.schema_id = t.schema_id
-     ORDER BY s.name, t.name";
+     ORDER BY s.name, t.name"
+);
 
 // Foreign keys of the tables TABLE_LIST_SQL lists, one row per column pair.
-const RELATIONS_SQL: &str = "SELECT s.name, t.name, fk.name, pc.name, rs.name, rt.name, rc.name
+const RELATIONS_SQL: &str = catalog_sql!(
+    "SELECT s.name, t.name, fk.name, pc.name, rs.name, rt.name, rc.name
      FROM sys.foreign_keys fk
      JOIN sys.tables t ON t.object_id = fk.parent_object_id
      JOIN sys.schemas s ON s.schema_id = t.schema_id
@@ -334,9 +352,11 @@ const RELATIONS_SQL: &str = "SELECT s.name, t.name, fk.name, pc.name, rs.name, r
        AND pc.column_id = fkc.parent_column_id
      JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id
        AND rc.column_id = fkc.referenced_column_id
-     ORDER BY s.name, t.name, fk.name, fkc.constraint_column_id";
+     ORDER BY s.name, t.name, fk.name, fkc.constraint_column_id"
+);
 
-const COLUMN_SQL: &str = "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM_LENGTH,
+const COLUMN_SQL: &str = catalog_sql!(
+    "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM_LENGTH,
             c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.IS_NULLABLE, c.COLUMN_DEFAULT,
             CASE WHEN EXISTS (
                 SELECT 1
@@ -353,13 +373,20 @@ const COLUMN_SQL: &str = "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM
             ) THEN 1 ELSE 0 END AS is_pk
      FROM INFORMATION_SCHEMA.COLUMNS c
      WHERE c.TABLE_SCHEMA = @P1 AND c.TABLE_NAME = @P2
-     ORDER BY c.ORDINAL_POSITION";
+     ORDER BY c.ORDINAL_POSITION"
+);
 
-const TABLE_LOOKUP_SQL: &str = "SELECT TOP 1 TABLE_SCHEMA, TABLE_NAME
+// The source lookups after a SELECT read the catalog the same way: the
+// result is a hint, and a write checks the key again (check_key) under the
+// session's own level before it goes through.
+const TABLE_LOOKUP_SQL: &str = catalog_sql!(
+    "SELECT TOP 1 TABLE_SCHEMA, TABLE_NAME
      FROM INFORMATION_SCHEMA.TABLES
-     WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2";
+     WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2"
+);
 
-const PK_SQL: &str = "SELECT kcu.COLUMN_NAME
+const PK_SQL: &str = catalog_sql!(
+    "SELECT kcu.COLUMN_NAME
      FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
      JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
        ON tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
@@ -369,7 +396,8 @@ const PK_SQL: &str = "SELECT kcu.COLUMN_NAME
      WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
        AND kcu.TABLE_SCHEMA = @P1
        AND kcu.TABLE_NAME = @P2
-     ORDER BY kcu.ORDINAL_POSITION";
+     ORDER BY kcu.ORDINAL_POSITION"
+);
 
 const COLUMN_TYPE_SQL: &str = "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
      WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 AND COLUMN_NAME = @P3";
@@ -435,13 +463,7 @@ pub(crate) async fn meta(
     // A reload picks up schema changes made elsewhere: so do the sources.
     inner.sources.clear();
     let mut client = take_client(&mut guard, &inner.log)?;
-    let rows = client
-        .query(TABLE_LIST_SQL, &[])
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+    let rows = catalog_rows(inner, &mut client, TABLE_LIST_SQL, &[]).await?;
     let tables = rows
         .iter()
         .filter_map(|row| {
@@ -467,13 +489,7 @@ pub(crate) async fn schema(
     let mut guard = inner.client().await?;
     inner.sources.clear();
     let mut client = take_client(&mut guard, &inner.log)?;
-    let tables = client
-        .query(TABLE_LIST_SQL, &[])
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+    let tables = catalog_rows(inner, &mut client, TABLE_LIST_SQL, &[]).await?;
     let mut out = Vec::with_capacity(tables.len());
     for row in tables {
         let values: Vec<ColumnData<'static>> = row.into_iter().collect();
@@ -483,16 +499,13 @@ pub(crate) async fn schema(
             (Some(schema_name), Some(table_name)) => (schema_name, table_name),
             _ => continue,
         };
-        let rows = client
-            .query(
-                COLUMN_SQL,
-                &[&schema_name as &dyn ToSql, &table_name as &dyn ToSql],
-            )
-            .await
-            .map_err(mssql_err)?
-            .into_first_result()
-            .await
-            .map_err(mssql_err)?;
+        let rows = catalog_rows(
+            inner,
+            &mut client,
+            COLUMN_SQL,
+            &[&schema_name as &dyn ToSql, &table_name as &dyn ToSql],
+        )
+        .await?;
         let columns = rows
             .into_iter()
             .map(|row| {
@@ -534,13 +547,7 @@ pub(crate) async fn relations(
     let _ = include_system;
     let mut guard = inner.client().await?;
     let mut client = take_client(&mut guard, &inner.log)?;
-    let rows = client
-        .query(RELATIONS_SQL, &[])
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+    let rows = catalog_rows(inner, &mut client, RELATIONS_SQL, &[]).await?;
     let mut out: Vec<Relation> = Vec::new();
     let mut current: Option<(String, String, String)> = None;
     for row in rows {
@@ -676,6 +683,7 @@ pub(crate) async fn query(
         column_kinds: Vec::new(),
         // The query stream keeps its DONE tokens' row counts to itself.
         rows_affected: None,
+        next_page: None,
     })
 }
 
@@ -737,25 +745,14 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
     if target.expr.is_none() {
         params.push(bound_text(cast, target.value.clone())?);
     }
-    let mut sql = format!(
-        "UPDATE {table_ref} SET {} = {} WHERE ",
+    let (condition, keys) =
+        key_condition(&mut client, &schema, &table, &target.pk, params.len() + 1).await?;
+    params.extend(keys);
+    let sql = format!(
+        "UPDATE {table_ref} SET {} = {} WHERE {condition}",
         quote_ident(&target.column),
         value_sql(target.expr, 1, cast)
     );
-    for (index, pk) in target.pk.iter().enumerate() {
-        if index > 0 {
-            sql.push_str(" AND ");
-        }
-        let pk_type = column_type_of(&mut client, &schema, &table, &pk.column).await?;
-        let pk_cast = cast_type(&pk_type);
-        params.push(bound_text(pk_cast, pk_value_string(&pk.value))?);
-        let position = params.len();
-        let quoted = quote_ident(&pk.column);
-        let bound = bound_sql(position, pk_cast);
-        sql.push_str(&format!(
-            "({quoted} = {bound} OR ({quoted} IS NULL AND @P{position} IS NULL))"
-        ));
-    }
 
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
     let result = client.change(&sql, &refs, inner.in_tx()).await;
@@ -763,6 +760,34 @@ pub(crate) async fn edit(inner: &MssqlInner, target: &EditTarget) -> Result<u64,
         check_tx(inner, &mut client).await;
     }
     result.map_err(mssql_err)
+}
+
+/// The WHERE condition naming one row by its key, each value bound as text
+/// from `@P{first}` on and cast to its column's type; those values in order.
+async fn key_condition(
+    client: &mut MsConn<'_>,
+    schema: &str,
+    table: &str,
+    pk: &[PkValue],
+    first: usize,
+) -> Result<(String, Vec<Option<String>>), EngineError> {
+    let mut condition = String::new();
+    let mut params = Vec::with_capacity(pk.len());
+    for (index, key) in pk.iter().enumerate() {
+        if index > 0 {
+            condition.push_str(" AND ");
+        }
+        let key_type = column_type_of(client, schema, table, &key.column).await?;
+        let cast = cast_type(&key_type);
+        params.push(bound_text(cast, pk_value_string(&key.value))?);
+        let position = first + index;
+        let quoted = quote_ident(&key.column);
+        let bound = bound_sql(position, cast);
+        condition.push_str(&format!(
+            "({quoted} = {bound} OR ({quoted} IS NULL AND @P{position} IS NULL))"
+        ));
+    }
+    Ok((condition, params))
 }
 
 pub(crate) async fn insert_row(
@@ -821,23 +846,8 @@ pub(crate) async fn delete_row(
     let schema = schema_part.unwrap_or_else(|| inner.default_schema.clone());
     let table_ref = qualified(&inner.database, &schema, &table_name);
     check_key(inner, &mut client, &schema, &table_name, pk).await?;
-    let mut sql = format!("DELETE FROM {table_ref} WHERE ");
-    let mut params: Vec<Option<String>> = Vec::with_capacity(pk.len());
-    for (index, condition) in pk.iter().enumerate() {
-        if index > 0 {
-            sql.push_str(" AND ");
-        }
-        let column_type =
-            column_type_of(&mut client, &schema, &table_name, &condition.column).await?;
-        let cast = cast_type(&column_type);
-        let position = index + 1;
-        let quoted = quote_ident(&condition.column);
-        let bound = bound_sql(position, cast);
-        sql.push_str(&format!(
-            "({quoted} = {bound} OR ({quoted} IS NULL AND @P{position} IS NULL))"
-        ));
-        params.push(bound_text(cast, pk_value_string(&condition.value))?);
-    }
+    let (condition, params) = key_condition(&mut client, &schema, &table_name, pk, 1).await?;
+    let sql = format!("DELETE FROM {table_ref} WHERE {condition}");
     let refs: Vec<&dyn ToSql> = params.iter().map(|param| param as &dyn ToSql).collect();
     let result = client.change(&sql, &refs, inner.in_tx()).await;
     if result.is_err() {
@@ -860,30 +870,24 @@ pub(crate) async fn table_detail(
         .clone()
         .unwrap_or_else(|| inner.default_schema.clone());
     let object_ref = format!("[{}].[{}]", schema, table_name);
-    let lookup = client
-        .query(
-            TABLE_LOOKUP_SQL,
-            &[&schema as &dyn ToSql, &table_name as &dyn ToSql],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+    let lookup = catalog_rows(
+        inner,
+        &mut client,
+        TABLE_LOOKUP_SQL,
+        &[&schema as &dyn ToSql, &table_name as &dyn ToSql],
+    )
+    .await?;
     if lookup.is_empty() {
         return Err(EngineError::TableNotFound);
     }
 
-    let rows = client
-        .query(
-            COLUMN_SQL,
-            &[&schema as &dyn ToSql, &table_name as &dyn ToSql],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+    let rows = catalog_rows(
+        inner,
+        &mut client,
+        COLUMN_SQL,
+        &[&schema as &dyn ToSql, &table_name as &dyn ToSql],
+    )
+    .await?;
     let columns = rows
         .into_iter()
         .map(|row| {
@@ -912,21 +916,20 @@ pub(crate) async fn table_detail(
         .collect::<Vec<_>>();
 
     let mut indexes: Vec<IndexInfo> = Vec::new();
-    let index_rows = client
-        .query(
+    let index_rows = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!(
             "SELECT i.name, i.is_unique, i.is_primary_key, c.name, ic.is_descending_key
              FROM sys.indexes i
              JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
              JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
              WHERE i.object_id = OBJECT_ID(@P1) AND i.type > 0 AND ic.is_included_column = 0
-             ORDER BY i.name, ic.key_ordinal",
-            &[&object_ref as &dyn ToSql],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+             ORDER BY i.name, ic.key_ordinal"
+        ),
+        &[&object_ref as &dyn ToSql],
+    )
+    .await?;
     for row in index_rows {
         let values: Vec<ColumnData<'static>> = row.into_iter().collect();
         let index_name = cd_string(values.first()).unwrap_or_default();
@@ -961,8 +964,10 @@ pub(crate) async fn table_detail(
     }
     // A filtered index's predicate and the INCLUDE columns, which the key
     // columns above leave out.
-    let extra_rows = client
-        .query(
+    let extra_rows = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!(
             "SELECT i.name, i.filter_definition, c.name
              FROM sys.indexes i
              LEFT JOIN sys.index_columns ic
@@ -970,14 +975,11 @@ pub(crate) async fn table_detail(
              LEFT JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
              WHERE i.object_id = OBJECT_ID(@P1) AND i.type > 0
                AND (i.has_filter = 1 OR ic.column_id IS NOT NULL)
-             ORDER BY i.name, ic.index_column_id",
-            &[&object_ref as &dyn ToSql],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+             ORDER BY i.name, ic.index_column_id"
+        ),
+        &[&object_ref as &dyn ToSql],
+    )
+    .await?;
     for row in extra_rows {
         let values: Vec<ColumnData<'static>> = row.into_iter().collect();
         let index_name = cd_string(values.first()).unwrap_or_default();
@@ -994,8 +996,10 @@ pub(crate) async fn table_detail(
     indexes.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
-    let fk_rows = client
-        .query(
+    let fk_rows = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!(
             "SELECT fk.name, pc.name, OBJECT_SCHEMA_NAME(fk.referenced_object_id),
                     OBJECT_NAME(fk.referenced_object_id), rc.name
              FROM sys.foreign_keys fk
@@ -1005,14 +1009,11 @@ pub(crate) async fn table_detail(
              JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id
                AND rc.column_id = fkc.referenced_column_id
              WHERE fk.parent_object_id = OBJECT_ID(@P1)
-             ORDER BY fk.name, fkc.constraint_column_id",
-            &[&object_ref as &dyn ToSql],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+             ORDER BY fk.name, fkc.constraint_column_id"
+        ),
+        &[&object_ref as &dyn ToSql],
+    )
+    .await?;
     for row in fk_rows {
         let values: Vec<ColumnData<'static>> = row.into_iter().collect();
         let constraint = cd_string(values.first()).unwrap_or_default();
@@ -1034,21 +1035,20 @@ pub(crate) async fn table_detail(
         }
     }
 
-    let stats = client
-        .query(
+    let stats = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!(
             "SELECT (SELECT SUM(p.rows) FROM sys.partitions p
                      WHERE p.object_id = OBJECT_ID(@P1) AND p.index_id IN (0,1)),
                     (SELECT SUM(au.total_pages) * 8192
                      FROM sys.allocation_units au
                      JOIN sys.partitions p ON p.partition_id = au.container_id
-                     WHERE p.object_id = OBJECT_ID(@P1))",
-            &[&object_ref as &dyn ToSql],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+                     WHERE p.object_id = OBJECT_ID(@P1))"
+        ),
+        &[&object_ref as &dyn ToSql],
+    )
+    .await?;
     let (row_count_estimate, size_bytes) = stats
         .into_iter()
         .next()
@@ -1060,8 +1060,10 @@ pub(crate) async fn table_detail(
 
     // Data size and comment are extras: a failure here leaves them empty
     // instead of failing the whole detail.
-    let extra = match client
-        .query(
+    let extra = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!(
             "SELECT (SELECT SUM(au.total_pages) * 8192
                      FROM sys.allocation_units au
                      JOIN sys.partitions p ON p.partition_id = au.container_id
@@ -1069,14 +1071,13 @@ pub(crate) async fn table_detail(
                     (SELECT CAST(ep.value AS nvarchar(4000))
                      FROM sys.extended_properties ep
                      WHERE ep.class = 1 AND ep.major_id = OBJECT_ID(@P1)
-                       AND ep.minor_id = 0 AND ep.name = 'MS_Description')",
-            &[&object_ref as &dyn ToSql],
-        )
-        .await
-    {
-        Ok(stream) => stream.into_row().await.ok().flatten(),
-        Err(_) => None,
-    };
+                       AND ep.minor_id = 0 AND ep.name = 'MS_Description')"
+        ),
+        &[&object_ref as &dyn ToSql],
+    )
+    .await
+    .ok()
+    .and_then(|rows| rows.into_iter().next());
     let (data_bytes, comment) = extra
         .map(|row| {
             let values: Vec<ColumnData<'static>> = row.into_iter().collect();
@@ -1090,29 +1091,30 @@ pub(crate) async fn table_detail(
 
     // Triggers are an extra too: a failure leaves the list empty.
     let mut triggers: Vec<TriggerInfo> = Vec::new();
-    if let Ok(stream) = client
-        .query(
+    let trigger_rows = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!(
             "SELECT tr.name, OBJECT_DEFINITION(tr.object_id), tr.is_instead_of_trigger,
                     STUFF((SELECT ' OR ' + te.type_desc
                            FROM sys.trigger_events te WHERE te.object_id = tr.object_id
                            FOR XML PATH('')), 1, 4, '')
              FROM sys.triggers tr
              WHERE tr.parent_id = OBJECT_ID(@P1)
-             ORDER BY tr.name",
-            &[&object_ref as &dyn ToSql],
-        )
-        .await
-    {
-        for row in stream.into_first_result().await.unwrap_or_default() {
-            let values: Vec<ColumnData<'static>> = row.into_iter().collect();
-            let instead_of = cd_i64(values.get(2)).map(|value| value != 0);
-            triggers.push(TriggerInfo {
-                name: cd_string(values.first()).unwrap_or_default(),
-                timing: instead_of.map(|flag| if flag { "INSTEAD OF" } else { "AFTER" }.into()),
-                event: cd_string(values.get(3)),
-                definition: cd_string(values.get(1)),
-            });
-        }
+             ORDER BY tr.name"
+        ),
+        &[&object_ref as &dyn ToSql],
+    )
+    .await;
+    for row in trigger_rows.unwrap_or_default() {
+        let values: Vec<ColumnData<'static>> = row.into_iter().collect();
+        let instead_of = cd_i64(values.get(2)).map(|value| value != 0);
+        triggers.push(TriggerInfo {
+            name: cd_string(values.first()).unwrap_or_default(),
+            timing: instead_of.map(|flag| if flag { "INSTEAD OF" } else { "AFTER" }.into()),
+            event: cd_string(values.get(3)),
+            definition: cd_string(values.get(1)),
+        });
     }
 
     let table_ref = qualified(&inner.database, &schema, &table_name);
@@ -1133,6 +1135,7 @@ pub(crate) async fn table_detail(
         foreign_keys,
         triggers,
         schema: Some(schema.clone()),
+        properties: Vec::new(),
     })
 }
 
@@ -1241,79 +1244,74 @@ pub(crate) async fn objects(
             .collect::<Vec<_>>()
     };
     let views = pair_rows(
-        client
-            .query(
+        catalog_rows(
+            inner,
+            &mut client,
+            catalog_sql!(
                 "SELECT s.name, v.name FROM sys.views v
                  JOIN sys.schemas s ON s.schema_id = v.schema_id
                  WHERE v.is_ms_shipped = 0
-                 ORDER BY s.name, v.name",
-                &[],
-            )
-            .await
-            .map_err(mssql_err)?
-            .into_first_result()
-            .await
-            .map_err(mssql_err)?,
+                 ORDER BY s.name, v.name"
+            ),
+            &[],
+        )
+        .await?,
     );
     let functions = pair_rows(
-        client
-            .query(
+        catalog_rows(
+            inner,
+            &mut client,
+            catalog_sql!(
                 "SELECT s.name, o.name FROM sys.objects o
                  JOIN sys.schemas s ON s.schema_id = o.schema_id
                  WHERE o.type IN ('FN','IF','TF') AND o.is_ms_shipped = 0
-                 ORDER BY s.name, o.name",
-                &[],
-            )
-            .await
-            .map_err(mssql_err)?
-            .into_first_result()
-            .await
-            .map_err(mssql_err)?,
+                 ORDER BY s.name, o.name"
+            ),
+            &[],
+        )
+        .await?,
     );
     let procedures = pair_rows(
-        client
-            .query(
+        catalog_rows(
+            inner,
+            &mut client,
+            catalog_sql!(
                 "SELECT s.name, o.name FROM sys.objects o
                  JOIN sys.schemas s ON s.schema_id = o.schema_id
                  WHERE o.type = 'P' AND o.is_ms_shipped = 0
-                 ORDER BY s.name, o.name",
-                &[],
-            )
-            .await
-            .map_err(mssql_err)?
-            .into_first_result()
-            .await
-            .map_err(mssql_err)?,
+                 ORDER BY s.name, o.name"
+            ),
+            &[],
+        )
+        .await?,
     );
     let triggers = pair_rows(
-        client
-            .query(
+        catalog_rows(
+            inner,
+            &mut client,
+            catalog_sql!(
                 "SELECT s.name, tr.name FROM sys.triggers tr
                  LEFT JOIN sys.objects o ON o.object_id = tr.parent_id
                  LEFT JOIN sys.schemas s ON s.schema_id = o.schema_id
                  WHERE tr.is_ms_shipped = 0
-                 ORDER BY tr.name",
-                &[],
-            )
-            .await
-            .map_err(mssql_err)?
-            .into_first_result()
-            .await
-            .map_err(mssql_err)?,
+                 ORDER BY tr.name"
+            ),
+            &[],
+        )
+        .await?,
     );
     let sequences = pair_rows(
-        client
-            .query(
+        catalog_rows(
+            inner,
+            &mut client,
+            catalog_sql!(
                 "SELECT s.name, sq.name FROM sys.sequences sq
                  JOIN sys.schemas s ON s.schema_id = sq.schema_id
-                 ORDER BY s.name, sq.name",
-                &[],
-            )
-            .await
-            .map_err(mssql_err)?
-            .into_first_result()
-            .await
-            .map_err(mssql_err)?,
+                 ORDER BY s.name, sq.name"
+            ),
+            &[],
+        )
+        .await?,
     );
     Ok(DbObjects {
         views: sort_dedup(views),
@@ -1321,6 +1319,7 @@ pub(crate) async fn objects(
         triggers: sort_dedup(triggers),
         sequences: sort_dedup(sequences),
         procedures: sort_dedup(procedures),
+        ..DbObjects::default()
     })
 }
 
@@ -1348,16 +1347,13 @@ pub(crate) async fn table_count(inner: &MssqlInner, name: &str) -> Result<i64, E
 pub(crate) async fn databases(inner: &MssqlInner) -> Result<Vec<String>, EngineError> {
     let mut guard = inner.client().await?;
     let mut client = take_client(&mut guard, &inner.log)?;
-    let rows = client
-        .query(
-            "SELECT name FROM sys.databases WHERE state = 0 ORDER BY name",
-            &[],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_first_result()
-        .await
-        .map_err(mssql_err)?;
+    let rows = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!("SELECT name FROM sys.databases WHERE state = 0 ORDER BY name"),
+        &[],
+    )
+    .await?;
     Ok(rows
         .iter()
         .filter_map(|row| row.get::<&str, _>(0).map(str::to_string))
@@ -1376,18 +1372,19 @@ pub(crate) async fn object_definition(
         .clone()
         .unwrap_or_else(|| inner.default_schema.clone());
     let object_ref = format!("[{}].[{}]", schema, object_name);
-    let row = client
-        .query(
+    let row = catalog_rows(
+        inner,
+        &mut client,
+        catalog_sql!(
             "SELECT o.type, OBJECT_DEFINITION(o.object_id)
              FROM sys.objects o
-             WHERE o.object_id = OBJECT_ID(@P1)",
-            &[&object_ref as &dyn ToSql],
-        )
-        .await
-        .map_err(mssql_err)?
-        .into_row()
-        .await
-        .map_err(mssql_err)?;
+             WHERE o.object_id = OBJECT_ID(@P1)"
+        ),
+        &[&object_ref as &dyn ToSql],
+    )
+    .await?
+    .into_iter()
+    .next();
     let Some(row) = row else {
         return Ok(None);
     };
@@ -1563,6 +1560,48 @@ fn batch_end(control: Option<TxControl>, succeeded: bool, open_after: bool) -> B
 async fn check_tx(inner: &MssqlInner, client: &mut MsConn<'_>) {
     if inner.in_tx() && trancount(client).await == Some(0) {
         inner.lose_tx(SERVER_ROLLED_BACK);
+    }
+}
+
+/// Tries a catalog read gets before its error is returned.
+const CATALOG_ATTEMPTS: u64 = 3;
+
+/// Runs a catalog read, `sql` from catalog_sql!, for its first result. Even
+/// under READ UNCOMMITTED a read can lose its place in a scan as DDL moves
+/// rows (error 601), or still be picked as a deadlock victim (1205): it
+/// changes nothing, so it is sent again, a few times. Not after a deadlock
+/// inside the user's transaction, though: that rolled the transaction back,
+/// which the error says now and the next COMMIT again.
+async fn catalog_rows(
+    inner: &MssqlInner,
+    client: &mut MsConn<'_>,
+    sql: &'static str,
+    params: &[&dyn ToSql],
+) -> Result<Vec<tiberius::Row>, EngineError> {
+    let mut attempt = 1;
+    loop {
+        let outcome = match client.query(sql, params).await {
+            Ok(stream) => stream.into_first_result().await,
+            Err(err) => Err(err),
+        };
+        let err = match outcome {
+            Ok(rows) => return Ok(rows),
+            Err(err) => err,
+        };
+        let retry = match &err {
+            tiberius::error::Error::Server(token) => match token.code() {
+                601 => true,
+                1205 => !inner.in_tx(),
+                _ => false,
+            },
+            _ => false,
+        };
+        if !retry || attempt == CATALOG_ATTEMPTS {
+            check_tx(inner, client).await;
+            return Err(mssql_err(err));
+        }
+        tokio::time::sleep(Duration::from_millis(50 * attempt)).await;
+        attempt += 1;
     }
 }
 

@@ -30,6 +30,7 @@ use tokio::sync::{broadcast, mpsc};
 
 pub mod cursors;
 pub mod picker;
+mod search;
 pub mod store;
 pub mod transfer;
 pub mod tunnel;
@@ -250,6 +251,15 @@ impl ConnSlot {
         (current || self.inflight.load(Ordering::SeqCst) > 0).then_some(summary)
     }
 
+    /// The last summary read, however old: for listing a connection whose
+    /// server can't be reached now.
+    fn last_summary(&self) -> Option<SlotSummary> {
+        self.summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Reads meta and remembers it, unless the engine moved on meanwhile.
     async fn refresh_summary(&self, include_system: bool) -> Result<EngineMeta, EngineError> {
         let epoch = self.engine.epoch();
@@ -412,20 +422,26 @@ impl ConnSlot {
     /// The page's statement while a job's transaction is open: PostgreSQL
     /// would abort that transaction (the job's work with it) if the statement
     /// failed, so it runs under a savepoint of its own there. A write is
-    /// refused (see refused_while_job).
-    async fn foreground_query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
+    /// refused (see refused_while_job). `page` continues an earlier read of
+    /// the same statement (`QueryData::next_page`).
+    async fn foreground_query(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        page: Option<&str>,
+    ) -> Result<QueryData, EngineError> {
         if !self.job_tx_open() {
-            return self.engine.query(sql, max_rows).await;
+            return self.engine.query_page(sql, max_rows, page).await;
         }
         if !tablepeek_engine::is_read_only(sql) {
             return Err(EngineError::BadRequest(JOB_BUSY.into()));
         }
         if !(self.engine.failure_aborts_transaction() && self.engine.in_tx().await.unwrap_or(false))
         {
-            return self.engine.query(sql, max_rows).await;
+            return self.engine.query_page(sql, max_rows, page).await;
         }
         self.engine.query("SAVEPOINT tablepeek_page", 1).await?;
-        let outcome = self.engine.query(sql, max_rows).await;
+        let outcome = self.engine.query_page(sql, max_rows, page).await;
         // A failure is undone back to the savepoint, which then goes too.
         let usable = outcome.is_ok()
             || self
@@ -705,6 +721,14 @@ pub fn app(state: AppState) -> Router {
         .route("/api/doc/explain", post(doc_explain))
         .route("/api/doc/command", post(doc_command))
         .route("/api/doc/export", post(doc_export))
+        .route("/api/sql/export", post(sql_export))
+        .route("/api/sql/cell", post(sql_cell_read))
+        .route(
+            "/api/sql/cell/write",
+            post(sql_cell_write).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/api/sql/skip", post(sql_skip))
+        .route("/api/sql/count", post(sql_count))
         .route("/api/doc/perf", get(doc_perf))
         .route("/api/doc/update/preview", post(doc_update_preview))
         .route(
@@ -753,6 +777,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/oidc/logins", get(oidc_logins).delete(oidc_cancel))
         .route("/api/oidc/callback", get(oidc_callback))
+        .merge(search::routes())
         .layer(middleware::from_fn_with_state(state.clone(), token_guard))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .with_state(state)
@@ -1117,7 +1142,7 @@ async fn exec_route(
             if req.job {
                 slot.engine.execute(sql, EXEC_MAX_ROWS).await
             } else {
-                slot.foreground_query(sql, EXEC_MAX_ROWS)
+                slot.foreground_query(sql, EXEC_MAX_ROWS, None)
                     .await
                     .map(|data| QueryResult {
                         columns: data.columns.clone(),
@@ -2319,10 +2344,29 @@ async fn conns_list(
                 summary.demo,
                 summary.table_count,
             ),
-            None => {
-                let meta = slot.refresh_summary(false).await.map_err(engine_error)?;
-                (meta.kind, meta.path, meta.demo, meta.tables.len())
-            }
+            None => match slot.refresh_summary(false).await {
+                Ok(meta) => (meta.kind, meta.path, meta.demo, meta.tables.len()),
+                // A server that went away still lists, as it was last
+                // known (or by its engine), so the other connections don't
+                // vanish from the page with it.
+                Err(err) => match slot.last_summary() {
+                    Some(summary) => (
+                        summary.kind,
+                        summary.path,
+                        summary.demo,
+                        summary.table_count,
+                    ),
+                    None => (
+                        slot.engine
+                            .engine_id()
+                            .map_err(|_| engine_error(err))?
+                            .to_string(),
+                        None,
+                        false,
+                        0,
+                    ),
+                },
+            },
         };
         let safe_mode = state.store.lock().await.safe_mode(&slot.history_scope());
         conns.push(ConnSummary {
@@ -3286,7 +3330,7 @@ async fn query(
     let max_rows = req.max_rows.unwrap_or(10_000).clamp(1, 500_000);
     let _inflight = InflightGuard::new(slot.inflight.clone());
     slot.gated(Holder::Foreground, false, async {
-        slot.foreground_query(&req.sql, max_rows)
+        slot.foreground_query(&req.sql, max_rows, None)
             .await
             .map(|data| QueryResult {
                 columns: data.columns.clone(),
@@ -3381,11 +3425,21 @@ async fn definition_route(
     let kind = params.kind.as_deref().unwrap_or("").trim();
     if !matches!(
         kind,
-        "view" | "function" | "procedure" | "trigger" | "sequence"
+        "view"
+            | "materialized_view"
+            | "dictionary"
+            | "function"
+            | "procedure"
+            | "trigger"
+            | "sequence"
+            | "type"
+            | "aggregate"
+            | "synonym"
+            | "package"
     ) {
         return Err(bad_request(
             "invalid_request",
-            "kind는 view/function/procedure/trigger/sequence 중 하나여야 합니다",
+            "kind는 view/materialized_view/dictionary/function/procedure/trigger/sequence/type/aggregate/synonym/package 중 하나여야 합니다",
         ));
     }
     let Some(name) = params
@@ -3661,6 +3715,184 @@ async fn doc_command(
         return doc_beside!(slot, |ops| ops.command(&req)).map(Json);
     }
     doc_call!(slot, Holder::Protected, |ops| ops.command(&req)).map(Json)
+}
+
+#[derive(Deserialize)]
+struct SqlExportRequest {
+    sql: String,
+    #[serde(flatten)]
+    export: driver::NativeExport,
+}
+
+/// What ends a native export that failed midway, on a line of its own: the
+/// file so far is useless, and the page reads the error from it.
+const EXPORT_ERROR_MARK: &str = "__tablepeek_error__";
+
+/// Streams a read's whole result as a file the database writes itself
+/// (ClickHouse's CSV and JSONEachRow), beside the page's statements. A
+/// failure before the first byte is the usual error reply; one midway ends
+/// the body with `\n__tablepeek_error__ {code, message}\n`.
+async fn sql_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<SqlExportRequest>,
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let chunks = slot
+        .engine
+        .export_native(&req.sql, &req.export)
+        .await
+        .map_err(engine_error)?;
+    let body = chunks.map(|chunk| {
+        Ok::<_, std::convert::Infallible>(match chunk {
+            Ok(bytes) => Bytes::from(bytes),
+            Err(err) => {
+                let (_, Json(error)) = engine_error(err);
+                Bytes::from(format!("\n{EXPORT_ERROR_MARK} {}\n", json!(error)))
+            }
+        })
+    });
+    let content_type = if req.export.format == "json" {
+        "application/json; charset=utf-8"
+    } else {
+        "text/csv; charset=utf-8"
+    };
+    Ok((
+        [(header::CONTENT_TYPE, content_type)],
+        Body::from_stream(body),
+    )
+        .into_response())
+}
+
+/// A binary cell's whole value as a file, streamed as the session reads it
+/// (`capabilities.binary_cells`). A failure midway breaks the response off,
+/// so the page never takes a partial value for the whole.
+async fn sql_cell_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(cell): Json<tablepeek_types::CellRef>,
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let pieces = slot.engine.read_cell(&cell).await.map_err(engine_error)?;
+    let body = pieces.map(|piece| piece.map(Bytes::from).map_err(std::io::Error::other));
+    Ok((
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        Body::from_stream(body),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct CellWriteQuery {
+    conn: Option<String>,
+    /// The cell (`CellRef`) as JSON: the body is the new value's bytes.
+    cell: String,
+}
+
+/// Replaces a binary cell with the request's body, passed to the session in
+/// pieces as it arrives (no size limit; see `SqlDriver::write_cell`).
+async fn sql_cell_write(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<CellWriteQuery>,
+    body: Body,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let cell: tablepeek_types::CellRef = serde_json::from_str(&params.cell)
+        .map_err(|err| bad_request("invalid_request", format!("셀을 읽을 수 없습니다: {err}")))?;
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let data = body
+        .into_data_stream()
+        .map(|piece| {
+            piece.map(|bytes| bytes.to_vec()).map_err(|err| {
+                EngineError::BadRequest(format!("올린 값을 끝까지 받지 못했습니다: {err}"))
+            })
+        })
+        .boxed();
+    let rows = slot
+        .engine
+        .write_cell(&cell, data)
+        .await
+        .map_err(engine_error)?;
+    Ok(Json(json!({ "rows": rows })))
+}
+
+/// How long one `/api/sql/skip` or `/api/sql/count` call may work before it
+/// answers with how far it got: the page shows that and calls again, or
+/// stops there.
+const STEP_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
+
+#[derive(Deserialize)]
+struct SqlSkipRequest {
+    sql: String,
+    #[serde(flatten)]
+    skip: driver::SkipRequest,
+}
+
+/// Passes rows of a data tab's statement on the server, so a far page is
+/// reached without its rows coming to the page (engines that page by
+/// token). One step at a time, as the page's own statement: Stop cancels it.
+async fn sql_skip(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<SqlSkipRequest>,
+) -> Result<Json<driver::SkipOutcome>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let _guard = InflightGuard::new(slot.inflight.clone());
+    slot.gated(Holder::Foreground, false, async {
+        slot.refused_while_job()?;
+        slot.engine
+            .skip_rows(&req.sql, &req.skip, STEP_BUDGET)
+            .await
+    })
+    .await
+    .map(Json)
+    .map_err(engine_error)
+}
+
+#[derive(Deserialize)]
+struct SqlCountRequest {
+    sql: String,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+/// One step of an exact count the engine splits (`count_steps`): the rows
+/// of the parts counted this time and where the next step starts.
+async fn sql_count(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnQuery>,
+    Json(req): Json<SqlCountRequest>,
+) -> Result<Json<driver::CountStep>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let slot = slot_for(&state, params.conn.as_deref()).await?;
+    let _guard = InflightGuard::new(slot.inflight.clone());
+    slot.gated(Holder::Foreground, false, async {
+        slot.refused_while_job()?;
+        slot.engine
+            .count_step(&req.sql, req.cursor.as_deref(), STEP_BUDGET)
+            .await
+    })
+    .await
+    .map(Json)
+    .map_err(engine_error)
 }
 
 /// Streams a find or an aggregation as NDJSON: one canonical EJSON document
@@ -4082,8 +4314,11 @@ async fn kill_route(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
+    // A number on most engines; ClickHouse's query id (a UUID) and Oracle's
+    // "sid,serial#" are not. The engine checks the form it takes.
     let id = req.session_id.trim();
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+    let id_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ',' | '.' | ':');
+    if id.is_empty() || id.len() > 128 || !id.chars().all(id_char) {
         return Err(bad_request(
             "invalid_request",
             "세션 ID가 올바르지 않습니다",
@@ -4458,6 +4693,8 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
     // page's statement nor can be cancelled by the page's next one, and its
     // result is kept apart until the job releases it.
     let job = value["job"].as_bool().unwrap_or(false);
+    // The rest of an earlier read's rows, on an engine that pages by token.
+    let page = value["page"].as_str().map(str::to_string);
     if id.is_empty() || sql.trim().is_empty() {
         sender
             .json(error_json(
@@ -4479,6 +4716,11 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
             return;
         }
     };
+
+    // Settings' query time limit, sent with every statement (0: none).
+    if let Some(secs) = value["timeout_secs"].as_u64() {
+        slot.engine.set_query_timeout(secs);
+    }
 
     // The page's queries replace one another (see Sender::latest).
     let seq = (!job).then(|| {
@@ -4518,9 +4760,11 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                     }
                     let mark = slot.engine.sql_log().ends();
                     let outcome = if job {
-                        slot.engine.query(&sql, max_rows).await
+                        slot.engine
+                            .query_page(&sql, max_rows, page.as_deref())
+                            .await
                     } else {
-                        slot.foreground_query(&sql, max_rows).await
+                        slot.foreground_query(&sql, max_rows, page.as_deref()).await
                     };
                     // Statements run here can open or close a transaction (or,
                     // failing, abort one): the page's indicator follows this.
@@ -4576,6 +4820,9 @@ async fn handle_query(state: &AppState, sender: &Sender, value: &Value, conn: &s
                     "rows_affected": data.rows_affected,
                     "in_tx": in_tx,
                 });
+                if let Some(page) = &data.next_page {
+                    meta["next_page"] = json!(page);
+                }
                 if let Some(state) = tx_state {
                     meta["tx"] = json!(state);
                 }
@@ -4705,6 +4952,13 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
         expr: Option<ValueExpr>,
         row: Option<usize>,
         col: Option<usize>,
+        // Every column of the row as the grid last knew it.
+        #[serde(default)]
+        seen: Vec<PkMsg>,
+        // `value` is an amount to add to the column in one atomic write (a
+        // CQL counter's increment), not the value it takes.
+        #[serde(default)]
+        add: bool,
     }
 
     let msg: EditMsg = match serde_json::from_value(value.clone()) {
@@ -4755,6 +5009,15 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
     let row = msg.row;
     let col = msg.col;
     let session_id = msg.session.clone();
+    let add = msg.add;
+    let seen: Vec<PkValue> = msg
+        .seen
+        .into_iter()
+        .map(|p| PkValue {
+            column: p.column,
+            value: p.value,
+        })
+        .collect();
     let target = EditTarget {
         table: msg.table,
         pk: msg
@@ -4775,15 +5038,19 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
     let outcome = slot
         .gated(Holder::Protected, false, async {
             slot.refused_while_job()?;
-            slot.engine.edit(&target).await
+            if add {
+                slot.engine.edit_add(&target).await
+            } else {
+                slot.engine.edit_seen(&target, &seen).await
+            }
         })
         .await;
     match outcome {
-        Ok(changed) if target.expr.is_some() => {
-            // Only the database knows what DEFAULT or the time became, so the
-            // cached cell isn't patched: the page reads the row again. Inside
-            // a transaction the change counts as structural, so a rollback
-            // drops the results read in the meantime.
+        Ok(changed) if target.expr.is_some() || add => {
+            // Only the database knows what DEFAULT, the time or a sum became,
+            // so the cached cell isn't patched: the page reads the row again.
+            // Inside a transaction the change counts as structural, so a
+            // rollback drops the results read in the meantime.
             if slot.engine.in_tx().await.unwrap_or(false) {
                 let mut store = slot.sessions.lock().await;
                 store.mark_structural();
@@ -4804,6 +5071,7 @@ async fn handle_edit(state: &AppState, sender: &Sender, value: &Value, conn: &st
                     "column": echo_column,
                     "value": Value::Null,
                     "expr": target.expr,
+                    "add": add,
                     "rows_affected": changed,
                 }))
                 .await;
@@ -4914,9 +5182,11 @@ async fn handle_row_change(
         },
         RowOp::Delete => match parse_pk_values(&value["pk"]) {
             Ok(pk) => {
+                // The row as the grid last knew it; none from older pages.
+                let seen = parse_pk_values(&value["seen"]).unwrap_or_default();
                 slot.gated(Holder::Protected, false, async {
                     slot.refused_while_job()?;
-                    slot.engine.delete_row(&table, &pk).await
+                    slot.engine.delete_row_seen(&table, &pk, &seen).await
                 })
                 .await
             }
@@ -5438,9 +5708,15 @@ mod tests {
                 "postgres",
                 "mysql",
                 "mssql",
+                "oracle",
+                "clickhouse",
+                "cassandra",
+                "scylladb",
                 "cockroach",
                 "sqlite",
-                "mongodb"
+                "mongodb",
+                "elasticsearch",
+                "opensearch"
             ]
         );
         let postgres = &engines[0];
@@ -5469,18 +5745,25 @@ mod tests {
             postgres["connection"]["detail"],
             json!("{user}@{host}:{port}/{database}")
         );
-        let cockroach = &engines[3];
+        let by_id = |id: &str| engines.iter().find(|engine| engine["id"] == id).unwrap();
+        let cockroach = by_id("cockroach");
         assert_eq!(cockroach["family"], json!("postgres"));
-        let sqlite = &engines[4];
+        let sqlite = by_id("sqlite");
         assert_eq!(sqlite["transport"], json!("file"));
         assert!(sqlite.get("default_port").is_none());
         assert_eq!(sqlite["connection"]["tunnels"], json!([]));
         assert_eq!(sqlite["capabilities"]["databases"], json!("none"));
-        let mongodb = &engines[5];
+        let mongodb = by_id("mongodb");
         assert_eq!(mongodb["paradigm"], json!("document"));
         assert_eq!(mongodb["capabilities"]["language"], json!("mongo"));
         assert_eq!(mongodb["error_code_prefix"], json!("mongo"));
         assert_eq!(mongodb["url_schemes"], json!(["mongodb", "mongodb+srv"]));
+        for id in ["elasticsearch", "opensearch"] {
+            let search = by_id(id);
+            assert_eq!(search["paradigm"], json!("search"));
+            assert_eq!(search["capabilities"]["language"], json!("es-dsl"));
+            assert_eq!(search["error_code_prefix"], json!("es"));
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5525,7 +5808,7 @@ mod tests {
             test_headers(),
             Json(NewConnectionRequest {
                 name: "x".into(),
-                connect: connect_request(json!({ "driver": "oracle", "config": { "host": "h" } })),
+                connect: connect_request(json!({ "driver": "db2", "config": { "host": "h" } })),
                 persist_password: false,
             }),
         )
@@ -5533,7 +5816,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert_eq!(err.1.code, "unsupported_driver");
-        assert_eq!(err.1.message, "지원하지 않는 엔진: oracle");
+        assert_eq!(err.1.message, "지원하지 않는 엔진: db2");
         assert!(state.store.lock().await.data().connections.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -7524,12 +7807,12 @@ mod tests {
     async fn connect_rejects_unsupported_driver() {
         let dir = temp_dir("connect-driver");
         let state = test_state(&dir);
-        let err = connect_for_test(&state, test_connect_request("oracle"))
+        let err = connect_for_test(&state, test_connect_request("db2"))
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert_eq!(err.code, "unsupported_driver");
-        assert_eq!(err.message, "지원하지 않는 엔진: oracle");
+        assert_eq!(err.message, "지원하지 않는 엔진: db2");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -8192,7 +8475,7 @@ mod tests {
             State(state.clone()),
             test_headers(),
             Json(TestConnectionRequest {
-                connect: test_connect_request("oracle"),
+                connect: test_connect_request("db2"),
                 saved_id: None,
             }),
         )
@@ -9953,7 +10236,7 @@ mod tests {
                 system: None,
             }),
             Json(KillRequest {
-                session_id: "abc".into(),
+                session_id: "1; KILL".into(),
             }),
         )
         .await

@@ -7,6 +7,7 @@ import type {
   SortIndicator,
 } from "../grid/CanvasGrid";
 import type { GridColumnSpec } from "../grid/columns";
+import { t } from "../i18n";
 import { store, type GridResult } from "../store";
 import { TableGrid, type TableGridHandle } from "./TableGrid";
 
@@ -32,6 +33,9 @@ interface GridHostProps {
   widthsKey?: string | null;
   // What the table's structure says about each result column.
   specs?: (GridColumnSpec | null)[] | null;
+  // The engine can't change a stored row's key columns (CQL): their cells
+  // aren't editable.
+  fixedKeys?: boolean;
   sortColumns?: SortIndicator[];
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
   onSelectionChange?(row: number | null, rows: SelectedRows | null): void;
@@ -66,14 +70,18 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
     const source = result.source;
     const pk = meta.pk;
     const keyed = pk !== null && pk.length > 0 && pk.every((name) => meta.columns.includes(name));
+    const lockedKey = (row: number, col: number): boolean =>
+      props.fixedKeys === true && pk !== null && pk.includes(meta.columns[col]) && !source.isInserted(row);
     editing = {
       // Rows staged for insert are editable even when the table has no primary
       // key; nothing is editable while a run or an apply could replace this result.
-      canEdit: (row) => {
+      canEdit: (row, col) => {
         const current = store.getState();
         const busy = store.isApplying() || (current.status === "running" && current.connId === result.conn);
-        return !busy && !source.isDeleted(row) && (keyed || source.isInserted(row));
+        return !busy && !source.isDeleted(row) && (keyed || source.isInserted(row)) && !lockedKey(row, col);
       },
+      lockedTitle: (row, col) =>
+        lockedKey(row, col) ? t("기본 키 컬럼은 바꿀 수 없습니다. 새 행을 넣고 이 행을 지우세요") : undefined,
       onCommit: (row, col, value) => {
         // A list's NULL entry stands for the NULL value, not the text.
         const spec = specs?.[col] ?? null;

@@ -10,14 +10,16 @@ import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { CloseIcon, DownloadIcon, EyeIcon, RefreshIcon, SearchIcon, TrashIcon, UploadIcon } from "../../../components/icons";
 import { LoadingState, Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { say, t } from "../../../i18n";
 import { count, gridFsDelete, gridFsDownloadUrl, gridFsFiles, gridFsUpload, isAbort, toNumber, type Namespace } from "../api";
 import { BsonDate, Int32, bsonDoc, isDocument, stringifyJson, toEJSON, type BsonDocument, type BsonValue } from "../bson";
 import { toShell, toShellPretty } from "../format";
 import { parseFilter } from "../shell/parse";
 import { AdminModal } from "./AdminModal";
 import { DocFields, docKey } from "./CardView";
+import { DocDetailPanel, ItemDetail, NothingSelected, useCollectionFacts } from "./DocDetailPanel";
 import { ConfirmModal, type ConfirmRequest } from "./DocModals";
+import { arrowStep, selectsItem } from "./selection";
 import "./streams.css";
 
 export interface GridFsTabProps {
@@ -62,7 +64,7 @@ function searchFilter(text: string): { ok: true; filter: BsonDocument } | { ok: 
   }
   if (trimmed.startsWith("{")) {
     const parsed = parseFilter(trimmed);
-    return parsed.ok ? { ok: true, filter: parsed.value } : { ok: false, message: parsed.error.message };
+    return parsed.ok ? { ok: true, filter: parsed.value } : { ok: false, message: say(parsed.error.message) };
   }
   const pattern = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return { ok: true, filter: bsonDoc({ filename: bsonDoc({ $regex: pattern, $options: "i" }) }) };
@@ -103,6 +105,9 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
   const pickerRef = useRef<HTMLInputElement | null>(null);
   const uploadSeq = useRef(0);
   const filesNs: Namespace = { conn, db, coll: `${bucket}.files` };
+  // The file in the detail panel (its docKey), and what the panel lists without one.
+  const [picked, setPicked] = useState<string | null>(null);
+  const facts = useCollectionFacts(filesNs, reloadSeq);
 
   useEffect(() => {
     memory.set(tabKey, { search: applied, sort, page });
@@ -247,6 +252,16 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
   };
 
   const pages = total !== null ? Math.max(1, Math.ceil(total / PAGE_SIZE)) : null;
+  const fileKeys = (files ?? []).map((file, i) => docKey(file, page * PAGE_SIZE + i));
+  const pickedAt = picked === null ? -1 : fileKeys.indexOf(picked);
+  const pickedFile = pickedAt >= 0 ? files?.[pickedAt] : undefined;
+  const pickAt = (table: HTMLTableElement | null, at: number) => {
+    const key = fileKeys[at];
+    if (key !== undefined) {
+      setPicked(key);
+      table?.tBodies[0]?.rows[at]?.scrollIntoView({ block: "nearest" });
+    }
+  };
 
   return (
     <div className="mg-root mg-gridfs">
@@ -351,7 +366,17 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
         ) : files.length === 0 ? (
           <div className="panel-empty mg-gridfs-empty">{applied.trim() === "" ? t("파일이 없습니다. 올리기를 누르거나 파일을 여기에 끌어다 놓으세요") : t("검색 결과가 없습니다")}</div>
         ) : (
-          <table className={`panel-table mg-struct-table mg-gridfs-table${loading ? " stale" : ""}`}>
+          <table
+            className={`panel-table mg-struct-table mg-gridfs-table mg-pick-table${loading ? " stale" : ""}`}
+            tabIndex={-1}
+            onKeyDown={(event) => {
+              const next = arrowStep(event, fileKeys.length, pickedAt);
+              if (next !== null) {
+                event.preventDefault();
+                pickAt(event.currentTarget, next);
+              }
+            }}
+          >
             <thead>
               <tr>
                 <th>
@@ -380,11 +405,20 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
             <tbody>
               {files.map((file, i) => {
                 const id = file.get("_id") ?? null;
-                const key = docKey(file, page * PAGE_SIZE + i);
+                const key = fileKeys[i];
                 const uploaded = file.get("uploadDate");
                 const meta = file.get("metadata");
                 return (
-                  <tr key={key}>
+                  <tr
+                    key={key}
+                    className={key === picked ? "selected" : undefined}
+                    onClick={(event) => {
+                      if (selectsItem(event.target)) {
+                        pickAt(null, i);
+                        event.currentTarget.closest("table")?.focus({ preventScroll: true });
+                      }
+                    }}
+                  >
                     <td className="mono mg-gridfs-name" title={toShell(id)}>
                       {String(file.get("filename") ?? "")}
                     </td>
@@ -453,6 +487,29 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
         </AdminModal>
       ) : null}
       {confirm !== null ? <ConfirmModal request={confirm.request} onResult={confirm.resolve} /> : null}
+      <DocDetailPanel>
+        {(query) =>
+          pickedFile !== undefined ? (
+            <ItemDetail
+              key={picked ?? ""}
+              title={String(pickedFile.get("filename") ?? t("파일"))}
+              note={formatBytes(toNumber(pickedFile.get("length"))) ?? undefined}
+              doc={pickedFile}
+              query={query}
+              foot={
+                <div className="mg-detail-foot">
+                  <a className="icon-text-button" href={gridFsDownloadUrl(conn, db, bucket, pickedFile.get("_id") ?? null)} download>
+                    <DownloadIcon size={10} />
+                    {t("내려받기")}
+                  </a>
+                </div>
+              }
+            />
+          ) : (
+            <NothingSelected facts={facts} query={query} empty={t("선택된 파일이 없습니다")} />
+          )
+        }
+      </DocDetailPanel>
     </div>
   );
 }

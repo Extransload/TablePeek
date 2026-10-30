@@ -11,12 +11,15 @@ futures-util = { version = "=0.3.32", features = ["io"] }
 fallible-iterator = "0.2"
 mysql_async = { version = "0.37.1", features = ["default-rustls-ring"] }
 tablepeek-types = { path = "../tablepeek-types" }
-rusqlite = { workspace = true }
+# blob: incremental blob I/O, for binary cells of any size.
+rusqlite = { workspace = true, features = ["blob"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 serde = { workspace = true }
-serde_json = { workspace = true }
+# raw_value: search engine documents and replies pass through as the bytes
+# they came as (numbers past i64/u64, `1.10`), never through f64.
+serde_json = { workspace = true, features = ["raw_value"] }
 tiberius = { version = "0.13", default-features = false, features = ["rustls", "chrono", "tds73"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
@@ -28,14 +31,27 @@ uuid.workspace = true
 # MONGODB-AWS, OIDC machine logins on Azure and GCP, and a SOCKS5 hop so a
 # tunnelled replica set keeps its members' real names (TLS checks them).
 mongodb = { version = "3", features = ["aws-auth", "azure-oidc", "gcp-oidc", "socks5-proxy"] }
+# The keys a MONGODB-AWS connection gives, handed to the driver as its own
+# credential provider (the one the driver's `aws-auth` brings).
+aws-credential-types = "1"
 # SRV and TXT records of a tunnelled `mongodb+srv://` name, read here
 # rather than by the driver (the same version it uses).
 hickory-resolver = "0.26"
 # OIDC browser logins: the IdP's discovery document and token endpoint,
 # trusting the system's roots as well (a company CA; SSL_CERT_FILE too).
+# Also Elasticsearch's and OpenSearch's REST API, with a TLS config of our
+# own (fingerprint pinning) handed to it.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
 sha2 = "0.10"
 base64 = "0.22"
+# The reply bodies reqwest hands over, kept as they came (the version it uses).
+bytes = "1"
+# Cassandra and ScyllaDB: the pure-Rust CQL driver (paging state, tracing,
+# token-aware routing), TLS through the rustls the other drivers use.
+scylla = { version = "1.9", features = ["rustls-023", "chrono-04"] }
+# Oracle: Oracle's own pure-Rust thin driver (no Instant Client to install),
+# TLS through rustls. A pre-release, so pinned exactly.
+oracledb = "=26.0.0-beta.5"
 
 # Kerberos (GSSAPI) links the system's GSSAPI library: always on macOS
 # (GSS.framework); elsewhere only with `--features kerberos`, which needs

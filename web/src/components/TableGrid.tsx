@@ -137,6 +137,7 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
       editable
         ? {
             canEdit: (row, col) => propsRef.current.editing?.canEdit?.(row, col) ?? true,
+            lockedTitle: (row, col) => propsRef.current.editing?.lockedTitle?.(row, col),
             onCommit: (row, col, value) => propsRef.current.editing?.onCommit(row, col, value),
             onCancel: () => propsRef.current.editing?.onCancel?.(),
             choices: (row, col) => propsRef.current.editing?.choices?.(row, col) ?? null,

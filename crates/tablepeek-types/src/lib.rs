@@ -118,6 +118,24 @@ pub struct Capabilities {
     pub validation: bool,
     pub aggregation: bool,
     pub indexes: IndexCapabilities,
+    /// A table's rows page by the database's own paging token (Cassandra's
+    /// paging state) rather than by OFFSET: the page goes forward from the
+    /// token the last page gave, back or far ahead from tokens it noted, and
+    /// past rows it never saw by having the server walk them (`/api/sql/skip`).
+    pub cursor_paging: bool,
+    /// An exact COUNT runs as steps the server splits (Cassandra's token
+    /// ranges, several at once) through `/api/sql/count`, so the page shows
+    /// how far it got and can stop it.
+    pub count_steps: bool,
+    /// Cancelling a running statement ends the session (SQL Server's KILL;
+    /// an Oracle session that can neither break the call out of band nor
+    /// run ALTER SYSTEM CANCEL SQL), so a transaction open on it rolls back:
+    /// the client asks before cancelling inside one.
+    pub cancel_ends_session: bool,
+    /// A binary cell (Oracle's BLOB and RAW) is read whole and replaced from
+    /// bytes of any size through `/api/sql/cell`, streamed both ways, past
+    /// what the grid shows of it.
+    pub binary_cells: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +190,15 @@ pub struct EditTarget {
     /// Written in place of `value` when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expr: Option<ValueExpr>,
+}
+
+/// One cell of a saved row, by its table's key: a binary cell read or
+/// replaced whole (`/api/sql/cell`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CellRef {
+    pub table: String,
+    pub pk: Vec<PkValue>,
+    pub column: String,
 }
 
 /// One column of a new row: a value bound as text, or an expression.
@@ -321,6 +348,19 @@ pub struct TableDetail {
     pub ddl: Option<String>,
     #[serde(default)]
     pub schema: Option<String>,
+    /// How the table is stored, line by line, where the engine says more
+    /// than its columns and indexes do (ClickHouse's engine, ORDER BY,
+    /// PARTITION BY, TTL). Left out when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<TableProperty>,
+}
+
+/// One line of a table's properties: what it is and its value as the
+/// engine writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableProperty {
+    pub name: String,
+    pub value: String,
 }
 
 /// 서버 세션 정보 (/api/server)
@@ -357,7 +397,7 @@ pub struct ServerInfo {
 }
 
 /// 뷰/함수/프로시저/트리거/시퀀스 목록 (/api/objects)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DbObjects {
     pub views: Vec<String>,
     pub functions: Vec<String>,
@@ -365,6 +405,26 @@ pub struct DbObjects {
     pub sequences: Vec<String>,
     #[serde(default)]
     pub procedures: Vec<String>,
+    /// Views whose rows are stored (ClickHouse, Oracle, Cassandra); opened
+    /// like a view. Left out where the engine has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materialized_views: Vec<String>,
+    /// ClickHouse dictionaries, read with SELECT like a table.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dictionaries: Vec<String>,
+    /// User-defined types (Cassandra's UDTs, Oracle object types), shown
+    /// with their definition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+    /// User-defined aggregates (Cassandra), shown with their definition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aggregates: Vec<String>,
+    /// Synonyms (Oracle): other names for objects, shown with their target.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub synonyms: Vec<String>,
+    /// PL/SQL packages (Oracle): their spec and body, shown as definitions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packages: Vec<String>,
 }
 
 /// 객체 정의 (/api/definition)

@@ -1,3 +1,5 @@
+import { SEARCH_EN } from "./engines/elasticsearch/i18n.en";
+
 export type Language = "ko" | "en";
 
 const STORAGE_KEY = "tablepeek.language";
@@ -867,6 +869,7 @@ const EN: Record<string, string> = {
   "SSH 터널로 로컬 포트에 접속한다면, 그 터널이 켜져 있는지 확인하세요.": "If you connect through a local port over an SSH tunnel, check that the tunnel is running.",
   "Cloud SQL 프록시로 로컬 포트(예: 127.0.0.1:3307)에 접속한다면, 프록시가 켜져 있는지 확인하세요.": "If you connect to a local port through the Cloud SQL proxy (e.g. 127.0.0.1:3307), check that the proxy is running.",
   "Cloud SQL 프록시로 로컬 포트(예: 127.0.0.1:5433)에 접속한다면, 프록시가 켜져 있는지 확인하세요.": "If you connect to a local port through the Cloud SQL proxy (e.g. 127.0.0.1:5433), check that the proxy is running.",
+  "Cloud SQL 프록시로 로컬 포트(예: 127.0.0.1:1433)에 접속한다면, 프록시가 켜져 있는지 확인하세요.": "If you connect to a local port through the Cloud SQL proxy (e.g. 127.0.0.1:1433), check that the proxy is running.",
   "호스트 이름을 찾을 수 없습니다": "Host name not found",
   "호스트 이름의 철자를 확인하세요.": "Check the host name's spelling.",
   "사내 DNS에서만 보이는 주소라면 VPN에 연결하세요.": "If the address only resolves on an internal network, connect to the VPN.",
@@ -2663,7 +2666,7 @@ const EN: Record<string, string> = {
   "보여 줄 출력": "Output to show",
   "출력 {n}": "Output {n}",
   "쿼리 시간 제한(초)": "Query time limit (s)",
-  "MongoDB 쿼리와 mongosh 스크립트에 쓰입니다. 0이면 제한이 없습니다.": "Used by MongoDB queries and mongosh scripts. 0 means no limit.",
+  "MongoDB 쿼리, mongosh 스크립트, ClickHouse 문장에 쓰입니다. 0이면 제한이 없습니다.": "Used by MongoDB queries, mongosh scripts and ClickHouse statements. 0 means no limit.",
   // ---- end ShellJS ----
   // ---- MongoDB search indexes, change streams, GridFS (SearchStreamFs) ----
   "(없음)": "(none)",
@@ -2789,6 +2792,479 @@ const EN: Record<string, string> = {
   "코드로": "To code",
   "이 파이프라인을 드라이버 코드로 (mongosh·Python·Node.js·Java·C#·Go·Rust·PHP·Ruby)": "This pipeline as driver code (mongosh, Python, Node.js, Java, C#, Go, Rust, PHP, Ruby)",
   // ---- end QueryOptsCode ----
+  // ---- Oracle (engines/oracle, its descriptor, functions, sidebar kinds) ----
+  "기본 포트 1521": "Default port 1521",
+  // Safe mode's reading of PL/SQL blocks.
+  "프로시저를 호출합니다 (무엇을 바꾸는지 알 수 없습니다)": "Calls a procedure (what it changes can't be told)",
+  "행을 잠급니다": "Locks rows",
+  "동적 SQL을 실행합니다 (무엇을 바꾸는지 알 수 없습니다)": "Runs dynamic SQL (what it changes can't be told)",
+  "트랜잭션을 끝냅니다": "Ends the transaction",
+  // Stop on an engine whose cancel ends the session (Oracle, SQL Server).
+  "실행 정지": "Stop running",
+  "정지하면 세션이 끝나 열린 트랜잭션의 변경이 모두 롤백됩니다. 정지할까요?":
+    "Stopping ends the session, so every change in the open transaction is rolled back. Stop?",
+  // Table properties the Oracle driver reports.
+  "테이블스페이스": "Tablespace",
+  "파티션": "Partitioned",
+  "임시 테이블": "Temporary",
+  "로깅": "Logging",
+  "압축": "Compression",
+  "행 이동": "Row movement",
+  "통계 수집 시각": "Last analyzed",
+  "접속 방식": "Connect by",
+  "예: FREEPDB1, ORCLPDB1": "e.g. FREEPDB1, ORCLPDB1",
+  "예: ORCL": "e.g. ORCL",
+  "Easy Connect (host:1521/service, tcps://…), (DESCRIPTION=…) 또는 tnsnames.ora의 별칭": "Easy Connect (host:1521/service, tcps://…), (DESCRIPTION=…), or an alias from tnsnames.ora",
+  "접속 권한": "Connect as",
+  "TCPS로 암호화 (서버 인증서를 확인)": "Encrypt with TCPS (verifies the server certificate)",
+  "월렛 (ewallet.pem)": "Wallet (ewallet.pem)",
+  "TLS 월렛": "TLS wallet",
+  "월렛 비밀번호": "Wallet password",
+  "(선택) 월렛의 개인 키가 암호화되어 있을 때": "(Optional) when the wallet's private key is encrypted",
+  "TNS 설정": "TNS settings",
+  "동의어": "Synonyms",
+  "패키지": "Packages",
+  "생성일": "Created",
+  "SYS로 접속하려면 고급 설정의 접속 권한을 SYSDBA로 고르세요.": "To connect as SYS, set Connect as to SYSDBA in the advanced settings.",
+  "PDB에 만든 사용자라면 서비스 이름이 그 PDB(예: FREEPDB1)여야 합니다.": "A user created in a PDB needs that PDB as the service name (e.g. FREEPDB1).",
+  "Oracle은 따옴표 없는 이름을 대문자로 바꿉니다. 소문자로 만든 테이블이라면 \"orders\"처럼 따옴표로 감싸세요.": "Oracle upper-cases unquoted names. For a table created in lower case, quote it, as in \"orders\".",
+  "다른 스키마의 테이블은 소유자를 앞에 붙이세요 (예: HR.EMPLOYEES). 읽을 권한이 없을 때도 이 오류가 납니다.": "Prefix another schema's table with its owner (e.g. HR.EMPLOYEES). This error also shows when you can't read the table.",
+  "Oracle은 LIMIT 대신 FETCH FIRST n ROWS ONLY를 씁니다.": "Oracle uses FETCH FIRST n ROWS ONLY instead of LIMIT.",
+  "테이블 없이 계산할 때도 FROM이 필요합니다: SELECT 1 FROM DUAL.": "A SELECT without a table still needs FROM: SELECT 1 FROM DUAL.",
+  "PL/SQL 블록(BEGIN … END;)과 CREATE PROCEDURE 같은 정의는 END; 다음 줄에 / 만 써서 끝내세요.": "End a PL/SQL block (BEGIN … END;) or a definition such as CREATE PROCEDURE with a line holding only / after its END;.",
+  "Oracle 리스너의 포트(기본 1521)와 리스너가 켜져 있는지(lsnrctl status) 확인하세요.": "Check the Oracle listener's port (1521 by default) and that the listener is running (lsnrctl status).",
+  "Oracle은 빈 문자열('')을 NULL로 저장합니다. 비워 둘 수 없는 컬럼에는 빈 문자열도 넣을 수 없습니다.": "Oracle stores an empty string ('') as NULL, so a column that can't be empty can't take an empty string either.",
+  "외래 키 ‘{key}’가 가리키는 행이 참조 대상 테이블에 없습니다.": "The row foreign key ‘{key}’ points to isn't in the referenced table.",
+  "외래 키 ‘{key}’로 이 행을 참조하는 행이 아직 있습니다.": "Rows still reference this row through foreign key ‘{key}’.",
+  "‘{column}’ 컬럼에는 {max}까지 들어가는데 {actual}인 값을 넣으려 했습니다.": "Column ‘{column}’ holds up to {max}, and the value was {actual}.",
+  "VARCHAR2(n)은 바이트로 셀 수 있습니다. 한글은 한 글자가 3바이트이니 VARCHAR2(n CHAR)로 늘리세요.": "VARCHAR2(n) may count bytes, and a non-ASCII character such as Korean takes up to 3 bytes; use VARCHAR2(n CHAR).",
+  "숫자 컬럼에는 숫자만 넣으세요. 문자열 컬럼을 숫자와 비교할 때도 생깁니다 (예: WHERE code = 1 대신 WHERE code = '1').": "Put only numbers in number columns. Comparing a text column with a number causes this too (write WHERE code = '1', not WHERE code = 1).",
+  "숫자가 아닌 문자열을 숫자로 바꾸려 했습니다.": "Text that isn't a number was converted to a number.",
+  "날짜·시간 형식이 맞지 않습니다": "The date or time doesn't match its format",
+  "문자열을 날짜로 바꾸는 서식(NLS_DATE_FORMAT 또는 TO_DATE의 서식)과 값이 맞지 않습니다.": "The value doesn't match the format that turns text into a date (NLS_DATE_FORMAT, or TO_DATE's format).",
+  "TO_DATE('2026-10-21 14:30:00', 'YYYY-MM-DD HH24:MI:SS')처럼 서식을 함께 쓰거나, DATE '2026-10-21' 리터럴을 쓰세요.": "Give the format, as in TO_DATE('2026-10-21 14:30:00', 'YYYY-MM-DD HH24:MI:SS'), or write a DATE '2026-10-21' literal.",
+  "Oracle은 따옴표 없는 이름을 대문자로 바꿉니다. 소문자로 만든 이름은 \"name\"처럼 따옴표로 감싸세요.": "Oracle upper-cases unquoted names. Quote a name created in lower case, as in \"name\".",
+  "계정이 잠겨 있습니다": "The account is locked",
+  "로그인 실패가 반복되었거나 관리자가 계정을 잠갔습니다.": "Too many failed logins, or an administrator locked the account.",
+  "DB 관리자에게 계정 잠금 해제(ALTER USER … ACCOUNT UNLOCK)를 요청하세요.": "Ask the database administrator to unlock the account (ALTER USER … ACCOUNT UNLOCK).",
+  "리스너가 이 서비스 이름을 모릅니다": "The listener doesn't know this service name",
+  "호스트와 포트의 리스너에는 닿았지만, 그 이름으로 등록된 데이터베이스 서비스가 없습니다.": "The listener at that host and port answered, but no database service is registered under that name.",
+  "서비스 이름을 확인하세요 (예: FREEPDB1, ORCLPDB1). 서버에서 lsnrctl services로 등록된 이름을 볼 수 있습니다.": "Check the service name (e.g. FREEPDB1, ORCLPDB1). lsnrctl services on the server lists the registered names.",
+  "SID로 접속하는 서버라면 접속 방식을 ‘SID’로 바꾸세요.": "If the server is reached by SID, set Connect by to ‘SID’.",
+  "DB가 막 시작되었다면 리스너에 등록될 때까지 잠시 뒤 다시 시도하세요.": "If the database just started, try again once it has registered with the listener.",
+  "리스너가 이 SID를 모릅니다": "The listener doesn't know this SID",
+  "호스트와 포트의 리스너에는 닿았지만, 그 SID로 등록된 인스턴스가 없습니다.": "The listener at that host and port answered, but no instance is registered under that SID.",
+  "SID의 철자를 확인하세요.": "Check the SID's spelling.",
+  "PDB(예: FREEPDB1)에는 SID가 아니라 서비스 이름으로 접속합니다. 접속 방식을 ‘서비스 이름’으로 바꾸세요.": "A PDB (e.g. FREEPDB1) is reached by service name, not SID. Set Connect by to ‘Service name’.",
+  "트리거 ‘{name}’에 컴파일 오류가 있습니다": "Trigger ‘{name}’ has compilation errors",
+  "이 테이블에 걸린 트리거가 INVALID 상태라, 트리거가 실행되는 작업이 모두 실패합니다.": "A trigger on this table is INVALID, so every change that fires it fails.",
+  "사이드바에서 트리거 정의를 열어 고친 뒤 다시 만드세요.": "Open the trigger's definition from the sidebar, fix it, and create it again.",
+  "오류 내용은 USER_ERRORS 뷰에서 볼 수 있습니다.": "The errors are in the USER_ERRORS view.",
+  "PL/SQL 컴파일 오류 ({line}번째 줄, {column}번째 열)": "PL/SQL compilation error (line {line}, column {column})",
+  "줄 번호는 블록의 첫 줄(BEGIN 또는 DECLARE)부터 셉니다.": "Lines are counted from the block's first line (BEGIN or DECLARE).",
+  "PL/SQL 블록은 끝의 END;까지가 한 문장입니다. 스크립트에서는 블록 다음 줄에 / 만 쓰세요.": "A PL/SQL block is one statement up to its final END;. In a script, put a line holding only / after the block.",
+  "만들었지만 컴파일 오류가 있습니다": "Created, with compilation errors",
+  "객체는 저장되었지만 INVALID 상태라 실행할 수 없습니다.": "The object was saved but is INVALID, so it can't run.",
+  "고친 뒤 CREATE OR REPLACE로 다시 실행하세요.": "Fix it and run CREATE OR REPLACE again.",
+  "테이블스페이스에 쓸 권한이 없습니다": "No quota on the tablespace",
+  "이 계정에는 테이블스페이스 할당량(QUOTA)이 없어 행이나 테이블을 저장할 수 없습니다.": "This account has no quota on the tablespace, so it can't store rows or tables there.",
+  "DB 관리자에게 ALTER USER … QUOTA UNLIMITED ON 테이블스페이스를 요청하세요.": "Ask the database administrator for ALTER USER … QUOTA UNLIMITED ON the tablespace.",
+  "NULL이 아니면 둘째 값, NULL이면 셋째 값": "The second value when not NULL, the third when NULL",
+  "값에 따라 결과를 고름 (CASE의 짧은 꼴)": "Picks a result by value (a short CASE)",
+  "문자열을 서식대로 날짜로": "Text to a date, by format",
+  "문자열을 서식대로 타임스탬프로": "Text to a timestamp, by format",
+  "문자열을 숫자로": "Text to a number",
+  "날짜에 개월 수 더하기": "Adds months to a date",
+  "두 날짜 사이의 개월 수": "Months between two dates",
+  "날짜를 단위로, 숫자를 자릿수로 자름": "Truncates a date to a unit, or a number to digits",
+  "그 달의 마지막 날": "Last day of the month",
+  "부분 문자열의 위치 (없으면 0)": "Position of a substring (0 when absent)",
+  "왼쪽을 채워 길이 맞추기": "Pads on the left to a length",
+  "단어 첫 글자만 대문자로": "Capitalizes each word",
+  "정규식에 맞는지 (WHERE 조건)": "Whether text matches a regular expression (a WHERE condition)",
+  "정규식에 맞는 부분": "The part matching a regular expression",
+  "정규식에 맞는 부분 바꾸기": "Replaces what matches a regular expression",
+  "값을 구분자로 이어 붙임 (뒤에 WITHIN GROUP (ORDER BY …))": "Joins values with a separator (followed by WITHIN GROUP (ORDER BY …))",
+  "JSON에서 객체·배열 꺼내기": "Extracts an object or array from JSON",
+  "JSON을 행과 열로 펼침": "Expands JSON into rows and columns",
+  "새 고유 ID (RAW(16))": "A new unique ID (RAW(16))",
+  "가장 큰 값": "The largest value",
+  // ---- end Oracle ----
+  // ---- Binary cells (components/BinaryCellModal, capabilities.binary_cells) ----
+  "전체 값 내려받기": "Download whole value",
+  "값 바꾸기…": "Replace value…",
+  "값 바꾸기": "Replace value",
+  "바이너리 값 — {column}": "Binary value — {column}",
+  "새 값": "New",
+  "새 값의 형식": "Format of the new value",
+  "알 수 없음": "Unknown",
+  "텍스트 (UTF-8)": "Text (UTF-8)",
+  "16진수": "Hex",
+  "16진수가 아닙니다": "Not hex",
+  "파일을 여기에 끌어다 놓거나 붙여 넣으세요": "Drop or paste a file here",
+  "값으로 쓸 글자": "Text to store",
+  "{count}바이트": "{count} bytes",
+  "{size}를 내려받았습니다": "Downloaded {size}",
+  "값을 끝까지 받지 못했습니다": "The value didn't arrive whole",
+  "받는 중": "Receiving",
+  "보내는 중": "Sending",
+  // What the engines answer about a binary cell (crates/tablepeek-engine/src/cells.rs).
+  "기본 키가 없어 행을 찾을 수 없습니다": "There is no primary key to find the row by",
+  "값이 NULL입니다": "The value is NULL",
+  "이 키의 행이 없습니다. 다른 곳에서 지워졌거나 키가 바뀌었습니다":
+    "No row has this key: it was deleted elsewhere, or its key changed",
+  "바이너리 값을 읽지 못했습니다": "Couldn't read the binary value",
+  "바이너리 값의 조각이 순서대로 오지 않았습니다": "The binary value's pieces arrived out of order",
+  "빈 BLOB을 읽지 못했습니다": "Couldn't read the emptied BLOB",
+  "이 엔진은 바이너리 값을 통째로 읽지 않습니다": "This engine doesn't read binary values whole",
+  "이 엔진은 바이너리 값을 통째로 바꾸지 않습니다": "This engine doesn't replace binary values whole",
+  // ---- end Binary cells ----
+  // ---- ClickHouse (engines/clickhouse, its descriptor, sidebar kinds, table properties) ----
+  "구체화된 뷰": "Materialized views",
+  "딕셔너리": "Dictionaries",
+  "테이블 속성": "Table properties",
+  "엔진·정렬 키·파티션·TTL 같은 테이블 속성 보기": "Show the table's properties: engine, sorting key, partitioning, TTL",
+  "활성 파트": "Active parts",
+  "압축 전 크기": "Uncompressed size",
+  "파트": "Parts",
+  "그래뉼": "granules",
+  "HTTPS로 접속 (보통 포트 8443)": "Connect over HTTPS (usually port 8443)",
+  "시스템 인증서 대신 쓸 CA (PEM)": "CA to trust instead of the system's (PEM)",
+  "인증서 검증 끄기": "Skip certificate verification",
+  "자체 서명 인증서를 확인 없이 받아들임": "Accept a self-signed certificate without checking it",
+  "정렬 키가 없어 행을 찾을 수 없습니다": "There is no sorting key to find the row by",
+  "정렬 키가 있는 MergeTree 계열 테이블만 키로 행을 고칠 수 있습니다":
+    "Only MergeTree-family tables with a sorting key can have rows edited by key",
+  "정렬 키 값이 같은 행이 여럿 있어 이 행만 고칠 수 없습니다. 데이터 탭에서 고치거나 SELECT에 _part, _part_offset을 더하세요":
+    "Several rows share this sorting key, so this one can't be changed alone. Change it in the data tab, or add _part, _part_offset to the SELECT",
+  "클러스터 이름 (system.clusters)": "Cluster name (system.clusters)",
+  "앱이 만드는 구조 변경(CREATE, ALTER, DROP, TRUNCATE, RENAME)을 이 클러스터의 모든 서버에서 실행. 문장마다 바꿀 수 있음":
+    "Run the structure changes the app makes (CREATE, ALTER, DROP, TRUNCATE, RENAME) on every server of this cluster; changeable per statement",
+  "이 서버만": "This server only",
+  "클러스터 {cluster}의 모든 서버에서 실행합니다": "Runs on every server of cluster {cluster}",
+  "ClickHouse는 트랜잭션을 지원하지 않습니다": "ClickHouse has no transactions",
+  "이 엔진은 데이터베이스가 직접 쓰는 파일로 내보낼 수 없습니다": "This engine can't export to a file the database writes itself",
+  "내보내기는 읽기 문장 하나만 받습니다": "An export takes a single read statement",
+  "알 수 없는 ClickHouse 오류": "Unknown ClickHouse error",
+  "쿼리가 실행 시간 제한을 넘었습니다": "The query went past its time limit",
+  "max_execution_time에 걸려 서버가 쿼리를 멈췄습니다.": "The server stopped the query at max_execution_time.",
+  "설정의 쿼리 시간 제한(초)을 늘리거나 0으로 두면 제한이 없어집니다.":
+    "Raise Settings' query time limit (s), or set it to 0 for no limit.",
+  "WHERE로 읽을 범위를 좁히거나 정렬 키를 쓰는 조건을 더하세요.":
+    "Narrow what is read with WHERE, or add a condition on the sorting key.",
+  "메모리 한도를 넘었습니다": "Memory limit exceeded",
+  "쿼리에 필요한 메모리가 서버나 사용자의 한도보다 큽니다.": "The query needs more memory than the server's or the user's limit.",
+  "GROUP BY·JOIN·ORDER BY가 다루는 행을 줄이거나 LIMIT을 두세요.": "Reduce the rows GROUP BY, JOIN or ORDER BY handle, or add a LIMIT.",
+  "SETTINGS max_bytes_before_external_group_by로 디스크를 쓰게 할 수 있습니다.":
+    "SETTINGS max_bytes_before_external_group_by lets it spill to disk.",
+  "키 컬럼은 고칠 수 없습니다": "Key columns can't be changed",
+  "정렬 키·파티션 키에 든 컬럼은 ALTER TABLE … UPDATE로 바꿀 수 없습니다.":
+    "Columns in the sorting or partition key can't be changed with ALTER TABLE … UPDATE.",
+  "행을 지우고 새 값으로 다시 넣으세요.": "Delete the row and insert it again with the new value.",
+  "이 계정으로는 할 수 없는 작업입니다": "This account can't do that",
+  "계정이 읽기 전용(readonly)이거나 이 작업의 권한(GRANT)이 없습니다.":
+    "The account is read-only, or lacks the grant for this.",
+  "권한이 있는 계정으로 연결하거나 관리자에게 GRANT를 요청하세요.": "Connect with an account that may, or ask an administrator for the GRANT.",
+  "로그인하지 못했습니다": "Couldn't log in",
+  "사용자 이름이나 비밀번호가 맞지 않거나, 이 주소에서의 접속이 허용되지 않았습니다.":
+    "The user name or password is wrong, or logins from this address aren't allowed.",
+  "사용자와 비밀번호를 확인하세요. 기본 사용자는 default입니다.": "Check the user and password. The default user is default.",
+  "users.xml이나 CREATE USER … HOST로 접속 주소가 막혀 있지 않은지 확인하세요.":
+    "Check that users.xml or CREATE USER … HOST doesn't block this address.",
+  "파트가 너무 많습니다": "Too many parts",
+  "작은 INSERT가 너무 자주 들어와 병합이 따라가지 못합니다.": "Small INSERTs come too often for merges to keep up.",
+  "행을 모아 한 번에 많이 넣거나 async_insert를 켜세요.": "Insert rows in larger batches, or turn on async_insert.",
+  "ClickHouse에서 이름은 `백틱`으로, 문자열은 '작은따옴표'로 감쌉니다. 함수 이름은 대소문자를 가립니다.":
+    "In ClickHouse, names go in `backticks` and text in 'single quotes'. Function names are case-sensitive.",
+  "다른 데이터베이스의 테이블은 db.table로 쓰거나 ⌘K로 데이터베이스를 바꾸세요.":
+    "Write a table in another database as db.table, or switch databases with ⌘K.",
+  "HTTP 포트(8123, HTTPS는 8443)로 연결하세요. 9000은 네이티브 프로토콜 포트입니다.":
+    "Connect to the HTTP port (8123, or 8443 for HTTPS). 9000 is the native protocol's port.",
+  "ClickHouse의 기본 사용자는 default이며, 비밀번호가 없을 수 있습니다.": "ClickHouse's default user is default, which may have no password.",
+  "그룹에서 처음 만난 값": "The first value met in the group",
+  "그룹에서 마지막으로 만난 값": "The last value met in the group",
+  "val이 가장 큰 행의 arg": "arg of the row with the largest val",
+  "val이 가장 작은 행의 arg": "arg of the row with the smallest val",
+  "서로 다른 값의 근사 개수": "Approximate number of distinct values",
+  "서로 다른 값의 정확한 개수": "Exact number of distinct values",
+  "조건에 맞는 행 수": "Rows matching the condition",
+  "조건에 맞는 행의 합계": "Sum over rows matching the condition",
+  "조건에 맞는 행의 평균": "Average over rows matching the condition",
+  "근사 분위수 (예: quantile(0.95)(x))": "Approximate quantile (e.g. quantile(0.95)(x))",
+  "여러 근사 분위수를 배열로": "Several approximate quantiles, as an array",
+  "근사 중앙값": "Approximate median",
+  "가장 자주 나온 값 k개 (근사)": "The k most frequent values (approximate)",
+  "서로 다른 정수의 개수 (비트맵)": "Number of distinct integers (bitmap)",
+  "모표준편차": "Population standard deviation",
+  "모분산": "Population variance",
+  "uniq의 중간 상태 (AggregatingMergeTree에 저장)": "uniq's intermediate state (stored in AggregatingMergeTree)",
+  "저장된 uniq 상태를 합쳐 결과로": "Merges stored uniq states into the result",
+  "키별 합계를 맵 배열로": "Sums per key, as map arrays",
+  "조건에 따라 두 값 중 하나": "One of two values, by condition",
+  "여러 조건 중 처음 맞는 값": "The value of the first condition that holds",
+  "NULL인지": "Whether it is NULL",
+  "Nullable을 벗긴 값 (NULL이면 기본값)": "The value without Nullable (the default for NULL)",
+  "Int64로": "To Int64",
+  "UInt64로": "To UInt64",
+  "Float64로": "To Float64",
+  "소수 자릿수가 scale인 Decimal64로": "To Decimal64 with scale decimal places",
+  "Date로": "To Date",
+  "DateTime으로": "To DateTime",
+  "소수 초를 담는 DateTime64로": "To DateTime64, with fractional seconds",
+  "여러 형식의 날짜·시각 문자열을 DateTime으로": "Date and time text in many formats, to DateTime",
+  "UUID로": "To UUID",
+  "IPv4 주소로": "To an IPv4 address",
+  "IPv6 주소로": "To an IPv6 address",
+  "값의 타입 이름": "The value's type name",
+  "정확히 바꿀 수 없으면 NULL": "NULL when it can't convert exactly",
+  "소수 초까지의 현재 시각": "The current time, with fractional seconds",
+  "오늘 날짜": "Today's date",
+  "어제 날짜": "Yesterday's date",
+  "그날 0시": "Midnight of that day",
+  "그 시각의 정시": "The start of that hour",
+  "그달 1일": "The first of that month",
+  "n 단위 구간의 시작": "The start of the n-unit interval",
+  "연월 숫자 (파티션 키로 흔히 씀)": "Year and month as a number (a common partition key)",
+  "요일 (월요일 1)": "Day of the week (Monday is 1)",
+  "두 시각의 차이": "The difference between two times",
+  "시각에 더하기": "Add to a time",
+  "유닉스 시각 (초)": "Unix time (seconds)",
+  "유닉스 시각을 DateTime으로": "Unix time to DateTime",
+  "문자열 길이 (바이트), 배열·맵의 원소 수": "Length of text (bytes), or elements of an array or map",
+  "문자열 길이 (UTF-8 문자)": "Length of text (UTF-8 characters)",
+  "정규식에 맞는 부분을 모두 바꾸기": "Replace every regex match",
+  "부분 문자열의 위치 (1부터, 없으면 0)": "Position of a substring (from 1, 0 if absent)",
+  "LIKE 패턴에 맞는지": "Whether it matches a LIKE pattern",
+  "대소문자 없이 LIKE 패턴에 맞는지": "Whether it matches a LIKE pattern, ignoring case",
+  "정규식에 맞는지": "Whether it matches a regex",
+  "정규식에 맞는 첫 부분": "The first regex match",
+  "구분 문자로 나눈 배열": "Split by a character, as an array",
+  "구분 문자열로 나눈 배열": "Split by a string, as an array",
+  "{} 자리에 값을 넣은 문자열": "Text with the values put in place of {}",
+  "JSON에서 문자열 꺼내기": "Text from JSON",
+  "JSON에서 정수 꺼내기": "An integer from JSON",
+  "JSON에서 원문 그대로 꺼내기": "Raw JSON from JSON",
+  "JSON에 키가 있는지": "Whether JSON has the key",
+  "배열의 각 원소를 행으로 펼침": "One row per array element",
+  "배열에 값이 있는지": "Whether the array holds the value",
+  "배열에 values 중 하나라도 있는지": "Whether the array holds any of values",
+  "배열에서 값의 위치 (1부터, 없으면 0)": "Position of the value in the array (from 1, 0 if absent)",
+  "배열의 각 원소에 식을 적용": "Apply an expression to each element",
+  "조건에 맞는 원소만 남긴 배열": "The elements that match the condition",
+  "정렬한 배열": "The array, sorted",
+  "중복을 없앤 배열": "The array without duplicates",
+  "배열을 구분자로 이어 붙인 문자열": "The array joined into text with a separator",
+  "빈 문자열·배열·맵인지": "Whether the text, array or map is empty",
+  "맵의 키 배열": "The map's keys",
+  "맵의 값 배열": "The map's values",
+  "튜플의 원소": "An element of a tuple",
+  "정수 나눗셈": "Integer division",
+  "무작위 UInt32": "A random UInt32",
+  "64비트 해시": "A 64-bit hash",
+  "64비트 해시 (SipHash)": "A 64-bit hash (SipHash)",
+  "무작위 UUID": "A random UUID",
+  "바이트 수를 읽기 쉬운 크기로 (1.5 GiB)": "Bytes as a readable size (1.5 GiB)",
+  "큰 수를 읽기 쉽게 (1.5 million)": "A large number, readable (1.5 million)",
+  "딕셔너리에서 키의 속성 값": "An attribute of the key from a dictionary",
+  "딕셔너리에서 값, 없으면 기본값": "A value from a dictionary, else the default",
+  "딕셔너리에 키가 있는지": "Whether the dictionary has the key",
+  "지금 데이터베이스": "The current database",
+  "서버 버전": "The server's version",
+  "0부터 (또는 start부터) 정수를 행으로 (테이블 함수)": "Integers from 0 (or start) as rows (table function)",
+  "서버의 파일을 테이블처럼 읽기 (테이블 함수)": "Read a file on the server as a table (table function)",
+  "URL의 데이터를 테이블처럼 읽기 (테이블 함수)": "Read a URL's data as a table (table function)",
+  "S3 객체를 테이블처럼 읽기 (테이블 함수)": "Read an S3 object as a table (table function)",
+  "프레임 안 앞 행의 값": "The value of an earlier row in the frame",
+  "프레임 안 뒤 행의 값": "The value of a later row in the frame",
+  // ---- ClickHouse limits: row relocation, cluster edits, lightweight UPDATE, nested CSV ----
+  "정렬 키와 모든 컬럼 값이 같은 행이 여럿 있어 어느 행인지 알 수 없습니다. 새로 고친 뒤(데이터 탭, 또는 SELECT에 _part, _part_offset을 더해) 다시 하세요":
+    "Several rows have this sorting key and every column value, so which one is meant can't be told. Refresh (the Data tab, or add _part, _part_offset to the SELECT) and try again",
+  "클러스터에 이 행과 정렬 키·값이 모두 같은 행이 여럿 있어 이 행만 고칠 수 없습니다":
+    "The cluster has several rows with this row's sorting key and values, so this row alone can't be changed",
+  "경량 UPDATE": "Lightweight UPDATE",
+  "켜짐": "On",
+  "꺼짐": "Off",
+  "켜기": "Turn on",
+  "경량 UPDATE 켜기": "Turn on lightweight UPDATE",
+  "테이블 설정 enable_block_number_column과 enable_block_offset_column을 켭니다. 그 뒤 셀 수정은 파트 전체를 다시 쓰는 뮤테이션(ALTER TABLE … UPDATE) 대신 바뀐 행만 패치 파트로 쓰는 경량 UPDATE(UPDATE … SET)로 바로 끝납니다. 행마다 블록 번호와 위치가 저장되어 디스크를 조금 더 쓰며, 이미 있는 파트도 그대로 경량 UPDATE를 받습니다.":
+    "Turns on the table settings enable_block_number_column and enable_block_offset_column. Cell edits then finish at once as a lightweight UPDATE (UPDATE … SET), which writes only the changed rows to a patch part, instead of a mutation (ALTER TABLE … UPDATE) that rewrites whole parts. Each row keeps its block number and offset, which takes a little more disk; existing parts take lightweight UPDATEs as they are.",
+  "{change}: 적용했습니다": "{change}: applied",
+  "배열·맵·튜플을 JSON으로": "Arrays, maps and tuples as JSON",
+  "끄면 데이터베이스가 쓰는 모양(예: ['a','b'])으로, 켜면 그리드처럼 JSON(예: [\"a\",\"b\"])으로 씁니다":
+    "Off: as the database writes them (e.g. ['a','b']). On: as JSON, as the grid shows them (e.g. [\"a\",\"b\"])",
+  // ---- end ClickHouse limits ----
+  // ---- Transaction-less apply undo (store.ts undoApplied) ----
+  "{row}행 {column}": "row {row} {column}",
+  "{row}행 삭제": "deleting row {row}",
+  "추가한 {row}행": "new row {row}",
+  "키 값을 데이터베이스가 정해 이 행을 다시 찾을 수 없습니다": "The database picked the key value, so the row can't be found again",
+  "지운 행의 값을 읽지 못해 다시 넣을 수 없습니다": "The deleted row's values couldn't be read, so it can't be put back",
+  "키 값을 데이터베이스가 정해 새 행을 찾을 수 없습니다": "The database picked the new row's key, so it can't be found",
+  "트랜잭션이 없어 앞서 적용한 변경 {count}개를 되돌렸습니다": "No transactions here, so the {count} changes applied before it were undone",
+  "트랜잭션이 없어 앞서 적용한 변경을 되돌렸지만 {count}개는 남았습니다. 새로고침해 확인하세요":
+    "No transactions here: the changes applied before it were undone, but {count} remain. Refresh to check",
+  "되돌림": "Undone",
+  "남음": "Left",
+  // ---- end transaction-less apply undo ----
+  // ---- end ClickHouse ----
+  // ---- Cassandra and ScyllaDB (Cassandra) ----
+  "키스페이스": "Keyspace",
+  "비우면 모든 키스페이스": "Empty for every keyspace",
+  "인증을 켠 클러스터에서만": "Only on clusters with authentication on",
+  "직렬 일관성 수준": "Serial consistency level",
+  "로컬 데이터센터": "Local datacenter",
+  "비우면 드라이버가 고름": "Empty lets the driver pick",
+  "편집 충돌 검사": "Edit conflict checks",
+  "셀 편집·행 추가·삭제를 IF EXISTS / IF NOT EXISTS 조건으로 보냄 (경량 트랜잭션)":
+    "Send cell edits, new rows and deletes with IF EXISTS / IF NOT EXISTS (lightweight transactions)",
+  "일관성 수준": "Consistency level",
+  "일관성 수준을 바꾸지 못했습니다": "Couldn't change the consistency level",
+  "일관성 수준 (CONSISTENCY): 이 연결의 문장이 몇 개의 복제본 응답을 기다릴지":
+    "Consistency level (CONSISTENCY): how many replicas this connection's statements wait for",
+  "집계 함수": "Aggregates",
+  "가져오기를 중지했습니다. 앞의 {count}행은 저장되었습니다.": "Import stopped. The first {count} rows were saved.",
+  "{where}에서 실패했습니다. 앞의 {count}행은 저장되었습니다: {error}": "Failed at {where}. The {count} rows before it were saved: {error}",
+  "가져오기에 실패했습니다. 앞의 {count}행은 저장되었습니다: {error}": "Import failed. The first {count} rows were saved: {error}",
+  "{where}에서 실패했습니다. 앞의 {count}행은 저장되었습니다": "Failed at {where}. The {count} rows before it were saved",
+  "가져오기에 실패했습니다. 앞의 {count}행은 저장되었습니다": "Import failed. The first {count} rows were saved",
+  "이벤트 {count}개": "{count} events",
+  "요청": "Request",
+  "코디네이터 {node}": "Coordinator {node}",
+  "경과 (ms)": "Elapsed (ms)",
+  "이 엔진에서는 만든 뒤 바꿀 수 없습니다": "This engine can't change it once the column exists",
+  "이 엔진의 컬럼에는 NOT NULL과 기본값이 없습니다": "This engine's columns have no NOT NULL or default",
+  "기본 키 컬럼은 바꿀 수 없습니다. 새 행을 넣고 이 행을 지우세요": "A primary key column can't change: add a new row and delete this one",
+  "지금 시각의 timeuuid": "A timeuuid for now",
+  "무작위 UUID (버전 4)": "A random UUID (version 4)",
+  "현재 시각 (timestamp)": "The current time (timestamp)",
+  "오늘 날짜 (date)": "Today's date (date)",
+  "현재 시각 (time)": "The current time (time)",
+  "timestamp로 변환": "As a timestamp",
+  "date로 변환": "As a date",
+  "1970년부터의 밀리초": "Milliseconds since 1970",
+  "그 시각의 가장 작은 timeuuid (범위 조회용)": "The smallest timeuuid at that time (for ranges)",
+  "그 시각의 가장 큰 timeuuid (범위 조회용)": "The largest timeuuid at that time (for ranges)",
+  "파티션 키의 토큰 (토큰 범위 조회)": "The partition key's token (token range reads)",
+  "값을 쓴 시각 (마이크로초)": "When the value was written (microseconds)",
+  "값이 사라지기까지 남은 초": "Seconds until the value expires",
+  "값을 JSON 문자열로": "The value as a JSON string",
+  "JSON 문자열을 컬럼 타입의 값으로 (INSERT·UPDATE 값)": "A JSON string as a value of the column's type (INSERT and UPDATE values)",
+  "blob을 text로": "A blob as text",
+  "text를 blob으로": "Text as a blob",
+  "bigint를 blob으로": "A bigint as a blob",
+  "키가 아닌 컬럼으로 거르려면 ALLOW FILTERING이 필요합니다": "Filtering on a non-key column needs ALLOW FILTERING",
+  "CQL은 파티션 키·클러스터링 키 조건으로만 바로 찾습니다. 다른 컬럼 조건은 테이블 전체를 훑어야 합니다.":
+    "CQL finds rows directly only by partition and clustering key conditions; any other condition scans the whole table.",
+  "파티션 키를 = 조건으로 넣어 범위를 좁히세요.": "Narrow the read with an = condition on the partition key.",
+  "데이터 탭에서는 필터 막대의 ‘ALLOW FILTERING’ 스위치를 켜고, 쿼리에서는 문장 끝에 ALLOW FILTERING을 붙이세요. 큰 테이블에서는 느리거나 시간 초과가 날 수 있습니다.":
+    "In a data tab turn on the filter bar's ‘ALLOW FILTERING’ switch; in a query end the statement with ALLOW FILTERING. On a big table it can be slow or time out.",
+  "자주 거르는 컬럼이면 보조 인덱스(SAI)를 만드세요.": "For a column you filter on often, create a secondary index (SAI).",
+  "파티션 키를 고정해야 정렬할 수 있습니다": "Sorting needs a fixed partition key",
+  "CQL은 한 파티션 안에서만, 클러스터링 키 순서로만 정렬합니다.": "CQL sorts only inside one partition, and only by its clustering key.",
+  "파티션 키를 = 또는 IN 조건으로 걸러 한 파티션만 읽은 뒤 클러스터링 키로 정렬하세요.":
+    "Filter the partition key with = or IN to read one partition, then sort by the clustering key.",
+  "정렬을 지우면 저장된 순서(파티션 토큰 순)로 읽습니다.": "Without a sort the rows come in stored order (by partition token).",
+  "기본 키 조건이 부족합니다": "The primary key conditions are incomplete",
+  "키 컬럼 {name}의 조건이 없거나 순서가 맞지 않습니다.": "Key column {name} has no condition, or the conditions are out of order.",
+  "UPDATE·DELETE는 기본 키 전체를, 조회는 앞쪽 키부터 차례로 조건을 줘야 합니다.":
+    "UPDATE and DELETE need the whole primary key; reads restrict the key columns in order from the first.",
+  "파티션 키의 모든 컬럼을 = 조건으로 넣고, 클러스터링 키는 앞에서부터 차례로 거르세요.":
+    "Give every partition key column an = condition, and restrict clustering columns in order from the first.",
+  "컬럼 {name}이(가) 없습니다": "There is no column {name}",
+  "대문자나 공백이 든 이름은 \"큰따옴표\"로 감싸야 그대로 읽힙니다. 따옴표 없는 이름은 소문자로 바뀝니다.":
+    "Names with capitals or spaces must be in \"double quotes\"; unquoted names are read in lower case.",
+  "구조 탭에서 컬럼 이름을 확인하세요.": "Check the column names in the Structure tab.",
+  "테이블 {name}이(가) 없습니다": "There is no table {name}",
+  "다른 키스페이스의 테이블이면 키스페이스.테이블 로 쓰거나 USE 키스페이스 로 바꾸세요.":
+    "For a table in another keyspace write keyspace.table, or switch with USE keyspace.",
+  "사이드바를 새로고침해 테이블 목록을 확인하세요.": "Refresh the sidebar to check the table list.",
+  "키스페이스 {name}이(가) 없습니다": "There is no keyspace {name}",
+  "연결의 ‘키스페이스’ 칸을 비우면 모든 키스페이스를 볼 수 있습니다.": "Leave the connection's ‘Keyspace’ empty to see every keyspace.",
+  "일관성 수준 {level}을(를) 맞출 복제본이 부족합니다": "Not enough replicas for consistency level {level}",
+  "살아 있는 복제본이 요청한 일관성 수준보다 적습니다. 노드가 내려갔거나 키스페이스의 복제 계수가 작습니다.":
+    "Fewer replicas are up than the consistency level asks for: a node is down, or the keyspace's replication factor is small.",
+  "탭 막대의 일관성 수준을 ONE이나 LOCAL_ONE으로 낮추거나, 내려간 노드를 확인하세요.":
+    "Lower the tab bar's consistency level to ONE or LOCAL_ONE, or check the nodes that are down.",
+  "서버가 시간 안에 답하지 못했습니다": "The server didn't answer in time",
+  "복제본이 제때 응답하지 않았습니다. ALLOW FILTERING으로 넓게 훑거나 큰 파티션을 읽으면 자주 생깁니다.":
+    "The replicas didn't answer in time; wide ALLOW FILTERING scans and big partitions often cause it.",
+  "파티션 키 조건으로 범위를 좁히거나, 설정의 쿼리 시간 제한을 늘리세요.":
+    "Narrow the read with a partition key condition, or raise the query time limit in Settings.",
+  "사용자 이름이나 비밀번호가 맞지 않습니다.": "The user name or password is wrong.",
+  "인증을 켠 클러스터에서는 사용자와 비밀번호를 넣으세요. 기본 관리자는 cassandra / cassandra입니다.":
+    "A cluster with authentication on needs a user and password; the default superuser is cassandra / cassandra.",
+  "이 클러스터는 로그인이 필요합니다": "This cluster needs a login",
+  "연결을 편집해 사용자와 비밀번호를 넣으세요.": "Edit the connection and fill in the user and password.",
+  "값이 컬럼 타입에 맞지 않습니다": "The value doesn't fit the column's type",
+  "CQL은 값의 타입을 엄격히 봅니다: uuid는 따옴표 없이, 텍스트는 '작은따옴표'로, 컬렉션은 [..], {..}로 씁니다.":
+    "CQL is strict about types: uuids go unquoted, text in 'single quotes', collections as [..] and {..}.",
+  "셀에서 컬렉션·UDT는 JSON으로 입력하세요 (예: [\"a\",\"b\"], {\"key\":\"value\"}).":
+    "In a cell, type collections and UDTs as JSON (e.g. [\"a\",\"b\"], {\"key\":\"value\"}).",
+  "counter 컬럼은 더하기·빼기로만 바뀝니다": "Counter columns change only by adding or subtracting",
+  "UPDATE … SET c = c + 1 처럼 쓰세요. counter 테이블에는 INSERT가 없습니다.":
+    "Write UPDATE … SET c = c + 1; counter tables take no INSERT.",
+  "서버에서 사용자 정의 함수가 꺼져 있습니다": "User-defined functions are off on the server",
+  "Cassandra는 cassandra.yaml의 user_defined_functions_enabled, ScyllaDB는 experimental-features udf를 켜야 합니다.":
+    "Turn on user_defined_functions_enabled in cassandra.yaml (Cassandra) or experimental-features udf (ScyllaDB).",
+  "서버에서 구체화된 뷰가 꺼져 있습니다": "Materialized views are off on the server",
+  "cassandra.yaml에서 materialized_views_enabled: true로 켜세요.": "Set materialized_views_enabled: true in cassandra.yaml.",
+  "CQL에서 이름은 \"큰따옴표\"로, 문자열은 '작은따옴표'로 감쌉니다. JOIN·서브쿼리·OR는 없습니다.":
+    "CQL puts names in \"double quotes\" and strings in 'single quotes'; it has no JOIN, subqueries or OR.",
+  "Cassandra의 기본 포트는 9042입니다. 노드가 막 켜졌다면 1분쯤 뒤에 다시 시도하세요.":
+    "Cassandra's default port is 9042. A node that just started may take a minute to accept connections.",
+  "키스페이스를 고르지 않은 연결에서는 테이블을 키스페이스.테이블 로 씁니다.":
+    "On a connection without a keyspace, write tables as keyspace.table.",
+  "트랜잭션이 없는 엔진입니다. 실패하거나 중지하면 그 앞까지 넣은 행은 남습니다.":
+    "This engine has no transactions: if the import fails or is stopped, the rows before that point stay.",
+  // ---- end Cassandra ----
+  // ---- Cassandra data tab (CassandraDataTab) ----
+  "데이터를 읽는 쿼리와 COUNT 끝에 {clause} 절을 붙입니다": "Adds {clause} to the end of the queries that read the data and the COUNT",
+  "테이블 전체(모든 파티션)를 훑어 읽으므로 느리거나 시간 초과로 실패할 수 있습니다":
+    "Scans the whole table (every partition): reads can be slow or time out",
+  "필터·정렬을 적용해 서버 페이지 단위로 나눠 읽으므로 행 수 제한이 없습니다":
+    "Reads with filters and sorting a server page at a time, so there is no row limit",
+  // ---- end CassandraDataTab ----
+  // ---- Cassandra far pages, counts in steps, counter increments (CassandraLimits) ----
+  "더할 값…": "Add to Value…",
+  "더할 값": "Add to Value",
+  "{column}에 더할 수 (빼려면 음수)": "Amount to add to {column} (negative subtracts)",
+  "정수를 입력하세요": "Enter a whole number",
+  "{row}행째로 가는 중 · {done} / {total}행 건너뜀": "Going to row {row} · skipped {done} / {total} rows",
+  "그 페이지로 가지 못했습니다": "Couldn't go to that page",
+  "행 수 세는 중…": "Counting rows…",
+  "행 수 세는 중 · {percent}% · {count}행까지": "Counting rows · {percent}% · {count} so far",
+  "시작 행 (OFFSET) · 서버가 앞의 행을 건너뛰어 갑니다": "Start row (OFFSET) · the server skips the rows before it",
+  "같은 기본 키를 가진 counter 행이 이미 있습니다. 그 행의 counter를 고치거나 '더할 값'으로 더하세요":
+    "A counter row with the same primary key already exists. Edit its counters or use ‘Add to Value’",
+  "행 수는 SELECT COUNT(*) 문 하나로 셉니다": "Rows are counted with a single SELECT COUNT(*) statement",
+  "행 수 세기의 이어 셀 자리가 올바르지 않습니다": "The count's resume point isn't valid",
+  "페이지는 SELECT 문 하나에서만 건너뜁니다": "Pages can only be skipped in a single SELECT statement",
+  "건너뛸 행 수가 0입니다": "No rows to skip",
+  "이 엔진은 페이지 토큰으로 행을 건너뛸 수 없습니다": "This engine can't skip rows by page token",
+  "이 엔진은 행 수를 나눠 셀 수 없습니다": "This engine can't count rows in steps",
+  "이 엔진에는 값을 더해 바꾸는 컬럼이 없습니다": "This engine has no columns that change by addition",
+  // ---- end CassandraLimits ----
+  // ---- Elasticsearch / OpenSearch search workbench (SearchWeb) ----
+  ...SEARCH_EN,
+  // ---- end SearchWeb ----
+  // ---- MongoDB and search views in the app's detail panel (MongoPanel) ----
+  "선택된 단계가 없습니다": "No stage selected",
+  "선택된 인덱스가 없습니다": "No index selected",
+  "선택된 필드가 없습니다": "No field selected",
+  "선택된 이벤트가 없습니다": "No event selected",
+  "선택된 파일이 없습니다": "No file selected",
+  "이 탭에는 보여 줄 상세 정보가 없습니다": "This tab has no details to show",
+  "있음": "Present",
+  "{pct} · 문서 {count}/{sample}개": "{pct} · {count}/{sample} documents",
+  "원소 타입": "Element types",
+  "하위 필드": "Subfields",
+  "수": "Numbers",
+  "최소 {min} · 최대 {max} · 평균 {mean} · 서로 다른 값 {distinct}개": "Min {min} · max {max} · mean {mean} · {distinct} distinct",
+  "서로 다른 값 {distinct}개 · 길이 {min}–{max} (평균 {mean})": "{distinct} distinct · length {min}–{max} (mean {mean})",
+  "자주 나오는 값": "Frequent values",
+  "서로 다른 값 {distinct}개 · 만든 때 {first} ~ {last}": "{distinct} distinct · created {first} ~ {last}",
+  "{min}–{max} (평균 {mean})": "{min}–{max} (mean {mean})",
+  // ---- end MongoPanel ----
 };
 
 // Keys for words Korean uses in more than one sense where English needs
@@ -2796,6 +3272,8 @@ const EN: Record<string, string> = {
 // the word given here.
 const KO: Record<string, string> = {
   "연결 [버튼]": "연결",
+  "열기 [탭]": "열기",
+  "닫기 [인덱스]": "닫기",
   "뷰 [종류]": "뷰",
   "시간 [걸린]": "시간",
   "작업 [연산]": "작업",
@@ -2843,6 +3321,47 @@ export function t(key: string, values?: Record<string, string | number>): string
   // English counts: "1 rows" reads "1 row", whichever value holds the 1
   // ("{count} documents and {indexes} indexes").
   return current === "en" && Object.values(values).some((value) => String(value) === "1") ? singular(filled) : filled;
+}
+
+// A message kept as its key and values and translated where it shows, so
+// text already on screen follows a language switch. A value may be a phrase
+// of its own (a reason inside a larger message).
+export interface Phrase {
+  key: string;
+  values?: Record<string, string | number | Phrase>;
+}
+
+export function phrase(key: string, values?: Record<string, string | number | Phrase>): Phrase {
+  return { key, values };
+}
+
+// Text that is not translated (a number, a message from elsewhere).
+export function literal(text: string): Phrase {
+  return { key: "{text}", values: { text } };
+}
+
+export function say(p: Phrase): string {
+  if (p.values === undefined) {
+    return t(p.key);
+  }
+  return t(p.key, Object.fromEntries(Object.entries(p.values).map(([name, value]) => [name, typeof value === "object" ? say(value) : value])));
+}
+
+// An error (Error, TypeError, …) that also carries its message as a phrase,
+// so whoever shows it can translate it again later; `message` holds the
+// text in the language it was thrown in.
+export function phraseError(p: Phrase, kind: new (message: string) => Error = Error): Error {
+  return Object.assign(new kind(say(p)), { phrase: p });
+}
+
+// The phrase an error was thrown with, or null.
+export function phraseOf(error: unknown): Phrase | null {
+  return error instanceof Error && "phrase" in error && error.phrase != null ? (error.phrase as Phrase) : null;
+}
+
+// A caught error as a phrase.
+export function errorPhrase(error: unknown): Phrase {
+  return phraseOf(error) ?? literal(error instanceof Error ? error.message : String(error));
 }
 
 // The plural word after a count of 1 and its singular; an adjective may sit
@@ -2894,14 +3413,36 @@ function singular(text: string): string {
 // ("SQLite 오류: …") before the database's own text. Shows them in the UI
 // language; anything unrecognised comes through as sent.
 const SERVER_PREFIXES: [RegExp, string][] = [
-  [/^(SQLite|PostgreSQL|MySQL|SQL Server|Arrow) 오류: /, "$1 error: "],
+  [/^(SQLite|PostgreSQL|MySQL|SQL Server|ClickHouse|Cassandra|ScyllaDB|Arrow) 오류: /, "$1 error: "],
   [/^파일을 찾을 수 없습니다: /, "File not found: "],
   [/^SQLite 데이터베이스 파일이 아닙니다: /, "Not a SQLite database file: "],
   [/^편집할 수 없습니다: /, "Can't edit: "],
   [/^내부 오류: /, "Internal error: "],
-  [/^(PostgreSQL |MySQL |SQL Server |MongoDB )?TLS 연결 실패: /, "$1TLS connection failed: "],
+  [/^(PostgreSQL |MySQL |SQL Server |MongoDB |ClickHouse )?TLS 연결 실패: /, "$1TLS connection failed: "],
+  [/^로그인 실패: /, "Login failed: "],
+  [/^클러스터 (.*?) · /, "Cluster $1 · "],
+  [/^노드 (\d+)개 · 데이터센터 (.*)$/, "$1 node(s) · datacenter $2"],
+  [/^쿼리가 취소되었습니다 \(서버에서는 끝까지 실행될 수 있습니다\)$/, "The query was cancelled (the server may still run it to the end)"],
+  [/^(\d+)초 안에 응답이 없어 기다리기를 멈췄습니다 \(설정의 쿼리 시간 제한\)$/, "No answer within $1 seconds, so TablePeek stopped waiting (the query time limit in Settings)"],
+  [/^키스페이스를 고르지 않은 연결입니다\. (\S+) 대신 키스페이스\.(\S+) 으로 쓰세요$/, "This connection has no keyspace: write keyspace.$2 instead of $1"],
+  [/^CQL에는 트랜잭션이 없습니다 /, "CQL has no transactions "],
+  [/^기본 키 컬럼은 바꿀 수 없습니다\. 새 행을 넣고 이 행을 지우세요/, "A primary key column can't change: add a new row and delete this one"],
+  [/^같은 기본 키를 가진 행이 이미 있습니다 \(IF NOT EXISTS\)/, "A row with the same primary key already exists (IF NOT EXISTS)"],
+  [/^구체화된 뷰는 원본 테이블을 따라 바뀝니다\. 원본 테이블에서 편집하세요/, "A materialized view follows its base table: edit the base table"],
+  // CassandraLimits: counter edits.
+  [
+    /^counter (.+)의 값이 화면에 읽은 뒤 (-?\d+)에서 (-?\d+)\(으\)로 바뀌어 저장하지 않았습니다\. (-?\d+)\(으\)로 맞추려면 새로고침한 뒤 다시 고치고, 지금 값에 ([+-]\d+)만큼 더하려면 '더할 값'으로 바꾸세요$/,
+    "Counter $1 changed from $2 to $3 since it was read, so nothing was saved. To make it $4, refresh and edit again; to add $5 to its current value, use ‘Add to Value’",
+  ],
+  [/^counter (.+)는 화면에 보인 값과 함께 고치거나 '더할 값'으로 바꿉니다$/, "Counter $1 changes only together with the value the grid showed, or by ‘Add to Value’"],
+  [/^더할 값은 counter 컬럼에만 씁니다 \((.+)은\(는\) (.+)\)$/, "‘Add to Value’ works on counter columns only ($1 is $2)"],
+  [/^counter 값이 너무 큽니다: /, "The counter value is too large: "],
   [/^(SQL Server|MongoDB) 연결 실패: /, "$1 connection failed: "],
   [/^MongoDB 인증 실패: /, "MongoDB authentication failed: "],
+  [/^CA 인증서를 읽을 수 없습니다: /, "Can't read the CA certificate: "],
+  [/^Distributed 테이블이 읽는 테이블을 알 수 없습니다: /, "Can't tell which table the Distributed table reads: "],
+  [/^Distributed 테이블이 읽는 (.+)이\(가\) 이 서버에 없어 행을 고칠 수 없습니다$/, "$1, which the Distributed table reads, isn't on this server, so its rows can't be changed"],
+  [/^CA 인증서가 올바르지 않습니다: /, "The CA certificate isn't valid: "],
   [/^서버를 고르지 못했습니다: /, "No server could be selected: "],
   [/^DNS 조회 실패: /, "DNS lookup failed: "],
   [/^열을 찾을 수 없습니다: /, "Column not found: "],
@@ -2949,6 +3490,13 @@ const SERVER_PREFIXES: [RegExp, string][] = [
   [/^(.+)은\(는\) Extended JSON이어야 합니다: /, "$1 must be Extended JSON: "],
   [/^(fullDocument|fullDocumentBeforeChange) 값이 올바르지 않습니다: /, "Invalid $1 value: "],
   [/^resumeAfter가 올바르지 않습니다: /, "Invalid resumeAfter: "],
+  // The search 보안 tab: what the server says can't be managed.
+  [/^OpenSearch (\S+)에는 API 키가 없습니다 \(3\.7부터\)$/, "OpenSearch $1 has no API keys (they came in 3.7)"],
+  [/^이 서버에는 보안 플러그인이 없거나 꺼져 있습니다 /, "This server has no security plugin, or it is off "],
+  [/^본문이 JSON이 아닙니다: /, "The body is not JSON: "],
+  [/^바이너리 컬럼이 아닙니다: /, "Not a binary column: "],
+  [/^값이 너무 큽니다: (\d+)바이트까지만 쓸 수 있습니다 \((.+)\)$/, "The value is too large: at most $1 bytes can be written ($2)"],
+  [/^업로드를 임시 파일에 담지 못했습니다: /, "Couldn't keep the upload in a temporary file: "],
 ];
 
 export function tServer(message: string): string {

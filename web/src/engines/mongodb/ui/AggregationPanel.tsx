@@ -7,18 +7,19 @@
 // aborted, errors on the card. A text mode edits the whole array and comes
 // back to the cards. Pipelines are saved per collection, turned into driver
 // or mongosh code (코드로), saved as a view, explained, exported and run (`$out`/`$merge` after
-// the safe-mode confirmation) with the result in the ☰ / {} / ⊞ views.
+// the safe-mode confirmation) with the result in the ☰ / {} / ⊞ views; a
+// picked result document or plan stage shows in the app's detail panel.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, CloseIcon, CodeIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, RefreshIcon, TableIcon, TrashIcon } from "../../../components/icons";
 import { Spinner } from "../../../components/Spinner";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
-import { t } from "../../../i18n";
+import { phraseError, say, t, type Phrase } from "../../../i18n";
 import { aggregate, command, explain, isAbort, listCollections, type Namespace } from "../api";
 import { bsonDoc, compareForSort, Int32, stringifyJson, toEJSON, type BsonDocument } from "../bson";
 import { STAGES, sampleFields, type CompletionContext, type FieldStat } from "../complete";
-import { summarizeExplain, type PlanSummary } from "../explain";
+import { summarizeExplain, type PlanStage, type PlanSummary } from "../explain";
 import { toShell, toShellPretty } from "../format";
 import {
   WRITE_STAGES,
@@ -39,12 +40,13 @@ import {
   type Stage,
 } from "../pipeline";
 import type { ShellError } from "../shell/parse";
-import { CardView } from "./CardView";
+import { CardView, docKey } from "./CardView";
 import { CodeExportModal } from "./CodeExportModal";
+import { DocDetail, DocDetailPanel, NothingSelected, type Fact } from "./DocDetailPanel";
 import { useEscape } from "./DocModals";
 import { DocTableView } from "./DocTableView";
 import { ExportModal } from "./ExportModal";
-import { StageTree, Summary } from "./ExplainPanel";
+import { PlanTree, StageDetail, Summary } from "./ExplainPanel";
 import { CloneIcon, CollapseIcon, ExpandIcon, PlanIcon } from "./icons";
 import { JsonView, SyntaxErrorNotice } from "./JsonView";
 import { MongoEditor } from "./MongoEditor";
@@ -85,7 +87,7 @@ type Fetched = { docs: BsonDocument[]; elapsedMs: number } | { error: unknown };
 // What a card shows beside its editor.
 type Preview =
   | { kind: "off" }
-  | { kind: "invalid"; message: string }
+  | { kind: "invalid"; message: Phrase }
   | { kind: "blocked" }
   | { kind: "write"; target: string }
   | { kind: "after-write" }
@@ -146,9 +148,8 @@ export interface AggregationPanelProps {
   collections?: string[];
   maxTimeMS?: number;
   host: DocHost;
-  // The ⊞ result view's detail panel (App owns its toggle).
-  panelOpen: boolean;
-  onPanelOpenChange(open: boolean): void;
+  // What the detail panel lists with nothing picked in the results.
+  facts: Fact[] | null;
   // The plan's index suggestion: switch to 인덱스 with the dialog open.
   onCreateIndex(keys: BsonDocument): void;
   // A view was made or a $out/$merge wrote: the sidebar reads again.
@@ -159,7 +160,7 @@ export interface AggregationPanelProps {
   refreshSeq: number;
 }
 
-export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, collections, maxTimeMS, host, panelOpen, onPanelOpenChange, onCreateIndex, onCollectionsChanged, onOpenCollection, onOpenShell, refreshSeq }: AggregationPanelProps) {
+export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, collections, maxTimeMS, host, facts, onCreateIndex, onCollectionsChanged, onOpenCollection, onOpenShell, refreshSeq }: AggregationPanelProps) {
   const nsText = `${ns.db}.${ns.coll}`;
   const remembered = memory.get(tabKey);
   const [stages, setStages] = useState<Stage[]>(() => {
@@ -183,6 +184,9 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
   const [dialog, setDialog] = useState<"code" | "view" | "export" | null>(null);
   const [drag, setDrag] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<{ id: number; after: boolean } | null>(null);
+  // What the detail panel shows from the results on show: a document (its
+  // docKey) or a plan stage.
+  const [picked, setPicked] = useState<{ of: Outcome; doc: string } | { of: Outcome; stage: PlanStage } | null>(null);
 
   useEffect(() => {
     memory.set(tabKey, { outcome, view, name });
@@ -425,14 +429,14 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
       const parsed = stagesFromText(text, []);
       if (!parsed.ok) {
         setTextError(parsed.error);
-        setOutcome({ kind: "error", error: parsed.error.message, shownAt: "text" });
+        setOutcome({ kind: "error", error: phraseError(parsed.error.message), shownAt: "text" });
         return null;
       }
       cards = parsed.stages;
     }
     const built = buildPipeline(cards);
     if (!built.ok) {
-      setOutcome({ kind: "error", error: built.message, shownAt: mode === "stages" ? { card: built.index } : null });
+      setOutcome({ kind: "error", error: phraseError(built.message), shownAt: mode === "stages" ? { card: built.index } : null });
       return null;
     }
     return built.pipeline;
@@ -580,6 +584,10 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
   const onCount = stages.filter((s) => s.on).length;
   const codePipeline = dialog !== null ? currentPipelineQuiet(mode, stages, text) : null;
 
+  const pickedStage = picked !== null && picked.of === outcome && "stage" in picked ? picked.stage : null;
+  const pickedDoc = picked !== null && picked.of === outcome && "doc" in picked ? picked.doc : null;
+  // What the detail panel shows; the table view puts its own selection there.
+  let detail: ((query: string) => ReactNode) | null = (query) => <NothingSelected facts={facts} query={query} />;
   let results = null;
   if (outcome !== null) {
     let head;
@@ -616,13 +624,17 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
             <div className="mg-explain-grid">
               <div className="mg-ptree-wrap">
                 <div className="mg-ptree-title panel-dim">{t("위에서 아래로: 결과 ← 입력")}</div>
-                {outcome.summary.root !== null ? <StageTree stage={outcome.summary.root} /> : <div className="panel-empty">{t("계획에 단계가 없습니다")}</div>}
+                {outcome.summary.root !== null ? <PlanTree root={outcome.summary.root} selected={pickedStage} onSelect={(stage) => setPicked({ of: outcome, stage })} /> : <div className="panel-empty">{t("계획에 단계가 없습니다")}</div>}
               </div>
               <Summary summary={outcome.summary} query={outcome.query} coll={ns.coll} onCreateIndex={onCreateIndex} />
             </div>
           )}
         </div>
       );
+      if (pickedStage !== null) {
+        const stage = pickedStage;
+        detail = (query) => <StageDetail stage={stage} query={query} />;
+      }
     } else {
       const docs = tableSort === null ? outcome.docs : sortedDocs(outcome.docs, tableSort);
       head = (
@@ -643,11 +655,19 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
           <ViewSwitch view={view} onChange={setView} />
         </>
       );
+      const pickedAt = pickedDoc === null ? -1 : docs.findIndex((doc, i) => docKey(doc, i) === pickedDoc);
+      const pick = (key: string) => setPicked({ of: outcome, doc: key });
+      if (view === "table") {
+        detail = null;
+      } else if (pickedAt >= 0) {
+        const resultNs = { ...ns, coll: `${ns.coll}.$aggregate` };
+        detail = (query) => <DocDetail ns={resultNs} doc={docs[pickedAt]} position={pickedAt} query={query} />;
+      }
       body =
         view === "cards" ? (
-          <CardView docs={docs} offset={0} readOnly allOpen={allOpen} notify={host.notify} emptyText={t("결과 문서가 없습니다")} />
+          <CardView docs={docs} offset={0} readOnly allOpen={allOpen} notify={host.notify} emptyText={t("결과 문서가 없습니다")} selected={pickedDoc} onSelect={pick} />
         ) : view === "json" ? (
-          <JsonView docs={docs} offset={0} canonical={false} allFolded={!allOpen} readOnly notify={host.notify} emptyText={t("결과 문서가 없습니다")} />
+          <JsonView docs={docs} offset={0} canonical={false} allFolded={!allOpen} readOnly notify={host.notify} emptyText={t("결과 문서가 없습니다")} selected={pickedDoc} onSelect={pick} />
         ) : (
           <DocTableView
             ns={{ ...ns, coll: `${ns.coll}.$aggregate` }}
@@ -657,8 +677,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
             sort={tableSort}
             onSort={setTableSort}
             save={async () => new Error(t("집계 결과는 읽기 전용입니다 — 문서 탭에서 편집하세요"))}
-            panelOpen={panelOpen}
-            onPanelOpenChange={onPanelOpenChange}
+            facts={facts}
             path={tablePath}
             onPathChange={setTablePath}
           />
@@ -805,7 +824,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
               error={textError !== null && textError.to > textError.from ? textError : null}
               ariaLabel={t("파이프라인")}
             />
-            {textError !== null ? <SyntaxErrorNotice src={text} message={textError.message} at={textError.from} context="aggregation" /> : null}
+            {textError !== null ? <SyntaxErrorNotice src={text} message={say(textError.message)} at={textError.from} context="aggregation" /> : null}
           </div>
         ) : (
           <>
@@ -894,6 +913,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
         />
       ) : null}
       {dialog === "export" && codePipeline !== null ? <ExportModal ns={ns} source={{ kind: "aggregate", pipeline: codePipeline }} notify={host.notify} onClose={() => setDialog(null)} /> : null}
+      {detail !== null ? <DocDetailPanel>{detail}</DocDetailPanel> : null}
     </div>
   );
 }
@@ -955,7 +975,7 @@ function StageCard({ stage, index, preview, error, completion, dragging, drop, o
       break;
     case "invalid":
       status = <span className="mg-stage-err">{t("구문 오류")}</span>;
-      body = error !== null ? <SyntaxErrorNotice src={stage.text} message={error.message} at={error.from} context="aggregation" /> : <ErrorNotice error={preview.message} context="aggregation" engine="mongodb" variant="compact" />;
+      body = error !== null ? <SyntaxErrorNotice src={stage.text} message={say(error.message)} at={error.from} context="aggregation" /> : <ErrorNotice error={say(preview.message)} context="aggregation" engine="mongodb" variant="compact" />;
       break;
     case "blocked":
       status = <span className="mg-stage-err">{t("앞 단계 오류")}</span>;

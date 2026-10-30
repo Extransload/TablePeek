@@ -25,6 +25,10 @@ export interface CsvOptions extends CsvFormat {
   bom: boolean;
   // Columns whose text values are numbers: NUMERIC and DECIMAL come back as text.
   numeric?: boolean[];
+  // A file the database writes itself (SqlDialect.nativeExport): arrays,
+  // maps and tuples as JSON text, as the grid shows them and as a file
+  // written from the grid has them, rather than in the database's own form.
+  nestedJson?: boolean;
 }
 
 // The server's ceiling for one query's rows. Exports that can't page (an
@@ -239,23 +243,28 @@ export function toSqlInserts(
   rows: unknown[][],
   dialect: SqlDialect,
   binary: readonly boolean[] = [],
+  // Each column's declared type, for an engine whose literals depend on it
+  // (SqlDialect.importLiteral: CQL's uuids, numbers and collections).
+  declared: readonly (string | null)[] = [],
 ): string {
   if (columns.length === 0) {
     return "";
   }
   const target = quoteIdentifier(table, dialect);
   const chunks: string[] = [];
-  // Rows leaving out the same columns share a statement, up to INSERT_CHUNK.
+  // Rows leaving out the same columns share a statement, up to INSERT_CHUNK
+  // (one, where VALUES takes one row).
+  const chunkRows = dialect.singleRowValues === true ? 1 : INSERT_CHUNK;
   for (let start = 0; start < rows.length; ) {
     const key = omitted(rows[start], columns.length);
     let end = start + 1;
-    while (end < rows.length && end - start < INSERT_CHUNK && omitted(rows[end], columns.length) === key) {
+    while (end < rows.length && end - start < chunkRows && omitted(rows[end], columns.length) === key) {
       end += 1;
     }
     const kept = columns.map((_, c) => c).filter((c) => !isDefault(rows[start][c]));
     if (kept.length === 0) {
-      // Every column at its default; MySQL spells it its own way.
-      const statement = dialect.emptyInsert(target);
+      // Every column at its default; MySQL and Oracle spell it their own way.
+      const statement = dialect.emptyInsert(target, escapeSqlIdentifier(columns[0], dialect));
       for (let r = start; r < end; r += 1) {
         chunks.push(statement);
       }
@@ -263,7 +272,9 @@ export function toSqlInserts(
       const head = `INSERT INTO ${target} (${kept.map((c) => escapeSqlIdentifier(columns[c], dialect)).join(", ")}) VALUES`;
       const lines = new Array<string>(end - start);
       for (let r = start; r < end; r += 1) {
-        lines[r - start] = `  (${kept.map((c) => columnLiteral(rows[r][c], dialect, binary[c])).join(", ")})`;
+        lines[r - start] = `  (${kept
+          .map((c) => dialect.importLiteral?.(declared[c] ?? null, rows[r][c]) ?? columnLiteral(rows[r][c], dialect, binary[c]))
+          .join(", ")})`;
       }
       chunks.push(`${head}\n${lines.join(",\n")};`);
     }

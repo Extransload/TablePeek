@@ -4,11 +4,11 @@ use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use tablepeek_types::{
-    Capabilities, ConnConfig, DbObjects, EditTarget, EngineMeta, InsertValue, MySqlConfig,
+    Capabilities, CellRef, ConnConfig, DbObjects, EditTarget, EngineMeta, InsertValue, MySqlConfig,
     ObjectDefinition, PkValue, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
-use crate::driver::{CancelRequest, Driver, SqlDriver, TxOp};
+use crate::driver::{numeric_session_id, CancelRequest, Driver, FileStream, SqlDriver, TxOp};
 use crate::mysql::{self as imp, MySqlInner};
 use crate::registry::{
     check_host, parse_descriptor, typed_config, ConfigProblem, DriverFactory, EngineDescriptor,
@@ -155,8 +155,8 @@ impl SqlDriver for MySqlDriver {
         imp::object_definition(&self.inner, kind, name).await
     }
 
-    async fn kill_session(&self, id: u64) -> Result<(), EngineError> {
-        imp::kill_session(&self.inner, id).await
+    async fn kill_session(&self, id: &str) -> Result<(), EngineError> {
+        imp::kill_session(&self.inner, numeric_session_id(id)?).await
     }
 
     async fn in_tx(&self) -> Result<bool, EngineError> {
@@ -165,5 +165,13 @@ impl SqlDriver for MySqlDriver {
 
     async fn tx(&self, op: TxOp) -> Result<(), EngineError> {
         imp::tx(&self.inner, op.statement()).await
+    }
+
+    async fn read_cell(&self, cell: &CellRef) -> Result<FileStream, EngineError> {
+        imp::cells::read_cell(self.inner.clone(), cell).await
+    }
+
+    async fn write_cell(&self, cell: &CellRef, data: FileStream) -> Result<u64, EngineError> {
+        imp::cells::write_cell(&self.inner, cell, data).await
     }
 }

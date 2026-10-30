@@ -181,10 +181,14 @@ async fn aws_logs_in_with_keys_tokens_and_the_environment() {
     // A wrong secret breaks the signature STS checks.
     let mut wrong = base;
     wrong["password"] = json!("wrong");
-    let err = connect(wrong, &NetRoute::Direct).await.err().unwrap();
+    let err = connect(wrong.clone(), &NetRoute::Direct)
+        .await
+        .err()
+        .unwrap();
     assert!(err.to_string().contains("인증 실패"), "{err}");
 
-    // No key in the form: the driver reads the environment's.
+    // No key in the form: the driver reads the environment's. A key in
+    // the form is the connection's own even then, wrong secret and all.
     std::env::set_var("AWS_ACCESS_KEY_ID", "AKIATABLEPEEKTEST");
     std::env::set_var("AWS_SECRET_ACCESS_KEY", "tablepeek_aws_secret");
     let from_env = connect(
@@ -192,8 +196,11 @@ async fn aws_logs_in_with_keys_tokens_and_the_environment() {
         &NetRoute::Direct,
     )
     .await;
+    let own = connect(wrong, &NetRoute::Direct).await;
     std::env::remove_var("AWS_ACCESS_KEY_ID");
     std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+    let err = own.err().expect("the environment's key stood in");
+    assert!(err.to_string().contains("인증 실패"), "{err}");
     let driver = from_env.expect("AWS environment connect failed");
     assert!(
         logged_in_as(driver.document().unwrap())

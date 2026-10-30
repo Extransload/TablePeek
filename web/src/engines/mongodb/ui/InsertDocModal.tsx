@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Spinner } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { say, t, type Phrase } from "../../../i18n";
 import type { BsonDocument, BsonTypeName, BsonValue } from "../bson";
 import type { CompletionContext, FieldStat } from "../complete";
 import { SyntaxErrorNotice, parseDocText } from "./JsonView";
@@ -43,7 +43,7 @@ export function InsertDocModal({
   const editorRef = useRef<MongoEditorHandle | null>(null);
   // What stopped the last submit: the text did not parse (with the text it
   // was in), or the server refused the write.
-  const [error, setError] = useState<{ parse: { message: string; from: number; to: number; src: string } } | { failure: Error } | null>(null);
+  const [error, setError] = useState<{ parse: { message: Phrase; from: number; to: number; src: string } } | { failure: Error } | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
 
@@ -88,7 +88,7 @@ export function InsertDocModal({
         {error !== null ? (
           <div className="mg-modal-error">
             {"parse" in error ? (
-              <SyntaxErrorNotice src={error.parse.src} message={error.parse.message} at={error.parse.from} context="document" />
+              <SyntaxErrorNotice src={error.parse.src} message={say(error.parse.message)} at={error.parse.from} context="document" />
             ) : (
               <OpenValidationContext.Provider
                 value={onOpenValidation === undefined ? null : () => onOpenValidation(editorRef.current?.text() ?? initial)}

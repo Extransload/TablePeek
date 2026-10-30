@@ -67,6 +67,10 @@ export interface FilterRow {
 export interface FilterState {
   rows: FilterRow[];
   logic: FilterLogic;
+  // The data tab's "allow filtering" switch: the dialect's
+  // allowFilteringClause goes at the end of its reads (CQL's ALLOW
+  // FILTERING, which scans the whole table).
+  allowFiltering?: boolean;
 }
 
 export const EMPTY_FILTER: FilterState = { rows: [], logic: "AND" };
@@ -85,6 +89,9 @@ export interface DataSqlInput {
   sorts?: SortState[] | null;
   pk?: string[] | null;
   columns?: string[] | null;
+  // Columns read after the table's own that tell its rows apart
+  // (SqlDialect.rowIdentity); none by default.
+  identity?: readonly string[];
   limit: number;
   offset?: number;
 }
@@ -126,14 +133,16 @@ export function likePattern(value: string): string {
 // characters, behind the ! the LIKE names as its escape: unlike a backslash,
 // it means the same in every dialect and server mode.
 function likeEscaped(value: string, dialect: SqlDialect): string {
-  return value.replace(dialect.likeSpecials, (ch) => `!${ch}`);
+  const escape = dialect.backslashLike === true ? "\\" : "!";
+  return value.replace(dialect.likeSpecials, (ch) => `${escape}${ch}`);
 }
 
 // Contains, Has prefix, Has suffix: the value matched as text, whatever the
 // column's type (PostgreSQL has no LIKE for numbers or dates).
 function textMatch(column: string, pattern: string, negate: boolean, dialect: SqlDialect): string {
   const target = dialect.textMatchColumn?.(column) ?? column;
-  return `${target} ${negate ? "NOT LIKE" : "LIKE"} ${dialect.stringLiteral(pattern)} ESCAPE '!'`;
+  const escape = dialect.backslashLike === true ? "" : " ESCAPE '!'";
+  return `${target} ${negate ? "NOT LIKE" : "LIKE"} ${dialect.stringLiteral(pattern)}${escape}`;
 }
 
 // "a,b" → ["a", "b"]: BETWEEN's bounds, split at the first comma.
@@ -176,7 +185,9 @@ export function buildFragment(row: FilterRow, dialect: SqlDialect): string | nul
     case "NOT LIKE":
       return `${column} NOT LIKE ${dialect.stringLiteral(likePattern(row.value))}`;
     case "CONTAINS":
-      return textMatch(column, `%${likeEscaped(row.value, dialect)}%`, false, dialect);
+      return dialect.containsSql !== undefined
+        ? dialect.containsSql(column, literal(row.value))
+        : textMatch(column, `%${likeEscaped(row.value, dialect)}%`, false, dialect);
     case "NOT CONTAINS":
       return textMatch(column, `%${likeEscaped(row.value, dialect)}%`, true, dialect);
     case "HAS PREFIX":
@@ -249,10 +260,23 @@ export function buildOrderBy(sorts: SortState[] | null | undefined, dialect: Sql
 }
 
 function buildPkOrder(pk: string[] | null | undefined, dialect: SqlDialect): string | null {
-  if (!pk || pk.length === 0) {
+  if (!pk || pk.length === 0 || dialect.keyOrder === false) {
     return null;
   }
   return pk.map((column) => escapeSqlIdentifier(column, dialect)).join(", ");
+}
+
+// The clause the filter's "allow filtering" switch puts last, when it is on
+// and the engine has one.
+export function filteringClause(filter: FilterState | null | undefined, dialect: SqlDialect): string | null {
+  return filter?.allowFiltering === true ? (dialect.allowFilteringClause ?? null) : null;
+}
+
+// What a count was taken under: the WHERE and the "allow filtering" switch.
+export function filterKey(filter: FilterState | null | undefined, dialect: SqlDialect): string {
+  const where = buildWhere(filter, dialect) ?? "";
+  const clause = filteringClause(filter, dialect);
+  return clause === null ? where : `${where} ${clause}`;
 }
 
 function sanitizeLimit(limit: number): number {
@@ -278,14 +302,19 @@ export function selectList(columns: string[] | null | undefined, dialect: SqlDia
 
 export function buildDataSql(input: DataSqlInput): string {
   const { dialect } = input;
-  const parts = [`SELECT ${selectList(input.columns, dialect)} FROM ${quoteIdentifier(input.table, dialect)}`];
+  const identity = (input.identity ?? []).map((column) => `, ${column}`).join("");
+  const parts = [`SELECT ${selectList(input.columns, dialect)}${identity} FROM ${quoteIdentifier(input.table, dialect)}`];
   const where = buildWhere(input.filter, dialect);
   if (where !== null) {
     parts.push(`WHERE ${where}`);
   }
   const order = buildOrderBy(input.sorts, dialect) ?? buildPkOrder(input.pk, dialect);
   parts.push(rowWindowSql(dialect, order, sanitizeLimit(input.limit), sanitizeOffset(input.offset)));
-  return parts.join(" ");
+  const clause = filteringClause(input.filter, dialect);
+  if (clause !== null) {
+    parts.push(clause);
+  }
+  return parts.filter((part) => part !== "").join(" ");
 }
 
 // The ordered rows from `offset` on, at most `limit` of them.
@@ -307,7 +336,10 @@ export function firstRowsSql(dialect: SqlDialect, quotedTable: string, select = 
 // What a table view's total counts: its rows under the same filter.
 export function buildCountSql(input: Pick<DataSqlInput, "dialect" | "table" | "filter">): string {
   const where = buildWhere(input.filter, input.dialect);
-  return `SELECT COUNT(*) FROM ${quoteIdentifier(input.table, input.dialect)}${where === null ? "" : ` WHERE ${where}`}`;
+  const clause = filteringClause(input.filter, input.dialect);
+  return `SELECT COUNT(*) FROM ${quoteIdentifier(input.table, input.dialect)}${where === null ? "" : ` WHERE ${where}`}${
+    clause === null ? "" : ` ${clause}`
+  }`;
 }
 
 export function buildDataSqlUnlimited(input: Omit<DataSqlInput, "limit" | "offset">): string {
@@ -320,6 +352,10 @@ export function buildDataSqlUnlimited(input: Omit<DataSqlInput, "limit" | "offse
   const order = buildOrderBy(input.sorts, dialect) ?? buildPkOrder(input.pk, dialect);
   if (order !== null) {
     parts.push(`ORDER BY ${order}`);
+  }
+  const clause = filteringClause(input.filter, dialect);
+  if (clause !== null) {
+    parts.push(clause);
   }
   return parts.join(" ");
 }
