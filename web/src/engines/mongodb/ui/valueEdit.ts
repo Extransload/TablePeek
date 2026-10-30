@@ -3,7 +3,7 @@
 // value's BSON type, and switching a value to another type.
 
 import { errorPhrase, phrase, type Phrase } from "../../../i18n";
-import { BsonDate, Decimal128, Double, Int32, Int64, ObjectId, doubleText, isDocument, typeName, type BsonTypeName, type BsonValue } from "../bson";
+import { BsonDate, Decimal128, Double, Int32, Int64, ObjectId, deepEqual, doubleText, isDocument, isNumber, typeName, type BsonTypeName, type BsonValue } from "../bson";
 import { cellText, toShell } from "../format";
 import { parseValue } from "../shell/parse";
 
@@ -165,7 +165,8 @@ export function defaultOfType(type: BsonTypeName): BsonValue {
 }
 
 // `v` as `type`: kept when the text converts (5 → "5", "12" → Int32 12),
-// otherwise the type's default.
+// a number made an integer drops its fraction toward zero as mongosh's
+// NumberInt/NumberLong do (1.5 → 1, -2.7 → -2), otherwise the type's default.
 export function convertType(v: BsonValue, type: BsonTypeName): BsonValue {
   if (typeName(v) === type) {
     return v;
@@ -182,6 +183,59 @@ export function convertType(v: BsonValue, type: BsonTypeName): BsonValue {
     case "Boolean":
       return v !== null && v !== "" && v !== false && !(isDocument(v) && v.size === 0) && editText(v) !== "0";
   }
-  const r = coerceInput(editText(v), type);
+  const text = (type === "Int32" || type === "Int64") && isNumber(v) ? wholePart(exactNumber(v)) : editText(v);
+  const r = coerceInput(text, type);
   return "error" in r ? defaultOfType(type) : r.value;
+}
+
+// The integer part of a number's text, toward zero ("-0.5" → "0"). Text in
+// exponent form (a huge Double, a Decimal128 like "1.5E+3") goes through the
+// number's value; NaN and infinities are left for the type check to refuse.
+function wholePart(text: string): string {
+  if (/[eE]/.test(text)) {
+    const n = Number(text);
+    return Number.isFinite(n) ? BigInt(Math.trunc(n)).toString() : text;
+  }
+  const whole = text.split(".")[0];
+  return whole === "-0" || whole === "-" || whole === "" ? "0" : whole;
+}
+
+// A number's exact value as decimal text, the same for every type that can
+// hold it (Int32 7, Double 7, Int64 7, Decimal128 "7.00" all read "7").
+function exactNumber(n: Int32 | Int64 | Double | Decimal128): string {
+  if (n instanceof Int64) {
+    return n.value.toString();
+  }
+  if (n instanceof Decimal128) {
+    const m = /^([+-]?)0*(\d*?)(?:\.(\d*?)0*)?$/.exec(n.value);
+    if (m === null) {
+      return n.value;
+    }
+    const whole = m[2] === "" ? "0" : m[2];
+    const text = m[3] ? `${whole}.${m[3]}` : whole;
+    return m[1] === "-" && text !== "0" ? `-${text}` : text;
+  }
+  return Number.isSafeInteger(n.value) ? BigInt(n.value).toString() : String(n.value);
+}
+
+// Whether `next`, `v` converted to another type, still holds all of `v`:
+// the same number, a string that reads back as the same text or number,
+// `v` converting back from it unchanged, or `v` wrapped in an array. Null,
+// an empty string, document or array hold nothing to lose. A string that
+// does not read as the target, a fraction made whole, a number past the
+// target's precision, a document made a scalar do not.
+export function keepsValue(v: BsonValue, next: BsonValue): boolean {
+  if (v === null || v === "" || (Array.isArray(v) && v.length === 0) || (isDocument(v) && v.size === 0)) {
+    return true;
+  }
+  if (Array.isArray(next) && next.length === 1 && deepEqual(next[0], v)) {
+    return true;
+  }
+  if (isNumber(v) && isNumber(next)) {
+    return exactNumber(v) === exactNumber(next);
+  }
+  if (typeof v === "string") {
+    return editText(next) === v || (isNumber(next) && exactNumber(next) === v);
+  }
+  return deepEqual(convertType(next, typeName(v)), v);
 }

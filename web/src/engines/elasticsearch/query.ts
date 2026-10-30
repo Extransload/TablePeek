@@ -3,7 +3,9 @@
 // object, the sort and the `_source` filter.
 
 import { t } from "../../i18n";
-import { JsonSyntaxError, jsonObject, parseJson } from "../mongodb/bson";
+import { JsonSyntaxError, isNumber, jsonObject, parseJson, type BsonValue } from "../mongodb/bson";
+import type { FilterHow } from "../mongodb/ui/docMenus";
+import { editText } from "../mongodb/ui/valueEdit";
 import type { Json } from "./json";
 
 export interface QueryText {
@@ -112,6 +114,46 @@ export function searchBody(query: BuiltQuery): Json {
   if (query.sort !== null) entries.push(["sort", query.sort]);
   if (query.source !== null) entries.push(["_source", query.source]);
   return jsonObject(entries);
+}
+
+// A query_string term: Lucene's reserved characters escaped.
+function luceneTerm(text: string): string {
+  return text.replace(/[+\-=&|><!(){}[\]^"~*?:\\/\s]/g, (c) => `\\${c}`);
+}
+
+// The query box with the condition a document view's menu asks for on
+// `path` ANDed on: the value as a phrase (numbers and booleans bare), its
+// negation, or whether the field is there (`_exists_`). The index keeps no
+// nulls, so "equal to null" is "missing".
+export function withLuceneCondition(q: string, path: string, value: BsonValue, how: FilterHow): string {
+  const field = luceneTerm(path);
+  let clause: string;
+  if (how === "exists" || (how === "ne" && value === null)) {
+    clause = `_exists_:${field}`;
+  } else if (how === "missing" || value === null) {
+    clause = `NOT _exists_:${field}`;
+  } else {
+    const term = typeof value === "boolean" || isNumber(value) ? editText(value) : `"${editText(value).replace(/["\\]/g, "\\$&")}"`;
+    clause = `${how === "ne" ? "NOT " : ""}${field}:${term}`;
+  }
+  const base = q.trim();
+  return base === "" ? clause : `(${base}) AND ${clause}`;
+}
+
+// The fields box with `path` left out: dropped from a list of fields to
+// return (null when it isn't in it), else excluded with `-path`. Dropping
+// the last listed field returns every field but `path`.
+export function withHiddenSource(source: string, path: string): string | null {
+  const items = source.split(",").map((item) => item.trim()).filter((item) => item !== "");
+  const lists = (list: string[]) => list.some((item) => !item.startsWith("-"));
+  if (!lists(items)) {
+    return [...items, `-${path}`].join(", ");
+  }
+  const kept = items.filter((item) => item !== path && !item.startsWith(`${path}.`));
+  if (kept.length === items.length) {
+    return null;
+  }
+  return (lists(kept) ? kept : [...kept, `-${path}`]).join(", ");
 }
 
 // Saved and recent queries per index, newest first (localStorage).

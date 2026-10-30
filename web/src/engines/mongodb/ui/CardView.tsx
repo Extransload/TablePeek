@@ -5,9 +5,11 @@
 // renamed by double-clicking it; the draft is saved as one guarded
 // updateOne (see useDocEdits). `DocFields` is the card body alone, which
 // the app's detail panel reuses. A click on a card's head or the arrow keys
-// pick the card the detail panel shows.
+// pick the card the detail panel shows. As on the SQL grid, a field row's
+// and a card head's right-click (a row's ⌥-click too) open their menus, and
+// a middle-click (⌘↩ on the list for the picked card) opens Quick Look.
 
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
@@ -16,10 +18,11 @@ import { phrase, say, t, type Phrase } from "../../../i18n";
 import { deepEqual, isDocument, stringifyJson, toEJSON, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { VIEW_LIMITS, ejsonText, preview, toShell, truncation } from "../format";
 import { valueAt, type DocEdit } from "../guard";
+import { anchorOf, confirmTypeChange, copyDocsItem, copyPathItem, copyValueItems, docMenuItems, filterItems, hideItem, queryPath, querySort, sortItems, useDocActions, useOnItemsChange, ValueQuickLook, type QuickLookTarget } from "./docMenus";
 import { BracesIcon, CloneIcon } from "./icons";
 import { arrowStep, selectsItem } from "./selection";
 import { ShellText } from "./ShellText";
-import { EDIT_TYPES, coerceInput, convertType, editText, valueText } from "./valueEdit";
+import { EDIT_TYPES, coerceInput, defaultOfType, editText, valueText } from "./valueEdit";
 import { WriteErrorNotice, validationProblems } from "./writeErrors";
 
 // ---- Draft helpers ----
@@ -212,6 +215,16 @@ export interface DocFieldsProps {
   // index's mapping type: keyword, long, date…); null keeps the BSON name.
   // `path` is dotted, with array positions.
   typeLabel?(path: string, value: BsonValue): string | null;
+  // Called when a pointer press or focus lands anywhere inside the card, so
+  // working on a field also picks its document.
+  onActivate?(): void;
+  // The whole document when the rows show part of it (a drilled table
+  // row's element), and the rows' dotted path in it: the menus copy and
+  // query full paths, and copy that document.
+  root?: BsonDocument;
+  prefix?: string;
+  // The document's position in the page, which Quick Look names.
+  position?: number;
 }
 
 interface Editing {
@@ -223,7 +236,7 @@ interface Editing {
   fresh: boolean;
 }
 
-export function DocFields({ doc, readOnly = false, filter = "", allOpen = false, onSave, onDirtyChange, head, className, typeLabel }: DocFieldsProps) {
+export function DocFields({ doc, readOnly = false, filter = "", allOpen = false, onSave, onDirtyChange, head, className, typeLabel, onActivate, root, prefix = "", position = 0 }: DocFieldsProps) {
   // The draft keeps the document it started from, so a page reload under
   // an unsaved draft does not change what the save is guarded against.
   const [draft, setDraft] = useState<{ base: BsonDocument; value: BsonDocument } | null>(null);
@@ -236,8 +249,18 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
   const [saving, setSaving] = useState(false);
   const [full, setFull] = useState(false);
   const [typeMenu, setTypeMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  // A field row's right-click menu, and a value in Quick Look.
+  const [fieldMenu, setFieldMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  const [look, setLook] = useState<QuickLookTarget | null>(null);
+  const actions = useDocActions();
 
   useEffect(() => setToggled(new Set()), [allOpen]);
+  // A menu or Quick Look belongs to the document it was opened on; a reload
+  // can move or drop its field, so it closes.
+  useEffect(() => {
+    setFieldMenu(null);
+    setLook(null);
+  }, [doc]);
 
   const cur = draft?.value ?? doc;
   const diff = useMemo(() => (draft ? visualDiff(draft.base, draft.value) : null), [draft]);
@@ -375,16 +398,98 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
     setEditing({ path: target, mode, error: null, fresh: mode === "key" });
   };
 
-  const changeType = (path: string, type: BsonTypeName) => {
+  // A conversion that loses part of the value asks first (confirmTypeChange).
+  const changeType = async (path: string, type: BsonTypeName) => {
     const old = valueAt(cur, path);
     if (old === undefined || typeName(old) === type) {
       return;
     }
-    mutate((d) => setAt(d, path, convertType(old, type)));
+    const next = await confirmTypeChange(prefix === "" ? path : `${prefix}.${path}`, old, type);
+    if (next === undefined) {
+      return;
+    }
+    mutate((d) => setAt(d, path, next));
     if ((type === "Object" || type === "Array") && !isOpen(path)) {
       toggle(path);
     }
   };
+
+  // The value box of a field row, where Quick Look points.
+  const lookAt = (path: string, v: BsonValue, row: Element) => {
+    setFieldMenu(null);
+    const box = row.querySelector(":scope > .mg-f-box > .mg-f-line, :scope > .mg-f-val, :scope > .mg-f-sum");
+    setLook({ name: prefix === "" ? path : `${prefix}.${path}`, value: v, position, anchor: anchorOf(box ?? row) });
+  };
+
+  // A field row's menu: copy, look, the draft's edits (as the row's own
+  // controls make them), then the query.
+  const openFieldMenu = (x: number, y: number, path: string, v: BsonValue, row: Element) => {
+    const whole = root ?? doc;
+    const at = prefix === "" ? path : `${prefix}.${path}`;
+    const field = queryPath(whole, at);
+    const container = isContainer(v);
+    const items: ContextMenuItem[] = [...copyValueItems(v, actions.json), copyPathItem(at), copyDocsItem([whole], actions.json)];
+    items.push({ label: "Quick Look", separatorBefore: true, onSelect: () => lookAt(path, v, row) });
+    if (container) {
+      items.push({ label: isOpen(path) ? t("접기") : t("펼치기"), onSelect: () => toggle(path) });
+    }
+    if (!ro && path !== "_id") {
+      const inArray = Array.isArray(parentAt(cur, path).parent);
+      const type = typeName(v);
+      const set = (value: BsonValue) => mutate((d) => setAt(d, path, value));
+      const values: ContextMenuItem[] = [];
+      if (type === "String") {
+        values.push({ label: "EMPTY", disabled: v === "", onSelect: () => set("") });
+      }
+      values.push({ label: "null", disabled: v === null, onSelect: () => set(null) });
+      if (type === "Date") {
+        values.push({ label: "new Date()", onSelect: () => set(defaultOfType("Date")) });
+      }
+      items.push({ label: t("이 값 편집"), separatorBefore: true, disabled: container, onSelect: () => setEditing({ path, mode: "value", error: null, fresh: false }) });
+      if (!inArray) {
+        items.push({ label: t("이름 바꾸기"), onSelect: () => setEditing({ path, mode: "key", error: null, fresh: false }) });
+      }
+      items.push(
+        { label: t("타입 바꾸기"), submenu: EDIT_TYPES.map((name) => ({ label: name, checked: type === name, onSelect: () => changeType(path, name) })) },
+        { label: t("값 설정"), submenu: values },
+        container ? { label: Array.isArray(v) ? t("원소 추가") : t("하위 필드 추가"), onSelect: () => add("child", path) } : { label: t("아래에 추가"), onSelect: () => add("after", path) },
+        { label: t("지우기"), danger: true, onSelect: () => remove(path) },
+      );
+    }
+    items.push(...filterItems(actions, field, v), ...sortItems(querySort(actions, field)), ...hideItem(actions, field));
+    setLook(null);
+    setFieldMenu({ x, y, items });
+  };
+
+  // The SQL grid's mouse on a field row: right-click or ⌥-click opens its
+  // menu, a middle-click shows the value in Quick Look, and a plain click
+  // does what the row does (`activate`). Rows nest, so each keeps these to
+  // itself; a field being typed into keeps the browser's own menu.
+  const rowMouse = (path: string, v: BsonValue, activate?: () => void) => ({
+    onContextMenu: (event: ReactMouseEvent<HTMLElement>) => {
+      if (event.target instanceof Element && event.target.closest("input") !== null) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openFieldMenu(event.clientX, event.clientY, path, v, event.currentTarget);
+    },
+    onAuxClick: (event: ReactMouseEvent<HTMLElement>) => {
+      if (event.button === 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        lookAt(path, v, event.currentTarget);
+      }
+    },
+    onClick: (event: ReactMouseEvent<HTMLElement>) => {
+      if (event.altKey) {
+        event.stopPropagation();
+        openFieldMenu(event.clientX, event.clientY, path, v, event.currentTarget);
+      } else {
+        activate?.();
+      }
+    },
+  });
 
   const save = async () => {
     if (draft === null || onSave === undefined) {
@@ -527,10 +632,10 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       const onActivate = container ? () => toggle(path) : editable && !editingThis ? () => setEditing({ path, mode: "value", error: null, fresh: false }) : undefined;
       if (depth === 0) {
         out.push(
-          <div key={path} className={`mg-f top${mark ? ` ${mark}` : ""}${problems.has(path) ? " invalid" : ""}`} data-path={path}>
+          <div key={path} className={`mg-f top${mark ? ` ${mark}` : ""}${problems.has(path) ? " invalid" : ""}`} data-path={path} {...rowMouse(path, v)}>
             {keyEl}
-            <div className={`mg-f-box${container ? " tree" : editable ? " editable" : ""}`} onClick={container ? undefined : onActivate}>
-              <div className="mg-f-line" onClick={container ? onActivate : undefined}>
+            <div className={`mg-f-box${container ? " tree" : editable ? " editable" : ""}`} onClick={container ? undefined : (event) => !event.altKey && onActivate?.()}>
+              <div className="mg-f-line" onClick={container ? (event) => !event.altKey && onActivate?.() : undefined}>
                 {valEl}
               </div>
               {fieldError}
@@ -547,7 +652,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
         );
       } else {
         out.push(
-          <div key={path} className={`mg-n${mark ? ` ${mark}` : ""}${!container && editable ? " editable" : ""}${container ? " tree" : ""}${problems.has(path) ? " invalid" : ""}`} data-path={path} style={{ paddingLeft: (depth - 1) * 16 + 4 }} onClick={onActivate}>
+          <div key={path} className={`mg-n${mark ? ` ${mark}` : ""}${!container && editable ? " editable" : ""}${container ? " tree" : ""}${problems.has(path) ? " invalid" : ""}`} data-path={path} style={{ paddingLeft: (depth - 1) * 16 + 4 }} {...rowMouse(path, v, onActivate)}>
             {keyEl}
             <span className="mg-n-colon">:</span>
             {valEl}
@@ -589,7 +694,7 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
       : EDIT_TYPES.map((type) => ({ label: type, checked: typeName(menuValue) === type, onSelect: () => changeType(typeMenu.path, type) }));
 
   return (
-    <div className={`mg-card${dirty ? " dirty" : ""}${ro ? " ro" : ""}${className ? ` ${className}` : ""}`}>
+    <div className={`mg-card${dirty ? " dirty" : ""}${ro ? " ro" : ""}${className ? ` ${className}` : ""}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate}>
       {head}
       <div className="mg-card-body" style={{ ["--kw" as string]: `${keyWidth + 1}ch` }}>
         {rows(cur, "", 0)}
@@ -632,6 +737,8 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
         </div>
       ) : null}
       {typeMenu !== null && menuItems.length > 0 ? <ContextMenu x={typeMenu.x} y={typeMenu.y} items={menuItems} onClose={() => setTypeMenu(null)} /> : null}
+      {fieldMenu !== null ? <ContextMenu x={fieldMenu.x} y={fieldMenu.y} items={fieldMenu.items} onClose={() => setFieldMenu(null)} /> : null}
+      {look !== null ? <ValueQuickLook target={look} where={null} onClose={() => setLook(null)} /> : null}
     </div>
   );
 }
@@ -676,6 +783,16 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
   const dirtyKeys = useRef(new Set<string>());
   const countRef = useRef(onDirtyCount);
   countRef.current = onDirtyCount;
+  const actions = useDocActions();
+  // A card head's right-click menu, and a whole document in Quick Look.
+  const [menu, setMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  const [look, setLook] = useState<QuickLookTarget | null>(null);
+  // The head menu and Quick Look close when other documents take the cards'
+  // places (a reload, another page), however the array was rebuilt.
+  useOnItemsChange(docs, () => {
+    setMenu(null);
+    setLook(null);
+  });
 
   if (docs.length === 0) {
     return (
@@ -692,13 +809,24 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
       listRef.current?.children[index]?.scrollIntoView({ block: "nearest" });
     }
   };
+  const lookAt = (index: number, anchor: Element | null) => {
+    setMenu(null);
+    setLook({ name: `#${(offset + index + 1).toLocaleString()}`, value: docs[index], position: offset + index, anchor: anchorOf(anchor) });
+  };
   return (
     <div
       ref={listRef}
       className="mg-cards"
       tabIndex={-1}
       onKeyDown={(event) => {
-        const next = onSelect === undefined ? null : arrowStep(event, keys.length, selected === null ? -1 : keys.indexOf(selected));
+        const at = selected === null ? -1 : keys.indexOf(selected);
+        // ⌘↩ on the list shows the picked document in Quick Look, as on a grid cell.
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && at >= 0 && event.target === event.currentTarget) {
+          event.preventDefault();
+          lookAt(at, listRef.current?.children[at]?.querySelector(".mg-card-head") ?? null);
+          return;
+        }
+        const next = onSelect === undefined ? null : arrowStep(event, keys.length, at);
         if (next !== null) {
           event.preventDefault();
           pick(next);
@@ -716,6 +844,29 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
               if (onSelect !== undefined && selectsItem(event.target)) {
                 pick(i);
                 listRef.current?.focus({ preventScroll: true });
+              }
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setLook(null);
+              const anchor = event.currentTarget;
+              setMenu({
+                x: event.clientX,
+                y: event.clientY,
+                items: docMenuItems(actions, {
+                  doc,
+                  json,
+                  quickLook: () => lookAt(i, anchor),
+                  onEdit: editable && onEditJson ? () => onEditJson(doc) : undefined,
+                  onClone: editable && onClone ? () => onClone(doc) : undefined,
+                  onDelete: editable && onDelete ? () => onDelete(doc) : undefined,
+                }),
+              });
+            }}
+            onAuxClick={(event) => {
+              if (event.button === 1) {
+                event.preventDefault();
+                lookAt(i, event.currentTarget);
               }
             }}
           >
@@ -765,7 +916,9 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
             allOpen={allOpen}
             head={head}
             className={key === selected ? "selected" : undefined}
+            onActivate={onSelect === undefined || key === selected ? undefined : () => onSelect(key)}
             typeLabel={typeLabel}
+            position={offset + i}
             onSave={editable && onSave ? (edits) => onSave(doc, edits) : undefined}
             onDirtyChange={(dirty) => {
               const had = dirtyKeys.current.has(key);
@@ -782,6 +935,9 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
           />
         );
       })}
+      {/* After the cards, so a card's index is still its child's. */}
+      {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} /> : null}
+      {look !== null ? <ValueQuickLook target={look} where={null} onClose={() => setLook(null)} /> : null}
     </div>
   );
 }

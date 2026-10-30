@@ -3,6 +3,8 @@
 
 export const SEARCH_EN: Record<string, string> = {
   "내보내기 스트림이 끝 표시 없이 끊겼습니다": "The export stream was cut off without an end marker",
+  "필드 칸이 고른 필드만 돌려주고 있어 {path}만 숨길 수 없습니다. 필드 칸에서 빼세요.":
+    "The fields box returns only the fields it lists, so {path} alone can't be hidden. Take it out of the fields box.",
   "‘{name}’ 인덱스(또는 별칭·데이터 스트림)가 이 클러스터에 없습니다.": "The index (or alias or data stream) ‘{name}’ does not exist in this cluster.",
   "요청한 인덱스(또는 별칭·데이터 스트림)가 이 클러스터에 없습니다.": "The requested index (or alias or data stream) does not exist in this cluster.",
   "이름의 철자와 대소문자를 확인하세요. 인덱스 이름은 모두 소문자입니다.": "Check the spelling and case of the name. Index names are all lowercase.",

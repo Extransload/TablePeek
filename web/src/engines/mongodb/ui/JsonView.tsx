@@ -1,18 +1,24 @@
 // {} JSON view: one coloured block per document in mongosh notation (or
 // canonical Extended JSON), every { and [ foldable. Hovering a block shows
 // edit · clone · copy · delete; editing turns the block into a code editor
-// in place (⌘↩ saves as a guarded replaceOne, Esc cancels).
+// in place (⌘↩ saves as a guarded replaceOne, Esc cancels). As on the SQL
+// grid, a line's right-click opens the menu of the value it starts (the
+// block's, the document's) and a middle-click opens it in Quick Look, as ⌘↩
+// on the list does for the picked block.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
+import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CopyIcon, PencilIcon, TrashIcon } from "../../../components/icons";
 import type { ErrorContext } from "../../../errorHelp";
 import { errorPhrase, phrase, say, t, type Phrase } from "../../../i18n";
 import { JsonSyntaxError, fromEJSON, isDocument, jsonKeys, parseJson, stringifyJson, toEJSON, type BsonDocument, type BsonValue, type EJSON } from "../bson";
 import { VIEW_LIMITS, ejsonText, shellKey, toShell, toShellPretty, truncation } from "../format";
+import { valueAt } from "../guard";
 import { parseValue } from "../shell/parse";
 import { docKey } from "./CardView";
+import { anchorOf, copyDocsItem, copyPathItem, copyValueItems, docEditItems, docMenuItems, filterItems, hideItem, queryPath, querySort, sortItems, useDocActions, useOnItemsChange, ValueQuickLook, type QuickLookTarget } from "./docMenus";
 import { CloneIcon } from "./icons";
 import { MongoEditor, type MongoEditorHandle } from "./MongoEditor";
 import { arrowStep, selectsItem } from "./selection";
@@ -76,6 +82,9 @@ interface Line {
   folded: boolean;
   summary: string | null;
   more: string | null;
+  // The dotted path of the value the line starts ("" for the document),
+  // null on closing brackets and "more" lines: what its menu acts on.
+  path: string | null;
 }
 
 // An EJSON wrapper ({ "$oid": … }, { "$date": { "$numberLong": … } })
@@ -99,9 +108,12 @@ interface JsonBlockProps {
   selected: boolean;
   // Picks the block for the app's detail panel; omitted where nothing is picked.
   onPick?(): void;
+  // Called when a pointer press or focus lands anywhere inside the block
+  // (its editor included), so working on it also picks it.
+  onActivate?(): void;
 }
 
-function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, completion, onSave, onClone, onDelete, notify, selected, onPick }: JsonBlockProps) {
+function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, completion, onSave, onClone, onDelete, notify, selected, onPick, onActivate }: JsonBlockProps) {
   const [toggled, setToggled] = useState<Set<string>>(() => new Set());
   // The text being edited, and what stopped the last save: the text did not
   // parse, or the server refused the write.
@@ -110,8 +122,18 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
   const [full, setFull] = useState(false);
   const editorRef = useRef<MongoEditorHandle | null>(null);
   const blockRef = useRef<HTMLDivElement | null>(null);
+  const actions = useDocActions();
+  // A line's or the block's right-click menu, and a value in Quick Look.
+  const [menu, setMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  const [look, setLook] = useState<QuickLookTarget | null>(null);
 
   useEffect(() => setToggled(new Set()), [allFolded]);
+  // A menu or Quick Look belongs to the document it was opened on; a reload
+  // can move or drop its line, so it closes.
+  useEffect(() => {
+    setMenu(null);
+    setLook(null);
+  }, [doc]);
 
   const ro = readOnly || !doc.has("_id") || onSave === undefined;
 
@@ -125,21 +147,21 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
       const tail = comma ? "," : "";
       const container = (Array.isArray(v) || isDocument(v)) && !(canonical && isWrapper(e));
       if (!container) {
-        out.push({ depth, text: `${prefix}${scalar(v, e)}${tail}`, fold: null, folded: false, summary: null, more: null });
+        out.push({ depth, text: `${prefix}${scalar(v, e)}${tail}`, fold: null, folded: false, summary: null, more: null, path });
         return;
       }
       const arr = Array.isArray(v);
       let keys = Array.isArray(v) ? v.map((_, i) => String(i)) : isDocument(v) ? [...v.keys()] : [];
       const [open, close] = arr ? ["[", "]"] : ["{", "}"];
       if (keys.length === 0) {
-        out.push({ depth, text: `${prefix}${open}${close}${tail}`, fold: null, folded: false, summary: null, more: null });
+        out.push({ depth, text: `${prefix}${open}${close}${tail}`, fold: null, folded: false, summary: null, more: null, path });
         return;
       }
       if (isFolded(path, depth)) {
-        out.push({ depth, text: `${prefix}${open} … ${close}${tail}`, fold: path, folded: true, summary: arr ? t("{count}개", { count: keys.length }) : t("필드 {count}개", { count: keys.length }), more: null });
+        out.push({ depth, text: `${prefix}${open} … ${close}${tail}`, fold: path, folded: true, summary: arr ? t("{count}개", { count: keys.length }) : t("필드 {count}개", { count: keys.length }), more: null, path });
         return;
       }
-      out.push({ depth, text: `${prefix}${open}`, fold: path, folded: false, summary: null, more: null });
+      out.push({ depth, text: `${prefix}${open}`, fold: path, folded: false, summary: null, more: null, path });
       let more: string | null = null;
       if (cut !== null && depth === 0 && !arr && cut.shownFields < keys.length) {
         more = t("… 필드 {count}개 더", { count: keys.length - cut.shownFields });
@@ -155,9 +177,9 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
         walk(child, childE, childPath, depth + 1, arr ? "" : `${canonical || json ? JSON.stringify(k) : shellKey(k)}: `, i < keys.length - 1 || more !== null);
       });
       if (more !== null) {
-        out.push({ depth: depth + 1, text: "", fold: null, folded: false, summary: null, more });
+        out.push({ depth: depth + 1, text: "", fold: null, folded: false, summary: null, more, path: null });
       }
-      out.push({ depth, text: `${close}${tail}`, fold: null, folded: false, summary: null, more: null });
+      out.push({ depth, text: `${close}${tail}`, fold: null, folded: false, summary: null, more: null, path: null });
     };
     walk(doc, toEJSON(doc), "", 0, "", false);
     return out;
@@ -208,6 +230,44 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
     notify(t("복사했습니다"));
   };
 
+  // The document, or the value a line starts, in Quick Look beside `anchor`.
+  const lookAt = (path: string, anchor: Element) => {
+    const v = path === "" ? doc : valueAt(doc, path);
+    if (v === undefined) {
+      return;
+    }
+    setMenu(null);
+    setLook({ name: path === "" ? `#${(position + 1).toLocaleString()}` : path, value: v, position, anchor: anchorOf(anchor) });
+  };
+
+  // A line's menu (its value: copy, look, fold, the query) above the
+  // document's; the block's own space and its first line give the
+  // document's alone.
+  const openMenu = (x: number, y: number, line: Line | null, anchor: Element) => {
+    const edits = {
+      onEdit: ro ? undefined : startEdit,
+      onClone: !ro && onClone ? () => onClone(doc) : undefined,
+      onDelete: !ro && onDelete ? () => onDelete(doc) : undefined,
+    };
+    const path = line?.path ?? "";
+    const v = path === "" ? undefined : valueAt(doc, path);
+    let items: ContextMenuItem[];
+    if (line === null || v === undefined) {
+      items = docMenuItems(actions, { doc, json, quickLook: () => lookAt("", anchor), ...edits });
+    } else {
+      const field = queryPath(doc, path);
+      items = [...copyValueItems(v, json), copyPathItem(path), { label: "Quick Look", separatorBefore: true, onSelect: () => lookAt(path, anchor) }];
+      if (line.fold !== null) {
+        const fold = line.fold;
+        items.push({ label: line.folded ? t("펼치기") : t("접기"), onSelect: () => toggle(fold) });
+      }
+      items.push(...filterItems(actions, field, v), ...sortItems(querySort(actions, field)), ...hideItem(actions, field));
+      items.push({ ...copyDocsItem([doc], json), separatorBefore: true }, ...docEditItems(edits));
+    }
+    setLook(null);
+    setMenu({ x, y, items });
+  };
+
   let body: ReactNode;
   if (editing !== null) {
     const height = Math.min(560, Math.max(120, editing.text.split("\n").length * 18 + 14));
@@ -247,7 +307,31 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
     body = (
       <div className="mg-jcode">
         {lines.map((line, i) => (
-          <div key={i} className="mg-jl" style={{ paddingLeft: `${line.depth * 2 + 2}ch` }}>
+          <div
+            key={i}
+            className="mg-jl"
+            style={{ paddingLeft: `${line.depth * 2 + 2}ch` }}
+            onContextMenu={
+              line.path === null
+                ? undefined
+                : (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openMenu(event.clientX, event.clientY, line, event.currentTarget);
+                  }
+            }
+            onAuxClick={
+              line.path === null
+                ? undefined
+                : (event) => {
+                    if (event.button === 1) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      lookAt(line.path ?? "", event.currentTarget);
+                    }
+                  }
+            }
+          >
             {line.fold !== null ? (
               <span className={`mg-jl-fold${line.folded ? "" : " open"}`} onClick={() => toggle(line.fold ?? "")}>
                 <ChevronIcon size={8} />
@@ -275,14 +359,30 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
       ref={blockRef}
       className={`mg-jdoc${editing !== null ? " editing" : ""}${selected ? " selected" : ""}`}
       tabIndex={-1}
+      onPointerDownCapture={selected ? undefined : onActivate}
+      onFocusCapture={selected ? undefined : onActivate}
       onClick={(event) => {
         if (editing === null && onPick !== undefined && selectsItem(event.target)) {
           onPick();
         }
       }}
       onDoubleClick={(event) => {
-        if (editing === null && !(event.target as HTMLElement).closest(".mg-jl-fold, button")) {
+        if (editing === null && !(event.target as HTMLElement).closest(".mg-jl-fold, button, .cell-pop-backdrop")) {
           startEdit();
+        }
+      }}
+      onContextMenu={(event) => {
+        // While editing, the editor keeps the browser's own menu; the block's
+        // own menu and Quick Look keep theirs.
+        if (editing === null && !(event.target as HTMLElement).closest(".context-layer, .cell-pop-backdrop")) {
+          event.preventDefault();
+          openMenu(event.clientX, event.clientY, null, event.currentTarget);
+        }
+      }}
+      onAuxClick={(event) => {
+        if (editing === null && event.button === 1 && !(event.target as HTMLElement).closest(".context-layer, .cell-pop-backdrop")) {
+          event.preventDefault();
+          lookAt("", event.currentTarget);
         }
       }}
     >
@@ -312,6 +412,8 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
         ) : null}
       </span>
       {body}
+      {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} /> : null}
+      {look !== null ? <ValueQuickLook target={look} where={null} onClose={() => setLook(null)} /> : null}
     </div>
   );
 }
@@ -340,6 +442,9 @@ export interface JsonViewProps {
 
 export function JsonView({ docs, offset, emptyText, json = false, selected = null, onSelect, ...rest }: JsonViewProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
+  // The picked block's document in Quick Look (⌘↩).
+  const [look, setLook] = useState<QuickLookTarget | null>(null);
+  useOnItemsChange(docs, () => setLook(null));
   if (docs.length === 0) {
     return (
       <div className="mg-jdocs">
@@ -361,7 +466,14 @@ export function JsonView({ docs, offset, emptyText, json = false, selected = nul
       className="mg-jdocs"
       tabIndex={-1}
       onKeyDown={(event) => {
-        const next = onSelect === undefined ? null : arrowStep(event, keys.length, selected === null ? -1 : keys.indexOf(selected));
+        const at = selected === null ? -1 : keys.indexOf(selected);
+        // ⌘↩ on the list (not in a block's editor) shows the picked document in Quick Look, as on a grid cell.
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && at >= 0 && (event.target === event.currentTarget || (event.target as HTMLElement).matches(".mg-jdoc"))) {
+          event.preventDefault();
+          setLook({ name: `#${(offset + at + 1).toLocaleString()}`, value: docs[at], position: offset + at, anchor: anchorOf(listRef.current?.children[at] ?? null) });
+          return;
+        }
+        const next = onSelect === undefined ? null : arrowStep(event, keys.length, at);
         if (next !== null) {
           event.preventDefault();
           pick(next);
@@ -375,6 +487,7 @@ export function JsonView({ docs, offset, emptyText, json = false, selected = nul
           position={offset + i}
           json={json}
           selected={keys[i] === selected}
+          onActivate={onSelect === undefined ? undefined : () => onSelect(keys[i])}
           onPick={
             onSelect === undefined
               ? undefined
@@ -386,6 +499,17 @@ export function JsonView({ docs, offset, emptyText, json = false, selected = nul
           {...rest}
         />
       ))}
+      {/* After the blocks, so a block's index is still its child's. */}
+      {look !== null ? (
+        <ValueQuickLook
+          target={look}
+          where={null}
+          onClose={() => {
+            setLook(null);
+            listRef.current?.focus({ preventScroll: true });
+          }}
+        />
+      ) : null}
     </div>
   );
 }

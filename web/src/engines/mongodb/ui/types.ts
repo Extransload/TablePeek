@@ -63,6 +63,12 @@ export interface DocTableViewProps {
   onPathChange(path: string[]): void;
   // The detail panel's type labels (see DocFieldsProps.typeLabel).
   typeLabel?(path: string, value: BsonValue): string | null;
+  // A row's document in the JSON editor (replace), cloned into a new one,
+  // or deleted (asking first): the cell menu's document items, offered where
+  // given.
+  onEditJson?(doc: BsonDocument): void;
+  onClone?(doc: BsonDocument): void;
+  onDelete?(doc: BsonDocument): void;
 }
 
 // A prefilled create dialog (from the explain view's suggestion). `seq`

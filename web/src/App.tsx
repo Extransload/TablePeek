@@ -1293,14 +1293,15 @@ export default function App() {
     return first !== undefined && first.includes(".") ? first.slice(0, first.indexOf(".")) : "test";
   }
 
-  // A collection tab: the open one for `db.coll`, else a new one.
-  function openCollectionTab(db: string, coll: string, view = false): void {
+  // A collection tab: the open one for `db.coll`, else a new one; `newTab`
+  // (the sidebar's middle-click, ⌘-click, 새 탭에서 열기) always a new one.
+  function openCollectionTab(db: string, coll: string, view = false, newTab = false): void {
     const conn = activeConnIdRef.current;
     const current = conn !== null ? tabsOf(conn) : null;
     if (conn === null || current === null) {
       return;
     }
-    const open = current.tabs.find((tab) => tab.kind === "collection" && tab.db === db && tab.coll === coll);
+    const open = newTab ? undefined : current.tabs.find((tab) => tab.kind === "collection" && tab.db === db && tab.coll === coll);
     if (open !== undefined) {
       activate(open.id);
       return;
@@ -1309,14 +1310,15 @@ export default function App() {
     setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
   }
 
-  // A database's 변경 보기 tab, or a GridFS bucket's tab: the open one, else a new one.
-  function openDocDbTab(kind: "watch" | "gridfs", db: string, bucket = ""): void {
+  // A database's 변경 보기 tab, or a GridFS bucket's tab: the open one, else
+  // a new one (always, with `newTab`).
+  function openDocDbTab(kind: "watch" | "gridfs", db: string, bucket = "", newTab = false): void {
     const conn = activeConnIdRef.current;
     const current = conn !== null ? tabsOf(conn) : null;
     if (conn === null || current === null) {
       return;
     }
-    const open = current.tabs.find((tab) => (kind === "watch" ? tab.kind === "watch" && tab.db === db : tab.kind === "gridfs" && tab.db === db && tab.bucket === bucket));
+    const open = newTab ? undefined : current.tabs.find((tab) => (kind === "watch" ? tab.kind === "watch" && tab.db === db : tab.kind === "gridfs" && tab.db === db && tab.bucket === bucket));
     if (open !== undefined) {
       activate(open.id);
       return;
@@ -1344,14 +1346,15 @@ export default function App() {
     setTabsFor(conn, { tabs: [...current.tabs, tab], activeId: tab.id });
   }
 
-  // A search connection's index (alias, data stream) tab: the open one, else a new one.
-  function openSearchIndexTab(index: string, target: TargetKind): void {
+  // A search connection's index (alias, data stream) tab: the open one, else
+  // a new one (always, with `newTab`).
+  function openSearchIndexTab(index: string, target: TargetKind, newTab = false): void {
     const conn = activeConnIdRef.current;
     const current = conn !== null ? tabsOf(conn) : null;
     if (conn === null || current === null) {
       return;
     }
-    const open = current.tabs.find((tab) => tab.kind === "searchIndex" && tab.index === index);
+    const open = newTab ? undefined : current.tabs.find((tab) => tab.kind === "searchIndex" && tab.index === index);
     if (open !== undefined) {
       activate(open.id);
       return;
@@ -6215,7 +6218,7 @@ export default function App() {
                     onOpenShell={(db, text) => openMongoshTab(db, text)}
                     onAdmin={setDocAdmin}
                     onOpenWatch={(db) => openDocDbTab("watch", db)}
-                    onOpenBucket={(db, bucket) => openDocDbTab("gridfs", db, bucket)}
+                    onOpenBucket={(db, bucket, newTab) => openDocDbTab("gridfs", db, bucket, newTab)}
                     activeBucket={activeTab?.kind === "gridfs" ? { db: activeTab.db, bucket: activeTab.bucket } : null}
                   />
                 ) : searchHost !== null ? (

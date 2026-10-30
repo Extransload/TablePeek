@@ -127,6 +127,7 @@ export interface GridSelection {
   c1: number;
 }
 type CellContextMenuHandler = (row: number, col: number, x: number, y: number, selection: GridSelection) => void;
+type HeaderContextMenuHandler = (columnIndex: number, x: number, y: number) => void;
 type DeleteRowsHandler = (rows: number[]) => void;
 // Clipboard rows pasted over whole selected rows, each with a field per column.
 type PasteRowsHandler = (rows: string[][]) => void;
@@ -225,6 +226,7 @@ export class CanvasGrid {
   private sortColumns: SortIndicator[] = [];
   private selectionListener: SelectionHandler | null = null;
   private contextMenuHandler: CellContextMenuHandler | null = null;
+  private headerMenuHandler: HeaderContextMenuHandler | null = null;
   private deleteRowsHandler: DeleteRowsHandler | null = null;
   private pasteRowsHandler: PasteRowsHandler | null = null;
   private quickLook: ((row: number, col: number) => void) | null = null;
@@ -617,6 +619,10 @@ export class CanvasGrid {
 
   setCellContextMenuHandler(handler: CellContextMenuHandler | null): void {
     this.contextMenuHandler = handler;
+  }
+
+  setHeaderContextMenuHandler(handler: HeaderContextMenuHandler | null): void {
+    this.headerMenuHandler = handler;
   }
 
   setDeleteRowsHandler(handler: DeleteRowsHandler | null): void {
@@ -2464,15 +2470,23 @@ export class CanvasGrid {
 
   // A right-click inside the selection (a block of cells, whole rows, whole
   // columns) keeps it, so the menu acts on all of it; one outside selects the
-  // cell clicked.
+  // cell clicked. One on a column's header goes to the header's menu, where
+  // a view has one.
   private readonly onContextMenu = (e: MouseEvent): void => {
-    if (!this.source || !this.contextMenuHandler) {
+    if (!this.source) {
       return;
     }
     const p = this.localPos(e);
-    const row = this.hitRow(p.y);
     const col = this.hitCol(p.x);
-    if (row === null || col === null) {
+    if (p.y < HEADER_H) {
+      if (col !== null && this.headerMenuHandler) {
+        e.preventDefault();
+        this.headerMenuHandler(col, e.clientX, e.clientY);
+      }
+      return;
+    }
+    const row = this.hitRow(p.y);
+    if (row === null || col === null || !this.contextMenuHandler) {
       return;
     }
     e.preventDefault();

@@ -152,14 +152,16 @@ export function useCollectionFacts(ns: Namespace | null, seq = 0): Fact[] | null
   return facts !== null && facts.nsKey === nsKey ? facts.list : null;
 }
 
-// A list of facts under a title (or the "nothing selected" line), filtered
-// by the field search.
+// A list of facts under a title, filtered by the field search. `empty` (the
+// "nothing selected" line) fills the panel only when there are no facts;
+// with facts it is a one-line title above them.
 export function FactsList({ title, empty, facts, query }: { title?: ReactNode; empty?: string; facts: Fact[] | null; query: string }) {
   const needle = query.trim().toLowerCase();
+  const bare = facts !== null && facts.length === 0;
   return (
     <div className="field-list mg-detail-other">
       {title !== undefined ? <div className="mg-detail-head">{title}</div> : null}
-      {empty !== undefined ? <div className="panel-empty mg-detail-empty">{empty}</div> : null}
+      {empty === undefined ? null : bare ? <div className="panel-empty mg-detail-empty">{empty}</div> : <div className="mg-detail-title">{empty}</div>}
       {(facts ?? [])
         .filter((fact) => needle === "" || fact.name.toLowerCase().includes(needle) || (fact.type ?? "").toLowerCase().includes(needle))
         .map((fact) => (
@@ -235,6 +237,9 @@ function SingleRow({ ns, table, row, readOnly, save, query, typeLabel }: { ns: N
         head={<DetailHead parts={[ns.coll, ...parts]} id={root.get("_id")} />}
         className="mg-panel-card"
         typeLabel={typeLabel === undefined ? undefined : (path, value) => typeLabel(prefix === "" ? path : `${prefix}.${path}`, value)}
+        root={root}
+        prefix={prefix}
+        position={row}
       />
     </div>
   );
@@ -301,6 +306,7 @@ export function DocDetail({ ns, doc, position, save, typeLabel, query }: { ns: N
         head={<DetailHead parts={[ns.coll]} id={id} note={`#${(position + 1).toLocaleString()}`} />}
         className="mg-panel-card"
         typeLabel={typeLabel}
+        position={position}
       />
     </div>
   );

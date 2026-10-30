@@ -1,8 +1,10 @@
 // The Items pane of a document connection (MONGODB.md §3.1): databases,
 // each opening to its collections and views with estimated document counts.
-// Click opens a collection tab; the context menus offer 열기 · 새 mongosh 탭
-// · 새로 고침 and the management dialogs (만들기, 가져오기, 내보내기, 이름
-// 바꾸기, 삭제, 통계 — MONGODB.md §6.2), which App shows through `onAdmin`.
+// Click opens a collection tab (the open one if there is one); as on the SQL
+// sidebar a middle-click, ⌘-click or ⌘↩ opens another tab beside it. The
+// context menus offer 열기 · 새 탭에서 열기 · 새 mongosh 탭 · 새로 고침 and
+// the management dialogs (만들기, 가져오기, 내보내기, 이름 바꾸기, 삭제,
+// 통계 — MONGODB.md §6.2), which App shows through `onAdmin`.
 // A GridFS bucket (`<b>.files` beside `<b>.chunks`) shows as one node that
 // opens the bucket's tab and folds out to its two collections; a database's
 // menu opens its 변경 보기 tab (MONGODB.md §8.1).
@@ -24,8 +26,9 @@ interface DocSidebarProps {
   refreshKey: number;
   // The collection in front, highlighted.
   active: { db: string; coll: string } | null;
-  // `view`: a MongoDB view, opened read-only.
-  onOpen(db: string, coll: string, view: boolean): void;
+  // `view`: a MongoDB view, opened read-only. `newTab`: another tab even
+  // when one shows it already.
+  onOpen(db: string, coll: string, view: boolean, newTab?: boolean): void;
   // A new mongosh tab on `db`, its text seeded when a collection was picked.
   onOpenShell(db: string, text?: string): void;
   // A management dialog (create, import, export, rename, drop, stats).
@@ -33,7 +36,7 @@ interface DocSidebarProps {
   // A database's 변경 보기 tab.
   onOpenWatch(db: string): void;
   // A GridFS bucket's tab, and the bucket in front (highlighted).
-  onOpenBucket(db: string, bucket: string): void;
+  onOpenBucket(db: string, bucket: string, newTab?: boolean): void;
   activeBucket: { db: string; bucket: string } | null;
 }
 
@@ -163,6 +166,7 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
 
   const collMenu = (db: string, coll: string, view: boolean): ContextMenuItem[] => [
     { label: t("열기"), onSelect: () => onOpen(db, coll, view) },
+    { label: t("새 탭에서 열기"), onSelect: () => onOpen(db, coll, view, true) },
     { label: t("새 mongosh 탭"), onSelect: () => onOpenShell(db, `db.${/^[A-Za-z_$][\w$]*$/.test(coll) ? coll : `getCollection(${JSON.stringify(coll)})`}.find({})\n`) },
     ...(view ? [] : [{ label: t("가져오기…"), separatorBefore: true, onSelect: () => onAdmin({ kind: "import", db, coll }) }]),
     { label: t("내보내기…"), separatorBefore: view, onSelect: () => onAdmin({ kind: "export", db, coll }) },
@@ -178,6 +182,7 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
 
   const bucketMenu = (db: string, bucket: string): ContextMenuItem[] => [
     { label: t("열기"), onSelect: () => onOpenBucket(db, bucket) },
+    { label: t("새 탭에서 열기"), onSelect: () => onOpenBucket(db, bucket, true) },
     { label: t("{name} 컬렉션 열기", { name: `${bucket}.files` }), separatorBefore: true, onSelect: () => onOpen(db, `${bucket}.files`, false) },
     { label: t("{name} 컬렉션 열기", { name: `${bucket}.chunks` }), onSelect: () => onOpen(db, `${bucket}.chunks`, false) },
     { label: t("새로 고침"), separatorBefore: true, onSelect: () => loadCollections(db) },
@@ -193,11 +198,17 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
           role="button"
           tabIndex={0}
           title={`${db}.${c.name}`}
-          onClick={() => onOpen(db, c.name, c.type === "view")}
+          onClick={(event) => onOpen(db, c.name, c.type === "view", event.metaKey || event.ctrlKey)}
+          onAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              onOpen(db, c.name, c.type === "view", true);
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              onOpen(db, c.name, c.type === "view");
+              onOpen(db, c.name, c.type === "view", event.metaKey || event.ctrlKey);
             }
           }}
           onContextMenu={(event) => {
@@ -240,11 +251,17 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
           role="button"
           tabIndex={0}
           title={t("GridFS 버킷 {name}", { name: key })}
-          onClick={() => onOpenBucket(db, bucket)}
+          onClick={(event) => onOpenBucket(db, bucket, event.metaKey || event.ctrlKey)}
+          onAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              onOpenBucket(db, bucket, true);
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              onOpenBucket(db, bucket);
+              onOpenBucket(db, bucket, event.metaKey || event.ctrlKey);
             } else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
               event.preventDefault();
               if (isOpen !== (event.key === "ArrowRight")) {

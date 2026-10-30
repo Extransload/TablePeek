@@ -1,8 +1,10 @@
 // The Items pane of a search connection: 인덱스 (health dot, document count),
 // 별칭 (with the indices behind each) and 데이터 스트림, with a search box and a
-// toggle for hidden and system indices. Click opens an index tab; the context
-// menus offer the console, import/export and the management dialogs, which
-// App shows through `onAdmin`.
+// toggle for hidden and system indices. Click opens an index tab (the open
+// one if there is one); as on the SQL sidebar a middle-click, ⌘-click or
+// ⌘↩ opens another tab beside it. The context menus offer the console,
+// import/export and the management dialogs, which App shows through
+// `onAdmin`.
 
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
@@ -24,7 +26,8 @@ interface SearchSidebarProps {
   refreshKey: number;
   // The tab in front, highlighted.
   active: { index: string; kind: TargetKind } | null;
-  onOpen(index: string, kind: TargetKind): void;
+  // `newTab`: another tab even when one shows it already.
+  onOpen(index: string, kind: TargetKind, newTab?: boolean): void;
   // A new console tab, its text seeded when an index was picked.
   onOpenConsole(text?: string): void;
   onOpenCluster(): void;
@@ -169,6 +172,7 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
     const closed = row.status === "close";
     return [
       { label: t("열기 [탭]"), onSelect: () => onOpen(row.name, "index") },
+      { label: t("새 탭에서 열기"), onSelect: () => onOpen(row.name, "index", true) },
       { label: t("새 콘솔 탭"), onSelect: () => onOpenConsole(consoleText(row.name)) },
       { label: t("통계…"), onSelect: () => onAdmin({ kind: "stats", index: row.name }) },
       { label: t("가져오기 (NDJSON·JSON·CSV)…"), separatorBefore: true, disabled: !writable || closed, onSelect: () => onAdmin({ kind: "import", index: row.name }) },
@@ -184,6 +188,7 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
 
   const aliasMenu = (name: string, rows: AliasRow[]): ContextMenuItem[] => [
     { label: t("열기 [탭]"), onSelect: () => onOpen(name, "alias") },
+    { label: t("새 탭에서 열기"), onSelect: () => onOpen(name, "alias", true) },
     { label: t("새 콘솔 탭"), onSelect: () => onOpenConsole(consoleText(name)) },
     { label: t("내보내기 (NDJSON·JSON·CSV)…"), onSelect: () => onAdmin({ kind: "export", index: name }) },
     ...rows.map((row, i) => ({ label: t("{index}에서 별칭 지우기…", { index: row.index }), separatorBefore: i === 0, danger: true, disabled: readOnly, onSelect: () => void removeAlias(row) })),
@@ -191,6 +196,7 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
 
   const streamMenu = (row: DataStreamRow): ContextMenuItem[] => [
     { label: t("열기 [탭]"), onSelect: () => onOpen(row.name, "data_stream") },
+    { label: t("새 탭에서 열기"), onSelect: () => onOpen(row.name, "data_stream", true) },
     { label: t("새 콘솔 탭"), onSelect: () => onOpenConsole(consoleText(row.name)) },
     { label: t("가져오기 (NDJSON·JSON·CSV)…"), separatorBefore: true, disabled: readOnly, onSelect: () => onAdmin({ kind: "import", index: row.name }) },
     { label: t("내보내기 (NDJSON·JSON·CSV)…"), onSelect: () => onAdmin({ kind: "export", index: row.name }) },
@@ -207,11 +213,17 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
           role="button"
           tabIndex={0}
           title={title}
-          onClick={() => onOpen(name, kind)}
+          onClick={(event) => onOpen(name, kind, event.metaKey || event.ctrlKey)}
+          onAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              onOpen(name, kind, true);
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              onOpen(name, kind);
+              onOpen(name, kind, event.metaKey || event.ctrlKey);
             }
           }}
           onContextMenu={(event) => {

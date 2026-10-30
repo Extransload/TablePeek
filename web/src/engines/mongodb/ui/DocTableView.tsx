@@ -1,27 +1,33 @@
 // The ⊞ view of a collection tab (MONGODB.md §3.5): the page as a table on
 // the app's canvas grid, object and array fields opened as child tables
 // (`orders › items`), typed cell edits saved as dotted-path $set with the
-// conflict guard, and the selected row in the app's detail panel.
+// conflict guard, and the selected row in the app's detail panel. As on the
+// SQL grid, a cell's and a header's right-click (or ⌥-click) open their
+// menus, a middle-click or ⌘↩ shows the cell in Quick Look and Space opens
+// the detail panel.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { writeClipboard } from "../../../clipboard";
 import { columnWidthsKey } from "../../../columnWidths";
+import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { notifyError } from "../../../components/ErrorNotice";
 import { PanelIcon } from "../../../components/icons";
 import { TableGrid, type TableGridHandle } from "../../../components/TableGrid";
 import type { GridEditHandlers, GridSelection, SelectedRows, SortIndicator } from "../../../grid/CanvasGrid";
 import type { GridColumnSpec } from "../../../grid/columns";
 import type { RowSource } from "../../../grid/rowSource";
-import { phraseError, t } from "../../../i18n";
+import { phrase, phraseError, t } from "../../../i18n";
 import { palette, type ValueKind } from "../../../palette";
 import { getSettings } from "../../../settings";
 import { Int32, deepEqual, isDocument, isNumber, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { preview, toShell } from "../format";
 import type { DocEdit } from "../guard";
-import { buildTable, cellPath, cellValue, sortRows, type DocTable, type TableColumn } from "../table";
+import { buildTable, cellPath, cellValue, sortRows, type DocTable, type TableColumn, type TableRow } from "../table";
 import { DocDetailPanel, TableDetail, useDetailSlot } from "./DocDetailPanel";
+import { confirmTypeChange, copyDocsItem, copyPathItem, copyValueItems, docEditItems, filterItems, hideItem, plainText, sortItems, trimSeparators, useDocActions, useOnItemsChange, ValueQuickLook, type QuickLookTarget, type SortControl } from "./docMenus";
 import { GridIcon } from "./icons";
 import type { DocTableViewProps, SaveEdits } from "./types";
-import { coerceInput, editText } from "./valueEdit";
+import { EDIT_TYPES, coerceInput, defaultOfType, editText } from "./valueEdit";
 import { WriteErrorNotice } from "./writeErrors";
 import "./panels.css";
 
@@ -154,9 +160,13 @@ export function DocTableView({
   onPathChange,
   facts,
   typeLabel,
+  onEditJson,
+  onClone,
+  onDelete,
 }: DocTableViewProps) {
   const gridRef = useRef<TableGridHandle | null>(null);
   const slot = useDetailSlot();
+  const actions = useDocActions();
   const pathKey = path.join("\u0000");
   // Drilled levels sort their rows here; the top level sorts on the server.
   const [localSort, setLocalSort] = useState<{ pathKey: string; column: string; dir: 1 | -1 } | null>(null);
@@ -165,6 +175,8 @@ export function DocTableView({
   const cellErrorRef = useRef<HTMLDivElement | null>(null);
   // The cell to select again once the page comes back after a save.
   const restoreRef = useRef<GridSelection | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  const [look, setLook] = useState<QuickLookTarget | null>(null);
 
   const built = useMemo(() => buildTable(docs, path), [docs, pathKey]);
   const activeSort = localSort !== null && localSort.pathKey === pathKey && path.length > 0 ? localSort : null;
@@ -173,6 +185,37 @@ export function DocTableView({
     return activeSort === null || column === undefined ? built : sortRows(built, column, activeSort.dir);
   }, [built, activeSort?.column, activeSort?.dir]);
   const source = useMemo(() => new DocRowSource(table), [table]);
+  // A menu or Quick Look belongs to the rows it was opened on: a reload (a
+  // save, F5, another page), another level or another order can move or
+  // drop its cell, so it closes, and its items no longer act.
+  const generation = useRef(0);
+  useOnItemsChange([pathKey, activeSort?.column, activeSort?.dir, ...docs], () => {
+    generation.current += 1;
+    setMenu(null);
+    setLook(null);
+  });
+
+  // A menu whose items act only while its rows are still the ones shown;
+  // otherwise they say so instead of acting on whatever moved into place.
+  function openMenu(x: number, y: number, items: ContextMenuItem[]): void {
+    const opened = generation.current;
+    const guard = (list: ContextMenuItem[]): ContextMenuItem[] =>
+      list.map((item) => ({
+        ...item,
+        submenu: item.submenu && guard(item.submenu),
+        onSelect:
+          item.onSelect &&
+          (() => {
+            if (generation.current !== opened) {
+              notifyError(phraseError(phrase("문서가 다시 읽혀 이 칸이 옮겨졌거나 사라졌습니다. 메뉴를 다시 여세요.")), { context: "document" });
+              return;
+            }
+            item.onSelect?.();
+          }),
+      }));
+    setLook(null);
+    setMenu({ x, y, items: guard(items) });
+  }
 
   const specs = useMemo(
     () =>
@@ -305,7 +348,15 @@ export function DocTableView({
     if (v !== undefined && deepEqual(v, value)) {
       return;
     }
-    const edit: DocEdit = v === undefined ? { op: "add", path: target, value } : { op: "set", path: target, value };
+    await applyEdit(row, col, v === undefined ? { op: "add", path: target, value } : { op: "set", path: target, value });
+  }
+
+  // One edit of a row's document; a refusal shows at the cell.
+  async function applyEdit(row: number, col: number, edit: DocEdit): Promise<void> {
+    const r = table.rows[row];
+    if (!r) {
+      return;
+    }
     const failure = await keptSave(table.docs[r.doc], [edit]);
     if (failure !== null) {
       showError(row, col, failure);
@@ -323,6 +374,189 @@ export function DocTableView({
     }
     return message;
   };
+
+  // A cell's dotted path in its document with array positions (what Quick
+  // Look names and an edit writes), or null for the position column.
+  function fieldPathOf(row: TableRow, column: TableColumn): string | null {
+    switch (column.kind) {
+      case "field":
+        return column.field === null ? null : row.base === "" ? column.field : `${row.base}.${column.field}`;
+      case "value":
+        return row.base;
+      case "parentId":
+        return "_id";
+      case "index":
+        return null;
+    }
+  }
+
+  // A column's path for queries (`items.sku` in `orders › items`), or null
+  // for the position column.
+  function columnPath(column: TableColumn): string | null {
+    switch (column.kind) {
+      case "field":
+        return column.field === null ? null : [...path, column.field].join(".");
+      case "value":
+        return path.join(".");
+      case "parentId":
+        return "_id";
+      case "index":
+        return null;
+    }
+  }
+
+  // The sort a column's menu shows: the query's at the top level (by this
+  // field alone, as a plain header click), the drilled table's own below.
+  function columnSort(column: TableColumn): SortControl | null {
+    if (path.length > 0) {
+      return {
+        dir: activeSort?.column === column.id ? activeSort.dir : null,
+        set: (dir) => setLocalSort(dir === null ? null : { pathKey, column: column.id, dir }),
+      };
+    }
+    const field = column.field;
+    if (column.kind !== "field" || field === null) {
+      return null;
+    }
+    const current = sort?.get(field);
+    return {
+      dir: isNumber(current) ? (Number(current.value) < 0 ? -1 : 1) : null,
+      set: (dir) => {
+        if (dir !== null) {
+          onSort(new Map<string, BsonValue>([[field, new Int32(dir)]]));
+          return;
+        }
+        const rest: BsonDocument = new Map([...(sort ?? [])].filter(([key]) => key !== field));
+        onSort(rest.size === 0 ? null : rest);
+      },
+    };
+  }
+
+  function quickLook(row: number, col: number): void {
+    const r = table.rows[row];
+    const column = table.columns[col];
+    const v = source.value(row, col);
+    if (!r || !column || v === undefined) {
+      return;
+    }
+    setMenu(null);
+    setLook({ name: fieldPathOf(r, column) ?? source.columns[col], value: v, position: row, anchor: gridRef.current?.cellRect(row, col) ?? null });
+  }
+
+  // The cell menu, in the SQL grid's order: copy, look, edit, then the
+  // query and the document. Copy and 문서 복사 take the whole selection;
+  // the rest acts on the cell clicked.
+  function openCellMenu(row: number, col: number, x: number, y: number, selection: GridSelection): void {
+    const r = table.rows[row];
+    const column = table.columns[col];
+    if (!r || !column) {
+      return;
+    }
+    const v = source.value(row, col);
+    const root = table.docs[r.doc];
+    const target = cellPath(r, column);
+    const at = fieldPathOf(r, column);
+    const container = Array.isArray(v) || isDocument(v);
+    const picked = selection.mode === "col" ? [r.doc] : [...new Set(table.rows.slice(selection.r0, selection.r1 + 1).map((entry) => entry.doc))];
+    const items: ContextMenuItem[] = [{ label: t("복사"), onSelect: () => gridRef.current?.copySelection() }];
+    if (v !== undefined) {
+      items.push(...copyValueItems(v, actions.json));
+    }
+    if (at !== null) {
+      items.push(copyPathItem(at));
+    }
+    items.push(copyDocsItem(picked.map((i) => table.docs[i]), actions.json));
+    items.push({ label: "Quick Look", separatorBefore: true, disabled: v === undefined, onSelect: () => quickLook(row, col) });
+    items.push({ label: t("행 상세 보기"), onSelect: () => slot.setOpen(true) });
+    const field = column.field;
+    if (container && column.kind === "field" && field !== null) {
+      items.push({ label: t("하위 표로 열기"), onSelect: () => drillTo([...path, field]) });
+    }
+    if (!readOnly && target !== null) {
+      const set = (value: BsonValue) => void applyEdit(row, col, v === undefined ? { op: "add", path: target, value } : { op: "set", path: target, value });
+      const type = editType(v, column);
+      const values: ContextMenuItem[] = [];
+      if (type === "String") {
+        values.push({ label: "EMPTY", disabled: v === "", onSelect: () => set("") });
+      }
+      values.push({ label: "null", disabled: v === null, onSelect: () => set(null) });
+      if (type === "Date") {
+        values.push({ label: "new Date()", onSelect: () => set(defaultOfType("Date")) });
+      }
+      items.push({ label: t("이 셀 편집"), separatorBefore: true, disabled: container, onSelect: () => gridRef.current?.beginEdit(row, col) });
+      if (v !== undefined) {
+        const current = typeName(v);
+        items.push({
+          label: t("타입 바꾸기"),
+          submenu: EDIT_TYPES.map((name) => ({
+            label: name,
+            checked: current === name,
+            // A conversion that loses part of the value asks first.
+            onSelect: () => {
+              if (current !== name) {
+                void confirmTypeChange(at ?? target, v, name).then((next) => next !== undefined && set(next));
+              }
+            },
+          })),
+        });
+      }
+      items.push({ label: t("값 설정"), submenu: values });
+      if (v !== undefined && column.kind === "field") {
+        items.push({ label: t("필드 지우기 ($unset)"), danger: true, onSelect: () => void applyEdit(row, col, { op: "unset", path: target }) });
+      }
+    }
+    const queryField = columnPath(column);
+    if (queryField !== null) {
+      items.push(...filterItems(actions, queryField, v));
+    }
+    items.push(...sortItems(columnSort(column)));
+    if (!readOnly && root.has("_id")) {
+      items.push(
+        ...docEditItems({
+          onEdit: onEditJson && (() => onEditJson(root)),
+          onClone: onClone && (() => onClone(root)),
+          onDelete: onDelete && (() => onDelete(root)),
+        }),
+      );
+    }
+    openMenu(x, y, items);
+  }
+
+  // A header's menu: sort, open, copy the path or every value, filter by
+  // presence, hide.
+  function openHeaderMenu(col: number, x: number, y: number): void {
+    const column = table.columns[col];
+    if (!column) {
+      return;
+    }
+    const queryField = columnPath(column);
+    const items: ContextMenuItem[] = [...sortItems(columnSort(column))];
+    const field = column.field;
+    if (column.drill && field !== null) {
+      items.push({ label: t("하위 표로 열기"), separatorBefore: true, onSelect: () => drillTo([...path, field]) });
+    }
+    if (queryField !== null) {
+      items.push({ ...copyPathItem(queryField), separatorBefore: true });
+    }
+    items.push({
+      label: t("열 값 전체 복사"),
+      separatorBefore: queryField === null,
+      onSelect: () => {
+        const lines = table.rows.map((entry) => {
+          const v = cellValue(entry, column);
+          return v === undefined ? "" : Array.isArray(v) || isDocument(v) ? toShell(v) : plainText(v);
+        });
+        void writeClipboard(lines.join("\n"));
+      },
+    });
+    if (queryField !== null && column.kind !== "parentId") {
+      items.push(...filterItems(actions, queryField, undefined));
+    }
+    if (queryField !== null && column.kind === "field") {
+      items.push(...hideItem(actions, queryField));
+    }
+    openMenu(x, y, trimSeparators(items));
+  }
 
   const editing: GridEditHandlers | null = readOnly
     ? null
@@ -400,6 +634,10 @@ export function DocTableView({
               setSelection(rows);
               setCellError(null);
             }}
+            onCellContextMenu={openCellMenu}
+            onHeaderContextMenu={openHeaderMenu}
+            onCellQuickLook={quickLook}
+            onQuickLook={() => slot.setOpen(true)}
           />
           {empty ? (
             <div className="panel-empty mg-grid-empty">
@@ -413,6 +651,17 @@ export function DocTableView({
         <div ref={cellErrorRef} className="mg-edit-error" style={{ left: cellError.left, top: cellError.top }}>
           <WriteErrorNotice error={cellError.error} onClose={() => setCellError(null)} />
         </div>
+      ) : null}
+      {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} /> : null}
+      {look !== null ? (
+        <ValueQuickLook
+          target={look}
+          where={ns.coll}
+          onClose={() => {
+            setLook(null);
+            gridRef.current?.focus();
+          }}
+        />
       ) : null}
     </div>
   );

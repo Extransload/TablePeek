@@ -17,7 +17,7 @@ import { say, t } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { store } from "../../../store";
 import { collStats, count as countDocs, find, insert, isAbort, remove, type CollStats, type Namespace } from "../api";
-import { ObjectId, bsonDoc, stringifyJson, toEJSON, type BsonDocument, type BsonValue } from "../bson";
+import { Int32, ObjectId, bsonDoc, isNumber, stringifyJson, toEJSON, type BsonDocument, type BsonValue } from "../bson";
 import { sampleFields, type CompletionContext } from "../complete";
 import { toShell, toShellPretty } from "../format";
 import { idFilter } from "../guard";
@@ -28,6 +28,7 @@ import { CardView, docKey } from "./CardView";
 import { DocDetail, DocDetailPanel, FactsList, NothingSelected, useCollectionFacts } from "./DocDetailPanel";
 import { ConfirmModal, ConflictModal, type ConfirmRequest } from "./DocModals";
 import { DocTableView } from "./DocTableView";
+import { DocActionsContext, mongoCondition, withHiddenField, type DocActions } from "./docMenus";
 import { ExplainPanel } from "./ExplainPanel";
 import { CodeExportModal } from "./CodeExportModal";
 import { ExportModal } from "./ExportModal";
@@ -497,6 +498,35 @@ export function DocumentWorkbench({
     setSub("indexes");
   };
 
+  // ---- The views' menus into the query bar ----
+
+  // A new sort, run at once (a table header, a menu's 정렬).
+  const sortBy = (sort: BsonDocument | null) => run({ ...applied, sort: sort === null ? "" : toShell(sort) });
+
+  // What the views' right-click menus put in the query: a filter condition
+  // and a hidden field go into the bar's text as the schema tab's
+  // 이 값으로 필터 does, a sort replaces the applied one; each runs at once.
+  const docActions: DocActions = {
+    json: false,
+    filter: (path, value, how) => run({ ...query, filter: withFilterValue(query.filter, path, mongoCondition(value, how)) }),
+    sort: (path, dir) => {
+      const rest: BsonDocument = new Map([...(appliedQuery?.sort ?? [])].filter(([key]) => key !== path));
+      sortBy(dir !== null ? new Map<string, BsonValue>([[path, new Int32(dir)]]) : rest.size === 0 ? null : rest);
+    },
+    sortOf: (path) => {
+      const v = appliedQuery?.sort?.get(path);
+      return isNumber(v) ? (Number(v.value) < 0 ? -1 : 1) : null;
+    },
+    hide: (path) => {
+      const next = withHiddenField(liveQuery.ok ? liveQuery.value.projection : (appliedQuery?.projection ?? null), path);
+      if (next === null) {
+        notify(t("프로젝션이 고른 필드만 돌려주고 있어 {path}만 숨길 수 없습니다. 프로젝션에서 빼세요.", { path }));
+        return;
+      }
+      run({ ...query, projection: toShell(next) });
+    },
+  };
+
   // ---- Shortcuts ----
 
   const switchView = useCallback((next: DocView) => {
@@ -629,11 +659,14 @@ export function DocumentWorkbench({
         docs={docs}
         readOnly={!editable}
         sort={appliedQuery?.sort ?? null}
-        onSort={(sort) => run({ ...applied, sort: sort === null ? "" : toShell(sort) })}
+        onSort={sortBy}
         save={edits.save}
         facts={facts}
         path={path}
         onPathChange={setPath}
+        onEditJson={editable ? (doc) => void openEditor("replace", doc) : undefined}
+        onClone={editable ? (doc) => void openEditor("clone", doc) : undefined}
+        onDelete={editable ? (doc) => void deleteDoc(doc) : undefined}
       />
     );
   }
@@ -750,7 +783,9 @@ export function DocumentWorkbench({
               </div>
             </div>
             <div className="result-body mg-result-body">
-              <div className={`mg-docbody${loadError !== null ? " stale" : ""}`}>{body}</div>
+              <div className={`mg-docbody${loadError !== null ? " stale" : ""}`}>
+                <DocActionsContext.Provider value={docActions}>{body}</DocActionsContext.Provider>
+              </div>
               {/* Over the last page (dimmed), not above it; a dead TablePeek
                   server is the app banner's to tell. */}
               {loadError !== null && !isAppServerDown(loadError) ? (
@@ -871,15 +906,17 @@ export function DocumentWorkbench({
         {sub === "changes" ? <ChangeStreamPanel conn={conn} db={db} coll={coll} sessionKey={tabKey} notify={notify} facts={facts} /> : null}
       </div>
       {sub === "docs" && view !== "table" ? (
-        <DocDetailPanel>
-          {(q) =>
-            pickedAt >= 0 ? (
-              <DocDetail ns={ns} doc={docs[pickedAt]} position={start + pickedAt} save={editable ? edits.save : undefined} query={q} />
-            ) : (
-              <NothingSelected facts={facts} query={q} />
-            )
-          }
-        </DocDetailPanel>
+        <DocActionsContext.Provider value={docActions}>
+          <DocDetailPanel>
+            {(q) =>
+              pickedAt >= 0 ? (
+                <DocDetail ns={ns} doc={docs[pickedAt]} position={start + pickedAt} save={editable ? edits.save : undefined} query={q} />
+              ) : (
+                <NothingSelected facts={facts} query={q} />
+              )
+            }
+          </DocDetailPanel>
+        </DocActionsContext.Provider>
       ) : null}
       {sizeMenu !== null ? (
         <ContextMenu

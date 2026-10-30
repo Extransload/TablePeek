@@ -20,6 +20,7 @@ import { store } from "../../../store";
 import { Int32, isNumber, jsonObject, type BsonDocument, type BsonValue } from "../../mongodb/bson";
 import { CardView, docKey } from "../../mongodb/ui/CardView";
 import { DocDetail, DocDetailPanel, FactsList, NothingSelected, type Fact } from "../../mongodb/ui/DocDetailPanel";
+import { DocActionsContext, type DocActions } from "../../mongodb/ui/docMenus";
 import { ConflictModal } from "../../mongodb/ui/DocModals";
 import { DocTableView } from "../../mongodb/ui/DocTableView";
 import { CollapseIcon, ExpandIcon } from "../../mongodb/ui/icons";
@@ -29,7 +30,7 @@ import { ViewSwitch, viewForKey, type DocView } from "../../mongodb/ui/ViewSwitc
 import { deleteDoc, getDoc, getMapping, guardOf, hitOf, indexDoc, indices, isAbort, isForbidden, isVersionConflict, privileges, search, type IndexRow, type SearchResult } from "../api";
 import { mappingFields, type MappedField } from "../dsl";
 import { docFromJson, jsonText, type Json } from "../json";
-import { EMPTY_QUERY, normalizeQuery, parseQuery, recordQuery, searchBody, type QueryError, type QueryText } from "../query";
+import { EMPTY_QUERY, normalizeQuery, parseQuery, recordQuery, searchBody, withHiddenSource, withLuceneCondition, type QueryError, type QueryText } from "../query";
 import { AliasesPanel } from "./AliasesPanel";
 import { AnalyzePanel } from "./AnalyzePanel";
 import { requestText, type SearchHost } from "./common";
@@ -531,6 +532,38 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
     return doc;
   }, [appliedQuery]);
 
+  // A new sort, run at once (a table header, a menu's 정렬), as the sort
+  // box's `field:asc, field:desc`.
+  const sortBy = (sort: BsonDocument | null) =>
+    run({
+      ...applied,
+      sort: sort === null ? "" : [...sort].map(([field, dir]) => (isNumber(dir) && Number(dir.value) < 0 ? `${field}:desc` : `${field}:asc`)).join(", "),
+    });
+
+  // What the views' right-click menus put in the query: a condition ANDed
+  // onto the query string, a field left out of the fields box, a sort in
+  // place of the applied one; each runs at once.
+  const docActions: DocActions = {
+    json: true,
+    filter: (field, value, how) => run({ ...query, q: withLuceneCondition(query.q, field, value, how) }),
+    sort: (field, dir) => {
+      const rest: BsonDocument = new Map([...(tableSort ?? [])].filter(([key]) => key !== field));
+      sortBy(dir !== null ? new Map<string, BsonValue>([[field, new Int32(dir)]]) : rest.size === 0 ? null : rest);
+    },
+    sortOf: (field) => {
+      const v = tableSort?.get(field);
+      return isNumber(v) ? (Number(v.value) < 0 ? -1 : 1) : null;
+    },
+    hide: (field) => {
+      const next = withHiddenSource(query.source, field);
+      if (next === null) {
+        notify(t("필드 칸이 고른 필드만 돌려주고 있어 {path}만 숨길 수 없습니다. 필드 칸에서 빼세요.", { path: field }));
+        return;
+      }
+      run({ ...query, source: next });
+    },
+  };
+
   const headExtra = (doc: BsonDocument) => {
     const hit = hitOf(doc);
     if (hit === undefined) {
@@ -598,22 +631,15 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
         docs={docs}
         readOnly={!editable}
         sort={tableSort}
-        onSort={(sort) =>
-          run({
-            ...applied,
-            sort:
-              sort === null
-                ? ""
-                : [...sort]
-                    .map(([field, dir]) => (isNumber(dir) && Number(dir.value) < 0 ? `${field}:desc` : `${field}:asc`))
-                    .join(", "),
-          })
-        }
+        onSort={sortBy}
         save={save}
         path={path}
         onPathChange={setPath}
         facts={facts}
         typeLabel={typeLabel}
+        onEditJson={editable ? (doc) => openEditor("replace", doc) : undefined}
+        onClone={editable ? (doc) => openEditor("clone", doc) : undefined}
+        onDelete={editable ? (doc) => void removeDoc(doc) : undefined}
       />
     );
   }
@@ -713,7 +739,9 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
               </div>
             </div>
             <div className="result-body mg-result-body">
-              <div className={`mg-docbody${loadError !== null ? " stale" : ""}`}>{body}</div>
+              <div className={`mg-docbody${loadError !== null ? " stale" : ""}`}>
+                <DocActionsContext.Provider value={docActions}>{body}</DocActionsContext.Provider>
+              </div>
               {loadError !== null && !isAppServerDown(loadError) ? (
                 <div className="mg-load-error">
                   <ErrorNotice error={loadError} context="data" engine="elasticsearch" variant="banner" onRetry={reload} onFix={{ "refresh-schema": onChanged }} onClose={() => setLoadError(null)} />
@@ -832,17 +860,19 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
       ) : null}
       {edits.conflict !== null ? <ConflictModal conflict={edits.conflict} /> : null}
       {sub === "docs" && view === "table" ? null : (
-        <DocDetailPanel>
-          {(search) =>
-            sub !== "docs" ? (
-              <FactsList title={<span className="mg-detail-path mono">{index}</span>} facts={facts} query={search} />
-            ) : pickedAt >= 0 ? (
-              <DocDetail ns={{ conn, db: "", coll: index }} doc={docs[pickedAt]} position={start + pickedAt} save={editable ? save : undefined} typeLabel={typeLabel} query={search} />
-            ) : (
-              <NothingSelected facts={facts} query={search} />
-            )
-          }
-        </DocDetailPanel>
+        <DocActionsContext.Provider value={docActions}>
+          <DocDetailPanel>
+            {(search) =>
+              sub !== "docs" ? (
+                <FactsList title={<span className="mg-detail-path mono">{index}</span>} facts={facts} query={search} />
+              ) : pickedAt >= 0 ? (
+                <DocDetail ns={{ conn, db: "", coll: index }} doc={docs[pickedAt]} position={start + pickedAt} save={editable ? save : undefined} typeLabel={typeLabel} query={search} />
+              ) : (
+                <NothingSelected facts={facts} query={search} />
+              )
+            }
+          </DocDetailPanel>
+        </DocActionsContext.Provider>
       )}
     </div>
   );
