@@ -5506,7 +5506,7 @@ async fn apply_journal(slot: &ConnSlot, action: &str) {
     for session_arc in sessions {
         let mut guard = session_arc.lock().await;
         if action == "rollback" {
-            let entries: Vec<JournalEntry> = guard.journal.drain(..).collect();
+            let entries: Vec<JournalEntry> = std::mem::take(&mut guard.journal);
             let session: &mut QuerySession = &mut guard;
             for entry in entries.into_iter().rev() {
                 if let JournalEntry::Cell { row, col, old } = entry {
