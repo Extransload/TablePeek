@@ -231,7 +231,7 @@ async fn mysql_binary_cells_go_whole_both_ways() {
     let port: u16 = std::env::var("TABLEPEEK_TEST_MYSQL_PORT")
         .ok()
         .and_then(|port| port.parse().ok())
-        .unwrap_or(3307);
+        .unwrap_or(3329);
     let engine = connect(
         "mysql",
         json!({

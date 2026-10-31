@@ -415,7 +415,7 @@ make test-live ENGINE=postgres        # the engine's live tests against them
 make test-db-down ENGINE=postgres     # stop them and throw the data away
 ```
 
-`make test-db` prints the host, port, and account for each one, so you can also add them as connections in TablePeek and try the app on a real server. Ports are bound to `127.0.0.1` only, and the accounts are test-only: never reuse them on a real server. MySQL listens on 3307; set `TABLEPEEK_TEST_MYSQL_PORT=3329` (for `make test-db` and `make test-live` alike) when that port is taken. SQL Server has no arm64 image, so on Apple Silicon it runs under emulation and takes a minute to start.
+`make test-db` prints the host, port, and account for each one, so you can also add them as connections in TablePeek and try the app on a real server. Ports are bound to `127.0.0.1` only, and the accounts are test-only: never reuse them on a real server. MySQL listens on 3329, leaving 3307 available for production proxies; set `TABLEPEEK_TEST_MYSQL_PORT` (for `make test-db` and `make test-live` alike) to override it. SQL Server has no arm64 image, so on Apple Silicon it runs under emulation and takes a minute to start.
 
 A few servers for particular tests sit in compose profiles, so `make test-db` leaves them out; name them in `ENGINE` to start them (and `make test-live ENGINE=…` to run their tests):
 

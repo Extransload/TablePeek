@@ -4438,11 +4438,11 @@ mod tests {
 
     fn mysql_config() -> Option<tablepeek_types::MySqlConfig> {
         std::env::var("TABLEPEEK_TEST_MYSQL").ok()?;
-        // Another port when 3307 is taken (a tunnel to a real server, say).
+        // Keep test traffic away from production proxies; allow a port override.
         let port = std::env::var("TABLEPEEK_TEST_MYSQL_PORT")
             .ok()
             .and_then(|port| port.parse().ok())
-            .unwrap_or(3307);
+            .unwrap_or(3329);
         Some(tablepeek_types::MySqlConfig {
             host: "127.0.0.1".into(),
             port,

@@ -5716,10 +5716,14 @@ mod tests {
     }
 
     fn test_mysql_connect_request() -> ConnectRequest {
+        let port: u16 = std::env::var("TABLEPEEK_TEST_MYSQL_PORT")
+            .ok()
+            .and_then(|port| port.parse().ok())
+            .unwrap_or(3329);
         connect_request(json!({
             "driver": "mysql",
             "config": {
-                "host": "127.0.0.1", "port": 3307, "user": "root",
+                "host": "127.0.0.1", "port": port, "user": "root",
                 "password": "root_pw", "database": "tablepeek_test", "ssl_mode": "disable"
             }
         }))
@@ -8644,7 +8648,6 @@ mod tests {
         assert_eq!(connections[0]["name"], json!("테스트 MySQL"));
         assert_eq!(connections[0]["driver"], json!("mysql"));
         assert_eq!(connections[0]["config"]["host"], json!("127.0.0.1"));
-        assert_eq!(connections[0]["config"]["port"], json!(3307));
         assert_eq!(
             connections[0]["config"]["database"],
             json!("tablepeek_test")

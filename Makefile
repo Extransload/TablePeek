@@ -60,7 +60,7 @@ CQL_ADMIN_scylladb := /var/lib/scylla/cql.m
 TESTDB_SERVICES := $(foreach engine,$(ENGINE),$(or $(TESTDB_SERVICES_$(engine)),$(engine)))
 TESTDB := docker compose -f testdb/compose.yml $(foreach engine,$(filter $(TESTDB_EXTRAS),$(ENGINE)),--profile $(engine))
 # MySQL's host port; the tests read the same variable.
-TABLEPEEK_TEST_MYSQL_PORT ?= 3307
+TABLEPEEK_TEST_MYSQL_PORT ?= 3329
 export TABLEPEEK_TEST_MYSQL_PORT
 TESTDB_ENV := $(if $(filter postgres,$(ENGINE)),TABLEPEEK_TEST_PG=1) \
 	$(if $(filter mysql,$(ENGINE)),TABLEPEEK_TEST_MYSQL=1) \

@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- Moved the test MySQL default port from 3307 to 3329 so it does not occupy a production proxy's port. Engine and server tests share the same port override.
+
 ## [0.1.0] - 2026-10-30
 
 The first versioned release of TablePeek: a local-first database client with a Rust engine and a browser UI.

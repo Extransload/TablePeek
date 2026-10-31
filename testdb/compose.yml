@@ -28,8 +28,8 @@ services:
   mysql:
     image: mysql:8.0
     ports:
-      # 3307 unless TABLEPEEK_TEST_MYSQL_PORT says otherwise (the tests read it too).
-      - "127.0.0.1:${TABLEPEEK_TEST_MYSQL_PORT:-3307}:3306"
+      # Keep the default clear of 3307, which may be a production proxy.
+      - "127.0.0.1:${TABLEPEEK_TEST_MYSQL_PORT:-3329}:3306"
     environment:
       MYSQL_ROOT_PASSWORD: root_pw
       MYSQL_DATABASE: tablepeek_test
