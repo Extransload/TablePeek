@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag vX.Y.Z (or vX.Y.Z-rc.N for a prerelease) builds the release
 # archives and the desktop app, and publishes them on GitHub Releases with
-# the CHANGELOG section as notes and the desktop updater's latest.json.
+# the CHANGELOG section as notes and the desktop updater's latest.json. A
+# stable tag then updates the Homebrew cask in Extransload/homebrew-tap.
 # docs/RELEASING.md walks through it.
 on:
   push:
@@ -208,3 +209,39 @@ jobs:
             --title "TablePeek $TAG" \
             --notes-file notes.md \
             "${prerelease[@]}"
+
+  homebrew:
+    name: Update the Homebrew cask
+    needs: release
+    # The tap follows the latest stable release, as the app's updater does.
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*-apple-darwin
+          path: dist
+          merge-multiple: true
+      # A deploy key with write access to the tap only.
+      - uses: actions/checkout@v7
+        with:
+          repository: Extransload/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+      - name: Push Casks/tablepeek.rb
+        run: |
+          node scripts/homebrew-cask.mjs "$TAG" dist > tap/Casks/tablepeek.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/tablepeek.rb
+          if git diff --cached --quiet; then
+            echo "Casks/tablepeek.rb is already at ${TAG#v}"
+            exit 0
+          fi
+          git commit -m "tablepeek ${TAG#v}"
+          git push

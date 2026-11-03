@@ -90,7 +90,17 @@ Get-FileHash .\tablepeek-vX.Y.Z-x86_64-pc-windows-msvc.zip -Algorithm SHA256   #
 
 ### Desktop app (macOS, Windows)
 
-The desktop app is the same TablePeek in its own window instead of a browser tab: it starts the server inside the app (on a free `127.0.0.1` port, with a fresh token each launch) and quits it with the app. Each release has:
+The desktop app is the same TablePeek in its own window instead of a browser tab: it starts the server inside the app (on a free `127.0.0.1` port, with a fresh token each launch) and quits it with the app.
+
+**macOS with Homebrew.**
+
+```sh
+brew install --cask extransload/tap/tablepeek
+```
+
+The cask picks the disk image for your Mac, clears the download quarantine so the app opens without a Gatekeeper prompt, and is updated with each stable release. The app updates itself too, so `brew upgrade` leaves it alone unless you pass `--greedy`. `brew uninstall --zap --cask tablepeek` also removes the app's web view caches; `~/.tablepeek` stays, since the command line shares it.
+
+**Download.** Each release has:
 
 | Platform | File |
 | --- | --- |
@@ -98,7 +108,7 @@ The desktop app is the same TablePeek in its own window instead of a browser tab
 | macOS, Intel | `TablePeek-vX.Y.Z-x86_64-apple-darwin.dmg` |
 | Windows, x86_64 | `TablePeek-vX.Y.Z-x86_64-pc-windows-msvc-setup.exe` (installs for the current user, no admin rights) |
 
-The builds are not signed with a paid Apple or Microsoft certificate, so the first launch needs one extra step:
+The builds are not signed with a paid Apple or Microsoft certificate, so the first launch of a downloaded file needs one extra step (Homebrew does the macOS one for you):
 
 - **macOS.** Drag TablePeek to Applications and open it. Gatekeeper refuses ("cannot be opened" / "could not verify"): open System Settings > Privacy & Security, scroll to the message about TablePeek and click **Open Anyway**, then confirm. Or clear the download quarantine once from Terminal: `xattr -dr com.apple.quarantine /Applications/TablePeek.app`. The app carries an ad-hoc signature only.
 - **Windows.** SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**.
