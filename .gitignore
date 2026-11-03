@@ -10,3 +10,4 @@ prototypes/
 /crates/vendor/oracledb/Cargo.lock
 # JSON schemas tauri-build writes on every build.
 /crates/tablepeek-desktop/gen/
+.DS_Store
