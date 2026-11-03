@@ -6,9 +6,9 @@ use std::sync::Arc;
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, Request, StatusCode};
+use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Json, Response};
+use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
@@ -801,18 +801,29 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::i
     axum::serve(listener, app(state)).await
 }
 
+/// A page opened as `localhost:<port>` goes to `127.0.0.1:<port>`, the
+/// address the launch URL names: the browser keeps the token, settings and
+/// workspaces per origin, so one address keeps them in one place. API calls
+/// (an MCP client set to `localhost`) are answered where they are.
 async fn host_guard(State(state): State<AppState>, request: Request<Body>, next: Next) -> Response {
-    let allowed = request
+    let Some(host) = request
         .headers()
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
-        .map(|host| state.allowed_hosts.iter().any(|a| a == host))
-        .unwrap_or(false);
-    if allowed {
-        next.run(request).await
-    } else {
-        (StatusCode::FORBIDDEN, "허용되지 않은 Host 헤더입니다").into_response()
+        .filter(|host| state.allowed_hosts.iter().any(|a| a == host))
+    else {
+        return (StatusCode::FORBIDDEN, "허용되지 않은 Host 헤더입니다").into_response();
+    };
+    if let Some(port) = host.strip_prefix("localhost:") {
+        let page = matches!(*request.method(), Method::GET | Method::HEAD)
+            && !request.uri().path().starts_with("/api/");
+        if page {
+            let target = request.uri().path_and_query().map_or("/", |p| p.as_str());
+            // Temporary: another program may hold this port in a later run.
+            return Redirect::temporary(&format!("http://127.0.0.1:{port}{target}")).into_response();
+        }
     }
+    next.run(request).await
 }
 
 /// The routes that may carry the token in the query instead of the header.
@@ -6557,6 +6568,49 @@ mod tests {
             let body: Value = serde_json::from_str(body).unwrap();
             assert_eq!(body["code"], json!("invalid_token"), "{path}");
         }
+        server.abort();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn localhost_pages_go_to_the_launch_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = temp_dir("localhost-redirect");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let state = AppState {
+            allowed_hosts: Arc::new(vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")]),
+            ..test_state(&dir)
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app(state)).await });
+        let send = |method: &'static str, host: String, path: &'static str| async move {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: {host}\r\nx-tablepeek-token: test-token\r\n\
+                 Connection: close\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).await.unwrap();
+            reply
+        };
+        let localhost = format!("localhost:{port}");
+        // The launch URL opened as localhost keeps its path and token.
+        let reply = send("GET", localhost.clone(), "/?token=abc").await;
+        assert!(reply.starts_with("HTTP/1.1 307"), "{reply}");
+        let location = format!("location: http://127.0.0.1:{port}/?token=abc\r\n");
+        assert!(reply.to_ascii_lowercase().contains(&location), "{reply}");
+        let reply = send("GET", localhost.clone(), "/assets/app.js").await;
+        assert!(reply.starts_with("HTTP/1.1 307"), "{reply}");
+        // The API answers on either name.
+        let reply = send("GET", localhost.clone(), "/api/version").await;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        // The launch address itself is served, and other names refused.
+        let reply = send("GET", format!("127.0.0.1:{port}"), "/").await;
+        assert!(!reply.starts_with("HTTP/1.1 307"), "{reply}");
+        let reply = send("GET", format!("evil.test:{port}"), "/").await;
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
         server.abort();
         std::fs::remove_dir_all(&dir).unwrap();
     }

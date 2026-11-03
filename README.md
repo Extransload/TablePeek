@@ -386,7 +386,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and protoc
 
 - **Loopback only.** The HTTP/WebSocket listener binds to `127.0.0.1`; there is no remote listener.
 - **Per-run access token.** Each server start generates a token. The browser receives it in the launch URL and sends it with API requests as `x-tablepeek-token`.
-- **Host header validation.** Requests with unexpected `Host` headers are rejected to mitigate DNS rebinding.
+- **Host header validation.** Requests with unexpected `Host` headers are rejected to mitigate DNS rebinding. Pages opened as `localhost:<port>` are redirected to `127.0.0.1:<port>`, so the token, settings, and workspaces the browser keeps per origin stay in one place; API calls are answered under either name.
 - **Credentials stay local.** `store.json` contains connection metadata and key paths, not passwords. Saved passwords live in the OS keychain (the default for new connections; choose "ask every time" per connection to keep none).
 - **Encrypted exports.** Exported connections (`.tablepeek`) are sealed with a file password (Argon2id + AES-256-GCM). Saved passwords go in only when you tick "include saved passwords".
 - **Encrypted connections.** PostgreSQL and CockroachDB support `disable`/`prefer`/`require` SSL modes plus CA and client certificates. MySQL supports TLS with CA and client certificates. SQL Server exposes an encryption toggle.
