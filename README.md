@@ -88,6 +88,25 @@ sha256sum --check --ignore-missing SHA256SUMS          # Linux
 Get-FileHash .\tablepeek-vX.Y.Z-x86_64-pc-windows-msvc.zip -Algorithm SHA256   # compare with its line in SHA256SUMS
 ```
 
+### Desktop app (macOS, Windows)
+
+The desktop app is the same TablePeek in its own window instead of a browser tab: it starts the server inside the app (on a free `127.0.0.1` port, with a fresh token each launch) and quits it with the app. Each release has:
+
+| Platform | File |
+| --- | --- |
+| macOS, Apple Silicon | `TablePeek-vX.Y.Z-aarch64-apple-darwin.dmg` |
+| macOS, Intel | `TablePeek-vX.Y.Z-x86_64-apple-darwin.dmg` |
+| Windows, x86_64 | `TablePeek-vX.Y.Z-x86_64-pc-windows-msvc-setup.exe` (installs for the current user, no admin rights) |
+
+The builds are not signed with a paid Apple or Microsoft certificate, so the first launch needs one extra step:
+
+- **macOS.** Drag TablePeek to Applications and open it. Gatekeeper refuses ("cannot be opened" / "could not verify"): open System Settings > Privacy & Security, scroll to the message about TablePeek and click **Open Anyway**, then confirm. Or clear the download quarantine once from Terminal: `xattr -dr com.apple.quarantine /Applications/TablePeek.app`. The app carries an ad-hoc signature only.
+- **Windows.** SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**.
+
+The app keeps everything in the same places as the command line: connections, history and UI state in `~/.tablepeek`, passwords in the OS keychain. You can switch between the app and `tablepeek serve` freely. Linux has no desktop app; use the binary above.
+
+**MCP and the desktop app.** The app's server listens on a port and token chosen at each launch and does not show them anywhere, so an MCP client cannot be pointed at it. For [MCP](#mcp-for-ai-clients), run `tablepeek serve` (it prints its URL and token) alongside or instead of the app; both share `~/.tablepeek`.
+
 ### Build from source
 
 Building needs two toolchains: **Rust** (`cargo`, for the server) and **Node.js 20+** (`npm`, for the web bundle).
@@ -176,6 +195,8 @@ make help                          # full command list
 
 TablePeek tells you when a newer release is out: a notice at the top of the app names the new version, links to its changes, and opens the update steps for the way your copy was installed. It checks GitHub Releases at most once a day, says nothing when offline, and can be turned off under Settings > General > **Check for new versions**; [Update check](#update-check) describes exactly what it sends. Versions follow [Semantic Versioning](https://semver.org) and every change is listed in [CHANGELOG.md](CHANGELOG.md).
 
+**The desktop app.** The notice offers **Install and restart**: the app downloads the new version's bundle from the release, checks its update signature against the key built into the app, installs it over the current app and starts again (Windows runs the installer, which reopens the app). The same button is under Settings > General. If installing fails (for example, the app sits in a folder you cannot write to), the notice says so and offers to try again; downloading the new `.dmg` or setup `.exe` by hand always works.
+
 **A downloaded binary.** Quit TablePeek, download the archive for the new version as in [Download a binary](#download-a-binary), and replace the old `tablepeek` binary with the new one (on macOS, clear the quarantine mark again). Your connections and settings live in `~/.tablepeek` and the OS keychain, not next to the binary, so they carry over.
 
 **A source build.** Pull and rebuild, then restart the server:
@@ -198,7 +219,7 @@ The server, not the page, asks GitHub whether a newer release is out. When the a
 - **Turning it off.** Clear Settings > General > **Check for new versions** (kept in `update.json`), or start the server with `TABLEPEEK_NO_UPDATE_CHECK=1` (any value but empty or `0`), which wins over the setting; CI and packagers can use it. Either way no request is made at all.
 - **Mirrors.** `TABLEPEEK_UPDATE_URL` replaces the GitHub URL with any endpoint answering in the shape of GitHub's latest-release API (`tag_name`, `html_url`, `published_at`, `body`, `draft`, `prerelease`, `assets[].name`, `assets[].browser_download_url`). The tests use it to point the check at a local server.
 
-`tablepeek --version` and `GET /api/version` report the version, the commit it was built from (`-dirty` with uncommitted changes) and whether it is a `release` binary or a `source` build.
+`tablepeek --version` and `GET /api/version` report the version, the commit it was built from (`-dirty` with uncommitted changes) and whether it is a `release` binary, the `desktop` app or a `source` build.
 
 ## Database connections
 
@@ -456,6 +477,7 @@ cargo test
 | Path | Contents |
 |---|---|
 | `crates/tablepeek` | CLI entry point and `serve` / `mcp` subcommands |
+| `crates/tablepeek-desktop` | Desktop app for macOS and Windows (Tauri 2) around the same server |
 | `crates/tablepeek-server` | axum server, auth, static assets, WebSocket, SSH tunnels |
 | `crates/tablepeek-engine` | Drivers, sessions, query execution, Arrow IPC, row operations |
 | `crates/tablepeek-types` | Shared request, result, and connection types |

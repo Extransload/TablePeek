@@ -1,3 +1,5 @@
+import * as uiState from "./persist";
+
 export interface ConnMeta {
   group: string;
   color: string;
@@ -34,7 +36,7 @@ export function normalizeMeta(value: unknown): ConnMeta | null {
 
 function readAll(): Record<string, ConnMeta> {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = uiState.getItem(STORAGE_KEY);
     if (raw === null) {
       return {};
     }
@@ -56,9 +58,7 @@ function readAll(): Record<string, ConnMeta> {
 }
 
 function writeAll(meta: Record<string, ConnMeta>): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(meta));
-  } catch {}
+  uiState.setItem(STORAGE_KEY, JSON.stringify(meta));
   for (const listener of listeners) {
     listener();
   }

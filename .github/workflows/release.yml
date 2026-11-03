@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a tag vX.Y.Z (or vX.Y.Z-rc.N for a prerelease) builds the release
-# archives and publishes them on GitHub Releases with the CHANGELOG section
-# as notes. docs/RELEASING.md walks through it.
+# archives and the desktop app, and publishes them on GitHub Releases with
+# the CHANGELOG section as notes and the desktop updater's latest.json.
+# docs/RELEASING.md walks through it.
 on:
   push:
     tags: ["v*"]
@@ -118,9 +119,65 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  desktop:
+    name: Desktop ${{ matrix.target }}
+    needs: web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+            bundles: app,dmg
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            bundles: app,dmg
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            bundles: nsis
+    env:
+      TARGET: ${{ matrix.target }}
+      # Marks the app as the desktop build in /api/version.
+      TABLEPEEK_DIST: desktop
+      # Signs the updater bundles (the .app.tar.gz and the setup .exe); the
+      # app checks them against the public key in tauri.conf.json.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      # No Apple or Windows code signing: macOS gets an ad-hoc signature
+      # (tauri.conf.json), Windows none.
+      - name: Build the app
+        shell: bash
+        working-directory: crates/tablepeek-desktop
+        run: npx --yes @tauri-apps/cli@2.12.4 build --ci --target "$TARGET" --bundles "${{ matrix.bundles }}" -- --locked
+      - name: Package
+        shell: bash
+        run: scripts/package.sh desktop "$TAG" "$TARGET" "target/$TARGET/release/bundle" dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Publish the release
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -131,8 +188,15 @@ jobs:
           pattern: archive-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: dist
+          merge-multiple: true
       - run: scripts/package.sh sums dist
       - run: node scripts/version.mjs notes "${TAG#v}" > notes.md
+      # The desktop updater's manifest, read from the latest stable release.
+      - run: node scripts/latest-json.mjs "$TAG" dist --notes notes.md
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

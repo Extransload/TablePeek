@@ -12,6 +12,7 @@ import {
 } from "./palette";
 import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT, declareFaces } from "./fonts";
 import { setLanguage, type Language } from "./i18n";
+import * as uiState from "./persist";
 import { KEYMAP_VERSION, normalizeKeymap, type Keymap } from "./shortcuts";
 import {
   EXTRA_SYNTAX_VARIABLES,
@@ -128,7 +129,7 @@ let current = readSettings();
 
 function readSettings(): AppSettings {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = uiState.getItem(STORAGE_KEY);
     if (raw === null) {
       return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
     }
@@ -349,9 +350,7 @@ export function getSettings(): AppSettings {
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   current = { ...current, ...patch };
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(current));
-  } catch {}
+  uiState.setItem(STORAGE_KEY, JSON.stringify(current));
   applySettings(current);
   for (const listener of listeners) {
     listener(current);
@@ -373,15 +372,15 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 export function getPasscodeHash(): string | null {
-  return window.localStorage.getItem(PASSCODE_KEY);
+  return uiState.getItem(PASSCODE_KEY);
 }
 
 export function setPasscodeHash(hash: string | null): void {
   if (hash === null) {
-    window.localStorage.removeItem(PASSCODE_KEY);
+    uiState.removeItem(PASSCODE_KEY);
     return;
   }
-  window.localStorage.setItem(PASSCODE_KEY, hash);
+  uiState.setItem(PASSCODE_KEY, hash);
 }
 
 applySettings(current);

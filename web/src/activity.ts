@@ -1,3 +1,4 @@
+import * as uiState from "./persist";
 import { getSettings } from "./settings";
 
 export interface ActivityEntry {
@@ -24,7 +25,7 @@ function prune(list: ActivityEntry[]): ActivityEntry[] {
 
 function load(): ActivityEntry[] {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = uiState.getItem(STORAGE_KEY);
     if (raw === null) {
       return [];
     }
@@ -36,9 +37,7 @@ function load(): ActivityEntry[] {
 }
 
 function persist(): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-  } catch {}
+  uiState.setItem(STORAGE_KEY, JSON.stringify(entries));
   for (const listener of listeners) {
     listener(entries);
   }

@@ -1,7 +1,7 @@
 // The collection tab's query bar (MONGODB.md §3.2, §8.1): a one-line filter
 // with completion, 옵션 for projection · sort · skip · limit and collation ·
 // hint · maxTimeMS, ⌘↩ 찾기, 초기화, recent runs and favourites per
-// collection (kept in localStorage), the sampled field list, and 계획 for
+// collection (kept in the saved UI state), the sampled field list, and 계획 for
 // the explain tab.
 
 import { useCallback, useId, useRef, useState } from "react";
@@ -9,6 +9,7 @@ import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, ColumnsIcon, HistoryIcon, SearchIcon, StarIcon } from "../../../components/icons";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
 import { phrase, say, t, type Phrase } from "../../../i18n";
+import * as uiState from "../../../persist";
 import { Int32, bsonDoc, isDocument, type BsonDocument, type BsonValue } from "../bson";
 import type { CompletionContext, FieldStat } from "../complete";
 import { shellKey, toShell } from "../format";
@@ -175,7 +176,7 @@ interface QueryShelf {
 
 function readShelves(): Record<string, QueryShelf> {
   try {
-    const raw: unknown = JSON.parse(window.localStorage.getItem(STORE_KEY) ?? "{}");
+    const raw: unknown = JSON.parse(uiState.getItem(STORE_KEY) ?? "{}");
     return raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, QueryShelf>) : {};
   } catch {
     return {};
@@ -190,11 +191,7 @@ function shelfOf(ns: string): QueryShelf {
 }
 
 function writeShelf(ns: string, shelf: QueryShelf): void {
-  try {
-    window.localStorage.setItem(STORE_KEY, JSON.stringify({ ...readShelves(), [ns]: shelf }));
-  } catch {
-    // Not remembered; the query still ran.
-  }
+  uiState.setItem(STORE_KEY, JSON.stringify({ ...readShelves(), [ns]: shelf }));
 }
 
 const sameQuery = (a: QueryText, b: QueryText) => (Object.keys(EMPTY_QUERY) as QueryKey[]).every((k) => a[k].trim() === b[k].trim());

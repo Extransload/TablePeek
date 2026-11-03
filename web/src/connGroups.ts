@@ -1,5 +1,6 @@
 import { listConnMeta, setConnMeta } from "./connMeta";
 import { t } from "./i18n";
+import * as uiState from "./persist";
 
 // Connection groups for the home list. A connection's meta names its group by
 // id; the groups themselves (name, color, folded or not) live here, so a group
@@ -56,7 +57,7 @@ function normalizeGroup(value: unknown, index: number): ConnGroup | null {
 
 function readAll(): ConnGroup[] {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = uiState.getItem(STORAGE_KEY);
     const parsed: unknown = raw === null ? [] : JSON.parse(raw);
     return Array.isArray(parsed)
       ? parsed.map(normalizeGroup).filter((group): group is ConnGroup => group !== null)
@@ -67,9 +68,7 @@ function readAll(): ConnGroup[] {
 }
 
 function writeAll(groups: ConnGroup[]): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(groups));
-  } catch {}
+  uiState.setItem(STORAGE_KEY, JSON.stringify(groups));
   for (const listener of listeners) {
     listener();
   }

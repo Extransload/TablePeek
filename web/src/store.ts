@@ -14,6 +14,7 @@ import { appErrorFromBody, toAppError, type AppError, type UndoReport } from "./
 // The TX controls' failures belong to no tab: they go to the error toasts.
 import { notifyError } from "./components/ErrorNotice";
 import { capabilitiesOf, engineById, type Capabilities, type EngineDescriptor, type FieldValue } from "./engines";
+import { authToken as tokenValue } from "./token";
 
 export interface EngineMeta {
   // The engine's id.
@@ -348,38 +349,10 @@ export type QueryOutcome =
   | { kind: "cancelled" }
   | { kind: "error"; error: AppError };
 
-const TOKEN_KEY = "tablepeek.token";
 const UNKNOWN_ERROR = "알 수 없는 오류가 발생했습니다";
 const NETWORK_ERROR = "서버에 연결할 수 없습니다";
 const QUERY_WINDOW = 1000;
 const CANCELLED_INFO = "쿼리가 취소되었습니다";
-
-function initialToken(): string {
-  let fromUrl: string | null = null;
-  try {
-    fromUrl = new URL(window.location.href).searchParams.get("token");
-  } catch {
-    fromUrl = null;
-  }
-  if (fromUrl) {
-    try {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("token");
-      window.history.replaceState(null, "", url.toString());
-    } catch {}
-    try {
-      window.localStorage.setItem(TOKEN_KEY, fromUrl);
-    } catch {}
-    return fromUrl;
-  }
-  try {
-    return window.localStorage.getItem(TOKEN_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-const tokenValue = initialToken();
 
 let state: StoreState = {
   status: "idle",
@@ -1549,11 +1522,12 @@ async function cancelOidcLogin(id: string): Promise<void> {
   await api<{ ok: boolean }>(`/api/oidc/logins?id=${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-// What this build is: its version, commit and how it was built.
+// What this build is: its version, commit and how it was built ("release"
+// CLI binary, "desktop" app, or "source" build).
 export interface VersionInfo {
   version: string;
   commit: string;
-  dist: "release" | "source";
+  dist: "release" | "desktop" | "source";
   target: string;
 }
 
@@ -1571,11 +1545,19 @@ export interface UpdateStatus {
   checked_at: number | null;
   error: string | null;
   skipped: string | null;
-  dist: "release" | "source";
+  dist: "release" | "desktop" | "source";
   target: string;
   asset_name: string | null;
   asset_url: string | null;
+  // This build installs updates itself (the desktop app): installUpdate.
+  installable: boolean;
 }
+
+// How far an install has come: the bytes downloaded (of total, when known),
+// then installing once the download's signature checked out.
+export type InstallStep = { step: "download"; downloaded: number; total: number | null } | { step: "install" };
+
+type InstallLine = InstallStep | { installed: string } | { error: { code: string; message: string } };
 
 async function fetchVersion(): Promise<VersionInfo> {
   return api<VersionInfo>("/api/version");
@@ -1592,6 +1574,52 @@ async function checkUpdateNow(): Promise<UpdateStatus> {
 
 async function configureUpdate(patch: { enabled?: boolean; skipped?: string | null }): Promise<UpdateStatus> {
   return api<UpdateStatus>("/api/update", { method: "PUT", body: JSON.stringify(patch) });
+}
+
+// Installs the newest release where the build can replace itself (the
+// desktop app), reporting each step: the version installed, after which the
+// app restarts on its own. On Windows the app quits for its installer right
+// after the install step, so the answer can end there: that resolves null.
+async function installUpdate(onStep: (step: InstallStep) => void): Promise<string | null> {
+  const response = await serverFetch("/api/update/install", { method: "POST" });
+  if (!response.ok || response.body === null) {
+    throw new ApiRequestError(appErrorFromBody(await response.json().catch(() => null), response.status));
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let pending = "";
+  let installing = false;
+  for (;;) {
+    let chunk: ReadableStreamReadResult<string>;
+    try {
+      chunk = await reader.read();
+    } catch {
+      if (installing) {
+        return null;
+      }
+      throw networkError();
+    }
+    if (chunk.done) {
+      if (installing) {
+        return null;
+      }
+      throw networkError();
+    }
+    pending += chunk.value;
+    let newline = pending.indexOf("\n");
+    while (newline >= 0) {
+      const line = JSON.parse(pending.slice(0, newline)) as InstallLine;
+      pending = pending.slice(newline + 1);
+      if ("installed" in line) {
+        return line.installed;
+      }
+      if ("error" in line) {
+        throw new ApiRequestError({ code: line.error.code, message: line.error.message });
+      }
+      installing ||= line.step === "install";
+      onStep(line);
+      newline = pending.indexOf("\n");
+    }
+  }
 }
 
 // Every engine the server can connect to, as it describes them.
@@ -2368,4 +2396,5 @@ export const store = {
   fetchUpdate,
   checkUpdateNow,
   configureUpdate,
+  installUpdate,
 };

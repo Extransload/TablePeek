@@ -819,6 +819,7 @@ mod tests {
                 crate::update::VERSION,
                 true,
             )),
+            ui_writers: Arc::default(),
         };
         (state, dir)
     }

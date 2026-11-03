@@ -69,9 +69,25 @@ git push origin v0.2.0
    | `x86_64-pc-windows-msvc` | `windows-latest` | `.zip` |
 
    파일 이름은 `tablepeek-v0.2.0-<target>.tar.gz`(Windows는 `.zip`)이고, 안에는 `tablepeek-v0.2.0-<target>/` 폴더에 바이너리와 `README.md`(저장소에 `LICENSE`가 생기면 그것도)가 들어간다. 서명·공증은 하지 않는다.
-4. **Publish the release**: 아카이브를 모아 `SHA256SUMS`를 만들고, CHANGELOG 절을 노트로 `gh release create`를 실행한다. 태그에 `-`가 있으면 prerelease로 올린다.
+4. **Desktop <target>**: 데스크톱 앱(`crates/tablepeek-desktop`)을 세 러너에서 `TABLEPEEK_DIST=desktop`으로 `npx --yes @tauri-apps/cli@2.12.4 build --ci --target <target> --bundles …`로 묶고, `scripts/package.sh desktop`이 릴리스 이름으로 옮긴다. 버전은 `Cargo.toml`의 workspace 버전을 그대로 쓴다(`tauri.conf.json`에는 버전을 적지 않는다).
 
-끝나면 [Releases](https://github.com/Extransload/TablePeek/releases)에서 파일 여섯 개(아카이브 다섯, `SHA256SUMS`)와 노트를 확인하고, 아카이브 하나를 받아 `./tablepeek --version`과 `./tablepeek serve`로 실행해 본다. 기존 버전을 켠 앱은 하루 안에 새 버전 알림을 띄운다(설정 > 일반 > **지금 확인**으로 바로 볼 수 있다).
+   | target | 러너 | 파일 |
+   |---|---|---|
+   | `aarch64-apple-darwin` | `macos-15` | `TablePeek-v0.2.0-<target>.dmg`, `TablePeek-v0.2.0-<target>.app.tar.gz`(+`.sig`) |
+   | `x86_64-apple-darwin` | `macos-15-intel` | 위와 같음 |
+   | `x86_64-pc-windows-msvc` | `windows-latest` | `TablePeek-v0.2.0-<target>-setup.exe`(NSIS, +`.sig`) |
+
+   유료 코드 서명은 하지 않는다. macOS는 ad-hoc 서명(`signingIdentity: "-"`)만, Windows는 서명 없음(사용자 첫 실행 안내는 README). 대신 업데이터 묶음(`.app.tar.gz`, `-setup.exe`)은 Tauri 업데이터 키(minisign)로 서명해 `.sig`를 만든다. 이 단계에 저장소 Secrets 두 개가 필요하다.
+
+   | Secret | 값 |
+   |---|---|
+   | `TAURI_SIGNING_PRIVATE_KEY` | 개인 키 파일의 **내용**(`~/.tauri/tablepeek-updater.key`를 그대로 붙여 넣는다) |
+   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 키 비밀번호. 지금 키는 빈 비밀번호라 비워 두거나 만들지 않아도 된다 |
+
+   공개 키는 `crates/tablepeek-desktop/tauri.conf.json`의 `plugins.updater.pubkey`에 있다. 키를 잃으면 이미 설치된 앱은 새 업데이트를 받을 수 없으므로(서명이 맞지 않는다) 개인 키는 저장소 밖에 백업해 둔다. 키를 바꾸면 그 뒤 릴리스부터는 사용자가 한 번 손으로 내려받아 설치해야 한다.
+5. **Publish the release**: 아카이브와 데스크톱 파일을 모아 `SHA256SUMS`(아카이브, `.dmg`, `.app.tar.gz`, `-setup.exe`)를 만들고, `node scripts/latest-json.mjs v0.2.0 dist --notes notes.md`로 업데이터 매니페스트 `latest.json`(버전, 노트, `pub_date`, `darwin-aarch64`·`darwin-x86_64`·`windows-x86_64` 각각의 `.sig` 내용과 다운로드 URL)을 쓴 뒤, CHANGELOG 절을 노트로 `gh release create`를 실행한다. 태그에 `-`가 있으면 prerelease로 올린다. 앱은 `https://github.com/Extransload/TablePeek/releases/latest/download/latest.json`을 읽으므로 prerelease는 앱 업데이트로 나가지 않는다.
+
+끝나면 [Releases](https://github.com/Extransload/TablePeek/releases)에서 아카이브 다섯, `.dmg` 둘, `.app.tar.gz`와 `-setup.exe`(각각 `.sig`), `latest.json`, `SHA256SUMS`와 노트를 확인하고, 아카이브 하나를 받아 `./tablepeek --version`과 `./tablepeek serve`로 실행해 본다. 기존 버전을 켠 앱은 하루 안에 새 버전 알림을 띄운다(설정 > 일반 > **지금 확인**으로 바로 볼 수 있다). 데스크톱 앱은 알림의 **설치하고 다시 시작**으로 새 버전이 깔리고 다시 열리는지 본다.
 
 로컬에서 같은 포장 단계를 미리 돌려 보려면(현재 플랫폼만):
 
@@ -105,4 +121,4 @@ git push origin v0.2.0
 
 ## 태그를 밀어야만 확인되는 것
 
-로컬에서는 현재 플랫폼의 빌드·포장·체크섬·노트 추출과 `actionlint`까지만 확인된다. 다음은 실제 태그로만 확인된다: 다섯 러너(특히 `macos-15-intel`, `ubuntu-24.04-arm`, Windows의 bash·`7z` 포장)에서의 빌드, 아티팩트 주고받기, `gh release create` 권한(`contents: write`), prerelease 표시. 첫 릴리스(v0.1.0)는 워크플로를 끝까지 지켜보고, 실패하면 위 절차대로 태그를 지우고 다시 붙인다. 이후 큰 변경이 있을 때는 `make version V=0.3.0-rc.1`로 프리릴리스를 먼저 내 볼 수 있다.
+로컬에서는 현재 플랫폼의 빌드·포장·체크섬·노트 추출과 `actionlint`까지만 확인된다. 데스크톱 앱은 이 Mac에서 `make desktop-bundle`(또는 `cd crates/tablepeek-desktop && npx --yes @tauri-apps/cli@2.12.4 build --debug --bundles app`)로 묶어 볼 수 있고, 업데이트는 `--config '{"plugins":{"updater":{"endpoints":["http://127.0.0.1:<port>/latest.json"],"dangerousInsecureTransportProtocol":true}}}'`로 엔드포인트만 바꾼 빌드와 `scripts/latest-json.mjs … --base-url http://127.0.0.1:<port> --platforms darwin-aarch64`로 만든 매니페스트를 로컬 서버로 내놓아 시험할 수 있다(앱은 심볼릭 링크가 아닌 경로에서 실행해야 한다. macOS의 `/tmp` 대신 `/private/tmp`). 다음은 실제 태그로만 확인된다: 다섯 러너(특히 `macos-15-intel`, `ubuntu-24.04-arm`, Windows의 bash·`7z` 포장)에서의 빌드, 데스크톱 세 러너의 Tauri 빌드(Windows NSIS, `macos-15-intel`의 x64 앱, CI에서의 `.dmg` 만들기), Secrets로 한 업데이터 서명, 아티팩트 주고받기, `gh release create` 권한(`contents: write`), `releases/latest/download/latest.json` 경로로 실제 업데이트가 받아지는지(Windows 설치 프로그램이 앱을 다시 여는지 포함), prerelease 표시. 첫 릴리스(v0.1.0)는 워크플로를 끝까지 지켜보고, 실패하면 위 절차대로 태그를 지우고 다시 붙인다. 이후 큰 변경이 있을 때는 `make version V=0.3.0-rc.1`로 프리릴리스를 먼저 내 볼 수 있다.

@@ -102,7 +102,13 @@ LINUX_RUN := docker run --rm -v "$(CURDIR)":/src -w /src \
 	-v tablepeek-cargo-registry:/usr/local/cargo/registry \
 	-e CARGO_TARGET_DIR=/src/target/linux -e CARGO_BUILD_JOBS -e TABLEPEEK_TEST_MYSQL_PORT
 
-.PHONY: all help install web build run mcp test test-docker test-db test-db-down test-live check fmt version clean distclean testdb-engines linux-image build-kerberos-linux test-live-linux test-oracle-oob
+# The desktop app's bundler, the version the release workflow uses. Without
+# the updater's signing key (TAURI_SIGNING_PRIVATE_KEY) a local bundle leaves
+# out the signed updater archive.
+TAURI ?= npx --yes @tauri-apps/cli@2.12.4
+DESKTOP_BUNDLE_ARGS := $(if $(TAURI_SIGNING_PRIVATE_KEY),,--config '{"bundle":{"createUpdaterArtifacts":false}}')
+
+.PHONY: all help install web build run mcp desktop desktop-bundle test test-docker test-db test-db-down test-live check fmt version clean distclean testdb-engines linux-image build-kerberos-linux test-live-linux test-oracle-oob
 
 all: build
 
@@ -111,6 +117,8 @@ help:
 		'TablePeek commands:' \
 		'  make install                 Install web dependencies' \
 		'  make build                   Build web bundle and Rust binary' \
+		'  make desktop                 Run the desktop app (macOS, Windows) from source' \
+		'  make desktop-bundle          Bundle the desktop app (target/release/bundle)' \
 		'  make run                     Build and run the server' \
 		'  make run PORT=7871           Run on a custom port' \
 		'  make run DEMO=1              Also open an in-memory demo database' \
@@ -153,6 +161,12 @@ run: build
 
 mcp: web
 	$(CARGO) run -p tablepeek -- mcp
+
+desktop: web
+	$(CARGO) run -p tablepeek-desktop
+
+desktop-bundle: web
+	cd crates/tablepeek-desktop && $(TAURI) build $(DESKTOP_BUNDLE_ARGS)
 
 test: web
 	$(CARGO) test

@@ -1,3 +1,5 @@
+import * as uiState from "./persist";
+
 export interface QueryDraft {
   sql: string;
   title: string;
@@ -14,7 +16,7 @@ const timers = new Map<string, number>();
 
 function read(): DraftMap {
   try {
-    const raw = window.localStorage.getItem(KEY);
+    const raw = uiState.getItem(KEY);
     if (raw === null) {
       return {};
     }
@@ -26,9 +28,7 @@ function read(): DraftMap {
 }
 
 function write(map: DraftMap): void {
-  try {
-    window.localStorage.setItem(KEY, JSON.stringify(map));
-  } catch {}
+  uiState.setItem(KEY, JSON.stringify(map));
 }
 
 // `conn` is the connection's stable key, so a closed tab's SQL outlives the

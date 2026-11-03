@@ -8,3 +8,5 @@ prototypes/
 /testdb/opensearch/
 # The vendored Oracle driver, when its own tests run alone (make test-oracle-oob).
 /crates/vendor/oracledb/Cargo.lock
+# JSON schemas tauri-build writes on every build.
+/crates/tablepeek-desktop/gen/

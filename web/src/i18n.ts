@@ -1,4 +1,5 @@
 import { SEARCH_EN } from "./engines/elasticsearch/i18n.en";
+import * as uiState from "./persist";
 
 export type Language = "ko" | "en";
 
@@ -3335,6 +3336,16 @@ const EN: Record<string, string> = {
   "최신 릴리스 {latest}": "Latest release {latest}",
   "지금 확인": "Check now",
   "다시 알리기": "Notify me again",
+  "데스크톱 앱": "Desktop app",
+  "설치하고 다시 시작": "Install and restart",
+  "내려받는 중…": "Downloading…",
+  "내려받는 중… {percent}%": "Downloading… {percent}%",
+  "설치하는 중…": "Installing…",
+  "다시 시작하는 중…": "Restarting…",
+  "설치하지 못했습니다": "Couldn't install",
+  "이 빌드는 스스로 업데이트할 수 없습니다": "This build can't update itself",
+  "업데이트를 이미 설치하고 있습니다": "An update is already being installed",
+  "설치할 새 버전이 없습니다": "There is no newer version to install",
   // ---- end Update check ----
 };
 
@@ -3353,15 +3364,7 @@ const KO: Record<string, string> = {
   "편집 [버튼]": "편집",
 };
 
-let current: Language = readLanguage();
-
-function readLanguage(): Language {
-  try {
-    return window.localStorage.getItem(STORAGE_KEY) === "en" ? "en" : "ko";
-  } catch {
-    return "ko";
-  }
-}
+let current: Language = uiState.getItem(STORAGE_KEY) === "en" ? "en" : "ko";
 
 export function getLanguage(): Language {
   return current;
@@ -3373,9 +3376,7 @@ export function setLanguage(language: Language): void {
   if (typeof document !== "undefined") {
     document.documentElement.lang = language === "en" ? "en" : "ko";
   }
-  try {
-    window.localStorage.setItem(STORAGE_KEY, language);
-  } catch {}
+  uiState.setItem(STORAGE_KEY, language);
 }
 
 export function t(key: string, values?: Record<string, string | number>): string {

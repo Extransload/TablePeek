@@ -72,3 +72,28 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # Live database tests stay off: none of the TABLEPEEK_TEST_* flags is set.
       - run: cargo test --workspace --locked
+
+  # The desktop app compiles only for macOS and Windows (on Linux the
+  # workspace build above leaves Tauri out).
+  desktop:
+    name: Desktop app (${{ matrix.os }})
+    needs: web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      - run: cargo clippy -p tablepeek-desktop --all-targets --locked -- -D warnings
+      - run: cargo test -p tablepeek-desktop --locked

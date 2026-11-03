@@ -1,3 +1,4 @@
+import * as uiState from "./persist";
 import type { SyntaxColors } from "./syntax";
 import { THEME_CATALOG, type ThemeSpec } from "./themeCatalog";
 
@@ -384,7 +385,7 @@ interface CustomThemeRecord {
 
 function readCustomThemes(): CustomThemeRecord[] {
   try {
-    const raw = window.localStorage.getItem(CUSTOM_THEME_KEY);
+    const raw = uiState.getItem(CUSTOM_THEME_KEY);
     if (raw === null) {
       return [];
     }

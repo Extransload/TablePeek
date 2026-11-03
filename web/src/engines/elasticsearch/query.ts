@@ -3,6 +3,7 @@
 // object, the sort and the `_source` filter.
 
 import { t } from "../../i18n";
+import * as uiState from "../../persist";
 import { JsonSyntaxError, isNumber, jsonObject, parseJson, type BsonValue } from "../mongodb/bson";
 import type { FilterHow } from "../mongodb/ui/docMenus";
 import { editText } from "../mongodb/ui/valueEdit";
@@ -156,13 +157,13 @@ export function withHiddenSource(source: string, path: string): string | null {
   return (lists(kept) ? kept : [...kept, `-${path}`]).join(", ");
 }
 
-// Saved and recent queries per index, newest first (localStorage).
+// Saved and recent queries per index, newest first (the saved UI state).
 const RECENT_KEY = "tablepeek.es.recentQueries";
 const RECENT_MAX = 20;
 
 export function recentQueries(index: string): QueryText[] {
   try {
-    const all = JSON.parse(window.localStorage.getItem(RECENT_KEY) ?? "{}") as Record<string, Partial<QueryText>[]>;
+    const all = JSON.parse(uiState.getItem(RECENT_KEY) ?? "{}") as Record<string, Partial<QueryText>[]>;
     return Array.isArray(all[index]) ? all[index].map(normalizeQuery) : [];
   } catch {
     return [];
@@ -174,11 +175,11 @@ export function recordQuery(index: string, text: QueryText): void {
     return;
   }
   try {
-    const all = JSON.parse(window.localStorage.getItem(RECENT_KEY) ?? "{}") as Record<string, QueryText[]>;
+    const all = JSON.parse(uiState.getItem(RECENT_KEY) ?? "{}") as Record<string, QueryText[]>;
     const same = (a: QueryText) => a.q === text.q && a.dsl === text.dsl && a.sort === text.sort && a.source === text.source;
     all[index] = [text, ...(Array.isArray(all[index]) ? all[index].filter((a) => !same(normalizeQuery(a))) : [])].slice(0, RECENT_MAX);
-    window.localStorage.setItem(RECENT_KEY, JSON.stringify(all));
+    uiState.setItem(RECENT_KEY, JSON.stringify(all));
   } catch {
-    // Storage full or off: the recent list is a convenience.
+    // A list that no longer parses: the recent list is a convenience.
   }
 }

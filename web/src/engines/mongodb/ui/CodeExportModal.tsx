@@ -10,6 +10,7 @@ import { writeClipboard } from "../../../clipboard";
 import { CopyIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
 import { t } from "../../../i18n";
+import * as uiState from "../../../persist";
 import { store } from "../../../store";
 import type { Namespace } from "../api";
 import { CODE_LANGUAGES, connectionUri, generateCode, type CodeLanguage, type CodeOptions, type CodeSource } from "../codegen";
@@ -22,20 +23,8 @@ const CONNECT_KEY = "tablepeek.mongo.codeConnect";
 const FALLBACK_URI = "mongodb://localhost:27017/";
 
 function storedLanguage(): CodeLanguage {
-  try {
-    const v = window.localStorage.getItem(LANGUAGE_KEY);
-    return CODE_LANGUAGES.some((l) => l.id === v) ? (v as CodeLanguage) : "python";
-  } catch {
-    return "python";
-  }
-}
-
-function remember(key: string, value: string): void {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // Not remembered; the dialog still works.
-  }
+  const v = uiState.getItem(LANGUAGE_KEY);
+  return CODE_LANGUAGES.some((l) => l.id === v) ? (v as CodeLanguage) : "python";
 }
 
 // The connection string of the live connection `conn` from the settings it
@@ -60,13 +49,7 @@ interface CodeExportModalProps {
 
 export function CodeExportModal({ ns, source, options, note, onOpenShell, notify, onClose }: CodeExportModalProps) {
   const [language, setLanguage] = useState<CodeLanguage>(storedLanguage);
-  const [connect, setConnect] = useState(() => {
-    try {
-      return window.localStorage.getItem(CONNECT_KEY) !== "false";
-    } catch {
-      return true;
-    }
-  });
+  const [connect, setConnect] = useState(() => uiState.getItem(CONNECT_KEY) !== "false");
   // undefined while reading the profile; null when there is none.
   const [uri, setUri] = useState<{ uri: string; placeholder: boolean } | null | undefined>(undefined);
 
@@ -132,7 +115,7 @@ export function CodeExportModal({ ns, source, options, note, onOpenShell, notify
           onChange={(event) => {
             const next = event.target.value as CodeLanguage;
             setLanguage(next);
-            remember(LANGUAGE_KEY, next);
+            uiState.setItem(LANGUAGE_KEY, next);
           }}
         >
           {CODE_LANGUAGES.map((l) => (
@@ -147,7 +130,7 @@ export function CodeExportModal({ ns, source, options, note, onOpenShell, notify
             checked={connect}
             onChange={(event) => {
               setConnect(event.target.checked);
-              remember(CONNECT_KEY, String(event.target.checked));
+              uiState.setItem(CONNECT_KEY, String(event.target.checked));
             }}
           />
           {t("접속 코드 포함")}

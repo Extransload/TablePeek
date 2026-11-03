@@ -15,6 +15,7 @@ import { CopyIcon, HistoryIcon, PlayIcon } from "../../../components/icons";
 import { Spinner } from "../../../components/Spinner";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
 import { t } from "../../../i18n";
+import * as uiState from "../../../persist";
 import { stringifyJson } from "../../mongodb/bson";
 import * as api from "../api";
 import { bulkDeletes, completeConsole, curlCommand, endpointOf, formatBody, parseConsole, requestLine, requestsIn, type ConsoleNames, type ConsoleRequest } from "../console";
@@ -64,7 +65,7 @@ const memory = new Map<string, { results: RunResult[]; selected: number; ratio: 
 
 function readHistory(key: string): HistoryEntry[] {
   try {
-    const raw: unknown = JSON.parse(window.localStorage.getItem(HISTORY_KEY) ?? "{}");
+    const raw: unknown = JSON.parse(uiState.getItem(HISTORY_KEY) ?? "{}");
     const list = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>)[key] : null;
     return Array.isArray(list) ? list.filter((e): e is HistoryEntry => typeof e?.text === "string" && typeof e?.at === "number") : [];
   } catch {
@@ -74,9 +75,9 @@ function readHistory(key: string): HistoryEntry[] {
 
 function writeHistory(key: string, list: HistoryEntry[]): void {
   try {
-    const raw: unknown = JSON.parse(window.localStorage.getItem(HISTORY_KEY) ?? "{}");
+    const raw: unknown = JSON.parse(uiState.getItem(HISTORY_KEY) ?? "{}");
     const all = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-    window.localStorage.setItem(HISTORY_KEY, JSON.stringify({ ...all, [key]: list }));
+    uiState.setItem(HISTORY_KEY, JSON.stringify({ ...all, [key]: list }));
   } catch {
     // Not remembered; the request still ran.
   }

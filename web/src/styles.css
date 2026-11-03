@@ -6648,6 +6648,20 @@ textarea[aria-invalid="true"] {
   height: 20px;
 }
 
+/* The desktop app's install: how far it has come, or that it failed. */
+.update-install-progress {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+}
+
+.update-install-error {
+  flex: none;
+  color: var(--error);
+}
+
 .update-how-modal {
   width: min(560px, 92vw);
 }

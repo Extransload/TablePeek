@@ -9,6 +9,7 @@ import {
   type ReactElement,
 } from "react";
 import { t } from "../i18n";
+import * as uiState from "../persist";
 import { loadObjects, loadSchema, peekObjects, peekSchema } from "../schemaCache";
 import { store, type ObjectList, type TableDetail, type TableSchema } from "../store";
 import { opensData, type DefinitionKind } from "../sqlTools";
@@ -127,7 +128,7 @@ function errorOf(error: unknown, fallback: string): string {
 
 function loadSections(): Record<string, boolean> {
   try {
-    const raw = window.localStorage.getItem("tablepeek.sidebar-sections");
+    const raw = uiState.getItem("tablepeek.sidebar-sections");
     return raw === null ? {} : (JSON.parse(raw) as Record<string, boolean>);
   } catch {
     return {};
@@ -135,11 +136,7 @@ function loadSections(): Record<string, boolean> {
 }
 
 function loadSystemMode(): boolean {
-  try {
-    return window.localStorage.getItem("tablepeek.system-tables") === "1";
-  } catch {
-    return false;
-  }
+  return uiState.getItem("tablepeek.system-tables") === "1";
 }
 
 interface Picked {
@@ -291,11 +288,7 @@ export function SchemaSidebar({
   function toggleSection(key: string, fallback: boolean): void {
     setSections((prev) => {
       const next = { ...prev, [key]: !(prev[key] ?? fallback) };
-      try {
-        window.localStorage.setItem("tablepeek.sidebar-sections", JSON.stringify(next));
-      } catch {
-        /* 저장 실패는 무시 */
-      }
+      uiState.setItem("tablepeek.sidebar-sections", JSON.stringify(next));
       return next;
     });
   }
@@ -303,11 +296,7 @@ export function SchemaSidebar({
   function toggleSystem(): void {
     setSystem((value) => {
       const next = !value;
-      try {
-        window.localStorage.setItem("tablepeek.system-tables", next ? "1" : "0");
-      } catch {
-        /* 저장 실패는 무시 */
-      }
+      uiState.setItem("tablepeek.system-tables", next ? "1" : "0");
       return next;
     });
   }

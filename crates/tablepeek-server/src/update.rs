@@ -8,6 +8,10 @@
 //! check at all and the release they chose to skip. Network, HTTP and rate
 //! limit failures are kept as an error code for Settings and otherwise say
 //! nothing.
+//!
+//! A build that can replace itself (the desktop app, through its updater)
+//! hands the checker an [`Installer`]; the status then says so and the page
+//! offers to install the release and restart instead of the manual steps.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,7 +22,8 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Short hash of the commit built, "-dirty" with local changes, or "unknown".
 pub const COMMIT: &str = env!("TABLEPEEK_COMMIT");
-/// "release" for the binaries the release workflow builds, else "source".
+/// "release" for the CLI binaries the release workflow builds, "desktop" for
+/// its desktop app, else "source".
 pub const DIST: &str = env!("TABLEPEEK_DIST");
 /// The Rust target triple, which names this platform's release archive.
 pub const TARGET: &str = env!("TABLEPEEK_TARGET");
@@ -169,6 +174,64 @@ pub struct UpdateStatus {
     /// release has it.
     pub asset_name: Option<String>,
     pub asset_url: Option<String>,
+    /// This build installs updates itself (POST /api/update/install).
+    pub installable: bool,
+}
+
+/// How far an install has come, as POST /api/update/install reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum InstallStep {
+    /// Bytes of the update downloaded so far, of `total` when it is known.
+    Download { downloaded: u64, total: Option<u64> },
+    /// Downloaded and its signature checked; installing, then restarting.
+    Install,
+}
+
+/// Why an install did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallError {
+    /// This build has no installer.
+    Unsupported,
+    /// Another install is under way.
+    Busy,
+    /// The update endpoint offers nothing newer than this build.
+    NoUpdate,
+    /// Checking, downloading, verifying or installing failed.
+    Failed(String),
+}
+
+impl InstallError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Unsupported => "update_unsupported",
+            Self::Busy => "update_busy",
+            Self::NoUpdate => "update_none",
+            Self::Failed(_) => "update_failed",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Unsupported => "이 빌드는 스스로 업데이트할 수 없습니다".into(),
+            Self::Busy => "업데이트를 이미 설치하고 있습니다".into(),
+            Self::NoUpdate => "설치할 새 버전이 없습니다".into(),
+            Self::Failed(message) => message.clone(),
+        }
+    }
+}
+
+/// Installs the newest release over the running build: the desktop app does
+/// it with its updater. `progress` hears each step as it goes.
+#[async_trait::async_trait]
+pub trait Installer: Send + Sync {
+    /// Downloads the update, checks its signature and installs it, answering
+    /// the version installed. The app restarts on its own shortly after, so
+    /// the answer still reaches the page.
+    async fn install(
+        &self,
+        progress: Box<dyn Fn(InstallStep) + Send + Sync>,
+    ) -> Result<String, InstallError>;
 }
 
 /// A change to the user's choices; fields left out stay as they are.
@@ -227,6 +290,9 @@ pub struct UpdateChecker {
     env_disabled: bool,
     // Held across a check, so pages asking at once share one request.
     file: tokio::sync::Mutex<UpdateFile>,
+    installer: Option<std::sync::Arc<dyn Installer>>,
+    // Held while an install runs, so a second one is refused.
+    installing: tokio::sync::Mutex<()>,
 }
 
 impl UpdateChecker {
@@ -261,7 +327,31 @@ impl UpdateChecker {
             current: current.to_string(),
             env_disabled,
             file: tokio::sync::Mutex::new(file),
+            installer: None,
+            installing: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// The checker for a build that installs updates with `installer`.
+    pub fn with_installer(mut self, installer: std::sync::Arc<dyn Installer>) -> Self {
+        self.installer = Some(installer);
+        self
+    }
+
+    /// Whether this build installs updates itself.
+    pub fn installable(&self) -> bool {
+        self.installer.is_some()
+    }
+
+    /// Installs the newest release with the build's installer, one install
+    /// at a time.
+    pub async fn install(
+        &self,
+        progress: Box<dyn Fn(InstallStep) + Send + Sync>,
+    ) -> Result<String, InstallError> {
+        let installer = self.installer.as_ref().ok_or(InstallError::Unsupported)?;
+        let _running = self.installing.try_lock().map_err(|_| InstallError::Busy)?;
+        installer.install(progress).await
     }
 
     /// The update status, checking first when checks are on and the last
@@ -343,6 +433,7 @@ impl UpdateChecker {
             target: TARGET,
             asset_name: None,
             asset_url: None,
+            installable: self.installable(),
         };
         if !enabled {
             return status;
@@ -753,5 +844,94 @@ mod tests {
         );
         let settings: UpdateSettings = serde_json::from_str(r#"{"skipped":null}"#).unwrap();
         assert!(checker.configure(settings).await.unwrap().skipped.is_none());
+    }
+
+    /// Reports a download in two chunks, then waits for `release` before it
+    /// says it installed.
+    struct FakeInstaller {
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl Installer for FakeInstaller {
+        async fn install(
+            &self,
+            progress: Box<dyn Fn(InstallStep) + Send + Sync>,
+        ) -> Result<String, InstallError> {
+            progress(InstallStep::Download {
+                downloaded: 5,
+                total: Some(10),
+            });
+            progress(InstallStep::Download {
+                downloaded: 10,
+                total: Some(10),
+            });
+            progress(InstallStep::Install);
+            self.release.notified().await;
+            Ok("v0.2.0".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn installs_through_the_builds_installer_one_at_a_time() {
+        let plain = UpdateChecker::new(&temp_dir("no-installer"), String::new(), "0.1.0", true);
+        assert!(!plain.status().await.installable);
+        assert_eq!(
+            plain.install(Box::new(|_| {})).await,
+            Err(InstallError::Unsupported)
+        );
+
+        let installer = Arc::new(FakeInstaller {
+            release: tokio::sync::Notify::new(),
+        });
+        let checker = Arc::new(
+            UpdateChecker::new(&temp_dir("installer"), String::new(), "0.1.0", true)
+                .with_installer(installer.clone()),
+        );
+        // Installing is offered even with checks off: the page asks only
+        // when a release is shown.
+        assert!(checker.status().await.installable);
+
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let first = tokio::spawn({
+            let checker = checker.clone();
+            let steps = steps.clone();
+            async move {
+                checker
+                    .install(Box::new(move |step| steps.lock().unwrap().push(step)))
+                    .await
+            }
+        });
+        while steps.lock().unwrap().len() < 3 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            checker.install(Box::new(|_| {})).await,
+            Err(InstallError::Busy)
+        );
+        installer.release.notify_one();
+        assert_eq!(first.await.unwrap(), Ok("v0.2.0".to_string()));
+        assert_eq!(
+            *steps.lock().unwrap(),
+            vec![
+                InstallStep::Download {
+                    downloaded: 5,
+                    total: Some(10)
+                },
+                InstallStep::Download {
+                    downloaded: 10,
+                    total: Some(10)
+                },
+                InstallStep::Install,
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(InstallStep::Download {
+                downloaded: 5,
+                total: None
+            })
+            .unwrap(),
+            serde_json::json!({ "step": "download", "downloaded": 5, "total": null })
+        );
     }
 }

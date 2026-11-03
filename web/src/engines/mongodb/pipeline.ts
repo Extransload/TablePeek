@@ -1,9 +1,10 @@
 // The aggregation builder's pipeline (MONGODB.md §6.2 집계) as plain data:
 // stages as typed (operator, body text, on/off), their starting templates,
 // the round trip with the whole pipeline as one text, the mongosh code, and
-// the pipelines saved per collection in localStorage.
+// the pipelines saved per collection in the saved UI state.
 
 import { phrase, type Phrase } from "../../i18n";
+import * as uiState from "../../persist";
 import { isDocument, type BsonDocument, type BsonValue } from "./bson";
 import { STAGES, type FieldStat } from "./complete";
 import { shellCollection, shellKey, toShell, toShellPretty } from "./format";
@@ -229,7 +230,7 @@ export interface SavedPipeline {
 
 function readSaved(): Record<string, SavedPipeline[]> {
   try {
-    const raw: unknown = JSON.parse(window.localStorage.getItem(STORE_KEY) ?? "{}");
+    const raw: unknown = JSON.parse(uiState.getItem(STORE_KEY) ?? "{}");
     return raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, SavedPipeline[]>) : {};
   } catch {
     return {};
@@ -243,9 +244,5 @@ export function savedPipelines(ns: string): SavedPipeline[] {
 }
 
 export function writeSavedPipelines(ns: string, list: SavedPipeline[]): void {
-  try {
-    window.localStorage.setItem(STORE_KEY, JSON.stringify({ ...readSaved(), [ns]: list }));
-  } catch {
-    // Not remembered; the pipeline is still on screen.
-  }
+  uiState.setItem(STORE_KEY, JSON.stringify({ ...readSaved(), [ns]: list }));
 }

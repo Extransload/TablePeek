@@ -13,6 +13,7 @@ import {
 } from "react";
 import { layoutDiagram, type Point } from "../erLayout";
 import { t } from "../i18n";
+import * as uiState from "../persist";
 import { loadRelations, loadSchema, peekRelations, peekSchema } from "../schemaCache";
 import type { Relation, TableSchema } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
@@ -97,19 +98,11 @@ function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function loadKeysOnly(): boolean {
-  try {
-    return window.localStorage.getItem(KEYS_ONLY_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
 type SavedPositions = Record<string, Point>;
 
 function readAllPositions(): Record<string, Record<string, [number, number]>> {
   try {
-    const raw = window.localStorage.getItem(POSITIONS_KEY);
+    const raw = uiState.getItem(POSITIONS_KEY);
     const parsed: unknown = raw === null ? null : JSON.parse(raw);
     return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, Record<string, [number, number]>>) : {};
   } catch {
@@ -139,11 +132,7 @@ function savePositions(key: string, positions: SavedPositions): void {
   } else {
     all[key] = Object.fromEntries(entries.map(([table, point]) => [table, [Math.round(point.x), Math.round(point.y)]]));
   }
-  try {
-    window.localStorage.setItem(POSITIONS_KEY, JSON.stringify(all));
-  } catch {
-    /* 저장 실패는 무시 */
-  }
+  uiState.setItem(POSITIONS_KEY, JSON.stringify(all));
 }
 
 let measureContext: CanvasRenderingContext2D | null | undefined;
@@ -369,7 +358,7 @@ export function ErDiagram({ conn, refreshKey, storageKey, tabId, focus, focusSeq
   const [loading, setLoading] = useState(false);
   const [nonce, setNonce] = useState(0);
   const forceRef = useRef(false);
-  const [keysOnly, setKeysOnly] = useState(loadKeysOnly);
+  const [keysOnly, setKeysOnly] = useState(() => uiState.getItem(KEYS_ONLY_KEY) === "1");
   const [saved, setSaved] = useState<SavedPositions>(() => loadPositions(storageKey));
   const [live, setLive] = useState<{ name: string; point: Point } | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -791,11 +780,7 @@ export function ErDiagram({ conn, refreshKey, storageKey, tabId, focus, focusSeq
 
   function toggleKeysOnly(next: boolean): void {
     setKeysOnly(next);
-    try {
-      window.localStorage.setItem(KEYS_ONLY_KEY, next ? "1" : "0");
-    } catch {
-      /* 저장 실패는 무시 */
-    }
+    uiState.setItem(KEYS_ONLY_KEY, next ? "1" : "0");
   }
 
   // Tables matching the search: exact name, then names starting with it,

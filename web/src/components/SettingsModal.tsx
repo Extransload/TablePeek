@@ -3,7 +3,7 @@ import { languageLabel, t, type Language } from "../i18n";
 import { THEMES, palette, type ValueKind } from "../palette";
 import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFont } from "../fonts";
 import { store, type VersionInfo } from "../store";
-import { checkUpdateNow, configureUpdate, getUpdate, loadUpdate, refreshUpdate, subscribeUpdate } from "../update";
+import { checkUpdateNow, configureUpdate, getInstall, getUpdate, loadUpdate, refreshUpdate, subscribeInstall, subscribeUpdate } from "../update";
 import {
   MAX_QUERY_TIMEOUT,
   MAX_ROWS_LIMIT,
@@ -52,7 +52,7 @@ import {
 } from "./icons";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { Spinner } from "./Spinner";
-import { UpdateHowDialog } from "./UpdateBanner";
+import { UpdateHowDialog, UpdateInstallAction } from "./UpdateBanner";
 import { gridHeightsAt } from "../grid/CanvasGrid";
 import { Select } from "./Select";
 import { SqlPreview } from "./SqlEditor";
@@ -486,6 +486,7 @@ function updateErrorText(code: string): string {
 // General: what this build is, and the check for a newer release.
 function VersionSettings() {
   const update = useSyncExternalStore(subscribeUpdate, getUpdate);
+  const install = useSyncExternalStore(subscribeInstall, getInstall);
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
@@ -575,7 +576,9 @@ function VersionSettings() {
             <span className="version-chip mono" title={t("커밋")}>
               {version.commit}
             </span>
-            <span className="version-chip">{version.dist === "release" ? t("릴리스 바이너리") : t("소스 빌드")}</span>
+            <span className="version-chip">
+              {version.dist === "release" ? t("릴리스 바이너리") : version.dist === "desktop" ? t("데스크톱 앱") : t("소스 빌드")}
+            </span>
           </>
         )}
       </div>
@@ -605,9 +608,13 @@ function VersionSettings() {
                   {t("다시 알리기")}
                 </button>
               ) : null}
-              <button type="button" className="version-update-button" onClick={() => setHowOpen(true)}>
-                {t("업데이트 방법")}
-              </button>
+              {update.installable ? (
+                <UpdateInstallAction install={install} className="version-update-button" />
+              ) : (
+                <button type="button" className="version-update-button" onClick={() => setHowOpen(true)}>
+                  {t("업데이트 방법")}
+                </button>
+              )}
             </>
           ) : null}
           {update?.enabled ? (

@@ -3,8 +3,9 @@
 //
 // TABLEPEEK_COMMIT is the short hash of HEAD, with "-dirty" when tracked
 // files differ from it, or "unknown" without git (a source archive).
-// TABLEPEEK_DIST is "release" when the release workflow builds with
-// TABLEPEEK_DIST=release, otherwise "source".
+// TABLEPEEK_DIST is "release" when the release workflow builds the CLI with
+// TABLEPEEK_DIST=release, "desktop" when it builds the desktop app with
+// TABLEPEEK_DIST=desktop, otherwise "source".
 // TABLEPEEK_TARGET is the Rust target triple, which names the release asset
 // for this platform.
 
@@ -16,6 +17,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TABLEPEEK_DIST");
     let dist = match std::env::var("TABLEPEEK_DIST").as_deref() {
         Ok("release") => "release",
+        Ok("desktop") => "desktop",
         _ => "source",
     };
     println!("cargo:rustc-env=TABLEPEEK_DIST={dist}");

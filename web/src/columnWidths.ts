@@ -1,3 +1,5 @@
+import * as uiState from "./persist";
+
 // Widths a table's columns were given by hand, as TablePlus keeps them: the
 // table opens with them again after it is closed, switched away from, or the
 // app restarts. Keyed by the connection's stable key and the table, then the
@@ -12,7 +14,7 @@ export function columnWidthsKey(conn: string, table: string): string {
 
 function loadAll(): ColumnWidthMap {
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
+    const parsed: unknown = JSON.parse(uiState.getItem(STORAGE_KEY) ?? "{}");
     if (parsed === null || typeof parsed !== "object") {
       return {};
     }
@@ -36,9 +38,7 @@ function loadAll(): ColumnWidthMap {
 }
 
 function saveAll(map: ColumnWidthMap): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-  } catch {}
+  uiState.setItem(STORAGE_KEY, JSON.stringify(map));
 }
 
 export function loadColumnWidths(key: string): Record<string, number> {

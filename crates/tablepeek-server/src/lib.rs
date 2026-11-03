@@ -29,11 +29,13 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 
 pub mod cursors;
+pub mod launch;
 pub mod picker;
 mod search;
 pub mod store;
 pub mod transfer;
 pub mod tunnel;
+pub mod ui_state;
 pub mod update;
 
 #[derive(RustEmbed)]
@@ -504,6 +506,8 @@ pub struct AppState {
     pub allowed_hosts: Arc<Vec<String>>,
     pub store: Arc<tokio::sync::Mutex<store::StoreFile>>,
     pub update: Arc<update::UpdateChecker>,
+    /// Which batch each page last saved (see ui_state).
+    pub ui_writers: Arc<ui_state::Writers>,
 }
 
 async fn slot_for(
@@ -702,6 +706,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/version", get(version_route))
         .route("/api/update", get(update_status).put(update_configure))
         .route("/api/update/check", post(update_check))
+        .route("/api/update/install", post(update_install))
         .route("/api/server", get(server_info_route))
         .route("/api/objects", get(objects_route))
         .route("/api/definition", get(definition_route))
@@ -770,6 +775,12 @@ pub fn app(state: AppState) -> Router {
         .route("/api/history", get(history_list).delete(history_clear))
         .route("/api/history/{id}", delete(history_delete))
         .route("/api/safe-mode", put(safe_mode_set))
+        .route(
+            "/api/ui-state",
+            get(ui_state_get)
+                .put(ui_state_put)
+                .layer(axum::extract::DefaultBodyLimit::max(ui_state::MAX_BYTES)),
+        )
         .route("/api/favorites", get(favorites_list).post(favorites_create))
         .route(
             "/api/favorites/{id}",
@@ -820,7 +831,8 @@ async fn host_guard(State(state): State<AppState>, request: Request<Body>, next:
         if page {
             let target = request.uri().path_and_query().map_or("/", |p| p.as_str());
             // Temporary: another program may hold this port in a later run.
-            return Redirect::temporary(&format!("http://127.0.0.1:{port}{target}")).into_response();
+            return Redirect::temporary(&format!("http://127.0.0.1:{port}{target}"))
+                .into_response();
         }
     }
     next.run(request).await
@@ -2760,6 +2772,64 @@ async fn oidc_callback(Query(params): Query<OidcCallback>) -> Response {
     (status, axum::response::Html(page)).into_response()
 }
 
+/// The page's saved state (see ui_state): read before the app starts, and
+/// again when the page comes back to the front.
+async fn ui_state_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let dir = state.store.lock().await.dir().to_path_buf();
+    let values = tokio::task::spawn_blocking(move || ui_state::read(&dir))
+        .await
+        .map_err(|err| internal_error(err.to_string()))?
+        .map_err(store_error)?;
+    Ok(Json(json!({ "values": values })))
+}
+
+#[derive(Deserialize)]
+struct UiStateChange {
+    // The page (random per load) and the batch's number in it.
+    writer: String,
+    seq: u64,
+    #[serde(default)]
+    set: ui_state::Values,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+/// Writes the keys a page changed; keys it doesn't name stay as the file has
+/// them. A batch older than one the page already saved is skipped.
+async fn ui_state_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(change): Json<UiStateChange>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let dir = state.store.lock().await.dir().to_path_buf();
+    let writers = state.ui_writers.clone();
+    tokio::task::spawn_blocking(move || {
+        writers.update(&dir, &change.writer, change.seq, change.set, &change.remove)
+    })
+    .await
+    .map_err(|err| internal_error(err.to_string()))?
+    .map_err(|err| match err {
+        ui_state::UpdateError::TooLarge => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ApiError::new(
+                "too_large",
+                "화면 상태가 너무 커서 저장할 수 없습니다",
+            )),
+        ),
+        ui_state::UpdateError::Io(message) => store_error(message),
+    })?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct SafeModeRequest {
     conn: Option<String>,
@@ -3195,6 +3265,59 @@ async fn update_configure(
         .await
         .map(Json)
         .map_err(store_error)
+}
+
+/// Installs the newest release where the build can replace itself (the
+/// desktop app), answering in NDJSON as it goes: `{"step": "download",
+/// "downloaded", "total"}` as the download grows, `{"step": "install"}` once
+/// it is verified, then `{"installed": <version>}` (the app restarts right
+/// after) or `{"error": {"code", "message"}}`.
+async fn update_install(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    if !state.update.installable() {
+        let err = update::InstallError::Unsupported;
+        return Err(bad_request(err.code(), err.message()));
+    }
+    let (lines, mut rx) = mpsc::unbounded_channel::<Bytes>();
+    let update = state.update.clone();
+    tokio::spawn(async move {
+        let line = |value: Value| Bytes::from(format!("{value}\n"));
+        let steps = lines.clone();
+        // One line per percent (per 256 KiB when the size is unknown), not
+        // one per chunk.
+        let reported = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let progress = Box::new(move |step: update::InstallStep| {
+            if let update::InstallStep::Download { downloaded, total } = step {
+                let mark = match total {
+                    Some(total) if total > 0 => downloaded.saturating_mul(100) / total,
+                    _ => downloaded / (256 * 1024),
+                };
+                if reported.swap(mark, Ordering::Relaxed) == mark {
+                    return;
+                }
+            }
+            let _ = steps.send(line(json!(step)));
+        });
+        let last = match update.install(progress).await {
+            Ok(version) => json!({ "installed": version }),
+            Err(err) => json!({ "error": { "code": err.code(), "message": err.message() } }),
+        };
+        let _ = lines.send(line(last));
+    });
+    let stream = futures_util::stream::poll_fn(move |cx| {
+        rx.poll_recv(cx)
+            .map(|line| line.map(Ok::<_, std::convert::Infallible>))
+    });
+    Ok((
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(stream),
+    )
+        .into_response())
 }
 
 /// The font families installed on this machine, for the settings' font
@@ -5703,6 +5826,7 @@ mod tests {
                 update::VERSION,
                 true,
             )),
+            ui_writers: Arc::default(),
         }
     }
 
@@ -6580,7 +6704,10 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let state = AppState {
-            allowed_hosts: Arc::new(vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")]),
+            allowed_hosts: Arc::new(vec![
+                format!("127.0.0.1:{port}"),
+                format!("localhost:{port}"),
+            ]),
             ..test_state(&dir)
         };
         let server = tokio::spawn(async move { axum::serve(listener, app(state)).await });
@@ -9212,6 +9339,56 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(state.store.lock().await.safe_mode("demo"), None);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ui_state_routes_read_and_change_the_store_dir_file() {
+        let dir = temp_dir("ui-state-routes");
+        let state = test_state(&dir);
+        let headers = test_headers();
+
+        let first = ui_state_get(State(state.clone()), headers.clone())
+            .await
+            .unwrap();
+        assert_eq!(first.0, json!({ "values": {} }));
+
+        let change = |value: Value| Json(serde_json::from_value::<UiStateChange>(value).unwrap());
+        for body in [
+            json!({ "writer": "page", "seq": 1, "set": { "tablepeek.language": "en", "tablepeek.drafts": "{}" } }),
+            json!({ "writer": "page", "seq": 2, "remove": ["tablepeek.drafts"] }),
+            // Arriving after batch 2, batch 1 again is skipped.
+            json!({ "writer": "page", "seq": 1, "set": { "tablepeek.drafts": "{}" } }),
+        ] {
+            let saved = ui_state_put(State(state.clone()), headers.clone(), change(body))
+                .await
+                .unwrap();
+            assert_eq!(saved.0, json!({ "ok": true }));
+        }
+        let read = ui_state_get(State(state.clone()), headers.clone())
+            .await
+            .unwrap();
+        assert_eq!(read.0, json!({ "values": { "tablepeek.language": "en" } }));
+        assert!(dir.join("ui-state.json").exists());
+
+        let mut stale = HeaderMap::new();
+        stale.insert("x-tablepeek-token", "old-token".parse().unwrap());
+        let refused = ui_state_put(
+            State(state.clone()),
+            stale.clone(),
+            change(json!({ "writer": "page", "seq": 3, "set": { "tablepeek.language": "ko" } })),
+        )
+        .await;
+        assert_eq!(refused.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            ui_state_get(State(state.clone()), stale)
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(ui_state::read(&dir).unwrap()["tablepeek.language"], "en");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { t, tServer } from "../i18n";
+import * as uiState from "../persist";
 import type { ConsoleEntry } from "../net/socket";
 import { store } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
@@ -14,22 +15,6 @@ interface ConsolePanelProps {
 // The server keeps this many too; anything older has scrolled away.
 const CONSOLE_CAP = 1000;
 const HIGHLIGHT_KEY = "tablepeek.console-highlight";
-
-function loadHighlight(): boolean {
-  try {
-    return localStorage.getItem(HIGHLIGHT_KEY) !== "0";
-  } catch {
-    return true;
-  }
-}
-
-function saveHighlight(on: boolean): void {
-  try {
-    localStorage.setItem(HIGHLIGHT_KEY, on ? "1" : "0");
-  } catch {
-    // Not remembered, still applied.
-  }
-}
 
 // "-- 2026-10-23 10:05:50.7580", TablePlus's stamp: local time, four places.
 function stamp(atMs: number): string {
@@ -64,7 +49,7 @@ const ConsoleLine = memo(function ConsoleLine({
 export function ConsolePanel({ conn, height }: ConsolePanelProps) {
   const [entries, setEntries] = useState<ConsoleEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [highlight, setHighlight] = useState(loadHighlight);
+  const [highlight, setHighlight] = useState(() => uiState.getItem(HIGHLIGHT_KEY) !== "0");
   const logRef = useRef<HTMLDivElement | null>(null);
   // Follow new entries only while the log is already scrolled to the end.
   const pinnedRef = useRef(true);
@@ -199,7 +184,7 @@ export function ConsolePanel({ conn, height }: ConsolePanelProps) {
             checked={highlight}
             onChange={(event) => {
               setHighlight(event.target.checked);
-              saveHighlight(event.target.checked);
+              uiState.setItem(HIGHLIGHT_KEY, event.target.checked ? "1" : "0");
             }}
           />
           {t("구문 강조")}

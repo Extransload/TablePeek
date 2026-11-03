@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
-use std::sync::Arc;
 
 use tablepeek_engine::Engine;
-use tablepeek_server::{serve, store, update, AppState, ConnSlot, Registry};
+use tablepeek_server::launch::{LaunchOptions, Server, DEFAULT_DEMO_ROWS};
+use tablepeek_server::update;
 
 mod mcp;
 
-const DEFAULT_DEMO_ROWS: usize = 10_000;
 const MAX_DEMO_ROWS: usize = 2_000_000;
 
 struct Args {
@@ -129,42 +128,14 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let token = format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", args.port)).await?;
-    let addr = listener.local_addr()?;
-
-    let allowed_hosts = Arc::new(vec![
-        format!("127.0.0.1:{}", addr.port()),
-        format!("localhost:{}", addr.port()),
-    ]);
-    let mut registry = Registry::new();
-    if let Some((label, engine)) = main {
-        registry.insert(Arc::new(ConnSlot::new(
-            "main".into(),
-            label,
-            None,
-            None,
-            engine,
-        )));
-    }
-
-    let dir = store::default_dir();
-    let state = AppState {
-        registry: Arc::new(tokio::sync::Mutex::new(registry)),
-        default_conn: "main".into(),
-        token: token.clone().into(),
+    let server = Server::bind(LaunchOptions {
+        port: args.port,
+        main,
         demo_rows: args.demo_rows,
-        allowed_hosts,
-        store: Arc::new(tokio::sync::Mutex::new(store::StoreFile::load(&dir))),
-        update: Arc::new(update::UpdateChecker::from_env(&dir)),
-    };
-
-    let url = format!("http://127.0.0.1:{}/?token={}", addr.port(), token);
+        installer: None,
+    })
+    .await?;
+    let url = server.launch_url();
 
     println!("tablepeek dev server: {url}");
     println!("종료: Ctrl+C");
@@ -173,7 +144,7 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         open_browser(&url);
     }
 
-    serve(listener, state).await?;
+    server.run().await?;
     Ok(())
 }
 

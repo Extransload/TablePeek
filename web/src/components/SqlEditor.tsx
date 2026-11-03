@@ -29,6 +29,7 @@ import type { SqlDialect } from "../engines/sqlDialect";
 import type { AppError } from "../errorHelp";
 import { scrollbarsFor } from "../scrollbars";
 import { t } from "../i18n";
+import * as uiState from "../persist";
 import {
   completeSql,
   valueSlotAt,
@@ -178,7 +179,7 @@ function usageMap(): Map<string, number> {
   if (usage === null) {
     usage = new Map();
     try {
-      const stored: unknown = JSON.parse(window.localStorage.getItem(USAGE_KEY) ?? "{}");
+      const stored: unknown = JSON.parse(uiState.getItem(USAGE_KEY) ?? "{}");
       if (stored !== null && typeof stored === "object") {
         for (const [key, count] of Object.entries(stored)) {
           if (typeof count === "number" && count > 0) {
@@ -200,9 +201,7 @@ function recordUsage(key: string): void {
       map.delete(key);
     }
   }
-  try {
-    window.localStorage.setItem(USAGE_KEY, JSON.stringify(Object.fromEntries(map)));
-  } catch {}
+  uiState.setItem(USAGE_KEY, JSON.stringify(Object.fromEntries(map)));
 }
 
 function el(tag: string, className: string, text?: string): HTMLElement {

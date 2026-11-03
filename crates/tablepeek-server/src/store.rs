@@ -366,6 +366,11 @@ impl StoreFile {
         &self.data
     }
 
+    /// The folder store.json lives in, shared with the other files kept there.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn add_connection(&mut self, connection: SavedConnection) -> Result<(), String> {
         if !self.update_connection(connection.clone())? {
             self.data.connections.push(connection);

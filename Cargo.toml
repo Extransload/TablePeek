@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/tablepeek",
+    "crates/tablepeek-desktop",
     "crates/tablepeek-engine",
     "crates/tablepeek-server",
     "crates/tablepeek-types",

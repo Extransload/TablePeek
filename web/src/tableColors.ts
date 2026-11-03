@@ -1,3 +1,5 @@
+import * as uiState from "./persist";
+
 // Font colours a table can be marked with, so it stands out in a long list:
 // its name in the sidebar and its tabs take the colour. Mid-tone hues that
 // read on light and dark themes alike.
@@ -23,7 +25,7 @@ export function tableColorValue(id: string | undefined): string | undefined {
 
 export function loadTableColors(): TableColorMap {
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
+    const parsed: unknown = JSON.parse(uiState.getItem(STORAGE_KEY) ?? "{}");
     if (parsed === null || typeof parsed !== "object") {
       return {};
     }
@@ -47,9 +49,7 @@ export function loadTableColors(): TableColorMap {
 }
 
 export function saveTableColors(map: TableColorMap): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-  } catch {}
+  uiState.setItem(STORAGE_KEY, JSON.stringify(map));
 }
 
 // The tables given the colour, or cleared of it (null).

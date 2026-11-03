@@ -1,4 +1,4 @@
-import { store, type UpdateStatus } from "./store";
+import { store, type InstallStep, type UpdateStatus } from "./store";
 
 // The update status the banner and Settings share. The page asks for it once
 // it opens; the server checks GitHub at most once a day (and never when the
@@ -51,6 +51,62 @@ export async function checkUpdateNow(): Promise<UpdateStatus> {
 
 export async function configureUpdate(patch: { enabled?: boolean; skipped?: string | null }): Promise<UpdateStatus> {
   return publish(await store.configureUpdate(patch));
+}
+
+// An install the desktop app makes of the newest release, shared by the
+// banner and Settings: downloading (with the percent once the size is known),
+// installing, restarting, or the error it stopped with.
+export type InstallState =
+  | { phase: "idle" }
+  | { phase: "download"; percent: number | null }
+  | { phase: "install" }
+  | { phase: "restart" }
+  | { phase: "error"; error: unknown };
+
+let install: InstallState = { phase: "idle" };
+const installListeners = new Set<() => void>();
+
+function setInstall(next: InstallState): void {
+  install = next;
+  for (const listener of installListeners) {
+    listener();
+  }
+}
+
+export function subscribeInstall(listener: () => void): () => void {
+  installListeners.add(listener);
+  return () => installListeners.delete(listener);
+}
+
+export function getInstall(): InstallState {
+  return install;
+}
+
+export function installBusy(state: InstallState): boolean {
+  return state.phase === "download" || state.phase === "install" || state.phase === "restart";
+}
+
+function stepState(step: InstallStep): InstallState {
+  if (step.step === "install") {
+    return { phase: "install" };
+  }
+  const percent = step.total !== null && step.total > 0 ? Math.min(100, Math.floor((step.downloaded * 100) / step.total)) : null;
+  return { phase: "download", percent };
+}
+
+// Downloads, verifies and installs the newest release; the app restarts on
+// its own once it is in, and this page goes with it.
+export async function installRelease(): Promise<void> {
+  if (installBusy(install)) {
+    return;
+  }
+  setInstall({ phase: "download", percent: null });
+  try {
+    await store.installUpdate((step) => setInstall(stepState(step)));
+    setInstall({ phase: "restart" });
+  } catch (error) {
+    setInstall({ phase: "error", error });
+  }
 }
 
 export function dismissedRelease(): string | null {

@@ -36,7 +36,7 @@
     tablepeek-server (axum)
       - 정적 자산(rust-embed), 토큰·Host 검증
       - WS 스트리밍, SSH 터널(russh)
-      - store.json(비밀 아님) + OS 키체인(비밀번호)
+      - store.json(비밀 아님) + OS 키체인(비밀번호) + ui-state.json(화면 상태)
     tablepeek-engine
       - rusqlite | tokio-postgres(PG·CRDB) | mysql_async(MySQL) | tiberius(TDS)
               │
@@ -44,22 +44,34 @@
   SQLite 파일 / PostgreSQL / MySQL / CockroachDB / SQL Server
 ```
 
+화면 상태(설정·언어·워크스페이스와 탭·초안·열 너비·패널 크기·최근 쿼리 등)는 `~/.tablepeek/ui-state.json`에 키-값으로 둔다. 브라우저 localStorage는 출처(포트 포함)마다 따로라서, 실행마다 포트가 바뀌는 서버에서는 매번 빈 상태가 된다. 페이지는 앱 모듈을 불러오기 전에 `GET /api/ui-state`로 한 번 읽어 메모리에 올리고(`web/src/persist.ts`), 바뀐 키만 잠깐 모았다가 `PUT /api/ui-state`(`{set, remove}`)로 보낸다. 페이지가 숨거나 닫힐 때는 바로 보낸다. 서버는 파일 잠금 아래 파일을 다시 읽고 이름 붙은 키만 바꿔 원자적으로 교체하므로, 같은 폴더를 쓰는 다른 TablePeek 프로세스가 쓴 키는 남는다. 요청에는 페이지 id(`writer`)와 번호(`seq`)가 붙고, 요청마다 아직 저장되지 않은 키를 모두 지금 값으로 싣는다. 서버는 그 페이지가 이미 저장한 번호보다 오래된 요청을 건너뛰므로, 닫힐 때 바로 보낸 요청보다 먼저 나간 요청이 늦게 닿아도 새 값을 덮지 않는다. 초안·열 너비처럼 맵 전체를 읽고 고쳐 쓰는 키가 있어서 페이지의 사본은 늘 최신이어야 한다: 같은 출처의 페이지끼리는 `BroadcastChannel`(`tablepeek.ui-state`)로 바뀐 키를 바로 알리고, 다른 출처(다른 포트의 서버, 데스크톱 앱)가 쓴 것은 페이지가 다시 앞에 오거나 포커스를 받을 때 `GET`으로 다시 읽어, 마지막으로 안 서버 값과 달라진 키만 받는다(이 페이지에서 저장 전이거나 읽는 사이에 바뀐 키는 제외). 읽기에 실패한 페이지(서버 꺼짐, 지난 실행의 토큰)는 메모리에만 두고 저장하지 않는다. 출처마다 처음 한 번, localStorage에 남은 `tablepeek.*` 키 중 서버에 없는 것을 옮겨 오고 표시(`tablepeek.ui-state-imported`)를 남긴다. localStorage에는 실행마다 바뀌는 토큰만 남는다.
+
 ## 3. 크레이트 경계
 
 | 크레이트 | 책임 | 의존 |
 |---|---|---|
-| `tablepeek` | CLI 엔트리: `serve` 서브커맨드, 포트·토큰 발급, 브라우저 오픈 | server, engine |
+| `tablepeek` | CLI 엔트리: `serve` 서브커맨드, 브라우저 오픈, MCP stdio 서버 | server, engine |
+| `tablepeek-desktop` | macOS·Windows 데스크톱 앱(Tauri 2). 서버를 앱 안에서 띄우고 네이티브 창에 보여 준다 | server |
 | `tablepeek-server` | axum 라우터, 토큰·Host 인증, 웹 자산(rust-embed), WS 스트리밍, 세션 스냅샷·저널, SSH 터널(russh), store.json·키체인 | engine, types |
 | `tablepeek-engine` | 커넥션·세션·쿼리 실행. 백엔드 enum(rusqlite / tokio-postgres / mysql_async / tiberius), Arrow IPC 직렬화, 쿼리 취소, 행 추가·삭제 | types |
 | `tablepeek-types` | 메시지·결과·접속 설정 공용 타입 (serde) | — |
 
 의존 방향은 항상 위→아래. server는 engine만, engine은 types만 안다.
 
+서버 기동(127.0.0.1 바인딩, 실행마다의 토큰, 허용 Host, `~/.tablepeek`의 store·업데이트 확인)은 `tablepeek_server::launch::Server`가 맡고, CLI와 데스크톱 앱이 같이 쓴다.
+
+### 데스크톱 앱
+
+- **구조.** Tauri의 tokio 런타임에서 `launch::Server`를 빈 포트로 띄우고, 첫 창을 `WebviewUrl::External(http://127.0.0.1:<port>/?token=…)`로 연다. 페이지는 브라우저에서와 같은 서버 페이지라 Tauri IPC·capability는 하나도 열지 않는다(opener 플러그인의 링크 가로채기 스크립트도 끈다). 앱을 끝내면 서버도 프로세스와 함께 끝난다. Linux에서는 Tauri 의존성을 빼고 바이너리가 안내만 하고 끝나, Linux CI의 workspace 빌드에 webkit2gtk가 필요 없다.
+- **창 핸들러**(`src/window.rs`, 모든 창에 같게). `on_navigation`: 이 서버(`127.0.0.1`/`localhost`의 같은 포트)와 `about:`·`blob:`·`data:`만 창 안에서 열고, http(s)·mailto는 시스템 브라우저로 넘기고 취소한다. `on_new_window`: 같은 서버 주소(`window.open('/?conn=…')`)는 새 앱 창, 나머지(OIDC 로그인, 릴리스 노트)는 시스템 브라우저. `on_download`: blob 내보내기와 GridFS 링크를 다운로드 폴더에 같은 이름으로, 있으면 `이름 (1).확장자`로 저장. `disable_drag_drop_handler`로 파일 끌어 놓기는 페이지가 받는다.
+- **macOS 메뉴**(`src/menu.rs`). WKWebView의 복사·붙여넣기·실행 취소가 편집 메뉴 항목을 거치므로 편집 메뉴는 둔다. 페이지 단축키를 메뉴가 먼저 가져가지 않도록 ⌘W(탭 닫기), ⌘T, ⌘N, ⌘R 항목은 두지 않고, 창 닫기는 ⇧⌘W.
+- **업데이트.** 서버의 `update::Installer` 트레이트를 앱이 tauri-plugin-updater로 구현해 `UpdateChecker`에 넘긴다(AppState 필드가 아니다). `GET /api/update`의 `installable`이 참이면 페이지가 **설치하고 다시 시작**을 보이고, `POST /api/update/install`이 NDJSON으로 진행을 알려 준다. 매니페스트는 최신 정식 릴리스의 `latest.json`, 묶음은 tauri.conf.json의 공개 키로 서명을 확인한다.
+
 ## 4. 보안 모델
 
 - **127.0.0.1 바인딩만** — 외부 인터페이스 노출 금지.
 - **실행 시마다 랜덤 토큰** 발급. 페이지 로드 시 쿼리 파라미터, API 호출 시 `x-tablepeek-token` 헤더로 검증(WS 핸드셰이크는 `?token=`). `/api/*` 전 경로는 본문·업그레이드를 읽기 전에 미들웨어에서 토큰을 확인하고, 없거나 맞지 않으면(서버가 다시 시작돼 바뀐 토큰) 언제나 401 `{code:"invalid_token"}`을 준다.
-- **Host 헤더 검증** (M2 적용) — DNS 리바인딩 방어. `localhost:<port>`로 연 페이지(`/api/` 밖의 GET·HEAD)는 시작 URL의 `127.0.0.1:<port>`로 307 리다이렉트한다. 브라우저는 토큰·설정·워크스페이스를 출처마다 따로 저장하므로 주소를 하나로 모은다. API 호출은 두 이름 모두에서 그대로 응답한다.
+- **Host 헤더 검증** (M2 적용) — DNS 리바인딩 방어. `localhost:<port>`로 연 페이지(`/api/` 밖의 GET·HEAD)는 시작 URL의 `127.0.0.1:<port>`로 307 리다이렉트한다. 브라우저는 토큰을 출처마다 따로 저장하므로 주소를 하나로 모은다. API 호출은 두 이름 모두에서 그대로 응답한다.
 - 자격증명: DB/SSH 비밀번호는 **OS 키체인에만** 저장(사용자가 "비밀번호도 저장" 선택 시). `~/.tablepeek/store.json`에는 비밀번호를 기록하지 않으며 SSH 개인키 경로만 저장. 키체인 호출(저장·읽기·삭제·되돌리기)은 모두 비동기 작업자 밖(`spawn_blocking`)에서 하고, macOS `security`는 20초 안에 답이 없으면(잠금 해제 창을 아무도 안 누를 때) 끝내고 "키체인 응답이 없습니다 — 잠금 해제 창을 확인하세요"로 실패한다. 저장은 이미 쓴 항목을 되돌린다. 멈춘 키체인 호출 하나가 다른 요청을 막지 않는다.
 - SSH 터널(russh, M4): 원격 DB는 사용자 머신에서 SSH 채널을 열어 127.0.0.1 임의 포트로 포워딩. PG 호스트/포트는 SSH 서버 관점 주소로 지정.
 - TLS: PostgreSQL/CockroachDB는 `ssl_mode=disable/prefer/require`와 CA·클라이언트 인증서(mTLS)를 지원한다. MySQL은 `SslOpts`로 CA·클라이언트 인증서를 적용하며 `prefer`는 TLS 실패 시 평문으로 폴백한다. 모든 rustls 경로는 `ensure_crypto_provider()`로 ring provider를 먼저 설치한다. 연결 전 점검은 `/api/fs/stat`으로 로컬 인증서·SSH 키 파일의 존재/파일 여부/읽기 가능 여부만 확인하고 실제 접속은 하지 않는다.

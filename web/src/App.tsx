@@ -25,6 +25,7 @@ import {
 } from "./ddl";
 import { adoptDrafts, listDrafts, removeDraft, saveDraft, type QueryDraft } from "./drafts";
 import { subscribeConnMeta } from "./connMeta";
+import * as uiState from "./persist";
 import { DefinitionPanel } from "./components/DefinitionPanel";
 import { ExplainPlanPanel } from "./components/ExplainPlanPanel";
 import { ConnectionPickerModal, type PickTarget } from "./components/ConnectionPickerModal";
@@ -263,18 +264,16 @@ function clampDetail(width: number): number {
 }
 
 function storedWidth(key: string, clamp: (width: number) => number): number | null {
-  const saved = Number(window.localStorage.getItem(key));
+  const saved = Number(uiState.getItem(key));
   return Number.isFinite(saved) && saved > 0 ? clamp(saved) : null;
 }
 
 function storeWidth(key: string, width: number | null): void {
-  try {
-    if (width === null) {
-      window.localStorage.removeItem(key);
-    } else {
-      window.localStorage.setItem(key, String(width));
-    }
-  } catch {}
+  if (width === null) {
+    uiState.removeItem(key);
+  } else {
+    uiState.setItem(key, String(width));
+  }
 }
 
 // Drags a side panel's edge. `grow` is 1 when moving right widens the panel
@@ -499,7 +498,7 @@ function persistReplacer(key: string, value: unknown): unknown {
 
 function loadParamValues(): Record<string, string> {
   try {
-    const raw = window.localStorage.getItem("tablepeek.param-values");
+    const raw = uiState.getItem("tablepeek.param-values");
     if (raw === null) {
       return {};
     }
@@ -514,7 +513,7 @@ function loadParamValues(): Record<string, string> {
 
 function loadTableMap(key: string): Record<string, string[]> {
   try {
-    const raw = window.localStorage.getItem(key);
+    const raw = uiState.getItem(key);
     if (raw === null) {
       return {};
     }
@@ -536,7 +535,7 @@ function loadTableMap(key: string): Record<string, string[]> {
 
 function loadFlagMap(key: string): Record<string, boolean> {
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    const parsed: unknown = JSON.parse(uiState.getItem(key) ?? "{}");
     if (parsed === null || typeof parsed !== "object") {
       return {};
     }
@@ -553,20 +552,16 @@ function loadFlagMap(key: string): Record<string, boolean> {
 }
 
 function saveFlagMap(key: string, map: Record<string, boolean>): void {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(map));
-  } catch {}
+  uiState.setItem(key, JSON.stringify(map));
 }
 
 function saveTableMap(key: string, map: Record<string, string[]>): void {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(map));
-  } catch {}
+  uiState.setItem(key, JSON.stringify(map));
 }
 
 function loadPersisted(): PersistedPayload | null {
   try {
-    const raw = window.localStorage.getItem(WORKSPACES_KEY);
+    const raw = uiState.getItem(WORKSPACES_KEY);
     if (raw === null) {
       return null;
     }
@@ -654,11 +649,11 @@ export default function App() {
   // Safe mode belongs to each connection (kept by the server). One that never
   // chose its own follows the single app-wide setting older versions kept.
   const [defaultSafeMode] = useState<SafeMode>(() => {
-    const raw = window.localStorage.getItem("tablepeek.alert-mode");
+    const raw = uiState.getItem("tablepeek.alert-mode");
     if (raw === "0" || raw === "1" || raw === "2") {
       return Number(raw) as SafeMode;
     }
-    return window.localStorage.getItem("tablepeek.safe-mode") === "0" ? 0 : 1;
+    return uiState.getItem("tablepeek.safe-mode") === "0" ? 0 : 1;
   });
   // Choices made in this window win over connection lists fetched before the
   // server stored them; a failed save rolls its choice back.
@@ -726,7 +721,7 @@ export default function App() {
   // Font colours picked for tables, per connection (sidebar names and tabs).
   const [tableColors, setTableColors] = useState<TableColorMap>(loadTableColors);
   const [consoleHeight, setConsoleHeight] = useState<number>(() => {
-    const saved = Number(window.localStorage.getItem(CONSOLE_HEIGHT_KEY));
+    const saved = Number(uiState.getItem(CONSOLE_HEIGHT_KEY));
     return Number.isFinite(saved) && saved >= CONSOLE_MIN ? saved : CONSOLE_DEFAULT;
   });
   const [historyVersion, setHistoryVersion] = useState(0);
@@ -789,7 +784,7 @@ export default function App() {
   // portal what they have selected into this element (DocDetailPanel).
   const [docSlot, setDocSlot] = useState<HTMLElement | null>(null);
   const [splitSide, setSplitSide] = useState<"bottom" | "right">(() =>
-    window.localStorage.getItem("tablepeek.split-side") === "right" ? "right" : "bottom",
+    uiState.getItem("tablepeek.split-side") === "right" ? "right" : "bottom",
   );
   const favoriteSnippets = useMemo(
     () =>
@@ -832,15 +827,13 @@ export default function App() {
     }
   }, [activeConnId]);
   useEffect(() => {
-    // The console log used to live in this browser; history is on the server now.
-    try {
-      window.localStorage.removeItem("tablepeek.query-log");
-    } catch {}
+    // The console log used to live in the browser; history is on the server now.
+    uiState.removeItem("tablepeek.query-log");
   }, []);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   useEffect(() => {
-    window.localStorage.setItem("tablepeek.split-side", splitSide);
+    uiState.setItem("tablepeek.split-side", splitSide);
   }, [splitSide]);
   useEffect(() => {
     let alive = true;
@@ -2210,13 +2203,7 @@ export default function App() {
     if (prompt === null) {
       return;
     }
-    try {
-      const stored = loadParamValues();
-      window.localStorage.setItem(
-        "tablepeek.param-values",
-        JSON.stringify({ ...stored, ...values }),
-      );
-    } catch {}
+    uiState.setItem("tablepeek.param-values", JSON.stringify({ ...loadParamValues(), ...values }));
     startRun(prompt.conn, prompt.tabId, bindParams(prompt.sql, values, quoteLiteral, prompt.dialect));
   }
 
@@ -5297,9 +5284,7 @@ export default function App() {
 
   function saveConsoleHeight(height: number): void {
     setConsoleHeight(height);
-    try {
-      window.localStorage.setItem(CONSOLE_HEIGHT_KEY, String(height));
-    } catch {}
+    uiState.setItem(CONSOLE_HEIGHT_KEY, String(height));
   }
 
   function onConsoleSplitterDown(event: ReactPointerEvent<HTMLDivElement>): void {
@@ -5491,7 +5476,7 @@ export default function App() {
     }
     try {
       const payload: PersistedPayload = { activeConnId, workspaces };
-      window.localStorage.setItem(WORKSPACES_KEY, JSON.stringify(payload, persistReplacer));
+      uiState.setItem(WORKSPACES_KEY, JSON.stringify(payload, persistReplacer));
     } catch {}
   }, [workspaces, activeConnId, booting]);
 
