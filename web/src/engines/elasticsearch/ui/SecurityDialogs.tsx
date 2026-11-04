@@ -8,7 +8,7 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { ErrorNotice, FieldError } from "../../../components/ErrorNotice";
 import { CopyIcon, PlusIcon, TrashIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { writeClipboard } from "../../../clipboard";
 import { t } from "../../../i18n";
@@ -129,8 +129,8 @@ function SecurityModal({
             {readOnly ? t("닫기") : t("취소")}
           </button>
           {readOnly ? null : (
-            <button type="button" className="primary" disabled={busy || command === null || problem !== null} onClick={onSubmit}>
-              {busy ? <Spinner size={10} /> : null}
+            <button type="button" className="primary gauge-host" disabled={busy || command === null || problem !== null} aria-busy={busy} onClick={onSubmit}>
+              <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
               {okLabel}
             </button>
           )}

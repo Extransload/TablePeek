@@ -12,7 +12,7 @@ import { writeClipboard } from "../../../clipboard";
 import { ContextMenu } from "../../../components/ContextMenu";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon, UploadIcon } from "../../../components/icons";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge, useTabWork } from "../../../components/Gauge";
 import { isAppServerDown } from "../../../errorHelp";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
@@ -444,6 +444,8 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
   // ---- Rendering ----
 
   const result = pageResult?.result ?? null;
+  // The tab fills while its page of documents is searched for.
+  useTabWork(tabKey, loading && sub === "docs", loadError !== null ? "error" : "ok");
   const start = pageResult?.start ?? page * pageSize;
   const total = result?.total ?? null;
   const pages = total === null ? null : Math.max(1, Math.ceil(total.value / pageSize));
@@ -748,8 +750,8 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
                 </div>
               ) : null}
               {loading ? (
-                <div className="result-loading" role="status">
-                  <Spinner size={12} />
+                <div className="result-loading gauge-host" role="status">
+                  <Gauge busy />
                   {t("불러오는 중…")}
                 </div>
               ) : null}

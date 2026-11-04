@@ -35,7 +35,7 @@ Connection features:
 
 - **SSH tunnels.** Enable a tunnel and provide the SSH host, port, user, and key or password. Database host and port are resolved from the SSH server's point of view, for example `127.0.0.1:5432`.
 - **Preflight checks.** The connection dialog verifies local certificate and SSH key paths before connecting.
-- **Connection state.** Color-coded connection tabs, environment badges (`LOCAL`, `DEV`, `STAGE`, `PROD`), and live status indicators keep multiple environments easy to tell apart.
+- **Connection state.** Color-coded connection tabs, environment badges (`LOCAL`, `DEV`, `STAGE`, `PROD`), and live status indicators keep multiple environments easy to tell apart. Waiting shows as a gauge: a connecting connection's row or tab fills with its color, and a query or table tab fills while its rows are on their way.
 
 ## The data grid
 
@@ -118,13 +118,13 @@ Settings open as a sheet docked on the right (`Mod+,` or the gear button), with 
 
 **Search.** Type anywhere in the sheet, or press `Mod+F`, to search every page. Matching settings are listed under their page's name with the match highlighted, in Korean or English whatever the interface language; a page's name offers that page (`Enter` opens it). `↑`/`↓` and `Enter` work on the results directly, and `Esc` clears the search.
 
-**Motion.** Tabs, dialogs, menus, the settings sheet, panels, the schema tree, Quick Look, counts and dragged connections animate in one style, on springs. With the system's reduced motion on (macOS: System Settings › Accessibility › Display › Reduce motion) every change is instant; nothing in TablePeek waits for an animation.
+**Motion.** Tabs, dialogs, menus, the settings sheet, panels, the schema tree, Quick Look, counts and dragged connections animate in one style, on springs. Settings › Appearance › Display › Reduce motion makes every change instant (the home backdrop becomes a still frame), at once and in every window; nothing in TablePeek waits for an animation. Only this setting decides: the operating system's Reduce motion preference is not followed.
 
 **Theme.** Settings › Appearance › Mode is Light, Dark or System; System follows the operating system's light or dark mode as it changes (in the desktop app the window follows it too). The light and dark themes are picked separately, each in a small searchable picker (type to filter, `↑`/`↓`, `Enter` picks, `Esc` closes) with a swatch per theme. The accent follows the theme shown unless one is picked.
 
 **Fonts.** Like Tern's, the fonts cascade; all of them are in Settings › Appearance › Fonts. Font and Font size set the interface (sidebars, menus, dialogs). Code font is the monospaced face the SQL editor, the data table and code labels use; its size follows Font size unless set. Editor font and Table font (and their sizes) follow the code font unless set apart. Every picker lists the system's faces and every face installed on the machine, monospaced ones first. Settings saved by earlier versions move over on first start: one theme becomes the theme of its mode, and the SQL editor's, data table's and sidebar's fonts become the code font, a table font where it differed, and the interface font where the sidebar's differed.
 
-**Material.** Settings › Appearance sets the surface material: Solid, Glass (translucent, with an opacity), or Clear (blurred, with a blur radius). Dialogs, menus, the command palette and the settings sheet turn to tinted glass. In the desktop app the window itself becomes see-through: macOS vibrancy or a blur without tint, Mica or Acrylic on Windows. The system's Reduce transparency setting draws everything solid.
+**Material.** Settings › Appearance sets the surface material: Solid, Glass (translucent, with an opacity), or Clear (blurred, with a blur radius). Dialogs, menus, the command palette and the settings sheet turn to tinted glass. In the desktop app the window itself becomes see-through: macOS vibrancy or a blur without tint, Mica or Acrylic on Windows. The picked material alone decides; the system's Reduce transparency setting is not followed (pick Solid for opaque surfaces).
 
 Fifty-two built-in themes are included: TablePeek Dark and Light, Dark Noir and Light Noir, plus Aura, Ayu, Catppuccin, Cobalt2, Dracula, Everforest, GitHub, Gruvbox, Horizon, Kanagawa, Material, Monokai, Night Owl, Nord, One Dark/Light, Panda, Pink Aura, Rosé Pine, Shades of Purple, Snazzy, Solarized, SynthWave '84, Tokyo Night, Tomorrow Night, and Xcode variants. The third-party themes also color the SQL editor while the syntax preset is left on "Theme default"; TablePeek Dark/Light derive editor colors from their accent and status colors. Dark Noir is the look of a Tern terminal theme (Dracula-style surfaces, a vivid 16-color table, a teal accent); Light Noir keeps its hues, darkened so every text color reads at 4.5:1 or better.
 

@@ -6,7 +6,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
 import { PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { t } from "../../../i18n";
 import { JsonSyntaxError, parseJson, stringifyJson } from "../../mongodb/bson";
@@ -220,8 +221,15 @@ export function AliasesPanel({ host, index, kind, refreshSeq, onChanged }: Index
                           <PencilIcon size={10} />
                           {t("편집 [버튼]")}
                         </button>
-                        <button type="button" className="icon-text-button mg-danger-text" disabled={removing !== null} onClick={() => void remove(row)}>
-                          {removing === key ? <Spinner size={10} /> : <TrashIcon size={10} />}
+                        <button
+                          type="button"
+                          className="icon-text-button mg-danger-text gauge-host"
+                          disabled={removing !== null}
+                          aria-busy={removing === key}
+                          onClick={() => void remove(row)}
+                        >
+                          <Gauge busy={removing === key} />
+                          <TrashIcon size={10} />
                           {t("삭제")}
                         </button>
                       </>
@@ -430,8 +438,8 @@ function AliasDialog({
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" disabled={busy || actions === null} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || actions === null} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("저장")}
           </button>
         </>

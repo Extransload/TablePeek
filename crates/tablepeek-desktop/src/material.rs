@@ -12,8 +12,8 @@
 //!
 //! The material and the title bar follow the page's theme (dark or light)
 //! rather than the system's appearance, or the system's when the page
-//! follows it (System in Settings). While the system's "Reduce
-//! transparency" is on, every window is solid whatever the page asks for.
+//! follows it (System in Settings). The page's pick alone decides the
+//! material: the system's "Reduce transparency" isn't followed.
 
 use std::sync::Mutex;
 
@@ -39,7 +39,7 @@ impl WindowEffects {
     pub fn apply_current(&self, window: &WebviewWindow) {
         let current = *self.current.lock().unwrap_or_else(|err| err.into_inner());
         if let Some(look) = current {
-            if let Err(err) = apply(window, shown(&self.app, look)) {
+            if let Err(err) = apply(window, look) {
                 eprintln!("창 재질을 바꿀 수 없습니다: {err}");
             }
         }
@@ -49,7 +49,6 @@ impl WindowEffects {
 impl WindowMaterial for WindowEffects {
     fn apply(&self, look: WindowLook) -> Result<(), String> {
         *self.current.lock().unwrap_or_else(|err| err.into_inner()) = Some(look);
-        let look = shown(&self.app, look);
         // A window that can't take it (one closing, say) keeps its look;
         // the others still get theirs.
         for window in self.app.webview_windows().into_values() {
@@ -59,70 +58,6 @@ impl WindowMaterial for WindowEffects {
         }
         Ok(())
     }
-
-    fn transparency_reduced(&self) -> bool {
-        transparency_reduced(&self.app)
-    }
-}
-
-/// The look a window is given: solid while the system reduces transparency.
-fn shown(app: &AppHandle, look: WindowLook) -> WindowLook {
-    if look.material != Material::Solid && transparency_reduced(app) {
-        WindowLook {
-            material: Material::Solid,
-            ..look
-        }
-    } else {
-        look
-    }
-}
-
-/// Whether the system's "Reduce transparency" is on, as AppKit says on the
-/// main thread: read there directly, or waited for from another thread.
-#[cfg(target_os = "macos")]
-fn transparency_reduced(app: &AppHandle) -> bool {
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    use objc2::runtime::{AnyObject, Bool};
-    use objc2::{class, msg_send, MainThreadMarker};
-
-    fn read() -> bool {
-        // SAFETY: called on the main thread; the shared NSWorkspace lives as
-        // long as the app.
-        unsafe {
-            let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
-            if workspace.is_null() {
-                return false;
-            }
-            let reduced: Bool =
-                msg_send![&*workspace, accessibilityDisplayShouldReduceTransparency];
-            reduced.as_bool()
-        }
-    }
-
-    if MainThreadMarker::new().is_some() {
-        return read();
-    }
-    let (sender, receiver) = mpsc::channel();
-    if app
-        .run_on_main_thread(move || {
-            let _ = sender.send(read());
-        })
-        .is_err()
-    {
-        return false;
-    }
-    receiver
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap_or(false)
-}
-
-// Elsewhere the page reads the system's setting itself (WebView2 answers
-// `prefers-reduced-transparency`) and asks for solid.
-#[cfg(not(target_os = "macos"))]
-fn transparency_reduced(_app: &AppHandle) -> bool {
-    false
 }
 
 fn apply(window: &WebviewWindow, look: WindowLook) -> tauri::Result<()> {

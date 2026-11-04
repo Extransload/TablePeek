@@ -341,11 +341,6 @@ select {
   color: var(--ink);
 }
 
-.spinner.tab-running {
-  flex: none;
-  color: var(--accent);
-}
-
 .workbench {
   flex: 1;
   min-height: 0;
@@ -1941,10 +1936,8 @@ select {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .conn-state-dot.connecting {
-    animation: none;
-  }
+html.reduce-motion .conn-state-dot.connecting {
+  animation: none;
 }
 
 .conn-menu {
@@ -3875,10 +3868,6 @@ input[type="color"]::-webkit-color-swatch {
   animation: tablepeek-delayed-in var(--motion-fast) ease var(--loading-delay) both;
 }
 
-.result-loading .spinner {
-  color: var(--accent);
-}
-
 .result-loading button {
   height: 20px;
   margin-right: -5px;
@@ -3911,19 +3900,14 @@ input[type="color"]::-webkit-color-swatch {
   animation: tablepeek-delayed-in var(--motion-fast) ease var(--loading-delay) both;
 }
 
-.file-pick-pending .spinner {
-  color: var(--accent);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+/* Settings → Appearance → Reduce motion (never the system's preference). */
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
@@ -5552,10 +5536,8 @@ button.pending-apply {
   white-space: nowrap;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .hover-tooltip {
-    animation: none;
-  }
+html.reduce-motion .hover-tooltip {
+  animation: none;
 }
 
 /* Header connection tab close button */
@@ -6085,10 +6067,8 @@ button.cm-tunnel.active {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .cm-reveal {
-    animation: none;
-  }
+html.reduce-motion .cm-reveal {
+  animation: none;
 }
 
 .cm-foot {
@@ -7242,18 +7222,16 @@ button.update-pill::after {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  button.update-pill,
-  button.update-pill svg,
-  .update-pill-word,
-  .update-pill-error {
-    animation: none;
-  }
+html.reduce-motion button.update-pill,
+html.reduce-motion button.update-pill svg,
+html.reduce-motion .update-pill-word,
+html.reduce-motion .update-pill-error {
+  animation: none;
+}
 
-  button.update-pill::before,
-  button.update-pill::after {
-    display: none;
-  }
+html.reduce-motion button.update-pill::before,
+html.reduce-motion button.update-pill::after {
+  display: none;
 }
 
 .update-how-modal {
@@ -8087,10 +8065,8 @@ button.launcher-welcome-demo:hover .launcher-welcome-demo-arrow {
   translate: 3px 0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .launcher-welcome-actions button.primary {
-    translate: none;
-  }
+html.reduce-motion .launcher-welcome-actions button.primary {
+  translate: none;
 }
 
 @media (max-width: 640px) {
@@ -9959,8 +9935,7 @@ button.schema-more {
   padding: 16px 10px;
 }
 
-/* A running tab's spinner takes its kind icon's place, so the title doesn't
-   move; both wait out the delay, so a quick load leaves the icon alone. */
+/* A tab's kind icon. */
 .tab-icon {
   position: relative;
   display: inline-flex;
@@ -9969,15 +9944,106 @@ button.schema-more {
   justify-content: center;
 }
 
-.tab-icon .spinner.tab-running {
-  position: absolute;
-  animation:
-    tablepeek-spin 0.72s linear infinite,
-    tablepeek-delayed-in var(--motion-fast) ease-out var(--loading-delay) both;
+/* ── Gauges: a box that waits fills from the left (components/Gauge.tsx) ── */
+
+/* Without weight, so a host placed absolutely or fixed keeps its place. */
+:where(.gauge-host) {
+  position: relative;
+  isolation: isolate;
 }
 
-.tab-icon:has(.tab-running) .tab-kind {
-  animation: tablepeek-delayed-out var(--motion-fast) ease-out var(--loading-delay) both;
+/* Behind the host's contents, over its background, in its corners. */
+.gauge {
+  --gauge: var(--gauge-color, var(--accent));
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.gauge[data-phase="error"] {
+  --gauge: var(--error);
+}
+
+/* A faint tint, deepening toward the leading edge, so the text over it stays
+   easy to read. Moved whole (translateX), so the edge keeps its shape. */
+.gauge-fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--gauge) 11%, transparent),
+    color-mix(in srgb, var(--gauge) 19%, transparent) calc(100% - 40px),
+    color-mix(in srgb, var(--gauge) 32%, transparent)
+  );
+  transform: translateX(-100%);
+  will-change: transform;
+}
+
+.gauge-fill::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: color-mix(in srgb, var(--gauge) 70%, transparent);
+  box-shadow: 0 0 8px 1px color-mix(in srgb, var(--gauge) 40%, transparent);
+  content: "";
+}
+
+/* A glint running into the edge, so a fill creeping late in a long wait
+   still looks alive. */
+.gauge-fill::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 56px;
+  background: linear-gradient(to right, transparent, color-mix(in srgb, var(--gauge) 30%, transparent));
+  opacity: 0;
+  content: "";
+}
+
+.gauge[data-phase="busy"] .gauge-fill::before {
+  animation: gauge-glint 1.5s var(--ease-in-out) infinite;
+}
+
+@keyframes gauge-glint {
+  0% {
+    opacity: 0;
+    transform: translateX(-70%);
+  }
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+}
+
+.gauge-flash {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--error) 24%, transparent);
+  opacity: 0;
+}
+
+/* On a filled button the gauge is drawn in the button's own text colour. */
+button.primary > .gauge {
+  --gauge: currentColor;
+}
+
+/* Reduce motion: a still, half-filled tint while busy (Gauge.tsx), no glint. */
+html.reduce-motion .gauge-fill::before {
+  animation: none;
+}
+
+html.reduce-motion .gauge-fill::after {
+  box-shadow: none;
 }
 
 /* Buttons disabled only while a load runs dim once it has lasted the delay. */
@@ -10207,28 +10273,13 @@ input.structure-name:disabled {
   opacity: 1;
 }
 
-/* A far page jump or a count the server does in steps: its progress and stop. */
+/* A far page jump or a count the server does in steps: its progress (a
+   gauge filling the status) and stop. */
 .data-toolbar .step-progress {
+  align-self: stretch;
+  min-width: 140px;
+  border-radius: var(--r-sm);
   color: var(--ink);
-}
-
-.data-toolbar .step-progress-bar {
-  width: 72px;
-  height: 4px;
-  border: 0;
-  border-radius: 2px;
-  background: var(--hover-fill);
-  accent-color: var(--accent);
-}
-
-.data-toolbar .step-progress-bar::-webkit-progress-bar {
-  border-radius: 2px;
-  background: var(--hover-fill);
-}
-
-.data-toolbar .step-progress-bar::-webkit-progress-value {
-  border-radius: 2px;
-  background: var(--accent);
 }
 
 .page-label {
@@ -11452,11 +11503,9 @@ button.driver-tile.selected {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .er-world.animate,
-  .er-card {
-    transition: none;
-  }
+html.reduce-motion .er-world.animate,
+html.reduce-motion .er-card {
+  transition: none;
 }
 
 /* Chart and Pivot views of a result: their settings in a bar along the top

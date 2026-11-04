@@ -12,7 +12,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
-import { ChevronDownIcon, CloseIcon, CodeIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, RefreshIcon, TableIcon, TrashIcon } from "../../../components/icons";
+import { ChevronDownIcon, CloseIcon, CodeIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, RefreshIcon, StopIcon, TableIcon, TrashIcon } from "../../../components/icons";
+import { Gauge, useTabWork, type GaugeOutcome } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
 import { phraseError, say, t, type Phrase } from "../../../i18n";
@@ -175,6 +176,8 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
   const [view, setView] = useState<DocView>(remembered?.view ?? "cards");
   const [name, setName] = useState(remembered?.name ?? "");
   const [running, setRunning] = useState<"run" | "explain" | null>(null);
+  // Whether the last run or plan was stopped, so its gauge drains.
+  const [stopped, setStopped] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [tableSort, setTableSort] = useState<BsonDocument | null>(null);
@@ -452,6 +455,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
     const controller = new AbortController();
     runController.current = controller;
     setRunning(kind);
+    setStopped(false);
     return controller.signal;
   };
 
@@ -697,6 +701,10 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
     );
   }
 
+  // The collection's tab fills while the pipeline runs (or is explained).
+  const runOutcome: GaugeOutcome = stopped ? "cancel" : outcome?.kind === "error" ? "error" : "ok";
+  useTabWork(tabKey, running !== null, runOutcome);
+
   return (
     <div className="mg-pane mg-agg">
       <div className="mg-agg-bar">
@@ -786,7 +794,15 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
           <DownloadIcon size={10} />
           {t("내보내기…")}
         </button>
-        <button type="button" className="mg-qbtn" title={t("이 파이프라인의 실행 계획")} disabled={running !== null} onClick={() => void explainAll()}>
+        <button
+          type="button"
+          className="mg-qbtn gauge-host"
+          title={t("이 파이프라인의 실행 계획")}
+          disabled={running !== null}
+          aria-busy={running === "explain"}
+          onClick={() => void explainAll()}
+        >
+          <Gauge busy={running === "explain"} outcome={runOutcome} />
           <PlanIcon size={10} />
           {t("계획")}
         </button>
@@ -797,13 +813,15 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
             onClick={() => {
               runController.current?.abort();
               setRunning(null);
+              setStopped(true);
             }}
           >
-            <Spinner size={10} />
+            <StopIcon size={9} />
             {t("정지")}
           </button>
         ) : null}
-        <button type="button" className="primary mg-find" title={t("파이프라인 실행 (⌘↩)")} disabled={running !== null} onClick={onRun}>
+        <button type="button" className="primary mg-find gauge-host" title={t("파이프라인 실행 (⌘↩)")} disabled={running !== null} aria-busy={running === "run"} onClick={onRun}>
+          <Gauge busy={running === "run"} outcome={runOutcome} />
           <PlayIcon size={9} />
           {t("실행")}
           <span className="split-hint">⌘↩</span>
@@ -1262,8 +1280,8 @@ function SaveViewDialog({ ns, pipeline, host, onSaved, onClose }: { ns: Namespac
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="submit" className="primary" disabled={busy || viewName === ""}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="submit" className="primary gauge-host" disabled={busy || viewName === ""} aria-busy={busy}>
+            <Gauge busy={busy} outcome={failure !== null || nameTaken ? "error" : "ok"} />
             {t("만들기")}
           </button>
         </div>

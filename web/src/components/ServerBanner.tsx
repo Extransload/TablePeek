@@ -3,7 +3,7 @@ import { t } from "../i18n";
 import { store } from "../store";
 import { FieldError, fieldErrorProps } from "./ErrorNotice";
 import { AlertIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 
 // The one place that says the TablePeek server can't be reached (every panel
 // leaves that error to it): while it is down, when the next try comes and a
@@ -85,8 +85,10 @@ export function ServerBanner() {
               : t("서버를 껐다면 다시 실행하세요.")}
         </span>
       </div>
-      <button type="button" disabled={server.checking} onClick={() => void store.reconnect()}>
-        {server.checking ? <Spinner size={11} /> : null}
+      <button type="button" className="gauge-host" disabled={server.checking} aria-busy={server.checking} onClick={() => void store.reconnect()}>
+        {/* A try that ends with this banner still up has failed: a server
+            back up takes the banner away. */}
+        <Gauge busy={server.checking} outcome="error" />
         {t("다시 연결")}
       </button>
     </section>

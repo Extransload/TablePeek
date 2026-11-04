@@ -10,7 +10,7 @@ import { t } from "../i18n";
 import { store, type CellRef } from "../store";
 import { ErrorNotice, FieldError, fieldErrorProps } from "./ErrorNotice";
 import { Select } from "./Select";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 
 export interface BinaryCellOptions {
   conn: string;
@@ -237,8 +237,18 @@ function BinaryCellModal({ options, onClose }: { options: BinaryCellOptions; onC
             <span className="binary-cell-label">{t("지금 값")}</span>
             <span>{shown === null ? "NULL" : size !== null ? bytesText(size) : t("알 수 없음")}</span>
             <span className="spacer" />
-            <button type="button" disabled={busy !== null || shown === null} onClick={() => void download()}>
-              {busy?.kind === "download" ? <Spinner size={10} /> : null}
+            <button
+              type="button"
+              className="gauge-host"
+              disabled={busy !== null || shown === null}
+              aria-busy={busy?.kind === "download"}
+              onClick={() => void download()}
+            >
+              <Gauge
+                busy={busy?.kind === "download"}
+                value={busy?.kind === "download" && percent !== null ? percent / 100 : null}
+                outcome={error !== null ? "error" : "ok"}
+              />
               {t("전체 값 내려받기")}
             </button>
           </div>
@@ -323,11 +333,16 @@ function BinaryCellModal({ options, onClose }: { options: BinaryCellOptions; onC
           </button>
           <button
             type="button"
-            className="primary"
+            className="primary gauge-host"
             disabled={busy !== null || payload === null || payload.size === 0}
+            aria-busy={busy?.kind === "upload"}
             onClick={() => void replace()}
           >
-            {busy?.kind === "upload" ? <Spinner size={10} /> : null}
+            <Gauge
+              busy={busy?.kind === "upload"}
+              value={busy?.kind === "upload" && percent !== null ? percent / 100 : null}
+              outcome={error !== null ? "error" : "ok"}
+            />
             {t("값 바꾸기")}
           </button>
         </div>

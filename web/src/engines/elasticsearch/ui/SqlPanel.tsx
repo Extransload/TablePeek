@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { columnWidthsKey } from "../../../columnWidths";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CloseIcon, CodeIcon, PlayIcon, StopIcon } from "../../../components/icons";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { TableGrid, type TableGridHandle } from "../../../components/TableGrid";
 import type { GridColumnSpec } from "../../../grid/columns";
@@ -390,6 +391,8 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
   const [errorAt, setErrorAt] = useState<{ from: number; to: number } | null>(null);
   const [busy, setBusy] = useState<"run" | "more" | "translate" | null>(null);
   const [translation, setTranslation] = useState<{ query: string; dsl: unknown } | { query: string; error: unknown } | null>(null);
+  // Whether the last run was stopped, so its button drains instead of filling.
+  const [stopped, setStopped] = useState(false);
   const editorRef = useRef<SearchEditorHandle | null>(null);
   const gridRef = useRef<TableGridHandle | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -466,6 +469,7 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
     cursorRef.current = null;
     lastQuery.current = query;
     setBusy("run");
+    setStopped(false);
     setError(null);
     setErrorAt(null);
     sql(host.conn, { query, fetch_size: FETCH_SIZE }, ctl.signal).then(
@@ -546,6 +550,7 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
     controller.current?.abort();
     controller.current = null;
     setBusy(null);
+    setStopped(true);
   }
 
   const source = useMemo(() => (run === null ? null : new SqlRowSource(run.columns, run.rows)), [run]);
@@ -558,8 +563,16 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
         <span className="mg-agg-count">SQL</span>
         <span className="panel-dim">{t("⌘↩ 실행 · 선택한 부분만 실행")}</span>
         <span className="spacer" />
-        <button type="button" className={`mg-qbtn${translation !== null ? " active" : ""}`} disabled={busy !== null} title={t("이 SQL이 되는 Query DSL 보기")} onClick={translate}>
-          {busy === "translate" ? <Spinner size={10} /> : <CodeIcon size={10} />}
+        <button
+          type="button"
+          className={`mg-qbtn gauge-host${translation !== null ? " active" : ""}`}
+          disabled={busy !== null}
+          aria-busy={busy === "translate"}
+          title={t("이 SQL이 되는 Query DSL 보기")}
+          onClick={translate}
+        >
+          <Gauge busy={busy === "translate"} outcome={translation !== null && "error" in translation ? "error" : "ok"} />
+          <CodeIcon size={10} />
           {t("번역")}
         </button>
         {busy === "run" ? (
@@ -568,8 +581,9 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
             {t("멈추기")}
           </button>
         ) : null}
-        <button type="button" className="primary mg-find" disabled={busy !== null} title="⌘↩" onClick={runStatement}>
-          {busy === "run" ? <Spinner size={10} /> : <PlayIcon size={9} />}
+        <button type="button" className="primary mg-find gauge-host" disabled={busy !== null} aria-busy={busy === "run"} title="⌘↩" onClick={runStatement}>
+          <Gauge busy={busy === "run"} outcome={stopped ? "cancel" : error !== null ? "error" : "ok"} />
+          <PlayIcon size={9} />
           {t("실행")}
         </button>
       </div>
@@ -622,8 +636,15 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
           </div>
           <span className="spacer" />
           {run.cursor !== null ? (
-            <button type="button" className="footer-button" disabled={busy !== null} title={t("다음 {count}행을 이어 붙입니다", { count: FETCH_SIZE.toLocaleString() })} onClick={loadMore}>
-              {busy === "more" ? <Spinner size={10} /> : null}
+            <button
+              type="button"
+              className="footer-button gauge-host"
+              disabled={busy !== null}
+              aria-busy={busy === "more"}
+              title={t("다음 {count}행을 이어 붙입니다", { count: FETCH_SIZE.toLocaleString() })}
+              onClick={loadMore}
+            >
+              <Gauge busy={busy === "more"} outcome={error !== null ? "error" : "ok"} />
               <span className="footer-label">{t("더 불러오기")}</span>
             </button>
           ) : (

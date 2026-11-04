@@ -48,13 +48,9 @@ impl WindowLook {
 
 /// How the embedding app gives its windows a look.
 pub trait WindowMaterial: Send + Sync {
-    /// Applies `look` to every window of the app; solid while the system
-    /// reduces transparency. May wait on the app's main thread.
+    /// Applies `look` to every window of the app. May wait on the app's
+    /// main thread.
     fn apply(&self, look: WindowLook) -> Result<(), String>;
-    /// Whether the system's "Reduce transparency" is on: the page can't tell
-    /// in every webview (WebKit doesn't answer the media query). May wait on
-    /// the app's main thread.
-    fn transparency_reduced(&self) -> bool;
 }
 
 #[cfg(test)]

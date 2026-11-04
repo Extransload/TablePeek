@@ -45,7 +45,7 @@ import {
   FileIcon,
   LinkPasteIcon,
 } from "./icons";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 import { Select } from "./Select";
 
 interface ConnectModalProps {
@@ -1171,6 +1171,8 @@ export function ConnectModal({
       (field) => field.advanced === true && (invalid.has(field.key) || String(form.values[field.key] ?? "") !== String(defaults[field.key] ?? "")),
     ) ??
       false);
+  // The button waited on flashes red when its action ends on an error status.
+  const failed = status !== null && status.kind === "error";
 
   return (
     <div
@@ -1505,15 +1507,9 @@ export function ConnectModal({
         <footer className="cm-foot">
           <span className={`cm-status${status !== null && status.kind !== "error" ? ` ${status.kind}` : ""}`} role="status">
             {busy === "test" ? (
-              <>
-                <Spinner size={11} />
-                {t("연결을 테스트하는 중…")}
-              </>
+              t("연결을 테스트하는 중…")
             ) : busy === "connect" ? (
-              <>
-                <Spinner size={11} />
-                {t("연결하는 중…")}
-              </>
+              t("연결하는 중…")
             ) : status !== null && status.kind !== "error" ? (
               <>
                 {status.kind === "ok" ? <CheckIcon size={11} /> : null}
@@ -1523,14 +1519,36 @@ export function ConnectModal({
               <span className="cm-hint">{t("Enter 연결 · ⌘S 저장 · Esc 닫기")}</span>
             )}
           </span>
-          <button type="button" onMouseDown={keepFocus} onClick={() => act("save")} disabled={busy !== null || engine === undefined}>
-            {busy === "save" ? <Spinner size={11} /> : null}
+          <button
+            type="button"
+            className="gauge-host"
+            onMouseDown={keepFocus}
+            onClick={() => act("save")}
+            disabled={busy !== null || engine === undefined}
+            aria-busy={busy === "save"}
+          >
+            <Gauge busy={busy === "save"} outcome={failed ? "error" : "ok"} />
             {t("저장")}
           </button>
-          <button type="button" onMouseDown={keepFocus} onClick={() => act("test")} disabled={busy !== null || engine === undefined}>
+          <button
+            type="button"
+            className="gauge-host"
+            onMouseDown={keepFocus}
+            onClick={() => act("test")}
+            disabled={busy !== null || engine === undefined}
+            aria-busy={busy === "test"}
+          >
+            <Gauge busy={busy === "test"} outcome={failed ? "error" : "ok"} />
             {t("테스트")}
           </button>
-          <button type="submit" className="primary" onMouseDown={keepFocus} disabled={busy !== null || engine === undefined}>
+          <button
+            type="submit"
+            className="primary gauge-host"
+            onMouseDown={keepFocus}
+            disabled={busy !== null || engine === undefined}
+            aria-busy={busy === "connect"}
+          >
+            <Gauge busy={busy === "connect"} outcome={failed ? "error" : "ok"} />
             {openConnId !== null ? t("저장 후 열기") : t("연결 [버튼]")}
           </button>
         </footer>

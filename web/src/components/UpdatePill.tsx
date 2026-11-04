@@ -14,7 +14,7 @@ import {
 import { ContextMenu } from "./ContextMenu";
 import { notifyError } from "./ErrorNotice";
 import { RefreshIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 
 // The desktop app's "Restart to update": shown once the app has downloaded a
 // newer release on its own, arriving with a wash of color. A click installs
@@ -62,7 +62,7 @@ export function UpdatePill({ className }: { className?: string }) {
         // A newer version arrives afresh.
         key={version}
         type="button"
-        className={`update-pill${failure !== null ? " failed" : ""}`}
+        className={`update-pill gauge-host${failure !== null ? " failed" : ""}`}
         title={t("TablePeek {latest}으로 업데이트 (지금 {current})", { latest: version, current: update.current })}
         disabled={busy}
         aria-busy={busy}
@@ -73,7 +73,8 @@ export function UpdatePill({ className }: { className?: string }) {
           setMenu({ x: event.clientX, y: event.clientY });
         }}
       >
-        {busy ? <Spinner size={10} /> : <RefreshIcon size={11} />}
+        <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
+        <RefreshIcon size={11} />
         {/* Keyed by its words, so each new label comes into focus word by word. */}
         <span key={label} className="update-pill-label">
           {label.split(/(\s+)/).map((word, index) =>

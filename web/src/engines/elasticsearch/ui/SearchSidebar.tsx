@@ -11,7 +11,8 @@ import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMe
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { ChevronIcon, EyeIcon, LinkIcon, ListIcon, MoreIcon, SearchIcon } from "../../../components/icons";
 import { RollingNumber } from "../../../components/RollingNumber";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
 import { store } from "../../../store";
@@ -370,7 +371,8 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
         </button>
         <button
           type="button"
-          className="icon-button schema-more"
+          className="icon-button schema-more gauge-host"
+          aria-busy={lists === null && error === null}
           title={t("더 보기")}
           aria-haspopup="menu"
           onClick={(event) => {
@@ -390,7 +392,9 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
             });
           }}
         >
-          {lists === null && error === null ? <Spinner size={11} /> : <MoreIcon size={13} />}
+          {/* Fills while the index lists are read. */}
+          <Gauge busy={lists === null && error === null} outcome={error !== null ? "error" : "ok"} />
+          <MoreIcon size={13} />
         </button>
       </div>
       <div className="schema-list">{content}</div>

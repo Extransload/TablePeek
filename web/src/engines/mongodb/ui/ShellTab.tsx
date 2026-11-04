@@ -14,7 +14,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { PlayIcon } from "../../../components/icons";
 import { ReviewModal } from "../../../components/ReviewModal";
 import { Select } from "../../../components/Select";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge, useTabWork, type GaugeOutcome } from "../../../components/Gauge";
 import { literal, phrase, say, t, type Phrase } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
 import * as api from "../api";
@@ -134,6 +134,9 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
   const [result, setResult] = useState<ShellResult | null>(remembered?.result ?? null);
   const [messages, setMessages] = useState<ShellMessage[]>(remembered?.messages ?? []);
   const [running, setRunning] = useState(false);
+  // Whether the user stopped the run (정지, or declined a confirmation), so
+  // the tab's gauge drains instead of flashing an error.
+  const [cancelled, setCancelled] = useState(false);
   const [errorRange, setErrorRange] = useState<{ from: number; to: number } | null>(null);
   const [collections, setCollections] = useState<string[]>([]);
   const [tablePath, setTablePath] = useState<string[]>([]);
@@ -337,6 +340,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     controllerRef.current = controller;
     setErrorRange(null);
     setRunning(true);
+    setCancelled(false);
     const out: ShellMessage[] = [];
     let last: ShellResult | null = null;
     let lastDb = dbRef.current;
@@ -350,6 +354,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
       const item = review(req, st.source, safeMode);
       if (item !== null && !(await ask(item))) {
         out.push({ source: st.source, ok: false, text: phrase("실행을 취소했습니다"), parse: null, error: null, ms: 0 });
+        setCancelled(true);
         break;
       }
       const started = performance.now();
@@ -400,6 +405,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     previous?.stop();
     setErrorRange(null);
     setRunning(true);
+    setCancelled(false);
     setView("messages");
     setChoices([]);
     const outputs: ScriptOutput[] = [];
@@ -487,6 +493,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
   };
 
   const stop = () => {
+    setCancelled(true);
     controllerRef.current?.abort();
     scriptRef.current?.stop();
   };
@@ -633,6 +640,10 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     });
   };
 
+  // The tab fills while a run goes on; a failed statement or script flashes it.
+  const runOutcome: GaugeOutcome = cancelled ? "cancel" : messages.some((m) => !m.ok) ? "error" : "ok";
+  useTabWork(tabKey, running, runOutcome);
+
   let body;
   if (result === null && messages.length === 0) {
     body = <div className="panel-empty mg-run-hint">{t("쿼리를 실행하세요 (⌘↩)")}</div>;
@@ -768,8 +779,8 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
         <div className="result-body mg-result-body">
           <div className="mg-docbody">{body}</div>
           {running ? (
-            <div className="result-loading" role="status">
-              <Spinner size={12} />
+            <div className="result-loading gauge-host" role="status">
+              <Gauge busy />
               {t("실행 중…")}
             </div>
           ) : null}

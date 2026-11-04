@@ -8,7 +8,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ErrorNotice, FieldError } from "../../../components/ErrorNotice";
 import { PencilIcon, RefreshIcon, SearchIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { t } from "../../../i18n";
 import { JsonSyntaxError, jsonKeys, parseJson, stringifyJson } from "../../mongodb/bson";
 import { AdminModal } from "../../mongodb/ui/AdminModal";
@@ -413,8 +414,8 @@ function SettingsDialog({
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" disabled={busy || problem !== null} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || problem !== null} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("바꾸기")}
           </button>
         </>

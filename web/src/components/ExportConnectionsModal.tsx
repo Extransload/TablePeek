@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { MIN_FILE_PASSWORD } from "../connectionsFile";
 import { t } from "../i18n";
 import { ErrorNotice, FieldError, fieldErrorProps } from "./ErrorNotice";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 
 interface ExportConnectionsModalProps {
   title: string;
@@ -138,8 +138,8 @@ export function ExportConnectionsModal({ title, count, onExport, onClose }: Expo
           <button type="button" onClick={close} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="submit" className="primary" disabled={!ready || busy}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="submit" className="primary gauge-host" disabled={!ready || busy} aria-busy={busy}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("내보내기")}
           </button>
         </div>

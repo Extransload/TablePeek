@@ -34,6 +34,7 @@ import { HomeWelcome } from "./HomeWelcome";
 import { CloseIcon, MoreIcon, PlusIcon, SearchIcon, SettingsIcon } from "./icons";
 import { PromptModal } from "./PromptModal";
 import { Spinner } from "./Spinner";
+import type { GaugeOutcome } from "./Gauge";
 import { UpdatePill } from "./UpdatePill";
 import { DRAG_REGION } from "../titlebar";
 
@@ -63,6 +64,8 @@ export interface NewConnectionOptions {
 interface HomeScreenProps {
   conns: ConnSummary[];
   busySaved: string | null;
+  // How the last connect of a saved connection ended, for its row's gauge.
+  savedOutcome: { id: string; outcome: GaugeOutcome } | null;
   onOpenConn(id: string): void;
   onOpenNewWindow(id: string): void;
   onCloseConn(id: string): void;
@@ -84,6 +87,7 @@ interface HomeScreenProps {
 export function HomeScreen({
   conns,
   busySaved,
+  savedOutcome,
   onOpenConn,
   onOpenNewWindow,
   onCloseConn,
@@ -462,6 +466,7 @@ export function HomeScreen({
         metaById={metaById}
         query={query}
         busySaved={busySaved}
+        savedOutcome={savedOutcome}
         containerRef={listRef}
         onExitTop={() => searchRef.current?.focus()}
         onActivateSaved={activateSaved}

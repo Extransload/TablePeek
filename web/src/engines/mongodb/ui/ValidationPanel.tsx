@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
+import { Gauge } from "../../../components/Gauge";
 import { LoadingState, Spinner } from "../../../components/Spinner";
 import { phrase, say, t, type Phrase } from "../../../i18n";
 import { aggregate, command, isAbort, listCollections, toNumber, type Namespace } from "../api";
@@ -387,8 +388,16 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
           </Select>
         </label>
         <span className="spacer" />
-        <button type="button" className="mg-qbtn" disabled={busy !== null} title={t("문서 {count}개를 표본으로 $jsonSchema 초안을 만듭니다", { count: PREVIEW_SAMPLE.toLocaleString() })} onClick={() => void makeDraft()}>
-          {busy === "draft" ? <Spinner size={10} /> : <BracesIcon size={10} />}
+        <button
+          type="button"
+          className="mg-qbtn gauge-host"
+          disabled={busy !== null}
+          aria-busy={busy === "draft"}
+          title={t("문서 {count}개를 표본으로 $jsonSchema 초안을 만듭니다", { count: PREVIEW_SAMPLE.toLocaleString() })}
+          onClick={() => void makeDraft()}
+        >
+          <Gauge busy={busy === "draft"} outcome={actionError !== null ? "error" : "ok"} />
+          <BracesIcon size={10} />
           {t("현재 데이터로 초안 만들기")}
         </button>
         <button
@@ -407,8 +416,16 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
           {t("되돌리기")}
         </button>
         {readOnly ? null : (
-          <button type="button" className="primary mg-find" disabled={!rule.ok || !dirty || busy !== null} title={t("collMod로 적용 (⌘↩)")} onClick={() => void apply()}>
-            {busy === "apply" ? <Spinner size={9} /> : <CheckIcon size={9} />}
+          <button
+            type="button"
+            className="primary mg-find gauge-host"
+            disabled={!rule.ok || !dirty || busy !== null}
+            aria-busy={busy === "apply"}
+            title={t("collMod로 적용 (⌘↩)")}
+            onClick={() => void apply()}
+          >
+            <Gauge busy={busy === "apply"} outcome={actionError !== null ? "error" : "ok"} />
+            <CheckIcon size={9} />
             {t("적용")}
           </button>
         )}

@@ -11,8 +11,8 @@
 // system's material (or a plain blur) behind the window, asked for through
 // the server (PUT /api/window), since the page can't reach its window. A
 // server whose pages live in browser tabs says its windows can't be
-// see-through. "Reduce transparency" in the system's settings makes every
-// material solid.
+// see-through. The picked material alone decides: the system's "Reduce
+// transparency" isn't followed.
 
 import { authToken } from "./token";
 
@@ -42,13 +42,8 @@ const ENDPOINT = "/api/window";
 // Changes this close together (a slider dragged) reach the window as one.
 const WINDOW_DELAY_MS = 60;
 
-// WebKit doesn't answer this query (webkit.org/b/175497): the desktop app
-// reads the system's setting itself and the server passes it on.
-const reduced = window.matchMedia("(prefers-reduced-transparency: reduce)");
 // Whether this page's window can be see-through: null until the server says.
 let translucentWindow: boolean | null = null;
-// The system reduces transparency, as the desktop app reads it.
-let reducedBySystem = false;
 let asked = false;
 const listeners = new Set<() => void>();
 // The look last sent (or on its way), and the next one to send.
@@ -64,18 +59,7 @@ function notify(): void {
   }
 }
 
-reduced.addEventListener("change", notify);
-// "Reduce transparency" may have been changed in the system's settings while
-// the app was in the back: asked again as a desktop window comes forward.
-window.addEventListener("focus", () => {
-  if (translucentWindow === true) {
-    void askWindow();
-  }
-});
-
-// Called when what the material comes out as may have changed: the server
-// answered whether the window can be see-through, or the system's "reduce
-// transparency" was turned on or off.
+// Called when the server answers whether the window can be see-through.
 export function subscribeMaterial(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -87,18 +71,9 @@ export function windowTranslucent(): boolean | null {
   return translucentWindow;
 }
 
-export function transparencyReduced(): boolean {
-  return reduced.matches || reducedBySystem;
-}
-
-// The material drawn: solid while the system reduces transparency.
-export function effectiveMaterial(picks: MaterialPicks): Material {
-  return transparencyReduced() ? "solid" : picks.material;
-}
-
 // Whether the page's own background is translucent: a see-through window.
 export function seeThrough(picks: MaterialPicks): boolean {
-  return translucentWindow === true && effectiveMaterial(picks) !== "solid";
+  return translucentWindow === true && picks.material !== "solid";
 }
 
 function rgba(color: string, alpha: number): string {
@@ -129,7 +104,7 @@ export function seeThroughColors<C extends Omit<MaterialColors, "mode">>(colors:
 // window keeps the system's appearance, which the page follows.
 export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, followsSystem: boolean): void {
   const root = document.documentElement;
-  const material = effectiveMaterial(picks);
+  const material = picks.material;
   root.dataset.material = material;
   root.classList.toggle("see-through", seeThrough(picks));
   if (material !== "solid") {
@@ -157,20 +132,15 @@ export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, foll
 
 async function askWindow(): Promise<void> {
   let translucent = false;
-  let reducedNow = false;
   try {
     const response = await fetch(ENDPOINT, { headers: { "x-tablepeek-token": authToken } });
-    const body = response.ok
-      ? ((await response.json()) as { translucent?: unknown; reducedTransparency?: unknown })
-      : null;
+    const body = response.ok ? ((await response.json()) as { translucent?: unknown }) : null;
     translucent = body?.translucent === true;
-    reducedNow = body?.reducedTransparency === true;
   } catch {}
-  if (translucent === translucentWindow && reducedNow === reducedBySystem) {
+  if (translucent === translucentWindow) {
     return;
   }
   translucentWindow = translucent;
-  reducedBySystem = reducedNow;
   notify();
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { reducedMotion, subscribeMotion } from "../motion";
 import { palette, type ValueKind } from "../palette";
 
 // The home's backdrop: a table laid out as a floor running to the horizon,
@@ -482,11 +483,10 @@ export function HomeBackdrop() {
     const canvas = canvasRef.current!;
     const host = canvas.parentElement!;
     const field = new Field(canvas);
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     let onScreen = true;
 
     const update = () => {
-      if (reduced.matches) {
+      if (reducedMotion()) {
         field.stop();
         field.still();
       } else if (onScreen && document.visibilityState === "visible") {
@@ -503,7 +503,7 @@ export function HomeBackdrop() {
     };
     const themed = () => {
       field.themeChanged();
-      if (reduced.matches) {
+      if (reducedMotion()) {
         field.still();
       }
     };
@@ -531,7 +531,7 @@ export function HomeBackdrop() {
     field.resize();
     update();
     document.addEventListener("visibilitychange", update);
-    reduced.addEventListener("change", update);
+    const unsubscribeMotion = subscribeMotion(update);
     window.addEventListener("tablepeek:theme", themed);
     host.addEventListener("pointermove", move);
     host.addEventListener("pointerdown", down);
@@ -541,7 +541,7 @@ export function HomeBackdrop() {
       sizes.disconnect();
       sight.disconnect();
       document.removeEventListener("visibilitychange", update);
-      reduced.removeEventListener("change", update);
+      unsubscribeMotion();
       window.removeEventListener("tablepeek:theme", themed);
       host.removeEventListener("pointermove", move);
       host.removeEventListener("pointerdown", down);

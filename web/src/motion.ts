@@ -3,7 +3,9 @@ import { useLayoutEffect, type RefObject } from "react";
 // Motion CSS can't express alone: things moving from where they were (FLIP),
 // things leaving after React has dropped them (ghosts), springs played from
 // script. The values mirror the tokens in styles.css (--motion-*, --ease-*);
-// under reduced motion everything here jumps straight to its end.
+// with Settings → Appearance → Reduce motion on (html.reduce-motion, set by
+// applySettings) everything here jumps straight to its end. The system's
+// preference isn't read: the setting alone decides.
 
 export const DURATION = {
   instant: 80,
@@ -29,10 +31,14 @@ export const EASE = {
   springBouncy: linearEasing ? SPRING_BOUNCY : "cubic-bezier(0.34, 1.56, 0.64, 1)",
 } as const;
 
-const reducedQuery = typeof window !== "undefined" ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
-
 export function reducedMotion(): boolean {
-  return reducedQuery?.matches ?? false;
+  return document.documentElement.classList.contains("reduce-motion");
+}
+
+// Called as Reduce motion is turned on or off.
+export function subscribeMotion(listener: () => void): () => void {
+  window.addEventListener("tablepeek:motion", listener);
+  return () => window.removeEventListener("tablepeek:motion", listener);
 }
 
 // Element.animate, skipped under reduced motion (the element simply is where

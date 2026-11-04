@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CloseIcon, PlayIcon } from "../../../components/icons";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { t } from "../../../i18n";
 import { jsonKeys } from "../../mongodb/bson";
@@ -433,8 +433,9 @@ export function AnalyzePanel({ host, index, kind, refreshSeq }: IndexPanelProps)
           {t("단계별 (explain)")}
         </label>
         <span className="spacer" />
-        <button type="button" className="primary mg-find" disabled={problem !== null || busy} title={problem ?? "⌘↩"} onClick={run}>
-          {busy ? <Spinner size={10} /> : <PlayIcon size={9} />}
+        <button type="button" className="primary mg-find gauge-host" disabled={problem !== null || busy} aria-busy={busy} title={problem ?? "⌘↩"} onClick={run}>
+          <Gauge busy={busy} outcome={outcome !== null && "error" in outcome ? "error" : "ok"} />
+          <PlayIcon size={9} />
           {t("분석")}
         </button>
       </div>

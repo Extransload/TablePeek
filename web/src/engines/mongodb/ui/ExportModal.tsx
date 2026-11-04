@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "../../../components/Select";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { TextBlobBuilder, downloadBlob, exportBaseName } from "../../../export";
 import { t } from "../../../i18n";
@@ -224,8 +225,12 @@ export function ExportModal(props: ExportModalProps) {
               {finished ? t("닫기") : t("취소")}
             </button>
           )}
-          <button type="button" className="primary" disabled={running || problem !== null || (format === "csv" && fields === null)} onClick={() => void run()}>
-            {running ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={running || problem !== null || (format === "csv" && fields === null)} aria-busy={running} onClick={() => void run()}>
+            <Gauge
+              busy={running}
+              value={running && percent !== null ? percent / 100 : null}
+              outcome={progress?.state === "error" ? "error" : progress?.state === "cancelled" ? "cancel" : "ok"}
+            />
             {finished ? t("다시 내려받기") : t("내려받기")}
           </button>
         </>

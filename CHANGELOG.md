@@ -4,6 +4,15 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Reduce motion setting** (Settings → Appearance → Display, off by default). On, every transition and animation is instant: tabs, dialogs, menus, home drag and drop, the schema tree, counts, and the home backdrop as a still frame; turning it on or off applies at once in every window.
+
+### Changed
+
+- **Motion and transparency follow TablePeek's settings only.** The system's "Reduce motion" no longer changes anything; use the new Reduce motion setting. The system's "Reduce transparency" no longer forces Solid: the Material setting alone decides. The desktop app no longer reads it, and `GET /api/window` no longer returns `reducedTransparency`.
+- **Loading shows as a gauge filling the box that waits, instead of a spinner.** A saved connection's row on home (and an open connection's tab in the top bar while it reconnects or is entered) fills with the connection's color while it connects; a query tab, a table tab while its rows load and MongoDB/Elasticsearch tabs while they run fill in the connection's color or the accent, background tabs included; buttons that wait (Apply changes, dialog buttons, refresh and delete), the "Running…" pill over results, the table count and a step-by-step page walk or count (with its real progress) fill the same way. Without known progress the gauge eases toward 90% and keeps creeping with a glint at its edge; it races to full on success, flashes red and drains on an error, and drains on a cancel. Under Reduce motion a busy box is half tinted, without movement.
+
 ## [0.2.0] - 2026-11-04
 
 A desktop app for macOS and Windows (also through Homebrew) that updates itself, settings rebuilt the way Tern does them, Tern's themes and color tables, a large JSON explorer, live setting previews, and motion throughout.

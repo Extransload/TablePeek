@@ -2836,8 +2836,7 @@ async fn ui_state_put(
 }
 
 /// Whether this server's windows can be see-through: only when the app that
-/// embeds it applies a material (see window_material); and whether the
-/// system reduces transparency, which only that app can read.
+/// embeds it applies a material (see window_material).
 async fn window_get(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2845,17 +2844,9 @@ async fn window_get(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    let reduced = match state.window_material.clone() {
-        // The app reads it on its main thread: waited for off the runtime.
-        Some(material) => tokio::task::spawn_blocking(move || material.transparency_reduced())
-            .await
-            .unwrap_or(false),
-        None => false,
-    };
-    Ok(Json(json!({
-        "translucent": state.window_material.is_some(),
-        "reducedTransparency": reduced,
-    })))
+    Ok(Json(
+        json!({ "translucent": state.window_material.is_some() }),
+    ))
 }
 
 /// Gives every window of the embedding app the look the page picked.
@@ -9475,9 +9466,6 @@ mod tests {
                 self.0.lock().unwrap().push(look);
                 Ok(())
             }
-            fn transparency_reduced(&self) -> bool {
-                true
-            }
         }
         let dir = temp_dir("window-routes");
         let headers = test_headers();
@@ -9488,10 +9476,7 @@ mod tests {
         let read = window_get(State(plain.clone()), headers.clone())
             .await
             .unwrap();
-        assert_eq!(
-            read.0,
-            json!({ "translucent": false, "reducedTransparency": false })
-        );
+        assert_eq!(read.0, json!({ "translucent": false }));
         let refused = window_put(
             State(plain),
             headers.clone(),
@@ -9510,10 +9495,7 @@ mod tests {
         let read = window_get(State(desktop.clone()), headers.clone())
             .await
             .unwrap();
-        assert_eq!(
-            read.0,
-            json!({ "translucent": true, "reducedTransparency": true })
-        );
+        assert_eq!(read.0, json!({ "translucent": true }));
         let applied = window_put(
             State(desktop.clone()),
             headers.clone(),

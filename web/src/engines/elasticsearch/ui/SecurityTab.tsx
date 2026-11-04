@@ -7,7 +7,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { KeyIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { t, tServer } from "../../../i18n";
 import { stringifyJson } from "../../mongodb/bson";
 import { isAbort, securityDelete, securityList, securityOverview, userEnabled, type SecurityEntry, type SecurityKind, type SecurityOverview } from "../api";
@@ -291,8 +292,15 @@ function SectionView({ ctx, kind, refreshSeq }: { ctx: SecurityContext; kind: Se
     if (kind === "api_keys") {
       const id = textOf(entry.id);
       return writable && entry.invalidated !== true ? (
-        <button type="button" className="icon-text-button mg-danger-text" disabled={busy} onClick={() => void invalidate(entry)}>
-          {working === `invalidate:${id}` ? <Spinner size={10} /> : <TrashIcon size={10} />}
+        <button
+          type="button"
+          className="icon-text-button mg-danger-text gauge-host"
+          disabled={busy}
+          aria-busy={working === `invalidate:${id}`}
+          onClick={() => void invalidate(entry)}
+        >
+          <Gauge busy={working === `invalidate:${id}`} />
+          <TrashIcon size={10} />
           {t("무효화")}
         </button>
       ) : null;
@@ -319,14 +327,27 @@ function SectionView({ ctx, kind, refreshSeq }: { ctx: SecurityContext; kind: Se
           </button>
         ) : null}
         {kind === "users" && writable && overview.userEnabled.available ? (
-          <button type="button" className="icon-text-button" disabled={busy} onClick={() => void switchUser(entry, entry.enabled === false)}>
-            {working === `enabled:${entry.name}` ? <Spinner size={10} /> : null}
+          <button
+            type="button"
+            className="icon-text-button gauge-host"
+            disabled={busy}
+            aria-busy={working === `enabled:${entry.name}`}
+            onClick={() => void switchUser(entry, entry.enabled === false)}
+          >
+            <Gauge busy={working === `enabled:${entry.name}`} />
             {entry.enabled === false ? t("켜기") : t("끄기")}
           </button>
         ) : null}
         {writable && !locked ? (
-          <button type="button" className="icon-text-button mg-danger-text" disabled={busy} onClick={() => void remove(entry)}>
-            {working === `delete:${entry.name}` ? <Spinner size={10} /> : <TrashIcon size={10} />}
+          <button
+            type="button"
+            className="icon-text-button mg-danger-text gauge-host"
+            disabled={busy}
+            aria-busy={working === `delete:${entry.name}`}
+            onClick={() => void remove(entry)}
+          >
+            <Gauge busy={working === `delete:${entry.name}`} />
+            <TrashIcon size={10} />
             {t("삭제")}
           </button>
         ) : null}

@@ -19,7 +19,8 @@ import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { RollingNumber } from "./RollingNumber";
-import { LoadingState, Spinner } from "./Spinner";
+import { LoadingState } from "./Spinner";
+import { Gauge } from "./Gauge";
 import { TableInfoCard } from "./TableInfoCard";
 import { playTreeMove, prepareTreeMove, type TreeMove } from "./treeMotion";
 import { TABLE_COLORS, tableColorValue } from "../tableColors";
@@ -855,7 +856,7 @@ export function SchemaSidebar({
             setMoreMenu({ x: rect.left, y: rect.bottom + 4 });
           }}
         >
-          {loading ? <Spinner size={11} /> : <MoreIcon size={13} />}
+          <MoreIcon size={13} />
         </button>
       </div>
       <div className="schema-list" ref={listRef}>
@@ -868,9 +869,12 @@ export function SchemaSidebar({
         ) : (
           <>
             <div
-              className="schema-section-head"
+              className="schema-section-head gauge-host"
+              aria-busy={loading}
               onClick={(event) => toggleSection("tables", true, event.currentTarget)}
             >
+              {/* Fills while the schema is read again. */}
+              <Gauge busy={loading} outcome={error ? "error" : "ok"} />
               <span className={`schema-toggle${tablesOpen ? " open" : ""}`}>
                 <ChevronIcon size={10} />
               </span>

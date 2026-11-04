@@ -12,6 +12,7 @@ import { PlayIcon, RefreshIcon, StopIcon } from "../../../components/icons";
 import { useThemeColors } from "../../../components/ResultChart";
 import { ReviewModal } from "../../../components/ReviewModal";
 import { Select } from "../../../components/Select";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
@@ -657,8 +658,8 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
                   <input className="mg-input mg-num mono" type="number" min={0} value={slowms} onChange={(event) => setSlowms(event.target.value)} />
                 </label>
               ) : null}
-              <button type="button" className="mg-qbtn" disabled={busy || profile === null} onClick={() => void applyLevel(Number(level))}>
-                {busy ? <Spinner size={10} /> : null}
+              <button type="button" className="mg-qbtn gauge-host" disabled={busy || profile === null} aria-busy={busy} onClick={() => void applyLevel(Number(level))}>
+                <Gauge busy={busy} />
                 {t("수준 바꾸기")}
               </button>
               {profile !== null && profile.level > 0 ? (

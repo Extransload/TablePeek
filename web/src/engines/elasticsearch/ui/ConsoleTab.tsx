@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { writeClipboard } from "../../../clipboard";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { CopyIcon, HistoryIcon, PlayIcon } from "../../../components/icons";
+import { Gauge, useTabWork, type GaugeOutcome } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
 import { t } from "../../../i18n";
@@ -689,6 +690,11 @@ export function ConsoleTab({ host, tabKey, connKey, text, onTextChange, active }
   };
 
   const runningIndex = running ? results.length : 0;
+  // The run's tab fills while it runs; its last request says how it ended.
+  const lastKind = results[results.length - 1]?.outcome.kind;
+  const runOutcome: GaugeOutcome =
+    lastKind === "failed" || lastKind === "refused" ? "error" : lastKind === "stopped" || lastKind === "declined" ? "cancel" : "ok";
+  useTabWork(tabKey, running, runOutcome);
 
   return (
     <div className={`mg-root es-console${narrow ? " narrow" : ""}`} ref={rootRef}>
@@ -852,8 +858,8 @@ export function ConsoleTab({ host, tabKey, connKey, text, onTextChange, active }
         <div className="result-body es-console-body">
           {responseBody}
           {running ? (
-            <div className="result-loading" role="status">
-              <Spinner size={12} />
+            <div className="result-loading gauge-host" role="status">
+              <Gauge busy />
               {results.length > 1 ? t("실행 중… ({n}번째)", { n: runningIndex }) : t("실행 중…")}
             </div>
           ) : null}

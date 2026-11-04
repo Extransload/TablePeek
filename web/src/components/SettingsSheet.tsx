@@ -16,7 +16,7 @@ import { type TableSlot } from "../termTheme";
 import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
 import { fontGroups, fontListLabel, SYSTEM_CODE_FONT, SYSTEM_UI_FONT, type InstalledFont } from "../fonts";
 import { store } from "../store";
-import { MATERIAL_BLUR_MAX, subscribeMaterial, transparencyReduced, windowTranslucent, type Material } from "../material";
+import { MATERIAL_BLUR_MAX, subscribeMaterial, windowTranslucent, type Material } from "../material";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "../panelEdge";
 import {
   activeThemeId,
@@ -148,12 +148,6 @@ const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: "system", label: "시스템" },
 ];
 
-// The material's state, to word its note: whether this window can be
-// see-through, and whether the system reduces transparency.
-function materialState(): string {
-  return `${windowTranslucent()}:${transparencyReduced()}`;
-}
-
 // Which part of the sheet has the keys, for the hints along its foot.
 interface FocusHint {
   esc: string;
@@ -181,7 +175,8 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   const [noMatch, setNoMatch] = useState(false);
   const [hint, setHint] = useState<FocusHint>({ esc: "", changed: false });
   const [width, setWidth] = useState<number | null>(() => storedWidth(SHEET_WIDTH_KEY, clampSheet));
-  const material = useSyncExternalStore(subscribeMaterial, materialState);
+  // Whether this window can be see-through, to word the material's note.
+  const translucent = useSyncExternalStore(subscribeMaterial, windowTranslucent);
   // The pickers redraw as themes come in (Tern's, an imported file), and the
   // theme shown changes with the system's mode under System.
   useSyncExternalStore(subscribeThemes, getThemesVersion);
@@ -711,7 +706,6 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
       }
 
       case "appearance": {
-        const [translucent, reduced] = material.split(":");
         const materials = MATERIAL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const modes = MODE_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const accent = currentAccent(settings);
@@ -917,13 +911,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
               <SettingRow
                 label="재질"
                 keywords="material solid glass clear transparency 투명도 유리"
-                hint={
-                  reduced === "true"
-                    ? t("시스템의 ‘투명도 줄이기’가 켜져 있어 불투명하게 그립니다.")
-                    : translucent === "true"
-                      ? null
-                      : t("브라우저 탭에서는 떠 있는 면만 유리가 됩니다.")
-                }
+                hint={translucent === true ? null : t("브라우저 탭에서는 떠 있는 면만 유리가 됩니다.")}
                 {...fromDefault("material")}
                 onActivate={() => onChange({ material: nextChoice(materials, settings.material) })}
               >
@@ -973,6 +961,17 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                   label={t("세로 스크롤바 항상 표시")}
                   checked={settings.scrollbarY}
                   onChange={(scrollbarY) => onChange({ scrollbarY })}
+                />
+              </SettingRow>
+              <SettingRow
+                label="동작 줄이기"
+                keywords="reduce motion animation transition 애니메이션 동작 모션"
+                {...fromDefault("reduceMotion")}
+              >
+                <Switch
+                  label={t("동작 줄이기")}
+                  checked={settings.reduceMotion}
+                  onChange={(reduceMotion) => onChange({ reduceMotion })}
                 />
               </SettingRow>
             </SettingsGroup>

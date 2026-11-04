@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon } from "../../../components/icons";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { t } from "../../../i18n";
 import { JsonSyntaxError, isDocument, jsonKeys, jsonObject, parseJson } from "../../mongodb/bson";
@@ -110,8 +111,9 @@ export function DocEditorModal({ request, fields, onSubmit, onClose }: { request
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" onClick={() => void submit()} disabled={busy}>
-            {busy ? <Spinner size={10} /> : <CheckIcon size={10} />}
+          <button type="button" className="primary gauge-host" onClick={() => void submit()} disabled={busy} aria-busy={busy}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
+            <CheckIcon size={10} />
             {request.mode === "replace" ? t("저장") : t("추가")}
           </button>
         </div>
@@ -316,8 +318,14 @@ export function ByQueryModal({ host, index, mode: initialMode, query, onDone, on
             {result !== null ? t("닫기") : t("취소")}
           </button>
           {result === null ? (
-            <button type="button" className="primary danger" onClick={() => void run()} disabled={busy || host.readOnly || limitBad || (mode === "update" && script.trim() === "")}>
-              {busy ? <Spinner size={10} /> : null}
+            <button
+              type="button"
+              className="primary danger gauge-host"
+              onClick={() => void run()}
+              disabled={busy || host.readOnly || limitBad || (mode === "update" && script.trim() === "")}
+              aria-busy={busy}
+            >
+              <Gauge busy={busy} outcome={runError !== null ? "error" : "ok"} />
               {mode === "update" ? t("수정 실행") : t("삭제 실행")}
             </button>
           ) : null}

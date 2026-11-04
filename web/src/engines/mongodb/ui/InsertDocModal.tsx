@@ -4,7 +4,7 @@
 // a parse error is underlined and shown with its line and column.
 
 import { useEffect, useRef, useState } from "react";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
 import { say, t, type Phrase } from "../../../i18n";
 import type { BsonDocument, BsonTypeName, BsonValue } from "../bson";
 import type { CompletionContext, FieldStat } from "../complete";
@@ -104,8 +104,8 @@ export function InsertDocModal({
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" onClick={() => void submit()} disabled={busy}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" onClick={() => void submit()} disabled={busy} aria-busy={busy}>
+            <Gauge busy={busy} outcome={error !== null && "failure" in error ? "error" : "ok"} />
             {okLabel} <span className="split-hint">⌘↩</span>
           </button>
         </div>

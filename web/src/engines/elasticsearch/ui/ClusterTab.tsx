@@ -13,6 +13,7 @@ import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { ChevronIcon, CopyIcon, PlayIcon, RefreshIcon, StopIcon } from "../../../components/icons";
 import { useThemeColors } from "../../../components/ResultChart";
 import { Select } from "../../../components/Select";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
@@ -629,8 +630,17 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
           </span>
         ) : null}
         <span className="panel-dim">{running ? t("2초마다 갱신") : paused ? t("일시 정지됨") : t("창이 가려져 멈춤")}</span>
-        {running || refreshing ? <Spinner size={11} /> : null}
-        <button type="button" className="icon-button" title={t("새로고침")} aria-label={t("새로고침")} disabled={refreshing} onClick={() => void refresh()}>
+        {running ? <Spinner size={11} /> : null}
+        <button
+          type="button"
+          className="icon-button gauge-host"
+          title={t("새로고침")}
+          aria-label={t("새로고침")}
+          disabled={refreshing}
+          aria-busy={refreshing}
+          onClick={() => void refresh()}
+        >
+          <Gauge busy={refreshing} outcome={infoError !== null || nodesError !== null ? "error" : "ok"} />
           <RefreshIcon size={11} />
         </button>
         <button type="button" className="icon-text-button" onClick={() => setPaused((p) => !p)} aria-pressed={paused}>
@@ -832,8 +842,17 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
                 <input type="checkbox" checked={problemsOnly} onChange={(event) => setProblemsOnly(event.target.checked)} />
                 {t("시작되지 않은 샤드만")}
               </label>
-              <button type="button" className="icon-button" title={t("샤드 새로고침")} aria-label={t("샤드 새로고침")} disabled={shardsLoading} onClick={() => void loadShards()}>
-                {shardsLoading ? <Spinner size={11} /> : <RefreshIcon size={11} />}
+              <button
+                type="button"
+                className="icon-button gauge-host"
+                title={t("샤드 새로고침")}
+                aria-label={t("샤드 새로고침")}
+                disabled={shardsLoading}
+                aria-busy={shardsLoading}
+                onClick={() => void loadShards()}
+              >
+                <Gauge busy={shardsLoading} outcome={shardsError !== null ? "error" : "ok"} />
+                <RefreshIcon size={11} />
               </button>
             </>
           }
@@ -992,8 +1011,14 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
                       </td>
                       <td className="num">
                         {task.cancellable && !task.cancelled && !host.readOnly ? (
-                          <button type="button" className="icon-text-button mg-danger-text" disabled={cancelling.has(task.id)} onClick={() => void cancel(task)}>
-                            {cancelling.has(task.id) ? <Spinner size={10} /> : null}
+                          <button
+                            type="button"
+                            className="icon-text-button mg-danger-text gauge-host"
+                            disabled={cancelling.has(task.id)}
+                            aria-busy={cancelling.has(task.id)}
+                            onClick={() => void cancel(task)}
+                          >
+                            <Gauge busy={cancelling.has(task.id)} />
                             {t("취소")}
                           </button>
                         ) : null}
@@ -1022,8 +1047,8 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
                 <option value="500ms">500ms</option>
                 <option value="1s">1s</option>
               </Select>
-              <button type="button" className="mg-qbtn" disabled={hotLoading} onClick={() => void loadHot()}>
-                {hotLoading ? <Spinner size={10} /> : null}
+              <button type="button" className="mg-qbtn gauge-host" disabled={hotLoading} aria-busy={hotLoading} onClick={() => void loadHot()}>
+                <Gauge busy={hotLoading} outcome={hotError !== null ? "error" : "ok"} />
                 {hot === null ? t("불러오기") : t("다시 불러오기")}
               </button>
               {hot !== null ? (

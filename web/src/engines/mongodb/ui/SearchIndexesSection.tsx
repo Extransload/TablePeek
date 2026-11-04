@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import { notifyError, ErrorNotice } from "../../../components/ErrorNotice";
 import { PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { phrase, say, t, type Phrase } from "../../../i18n";
@@ -158,8 +159,15 @@ export function SearchIndexesSection({ ns, readOnly, fields, host }: { ns: Names
                         <PencilIcon size={10} />
                         {t("고치기")}
                       </button>
-                      <button type="button" className="icon-text-button mg-danger-text" disabled={dropping !== null} onClick={() => void drop(ix.name)}>
-                        {dropping === ix.name ? <Spinner size={10} /> : <TrashIcon size={10} />}
+                      <button
+                        type="button"
+                        className="icon-text-button mg-danger-text gauge-host"
+                        disabled={dropping !== null}
+                        aria-busy={dropping === ix.name}
+                        onClick={() => void drop(ix.name)}
+                      >
+                        <Gauge busy={dropping === ix.name} />
+                        <TrashIcon size={10} />
                         {t("삭제")}
                       </button>
                     </>
@@ -292,8 +300,8 @@ function SearchIndexDialog({
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" disabled={busy || "error" in plan} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || "error" in plan} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {creating ? t("만들기") : t("저장")}
           </button>
         </>

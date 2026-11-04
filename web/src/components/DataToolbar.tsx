@@ -5,7 +5,7 @@ import { t } from "../i18n";
 import { withHint } from "../shortcuts";
 import { ColumnsIcon, FilterIcon, ListIcon, PlusIcon, RefreshIcon } from "./icons";
 import { RollingNumber } from "./RollingNumber";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 
 interface NumBoxProps {
   value: number;
@@ -273,12 +273,9 @@ export function DataTabToolbar({
       </div>
       <div className="footer-middle">
         {progress !== null ? (
-          <span className="row-range step-progress" role="status" aria-live="polite">
-            <Spinner size={10} />
+          <span className="row-range step-progress gauge-host" role="status" aria-live="polite">
+            <Gauge busy value={progress.fraction} step={progress.label} />
             <RollingNumber value={progress.label} />
-            {progress.fraction !== null ? (
-              <progress className="step-progress-bar" max={1} value={progress.fraction} />
-            ) : null}
             <button type="button" className="footer-button" onClick={progress.onCancel} title={t("중지")}>
               {t("중지")}
             </button>
@@ -292,13 +289,14 @@ export function DataTabToolbar({
         ) : hasMeta ? (
           <button
             type="button"
-            className="row-range"
+            className="row-range gauge-host"
             disabled={busy || counting}
             onClick={onCount}
             title={t("정확한 행 수 세기")}
+            aria-busy={counting}
           >
+            <Gauge busy={counting} />
             <RollingNumber value={rangeText(Math.max(0, tab.offset), meta.rowCount, total)} />
-            {counting ? <Spinner size={10} className="delayed-in" /> : null}
           </button>
         ) : running || loading ? (
           <span className="row-range delayed-in">{t("불러오는 중…")}</span>

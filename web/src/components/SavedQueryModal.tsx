@@ -5,7 +5,7 @@ import { ErrorNotice } from "./ErrorNotice";
 import { store, type Favorite } from "../store";
 import type { CompletionColumn } from "../sqlComplete";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 
 interface SavedQueryModalProps {
   // null writes a new query (into `folder`).
@@ -158,8 +158,8 @@ export function SavedQueryModal({ query, folder = null, onClose }: SavedQueryMod
           <button type="button" onClick={close} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="submit" className="primary" disabled={name.trim() === "" || busy}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="submit" className="primary gauge-host" disabled={name.trim() === "" || busy} aria-busy={busy}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("저장")}
           </button>
         </div>

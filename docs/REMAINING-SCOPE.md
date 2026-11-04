@@ -20,7 +20,7 @@
 | MariaDB/Percona/Yugabyte/Redshift 표시 | 버전 문자열 기반 호환 모드 카드 |
 | keyring 왕복 | macOS `security` 비대화형 경로로 저장·조회·삭제 왕복 검증. 전용 ignored 테스트 통과 |
 | Quick Look·Quick Edit 동작 | 셀 가운데 클릭·⌘Enter Quick Look, 사이드바 가운데/⌘클릭 새 탭, ⌥클릭 Quick Edit 메뉴. CDP 확인 |
-| 디자인 시스템 | 입력·체크박스·포커스·모달 공통 토큰, 모션, `prefers-reduced-motion` 적용. 흰 체크박스 테두리 제거 |
+| 디자인 시스템 | 입력·체크박스·포커스·모달 공통 토큰, 모션, 설정의 ‘동작 줄이기’(`html.reduce-motion`) 적용. 흰 체크박스 테두리 제거 |
 | MCP 서버 | `tablepeek mcp` stdio 서버, 연결·스키마·읽기 전용 쿼리 도구. 실제 JSON-RPC 왕복 확인 |
 
 ## 2. 보류 결정

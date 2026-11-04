@@ -8,7 +8,8 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { CloseIcon, DownloadIcon, EyeIcon, RefreshIcon, SearchIcon, TrashIcon, UploadIcon } from "../../../components/icons";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
 import { say, t } from "../../../i18n";
 import { count, gridFsDelete, gridFsDownloadUrl, gridFsFiles, gridFsUpload, isAbort, toNumber, type Namespace } from "../api";
@@ -290,8 +291,9 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
           />
         </form>
         <span className="spacer" />
-        <button type="button" className="icon-button" title={t("새로고침")} aria-label={t("새로고침")} onClick={reload}>
-          {loading ? <Spinner size={11} /> : <RefreshIcon size={12} />}
+        <button type="button" className="icon-button gauge-host" title={t("새로고침")} aria-label={t("새로고침")} aria-busy={loading} onClick={reload}>
+          <Gauge busy={loading} outcome={error !== null ? "error" : "ok"} />
+          <RefreshIcon size={12} />
         </button>
         <button type="button" className="primary mg-find" onClick={() => pickerRef.current?.click()}>
           <UploadIcon size={10} />
@@ -437,8 +439,15 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
                         <DownloadIcon size={10} />
                         {t("내려받기")}
                       </a>
-                      <button type="button" className="icon-text-button mg-danger-text" disabled={deleting !== null} onClick={() => void remove(file)}>
-                        {deleting === key ? <Spinner size={10} /> : <TrashIcon size={10} />}
+                      <button
+                        type="button"
+                        className="icon-text-button mg-danger-text gauge-host"
+                        disabled={deleting !== null}
+                        aria-busy={deleting === key}
+                        onClick={() => void remove(file)}
+                      >
+                        <Gauge busy={deleting === key} />
+                        <TrashIcon size={10} />
                         {t("삭제")}
                       </button>
                     </td>

@@ -4,6 +4,7 @@ import { t } from "../i18n";
 import type { ConnSummary, Connection } from "../store";
 import { DriverIcon, driverName } from "./DriverIcon";
 import { CloseIcon } from "./icons";
+import { Gauge, type GaugeOutcome } from "./Gauge";
 import { useTabMotion } from "./tabMotion";
 
 interface ConnSwitcherProps {
@@ -11,6 +12,8 @@ interface ConnSwitcherProps {
   activeId: string | null;
   connection: Connection;
   activeDetail: string | null;
+  // An open connection being entered, its outcome null while under way.
+  entering: { id: string; outcome: GaugeOutcome | null } | null;
   onSwitch(id: string): void;
   onClose(id: string): void;
 }
@@ -25,6 +28,7 @@ export function ConnSwitcher({
   activeId,
   connection,
   activeDetail,
+  entering,
   onSwitch,
   onClose,
 }: ConnSwitcherProps) {
@@ -46,8 +50,11 @@ export function ConnSwitcher({
             const meta = getConnMeta(conn.saved_id);
             const active = conn.id === activeId;
             const state = active ? connection : "idle";
+            const enteringThis = entering !== null && entering.id === conn.id ? entering : null;
+            const busy = state === "connecting" || (enteringThis !== null && enteringThis.outcome === null);
             const style = {
               "--conn-color": meta?.color || "var(--accent)",
+              "--gauge-color": meta?.color || "var(--accent)",
             } as CSSProperties;
             return (
               <span className="conn-tab-wrap" role="presentation" key={conn.id} data-motion-key={conn.id} style={style}>
@@ -55,7 +62,8 @@ export function ConnSwitcher({
                 type="button"
                 role="tab"
                 aria-selected={active}
-                className={`conn-tab${active ? " active" : ""}${conn.is_default ? "" : " closable"}`}
+                aria-busy={busy}
+                className={`conn-tab gauge-host${active ? " active" : ""}${conn.is_default ? "" : " closable"}`}
                 onClick={() => onSwitch(conn.id)}
                 title={`${connLabel(conn)} · ${driverName(conn.kind)} — ${
                   state === "open"
@@ -67,6 +75,13 @@ export function ConnSwitcher({
                         : t("연결 열기")
                 }${active && activeDetail ? `\n${activeDetail}` : ""}${conn.path ? `\n${conn.path}` : ""}`}
               >
+                {/* Fills in the connection's colour while it connects; a drop
+                    while reconnecting flashes and drains. */}
+                <Gauge
+                  busy={busy}
+                  id={`conn:${conn.id}`}
+                  outcome={enteringThis?.outcome ?? (state === "closed" ? "error" : "ok")}
+                />
                 <span className={`conn-state-dot conn-state-light ${state}`} aria-hidden="true" />
                 <span className="conn-tab-icon">
                   <DriverIcon kind={conn.kind} />

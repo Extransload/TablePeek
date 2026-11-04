@@ -24,7 +24,7 @@ import {
   truncateTableSql,
 } from "./ddl";
 import { adoptDrafts, listDrafts, removeDraft, saveDraft, type QueryDraft } from "./drafts";
-import { subscribeConnMeta } from "./connMeta";
+import { getConnMeta, subscribeConnMeta } from "./connMeta";
 import * as uiState from "./persist";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "./panelEdge";
 import { DefinitionPanel } from "./components/DefinitionPanel";
@@ -72,7 +72,9 @@ import { usePanelMotion } from "./components/panelMotion";
 import { ResultBar, StatementMessages, statementStatus, type ResultView, type ShownResult, type StatementMessage } from "./components/ResultBar";
 import { RollingNumber } from "./components/RollingNumber";
 import { AnalysisPane } from "./components/AnalysisPane";
-import { LoadingState, Spinner } from "./components/Spinner";
+import { LoadingState } from "./components/Spinner";
+import { Gauge, LOADING_DELAY, type GaugeOutcome } from "./components/Gauge";
+import { DURATION, reducedMotion } from "./motion";
 import { SchemaSidebar, type TableAction } from "./components/SchemaSidebar";
 import { SidebarPanel } from "./components/SidebarPanel";
 import { QueriesPane } from "./components/QueriesPane";
@@ -513,6 +515,11 @@ export default function App() {
   const [activeConnId, setActiveConnId] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
   const [busySaved, setBusySaved] = useState<string | null>(null);
+  // How the last connect of a saved connection ended, for its row's gauge.
+  const [savedOutcome, setSavedOutcome] = useState<{ id: string; outcome: GaugeOutcome } | null>(null);
+  // An open connection being entered (its workspace read), for its tab's
+  // gauge; outcome null while under way.
+  const [entering, setEntering] = useState<{ id: string; outcome: GaugeOutcome | null } | null>(null);
   const [fsOpen, setFsOpen] = useState(false);
   // The system's open dialog is up (it answers when it closes).
   const pickingFileRef = useRef(false);
@@ -4235,6 +4242,7 @@ export default function App() {
       setActiveConnId(id);
       return true;
     }
+    setEntering({ id, outcome: null });
     try {
       const nextMeta = await store.refreshMeta(id);
       // Opened another way meanwhile: keep that workspace.
@@ -4247,9 +4255,11 @@ export default function App() {
         };
         commitWorkspaces({ ...workspacesRef.current, [id]: ws });
       }
+      setEntering({ id, outcome: "ok" });
       setActiveConnId(id);
       return true;
     } catch (err) {
+      setEntering({ id, outcome: "error" });
       notifyError(toAppError(err, t("연결에 들어가지 못했습니다")));
       try {
         commitConns(await store.listConns());
@@ -4335,6 +4345,8 @@ export default function App() {
       return (await enterConn(existing.id)) ? "entered" : "failed";
     }
     setBusySaved(id);
+    const started = performance.now();
+    let outcome: GaugeOutcome = "error";
     try {
       const saved = (await store.listConnections()).find((entry) => entry.id === id);
       if (saved === undefined) {
@@ -4351,10 +4363,18 @@ export default function App() {
       const password = engine.connection.fields.find((field) => field.type === "secret");
       if (password !== undefined && fieldVisible(password, valuesFromConfig(engine, saved.config)) && !saved.has_password) {
         openConnectionEditor(saved, t("비밀번호를 입력해 연결하세요 (없으면 비워 두세요)"), "db");
+        outcome = "cancel";
         return "asking";
       }
       try {
         const live = await store.connectSaved(id);
+        outcome = "ok";
+        // A row whose gauge showed fills it before the workspace replaces home.
+        if (performance.now() - started >= LOADING_DELAY && !reducedMotion()) {
+          setSavedOutcome({ id, outcome });
+          setBusySaved(null);
+          await new Promise((resolve) => setTimeout(resolve, DURATION.slow));
+        }
         await afterOpen(live);
         return "entered";
       } catch (err) {
@@ -4362,6 +4382,7 @@ export default function App() {
         const missing = missingSecretOf(err);
         if (missing !== null) {
           openConnectionEditor(saved, t(errorOf(err, t("비밀번호를 입력하세요"))), missing);
+          outcome = "cancel";
           return "asking";
         }
         notifyError(toAppError(err, t("연결에 실패했습니다")));
@@ -4371,6 +4392,7 @@ export default function App() {
       notifyError(toAppError(err, t("저장된 연결을 불러오지 못했습니다")));
       return "failed";
     } finally {
+      setSavedOutcome({ id, outcome });
       setBusySaved(null);
     }
   }
@@ -5953,6 +5975,7 @@ export default function App() {
             conns={conns}
             activeId={activeConnId}
             connection={state.connection}
+            entering={entering}
             activeDetail={
               meta !== null
                 ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${documentConn ? t("컬렉션 {count}개", { count: meta.tables.length }) : searchConn ? t("인덱스 {count}개", { count: meta.tables.length }) : tTableCount(meta.tables.length)}`
@@ -6001,6 +6024,7 @@ export default function App() {
         <HomeScreen
           conns={conns}
           busySaved={busySaved}
+          savedOutcome={savedOutcome}
           onOpenConn={(id) => void enterConn(id)}
           onOpenNewWindow={openNewWindow}
           onCloseConn={(id) => void closeConn(id)}
@@ -6030,7 +6054,12 @@ export default function App() {
               <TabStrip
                 tabs={tabs.tabs}
                 activeId={tabs.activeId}
+                connId={activeConnId ?? ""}
                 runningTabId={spinningTabId}
+                progress={
+                  stepTask === null ? null : { tabId: stepTask.tabId, value: stepTask.fraction, step: stepTask.label }
+                }
+                color={getConnMeta(conns.find((conn) => conn.id === activeConnId)?.saved_id)?.color || undefined}
                 onActivate={activate}
                 onClose={closeTabById}
                 onRename={renameTabById}
@@ -6364,12 +6393,13 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      className="primary pending-apply"
+                      className="primary pending-apply gauge-host"
                       disabled={applying || connRunning}
                       onClick={() => void applyChanges()}
                       title={withHint(t("변경사항 적용"), shortcutHint(settings.keymap, "applyChanges"))}
                     >
-                      {applying ? <Spinner size={13} /> : <CheckIcon size={12} />}
+                      <Gauge busy={applying} outcome={state.editFailure !== null ? "error" : "ok"} />
+                      <CheckIcon size={12} />
                       {t("변경사항 적용")}
                     </button>
                   </div>
@@ -6908,8 +6938,8 @@ export default function App() {
                         {connRunning &&
                         state.result !== null &&
                         (runningTabId === null || runningTabId === activeTab?.id) ? (
-                          <div className="result-loading" role="status">
-                            <Spinner size={12} />
+                          <div className="result-loading gauge-host" role="status">
+                            <Gauge busy />
                             {activeTab?.kind === "data" && runningTabId === activeTab.id
                               ? t("불러오는 중…")
                               : t("실행 중…")}
@@ -7200,8 +7230,8 @@ export default function App() {
         />
       ) : null}
       {state.filePickOpening ? (
-        <div className="file-pick-pending" role="status">
-          <Spinner size={12} />
+        <div className="file-pick-pending gauge-host" role="status">
+          <Gauge busy />
           {t("파일 선택 창을 여는 중…")}
         </div>
       ) : null}

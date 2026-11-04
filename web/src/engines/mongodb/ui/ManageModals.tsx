@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Select } from "../../../components/Select";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
 import { getLanguage, say, t } from "../../../i18n";
@@ -243,8 +244,8 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" disabled={busy || "error" in plan} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || "error" in plan} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("만들기")}
           </button>
         </>
@@ -416,8 +417,8 @@ function RenameModal({ conn, db, coll, onEffect, onClose }: { conn: string; db: 
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className={`primary${dropTarget ? " danger" : ""}`} disabled={busy || problem !== null} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className={`primary gauge-host${dropTarget ? " danger" : ""}`} disabled={busy || problem !== null} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("바꾸기")}
           </button>
         </>
@@ -519,8 +520,8 @@ function DropModal({ conn, db, coll, view, safeMode, onEffect, onClose }: { conn
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary danger" disabled={busy || !ready} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary danger gauge-host" disabled={busy || !ready} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("삭제")}
           </button>
         </>

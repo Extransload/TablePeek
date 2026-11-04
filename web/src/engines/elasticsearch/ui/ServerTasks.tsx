@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { notifyError } from "../../../components/ErrorNotice";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { t } from "../../../i18n";
 import * as api from "../api";
@@ -65,8 +66,14 @@ export function ServerTasks({ host, report }: { host: SearchHost; report: api.St
     asked.has(task.id) ? (
       <span className="es-cl-tag">{t("취소 요청함")}</span>
     ) : (
-      <button type="button" className="footer-button" disabled={busy !== null || host.readOnly} onClick={() => void cancel(task, related)}>
-        {busy === task.id ? <Spinner size={10} /> : null}
+      <button
+        type="button"
+        className="footer-button gauge-host"
+        disabled={busy !== null || host.readOnly}
+        aria-busy={busy === task.id}
+        onClick={() => void cancel(task, related)}
+      >
+        <Gauge busy={busy === task.id} />
         {related ? t("관련 작업 취소") : t("작업 취소")}
       </button>
     );

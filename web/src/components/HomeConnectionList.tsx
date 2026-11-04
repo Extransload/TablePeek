@@ -9,7 +9,7 @@ import type { ConnSummary, SavedConnection } from "../store";
 import { DriverIcon } from "./DriverIcon";
 import { ChevronIcon, CloseIcon, ExternalIcon, FolderIcon } from "./icons";
 import { RollingNumber } from "./RollingNumber";
-import { Spinner } from "./Spinner";
+import { Gauge, type GaugeOutcome } from "./Gauge";
 import { DURATION, EASE, animate, flip, ghost, measure, reducedMotion, unhook, type Rects } from "../motion";
 
 export type ListTarget =
@@ -154,6 +154,8 @@ interface HomeConnectionListProps {
   metaById: Record<string, ConnMeta>;
   query: string;
   busySaved: string | null;
+  // How the last connect of a saved connection ended, for its row's gauge.
+  savedOutcome: { id: string; outcome: GaugeOutcome } | null;
   containerRef: RefObject<HTMLDivElement | null>;
   // ↑ on the first row: back to the search box.
   onExitTop(): void;
@@ -278,6 +280,7 @@ export function HomeConnectionList({
   metaById,
   query,
   busySaved,
+  savedOutcome,
   containerRef,
   onExitTop,
   onActivateSaved,
@@ -865,12 +868,16 @@ export function HomeConnectionList({
     const activate = () => onActivateSaved(connection);
     const recent = relativeTime(connection.last_used);
     const placeholder = dragRow === connection.id;
+    const connecting = busySaved === connection.id;
+    const color = metaById[connection.id]?.color;
     return (
       <div
         key={`saved:${connection.id}`}
-        className={`launcher-row${open !== undefined ? " is-open has-actions" : ""}${groupId !== "" ? " in-group" : ""}${
+        className={`launcher-row gauge-host${open !== undefined ? " is-open has-actions" : ""}${groupId !== "" ? " in-group" : ""}${
           placeholder ? " is-placeholder" : ""
         }${settling === `row:${connection.id}` ? " is-settling" : ""}`}
+        style={color ? ({ "--gauge-color": color } as CSSProperties) : undefined}
+        aria-busy={connecting}
         role="button"
         tabIndex={0}
         data-nav=""
@@ -884,6 +891,12 @@ export function HomeConnectionList({
         onKeyDown={(event) => activateKeys(event, activate)}
         onContextMenu={(event) => menuAt(event, target)}
       >
+        {/* Fills in the connection's colour while it connects. */}
+        <Gauge
+          busy={connecting}
+          id={`saved:${connection.id}`}
+          outcome={savedOutcome !== null && savedOutcome.id === connection.id ? savedOutcome.outcome : "ok"}
+        />
         <DriverIcon kind={connection.driver} size={34} className="launcher-logo" />
         <div className="launcher-row-body">
           <div className="launcher-row-title">
@@ -897,11 +910,8 @@ export function HomeConnectionList({
         </div>
         <div className="launcher-row-side">
           {rowActions(target, open)}
-          {busySaved === connection.id ? (
-            <span className="launcher-state idle">
-              <Spinner size={10} />
-              {t("연결 중…")}
-            </span>
+          {connecting ? (
+            <span className="launcher-state idle">{t("연결 중…")}</span>
           ) : open !== undefined ? (
             connectedState()
           ) : recent !== null ? (

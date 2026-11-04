@@ -8,7 +8,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { PlusIcon, RefreshIcon, TrashIcon, CloseIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
 import { phrase, say, t, type Phrase } from "../../../i18n";
@@ -241,8 +242,15 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, facts,
                       {ix.name === "_id_" ? (
                         <span className="panel-dim">{t("기본")}</span>
                       ) : readOnly ? null : (
-                        <button type="button" className="icon-text-button mg-danger-text" disabled={dropping !== null} onClick={() => void drop(ix.name)}>
-                          {dropping === ix.name ? <Spinner size={10} /> : <TrashIcon size={10} />}
+                        <button
+                          type="button"
+                          className="icon-text-button mg-danger-text gauge-host"
+                          disabled={dropping !== null}
+                          aria-busy={dropping === ix.name}
+                          onClick={() => void drop(ix.name)}
+                        >
+                          <Gauge busy={dropping === ix.name} />
+                          <TrashIcon size={10} />
                           {t("삭제")}
                         </button>
                       )}
@@ -520,8 +528,8 @@ function CreateIndexDialog({
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="submit" className="primary" disabled={busy || problem !== null}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="submit" className="primary gauge-host" disabled={busy || problem !== null} aria-busy={busy}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("만들기")}
           </button>
         </div>

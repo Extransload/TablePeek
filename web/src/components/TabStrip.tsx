@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
 import { t } from "../i18n";
 import { formatBinding, withHint } from "../shortcuts";
 import type { WorkbenchTab } from "../tabs";
@@ -16,7 +16,7 @@ import {
   StructureIcon,
   TableIcon,
 } from "./icons";
-import { Spinner } from "./Spinner";
+import { Gauge, useTabWorkOf, type GaugeOutcome } from "./Gauge";
 import { useTabMotion } from "./tabMotion";
 import { tableColorValue } from "../tableColors";
 
@@ -95,10 +95,25 @@ function tabKindLabel(tab: WorkbenchTab): string {
   }
 }
 
+// A walk in steps (a far page, a count) running for one tab: how far it has
+// got when it knows, and the step it is on.
+export interface TabProgress {
+  tabId: string;
+  value: number | null;
+  step: string;
+}
+
 interface TabStripProps {
   tabs: WorkbenchTab[];
   activeId: string;
+  // The connection the tabs belong to, whose views report their work by
+  // `${connId}:${tab id}` (useTabWork).
+  connId: string;
+  // The tab whose query or rows are on their way; it fills as a gauge.
   runningTabId: string | null;
+  progress: TabProgress | null;
+  // The gauges' colour: the connection's own, or the accent.
+  color?: string;
   onActivate(id: string): void;
   onClose(id: string): void;
   onRename(id: string, title: string): void;
@@ -108,6 +123,15 @@ interface TabStripProps {
   tableColors?: Record<string, string>;
   // The close shortcut as the keymap has it, for the × button's tooltip.
   closeHint?: string;
+}
+
+// How a tab's run ended, as its outcome left it (tabs.patchFromOutcome): an
+// error, the cancel notice, or rows.
+function runOutcome(tab: WorkbenchTab): GaugeOutcome {
+  if (tab.kind !== "query" && tab.kind !== "data") {
+    return "ok";
+  }
+  return tab.error !== undefined ? "error" : tab.info !== undefined ? "cancel" : "ok";
 }
 
 // The ⌥ digit that brings a tab forward: 1–8 by place, 9 for the last.
@@ -163,7 +187,10 @@ function elementKey(tab: WorkbenchTab): string {
 export function TabStrip({
   tabs,
   activeId,
+  connId,
   runningTabId,
+  progress,
+  color,
   onActivate,
   onClose,
   onRename,
@@ -178,6 +205,7 @@ export function TabStrip({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const cancelledRef = useRef(false);
   const activeTab = tabs.find((tab) => tab.id === activeId);
+  const workOf = useTabWorkOf();
 
   useTabMotion(stripRef, indicatorRef, tabs.map(elementKey), activeTab === undefined ? null : elementKey(activeTab));
 
@@ -232,6 +260,7 @@ export function TabStrip({
     <div
       ref={stripRef}
       className="tab-strip"
+      style={color === undefined ? undefined : ({ "--gauge-color": color } as CSSProperties)}
       role="tablist"
       onWheel={(event) => {
         if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
@@ -243,17 +272,22 @@ export function TabStrip({
       {tabs.map((tab, index) => {
         const active = tab.id === activeId;
         const renaming = tab.id === renamingId;
+        const work = workOf(`${connId}:${tab.id}`);
+        const stepping = progress !== null && progress.tabId === tab.id ? progress : null;
+        const running = tab.id === runningTabId || stepping !== null;
+        const busy = running || work?.busy === true;
         return (
           <div
             key={elementKey(tab)}
             data-motion-key={elementKey(tab)}
             role="tab"
             aria-selected={active}
-            className={`tab tab-${tab.kind}${active ? " active" : ""}${(tab.kind === "query" || tab.kind === "data") && tab.error ? " has-error" : ""}${tab.kind === "data" && tab.preview ? " preview" : ""}`}
+            aria-busy={busy}
+            className={`tab tab-${tab.kind} gauge-host${active ? " active" : ""}${(tab.kind === "query" || tab.kind === "data") && tab.error ? " has-error" : ""}${tab.kind === "data" && tab.preview ? " preview" : ""}`}
             data-kind={tab.kind}
             title={(() => {
               const digit = digitOf(index, tabs.length);
-              const label = `${tabKindLabel(tab)} · ${titleOf(tab)}`;
+              const label = `${tabKindLabel(tab)} · ${titleOf(tab)}${busy ? ` — ${t("실행 중…")}` : ""}`;
               return digit === null ? label : `${label} (${formatBinding(`Alt+${digit}`)})`;
             })()}
             onClick={() => onActivate(tab.id)}
@@ -265,10 +299,14 @@ export function TabStrip({
               }
             }}
           >
-            <span className="tab-icon">
-              {tabIcon(tab)}
-              {tab.id === runningTabId ? <Spinner size={10} className="tab-running" label={t("실행 중…")} /> : null}
-            </span>
+            <Gauge
+              busy={busy}
+              id={`tab:${connId}:${tab.id}`}
+              value={stepping?.value ?? null}
+              step={stepping?.step}
+              outcome={work !== undefined && !running ? work.outcome : runOutcome(tab)}
+            />
+            <span className="tab-icon">{tabIcon(tab)}</span>
             {renaming ? (
               <input
                 ref={inputRef}

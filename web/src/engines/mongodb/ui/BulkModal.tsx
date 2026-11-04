@@ -12,6 +12,7 @@ import { createPortal } from "react-dom";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ReviewModal } from "../../../components/ReviewModal";
 import { Select } from "../../../components/Select";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { phrase, say, t, type Phrase } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
@@ -478,8 +479,8 @@ export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, op
           <button type="button" onClick={onClose} disabled={busy}>
             {outcome !== null ? t("닫기") : t("취소")}
           </button>
-          <button type="button" className={mode === "delete" ? "primary danger" : "primary"} disabled={!canRun} onClick={() => void run()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className={`${mode === "delete" ? "primary danger" : "primary"} gauge-host`} disabled={!canRun} aria-busy={busy} onClick={() => void run()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {mode === "delete"
               ? matched?.count != null
                 ? t("{count}개 삭제 (deleteMany)", { count: countText(matched) })

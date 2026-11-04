@@ -14,7 +14,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactElement } from "re
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon, DatabaseIcon, FolderIcon, MoreIcon, SearchIcon, TableIcon } from "../../../components/icons";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { t } from "../../../i18n";
 import { store } from "../../../store";
 import { listCollections, listDatabases, type CollectionInfo, type DocDatabase } from "../api";
@@ -347,7 +348,8 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
         <input value={filter} placeholder={t("데이터베이스·컬렉션 검색")} spellCheck={false} onChange={(event) => setFilter(event.target.value)} />
         <button
           type="button"
-          className="icon-button schema-more"
+          className="icon-button schema-more gauge-host"
+          aria-busy={databases === null && error === null}
           title={t("더 보기")}
           aria-haspopup="menu"
           onClick={(event) => {
@@ -362,7 +364,9 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
             });
           }}
         >
-          {databases === null && error === null ? <Spinner size={11} /> : <MoreIcon size={13} />}
+          {/* Fills while the databases are read. */}
+          <Gauge busy={databases === null && error === null} outcome={error !== null ? "error" : "ok"} />
+          <MoreIcon size={13} />
         </button>
       </div>
       <div className="schema-list">

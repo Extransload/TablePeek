@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { writeClipboard } from "../../../clipboard";
 import { Select } from "../../../components/Select";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
@@ -465,8 +465,12 @@ export function ImportDialog({ host, index, onEffect, onClose }: DialogProps & {
             </button>
           )}
           {finished ? null : (
-            <button type="button" className="primary" disabled={running || problem !== null || host.readOnly} onClick={() => void run()}>
-              {running ? <Spinner size={10} /> : null}
+            <button type="button" className="primary gauge-host" disabled={running || problem !== null || host.readOnly} aria-busy={running} onClick={() => void run()}>
+              <Gauge
+                busy={running}
+                value={running ? percent / 100 : null}
+                outcome={progress?.state === "error" || progress?.state === "stopped" ? "error" : progress?.state === "cancelled" ? "cancel" : "ok"}
+              />
               {t("가져오기 (_bulk)")}
             </button>
           )}

@@ -14,7 +14,8 @@ import { writeClipboard } from "../../../clipboard";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
 import { ChevronIcon, CopyIcon, PlusIcon, RefreshIcon, SearchIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
-import { LoadingState, Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
+import { LoadingState } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { t } from "../../../i18n";
 import { jsonKeys, stringifyJson } from "../../mongodb/bson";
@@ -669,8 +670,8 @@ function AddFieldDialog({
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" disabled={busy || problem !== null} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || problem !== null} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("추가")}
           </button>
         </>

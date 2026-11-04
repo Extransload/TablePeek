@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
+import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
@@ -336,8 +337,8 @@ function CreateIndexDialog({ host, onEffect, onClose }: DialogProps) {
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" disabled={busy || "error" in plan || host.readOnly} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || "error" in plan || host.readOnly} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("만들기")}
           </button>
         </>
@@ -479,8 +480,8 @@ function CloneMappingDialog({ host, index, onEffect, onClose }: DialogProps & { 
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary" disabled={busy || "error" in plan || host.readOnly} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || "error" in plan || host.readOnly} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("만들기")}
           </button>
         </>
@@ -657,8 +658,8 @@ function DeleteDialog({ host, index, onEffect, onClose }: DialogProps & { index:
           <button type="button" onClick={onClose} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="button" className="primary danger" disabled={busy || !ready} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary danger gauge-host" disabled={busy || !ready} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("삭제")}
           </button>
         </>
@@ -734,8 +735,8 @@ function CloseIndexDialog({ host, index, onEffect, onClose }: DialogProps & { in
           <button type="button" onClick={onClose} disabled={busy} autoFocus>
             {t("취소")}
           </button>
-          <button type="button" className="primary danger" disabled={busy || host.readOnly} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary danger gauge-host" disabled={busy || host.readOnly} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("닫기 [인덱스]")}
           </button>
         </>
@@ -922,8 +923,8 @@ function ReindexDialog({ host, index, onEffect, onClose }: DialogProps & { index
             {finished ? t("닫기") : t("취소")}
           </button>
           {finished ? null : (
-            <button type="button" className="primary" disabled={busy || "error" in plan || host.readOnly} onClick={() => void submit()}>
-              {busy ? <Spinner size={10} /> : null}
+            <button type="button" className="primary gauge-host" disabled={busy || "error" in plan || host.readOnly} aria-busy={busy} onClick={() => void submit()}>
+              <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
               {t("재색인")}
             </button>
           )}
@@ -1131,8 +1132,8 @@ function AliasDialog({ host, index, onEffect, onClose }: DialogProps & { index: 
           <button type="button" onClick={onClose} disabled={busy}>
             {t("닫기")}
           </button>
-          <button type="button" className="primary" disabled={busy || "error" in plan || host.readOnly} onClick={() => void submit()}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="button" className="primary gauge-host" disabled={busy || "error" in plan || host.readOnly} aria-busy={busy} onClick={() => void submit()}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {t("별칭 추가")}
           </button>
         </>

@@ -81,6 +81,9 @@ export interface AppSettings {
   // instead of the system's, which may show only while scrolling.
   scrollbarX: boolean;
   scrollbarY: boolean;
+  // Motion kept to a minimum: transitions and animations jump to their end
+  // (see motion.ts). Only this decides; the system's preference isn't read.
+  reduceMotion: boolean;
   uppercaseKeywords: boolean;
   syntaxPreset: SyntaxPresetId;
   // Colours picked in Settings → Appearance over the syntax colours, by theme:
@@ -149,6 +152,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   typeColors: true,
   scrollbarX: true,
   scrollbarY: true,
+  reduceMotion: false,
   uppercaseKeywords: true,
   syntaxPreset: "tablepeek",
   syntaxColors: {},
@@ -194,6 +198,7 @@ function readSettings(): AppSettings {
       ...parsed,
       version: SETTINGS_VERSION,
       language: parsed.language === "en" ? "en" : "ko",
+      reduceMotion: parsed.reduceMotion === true,
       themeMode: THEME_MODES.includes(parsed.themeMode as ThemeMode) ? (parsed.themeMode as ThemeMode) : DEFAULT_SETTINGS.themeMode,
       themeLight: readThemeId(parsed.themeLight, DEFAULT_SETTINGS.themeLight),
       themeDark: readThemeId(parsed.themeDark, DEFAULT_SETTINGS.themeDark),
@@ -472,6 +477,10 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--type-null", palette.nullInk);
   root.classList.toggle("scrollbar-x-always", settings.scrollbarX);
   root.classList.toggle("scrollbar-y-always", settings.scrollbarY);
+  if (root.classList.contains("reduce-motion") !== settings.reduceMotion) {
+    root.classList.toggle("reduce-motion", settings.reduceMotion);
+    window.dispatchEvent(new CustomEvent("tablepeek:motion"));
+  }
   applyMaterial(settings, { ...opaque, mode: theme.mode }, settings.themeMode === "system");
   window.dispatchEvent(new CustomEvent("tablepeek:theme"));
 }
@@ -565,8 +574,7 @@ export function setPasscodeHash(hash: string | null): void {
 }
 
 applySettings(current);
-// The window turned out see-through or not, or the system's "reduce
-// transparency" changed: the material is drawn again.
+// The window turned out see-through or not: the material is drawn again.
 subscribeMaterial(redraw);
 // Tern's themes came in, or a theme file was imported: the saved theme may
 // be one of them.

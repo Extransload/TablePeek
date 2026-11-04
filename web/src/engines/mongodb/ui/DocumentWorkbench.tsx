@@ -11,7 +11,7 @@ import { ContextMenu } from "../../../components/ContextMenu";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { isAppServerDown } from "../../../errorHelp";
 import { ChevronDownIcon, CodeIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge, useTabWork } from "../../../components/Gauge";
 import { formatBytes } from "../../../format";
 import { say, t } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
@@ -558,6 +558,10 @@ export function DocumentWorkbench({
 
   // ---- Rendering ----
 
+  // The tab fills while its page of documents is found (the aggregation
+  // sub-tab reports its own runs).
+  useTabWork(tabKey, loading && sub === "docs", loadError !== null ? "error" : "ok");
+
   const docs = result?.docs ?? [];
   const start = result?.start ?? page * pageSize;
   const limitCap = appliedQuery !== null && appliedQuery.limit > 0 ? appliedQuery.limit : null;
@@ -794,8 +798,8 @@ export function DocumentWorkbench({
                 </div>
               ) : null}
               {loading ? (
-                <div className="result-loading" role="status">
-                  <Spinner size={12} />
+                <div className="result-loading gauge-host" role="status">
+                  <Gauge busy />
                   {t("불러오는 중…")}
                 </div>
               ) : null}

@@ -3,7 +3,7 @@
 
 import { useContext, useEffect, useMemo, useRef } from "react";
 import { ShieldIcon } from "../../../components/icons";
-import { Spinner } from "../../../components/Spinner";
+import { Gauge } from "../../../components/Gauge";
 import { t } from "../../../i18n";
 import { toShellPretty } from "../format";
 import { ShellText } from "./ShellText";
@@ -146,8 +146,8 @@ export function ConflictModal({ conflict }: { conflict: DocConflict }) {
             {t("지금 값으로 다시 불러오기")}
           </button>
           {deleted ? null : (
-            <button type="button" className="primary danger" onClick={conflict.overwrite} disabled={conflict.busy}>
-              {conflict.busy ? <Spinner size={10} /> : null}
+            <button type="button" className="primary danger gauge-host" onClick={conflict.overwrite} disabled={conflict.busy} aria-busy={conflict.busy}>
+              <Gauge busy={conflict.busy} outcome={conflict.error !== null ? "error" : "ok"} />
               {t("내 변경으로 덮어쓰기")}
             </button>
           )}

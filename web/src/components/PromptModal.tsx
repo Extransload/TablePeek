@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { t } from "../i18n";
 import { FieldError, fieldErrorProps } from "./ErrorNotice";
 import { EyeIcon, EyeOffIcon } from "./icons";
-import { Spinner } from "./Spinner";
+import { Gauge } from "./Gauge";
 
 interface PromptModalProps {
   title: string;
@@ -143,8 +143,8 @@ export function PromptModal({
           <button type="button" onClick={close} disabled={busy}>
             {t("취소")}
           </button>
-          <button type="submit" className="primary" disabled={value.trim() === "" || problem !== null || busy}>
-            {busy ? <Spinner size={10} /> : null}
+          <button type="submit" className="primary gauge-host" disabled={value.trim() === "" || problem !== null || busy} aria-busy={busy}>
+            <Gauge busy={busy} outcome={failure !== null ? "error" : "ok"} />
             {confirmLabel}
           </button>
         </div>
