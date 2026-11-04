@@ -7211,7 +7211,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "reqwest 0.12.28",
  "serde_json",
@@ -7222,7 +7222,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek-desktop"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-trait",
  "objc2",
@@ -7237,7 +7237,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek-engine"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "arrow",
  "async-trait",
@@ -7273,7 +7273,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek-server"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -7298,7 +7298,7 @@ dependencies = [
 
 [[package]]
 name = "tablepeek-types"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "serde",
  "serde_json",
