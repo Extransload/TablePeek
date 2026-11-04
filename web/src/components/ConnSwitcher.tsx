@@ -40,9 +40,20 @@ export function ConnSwitcher({
   useEffect(() => subscribeConnMeta(() => setMetaVersion((value) => value + 1)), []);
   useTabMotion(trackRef, indicatorRef, conns.map((conn) => conn.id), activeConn?.id ?? null);
 
+  const activeBusy =
+    activeConn !== undefined &&
+    (connection === "connecting" || (entering !== null && entering.id === activeConn.id && entering.outcome === null));
+
   return (
     <div className="conn-bar">
-      <div ref={trackRef} className="conn-bar-track" role="tablist" aria-label={t("열린 연결")}>
+      {/* While the active connection connects, the highlight under it empties
+          and its tab's gauge fills back up in the highlight's own colour. */}
+      <div
+        ref={trackRef}
+        className={`conn-bar-track${activeBusy ? " active-busy" : ""}`}
+        role="tablist"
+        aria-label={t("열린 연결")}
+      >
         {conns.length === 0 ? (
           <span className="conn-bar-empty">{t("열린 연결이 없습니다")}</span>
         ) : (
@@ -52,10 +63,7 @@ export function ConnSwitcher({
             const state = active ? connection : "idle";
             const enteringThis = entering !== null && entering.id === conn.id ? entering : null;
             const busy = state === "connecting" || (enteringThis !== null && enteringThis.outcome === null);
-            const style = {
-              "--conn-color": meta?.color || "var(--accent)",
-              "--gauge-color": meta?.color || "var(--accent)",
-            } as CSSProperties;
+            const style = { "--conn-color": meta?.color || "var(--accent)" } as CSSProperties;
             return (
               <span className="conn-tab-wrap" role="presentation" key={conn.id} data-motion-key={conn.id} style={style}>
               <button

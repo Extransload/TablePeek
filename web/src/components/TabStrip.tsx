@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { t } from "../i18n";
 import { formatBinding, withHint } from "../shortcuts";
 import type { WorkbenchTab } from "../tabs";
@@ -112,8 +112,6 @@ interface TabStripProps {
   // The tab whose query or rows are on their way; it fills as a gauge.
   runningTabId: string | null;
   progress: TabProgress | null;
-  // The gauges' colour: the connection's own, or the accent.
-  color?: string;
   onActivate(id: string): void;
   onClose(id: string): void;
   onRename(id: string, title: string): void;
@@ -190,7 +188,6 @@ export function TabStrip({
   connId,
   runningTabId,
   progress,
-  color,
   onActivate,
   onClose,
   onRename,
@@ -256,11 +253,18 @@ export function TabStrip({
     setRenamingId(null);
   }
 
+  const activeBusy =
+    activeTab !== undefined &&
+    (activeTab.id === runningTabId ||
+      (progress !== null && progress.tabId === activeTab.id) ||
+      workOf(`${connId}:${activeTab.id}`)?.busy === true);
+
   return (
     <div
       ref={stripRef}
-      className="tab-strip"
-      style={color === undefined ? undefined : ({ "--gauge-color": color } as CSSProperties)}
+      // While the active tab works, the highlight under it empties and the
+      // tab's gauge fills back up in the highlight's own colour.
+      className={`tab-strip${activeBusy ? " active-busy" : ""}`}
       role="tablist"
       onWheel={(event) => {
         if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {

@@ -12108,6 +12108,39 @@ html[data-mode="light"] .chart-tip {
   content: none;
 }
 
+/* A working tab is a gauge of its own colour: the highlight under the active
+   tab empties, and the tab fills back up from the left in the highlight's
+   fill, border and (for a connection) underline, so the finished tab looks
+   exactly as it rests. A background tab fills in the same colour. */
+.tab-strip.active-busy > .tab-indicator,
+.conn-bar-track.active-busy > .conn-tab-indicator {
+  border-color: var(--line-soft);
+  background: transparent;
+  box-shadow: none;
+}
+
+.conn-bar-track.active-busy > .conn-tab-indicator::after {
+  background: transparent;
+}
+
+.tab-strip > .tab > .gauge .gauge-fill {
+  background: var(--accent-soft);
+}
+
+.tab-strip > .tab > .gauge .gauge-fill::after {
+  background: var(--accent-line);
+  box-shadow: none;
+}
+
+.conn-bar-track .conn-tab > .gauge .gauge-fill {
+  background: color-mix(in srgb, var(--conn-color) 13%, var(--panel));
+}
+
+.conn-bar-track .conn-tab > .gauge .gauge-fill::after {
+  background: var(--conn-color);
+  box-shadow: none;
+}
+
 /* ── Motion: panels ── */
 
 /* A closing tree node's ghost is laid inside the list, so the list clips it

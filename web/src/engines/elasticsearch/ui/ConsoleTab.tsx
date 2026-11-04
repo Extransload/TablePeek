@@ -690,10 +690,15 @@ export function ConsoleTab({ host, tabKey, connKey, text, onTextChange, active }
   };
 
   const runningIndex = running ? results.length : 0;
-  // The run's tab fills while it runs; its last request says how it ended.
-  const lastKind = results[results.length - 1]?.outcome.kind;
+  // The run's tab fills while it runs; its last request says how it ended
+  // (a 4xx or 5xx reply ends it as an error, as its status chip shows).
+  const last = results[results.length - 1]?.outcome;
   const runOutcome: GaugeOutcome =
-    lastKind === "failed" || lastKind === "refused" ? "error" : lastKind === "stopped" || lastKind === "declined" ? "cancel" : "ok";
+    last?.kind === "failed" || last?.kind === "refused" || (last?.kind === "reply" && last.status >= 400)
+      ? "error"
+      : last?.kind === "stopped" || last?.kind === "declined"
+        ? "cancel"
+        : "ok";
   useTabWork(tabKey, running, runOutcome);
 
   return (

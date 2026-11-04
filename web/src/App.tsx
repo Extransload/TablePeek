@@ -24,7 +24,7 @@ import {
   truncateTableSql,
 } from "./ddl";
 import { adoptDrafts, listDrafts, removeDraft, saveDraft, type QueryDraft } from "./drafts";
-import { getConnMeta, subscribeConnMeta } from "./connMeta";
+import { subscribeConnMeta } from "./connMeta";
 import * as uiState from "./persist";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "./panelEdge";
 import { DefinitionPanel } from "./components/DefinitionPanel";
@@ -6059,7 +6059,6 @@ export default function App() {
                 progress={
                   stepTask === null ? null : { tabId: stepTask.tabId, value: stepTask.fraction, step: stepTask.label }
                 }
-                color={getConnMeta(conns.find((conn) => conn.id === activeConnId)?.saved_id)?.color || undefined}
                 onActivate={activate}
                 onClose={closeTabById}
                 onRename={renameTabById}
