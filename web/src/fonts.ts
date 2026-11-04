@@ -1,7 +1,7 @@
 // Fonts to pick from in Settings (the interface's, the code font and the
-// SQL editor's and data table's own): the system's own, then every face
-// installed on this machine by its PostScript name (JetBrainsMonoNF-Regular),
-// as TablePlus lists them.
+// SQL editor's and data table's own): the system's own, then every family
+// installed on this machine by its name, drawn in its regular face with the
+// family's own bold and italic.
 
 export interface FontChoice {
   label: string;
@@ -90,12 +90,17 @@ function companions(face: InstalledFace, family: InstalledFont): string[] {
   ];
 }
 
-// A face to pick: the face itself (with its family's bold and italic), then
-// its family should the system not find it by name, then the system's own.
-function faceChoice(face: InstalledFace, family: InstalledFont, monospaced: boolean): FontChoice {
-  const alias = FACE_PREFIX + companions(face, family).join(FACE_SEPARATOR);
+// A family to pick, by its name: its regular face (the upright one nearest
+// 400) with the family's bold and italic, then the family should the system
+// not find the face by name, then the system's own.
+function familyChoice(family: InstalledFont, monospaced: boolean): FontChoice {
+  const upright = family.faces.filter((face) => !face.italic);
+  const regular = (upright.length > 0 ? upright : family.faces).reduce((best, face) =>
+    Math.abs(face.weight - 400) < Math.abs(best.weight - 400) ? face : best,
+  );
+  const alias = FACE_PREFIX + companions(regular, family).join(FACE_SEPARATOR);
   return {
-    label: family.korean ? `${face.name} (${family.korean})` : face.name,
+    label: family.korean ? `${family.name} (${family.korean})` : family.name,
     value: `${cssName(alias)}, ${cssName(family.name)}, ${monospaced ? SYSTEM_CODE_FONT : SYSTEM_UI_FONT}`,
   };
 }
@@ -119,8 +124,7 @@ function drawsMonospace(family: string): boolean {
   return even;
 }
 
-// Every installed face to pick from, those of monospaced families before
-// the rest.
+// Every installed family to pick from, monospaced ones before the rest.
 export function fontGroups(families: InstalledFont[]): FontGroup[] {
   const monospaced: FontChoice[] = [];
   const others: FontChoice[] = [];
@@ -129,9 +133,7 @@ export function fontGroups(families: InstalledFont[]): FontGroup[] {
       continue;
     }
     const fixed = family.monospace || drawsMonospace(family.name);
-    for (const face of family.faces) {
-      (fixed ? monospaced : others).push(faceChoice(face, family, fixed));
-    }
+    (fixed ? monospaced : others).push(familyChoice(family, fixed));
   }
   const groups: FontGroup[] = [
     { label: "고정폭 글꼴", choices: monospaced },

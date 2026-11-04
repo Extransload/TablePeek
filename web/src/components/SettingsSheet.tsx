@@ -134,17 +134,6 @@ function clampSheet(width: number): number {
   return Math.round(Math.min(Math.max(width, SHEET_MIN), max));
 }
 
-// The installed families, asked of the server once a session.
-let installedFonts: Promise<InstalledFont[]> | null = null;
-
-function loadInstalledFonts(): Promise<InstalledFont[]> {
-  installedFonts ??= store.listFonts().catch(() => {
-    installedFonts = null;
-    return [];
-  });
-  return installedFonts;
-}
-
 const MATERIAL_OPTIONS: { value: Material; label: string }[] = [
   { value: "solid", label: "불투명" },
   { value: "glass", label: "유리" },
@@ -219,7 +208,9 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
 
   useEffect(() => {
     let live = true;
-    void loadInstalledFonts().then((families) => {
+    // Asked each time the sheet opens: the server lists the fonts again when
+    // one was installed or removed meanwhile.
+    void store.listFonts().catch(() => []).then((families) => {
       if (live) {
         setFontFamilies(families);
       }

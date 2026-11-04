@@ -3380,17 +3380,69 @@ async fn fonts_route(
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    static FAMILIES: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    if let Some(families) = FAMILIES.get() {
-        return Ok(Json(families.clone()));
+    // Listing every font takes a moment, so the list is kept until a fonts
+    // folder changes: a font installed while the server runs shows up the
+    // next time the list is asked for.
+    static FAMILIES: std::sync::Mutex<Option<(FontStamp, Value)>> = std::sync::Mutex::new(None);
+    let stamp = tokio::task::spawn_blocking(font_stamp)
+        .await
+        .map_err(|err| internal_error(err.to_string()))?;
+    if let Some((seen, families)) = FAMILIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
+        if *seen == stamp {
+            return Ok(Json(families.clone()));
+        }
     }
     let found = tokio::task::spawn_blocking(installed_fonts)
         .await
         .map_err(|err| internal_error(err.to_string()))?;
-    Ok(Json(FAMILIES.get_or_init(|| found).clone()))
+    *FAMILIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((stamp, found.clone()));
+    Ok(Json(found))
 }
 
-/// One face of a family: its PostScript name, as TablePlus lists fonts.
+/// When each folder fonts are installed into last changed (None: not there).
+type FontStamp = Vec<Option<std::time::SystemTime>>;
+
+/// The folders `fontdb`'s system scan reads that a user installs fonts into,
+/// stamped by their modification time: adding or removing a font changes it.
+fn font_stamp() -> FontStamp {
+    let home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if cfg!(target_os = "macos") {
+        dirs.extend(
+            [
+                "/Library/Fonts",
+                "/System/Library/Fonts",
+                "/Network/Library/Fonts",
+            ]
+            .map(PathBuf::from),
+        );
+        dirs.extend(home.iter().map(|home| home.join("Library/Fonts")));
+    } else if cfg!(windows) {
+        dirs.extend(std::env::var_os("WINDIR").map(|dir| PathBuf::from(dir).join("Fonts")));
+        dirs.extend(
+            std::env::var_os("LOCALAPPDATA")
+                .map(|dir| PathBuf::from(dir).join("Microsoft/Windows/Fonts")),
+        );
+    } else {
+        dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
+        dirs.extend(
+            home.iter()
+                .flat_map(|home| [home.join(".fonts"), home.join(".local/share/fonts")]),
+        );
+    }
+    dirs.iter()
+        .map(|dir| std::fs::metadata(dir).and_then(|meta| meta.modified()).ok())
+        .collect()
+}
+
+/// One face of a family, by its PostScript name.
 struct InstalledFace {
     name: String,
     weight: u16,

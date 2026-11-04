@@ -60,9 +60,12 @@ export function Picker({
   const [query, setQuery] = useState("");
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const entries = useMemo<Entry[]>(() => {
+    // Words in any order, or the name run together: "Ioskeley Mono Term"
+    // finds "IoskeleyMonoTerm Nerd Font Mono".
+    const joined = query.toLowerCase().replace(/[\s\-_]+/g, "");
     const found = items.filter((item) => {
       const text = `${item.label} ${item.group ?? ""}`.toLowerCase();
-      return terms.every((term) => text.includes(term));
+      return terms.every((term) => text.includes(term)) || text.replace(/[\s\-_]+/g, "").includes(joined);
     });
     return [
       ...found.map((item): Entry => ({ kind: "item", item })),

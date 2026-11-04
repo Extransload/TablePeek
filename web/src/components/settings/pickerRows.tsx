@@ -67,7 +67,7 @@ export function ThemeRow({
   const theme = THEMES.find((item) => item.id === value);
   const byLabel = (a: Theme, b: Theme): number => a.label.localeCompare(b.label, "en");
   const ofMode = THEMES.filter((item) => item.mode === mode);
-  const entry = (item: Theme, group: string, removable = false): PickerItem => ({
+  const entry = (item: Theme, group?: string, removable = false): PickerItem => ({
     value: item.id,
     label: t(item.label),
     group,
@@ -75,12 +75,14 @@ export function ThemeRow({
     selected: item.id === value,
     onRemove: removable ? () => onRemove(item) : undefined,
   });
+  // TablePeek's own themes first, then Tern's, in one list; only themes
+  // imported from files are set apart.
   const items: PickerItem[] = [
-    ...ofMode.filter((item) => !item.group && !item.imported).map((item) => entry(item, "TablePeek")),
+    ...ofMode.filter((item) => !item.group && !item.imported).map((item) => entry(item)),
     ...ofMode
       .filter((item) => item.group === "tern" && !item.imported)
       .sort(byLabel)
-      .map((item) => entry(item, "Tern")),
+      .map((item) => entry(item)),
     ...ofMode
       .filter((item) => item.imported)
       .sort(byLabel)
