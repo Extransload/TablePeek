@@ -1,4 +1,5 @@
 import { cellToString } from "../rowOps";
+import { moveItem, movedIndex } from "./columnMove";
 import type { CellState, RowSource, RowState } from "./rowSource";
 
 export interface WindowedRowSourceOptions {
@@ -79,7 +80,7 @@ export function subscribePendingChanges(listener: () => void): () => void {
 }
 
 export class WindowedRowSource implements RowSource {
-  readonly columns: string[];
+  private cols: string[];
   readonly baseRowCount: number;
   private readonly windowSize: number;
   private readonly maxWindows: number;
@@ -93,14 +94,62 @@ export class WindowedRowSource implements RowSource {
   private readonly deletes = new Map<number, PkPair[]>();
   private lastTouched = -1;
   private disposed = false;
+  // Rows come from the server in the order it was asked for; after a column
+  // moves (moveColumn), column c of a fetched row is at fetchOrder[c].
+  private fetchOrder: number[] | null = null;
 
   constructor(options: WindowedRowSourceOptions) {
-    this.columns = options.columns;
+    this.cols = options.columns;
     this.baseRowCount = options.rowCount;
     this.windowSize = Math.max(1, Math.trunc(options.windowSize));
     this.maxWindows = Math.max(1, Math.trunc(options.maxWindows ?? DEFAULT_MAX_WINDOWS));
     this.fetchWindow = options.fetchWindow;
     this.onDispose = options.onDispose;
+  }
+
+  get columns(): string[] {
+    return this.cols;
+  }
+
+  // Column `from` moved to index `to`, as if the rows had been read in that
+  // order: the rows loaded, the ones still on their way and the changes
+  // staged on them all go with it. The column list is a new array.
+  moveColumn(from: number, to: number): void {
+    const count = this.cols.length;
+    if (from === to || from < 0 || to < 0 || from >= count || to >= count) {
+      return;
+    }
+    const cols = this.cols.slice();
+    moveItem(cols, from, to);
+    this.cols = cols;
+    const order = this.fetchOrder?.slice() ?? cols.map((_, index) => index);
+    moveItem(order, from, to);
+    this.fetchOrder = order;
+    for (const rows of this.windows.values()) {
+      for (const line of rows) {
+        if (line.length < count) {
+          line.length = count;
+        }
+        moveItem(line, from, to);
+      }
+    }
+    const remap = <T>(cells: Map<number, T>): Map<number, T> =>
+      new Map([...cells].map(([col, value]) => [movedIndex(col, from, to), value]));
+    for (const entry of this.edits.values()) {
+      entry.cells = remap(entry.cells);
+      entry.exprs = remap(entry.exprs);
+      entry.adds = remap(entry.adds);
+    }
+    for (const insert of this.inserts) {
+      moveItem(insert.values, from, to);
+      moveItem(insert.touched, from, to);
+      moveItem(insert.exprs, from, to);
+    }
+    if (this.hasPending()) {
+      this.changed();
+    } else {
+      this.notify();
+    }
   }
 
   get rowCount(): number {
@@ -523,7 +572,8 @@ export class WindowedRowSource implements RowSource {
         if (this.disposed) {
           return;
         }
-        this.windows.set(offset, rows);
+        const order = this.fetchOrder;
+        this.windows.set(offset, order === null ? rows : rows.map((line) => order.map((index) => line[index])));
         this.lastTouched = offset;
         this.evict();
         this.notify();

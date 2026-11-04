@@ -51,6 +51,9 @@ export interface TableGridProps {
   onCellContextMenu?(row: number, col: number, x: number, y: number, selection: GridSelection): void;
   // A right-click on a column's header; absent, the header has no menu.
   onHeaderContextMenu?(columnIndex: number, x: number, y: number): void;
+  // A column dragged by its header (or moved with ⌥←/⌥→) from `from` to index
+  // `to`: true once the rows are in that order. Absent, columns stay put.
+  onColumnMove?(from: number, to: number): boolean;
   onDeleteRows?(rows: number[]): void;
   // Rows pasted over whole selected rows, a field per column; absent, they
   // paste over the cells as any other paste does.
@@ -205,6 +208,13 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
       hasHeaderMenu ? (columnIndex, x, y) => propsRef.current.onHeaderContextMenu?.(columnIndex, x, y) : null,
     );
   }, [hasHeaderMenu]);
+
+  const hasColumnMove = props.onColumnMove !== undefined;
+  useLayoutEffect(() => {
+    gridRef.current?.setColumnMoveHandler(
+      hasColumnMove ? (from, to) => propsRef.current.onColumnMove?.(from, to) ?? false : null,
+    );
+  }, [hasColumnMove]);
 
   const sortsKey = JSON.stringify(props.sortColumns ?? null);
   useLayoutEffect(() => {

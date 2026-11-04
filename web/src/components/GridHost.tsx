@@ -38,6 +38,8 @@ interface GridHostProps {
   fixedKeys?: boolean;
   sortColumns?: SortIndicator[];
   onHeaderClick?(columnIndex: number, event: { shiftKey: boolean }): void;
+  // See TableGrid: a column dragged to another place.
+  onColumnMove?(from: number, to: number): boolean;
   onSelectionChange?(row: number | null, rows: SelectedRows | null): void;
   onCellContextMenu?(row: number, col: number, x: number, y: number, selection: GridSelection): void;
   onDeleteRows?(rows: number[]): void;
@@ -132,6 +134,7 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
       editing={editing}
       sortColumns={props.sortColumns}
       onHeaderClick={props.onHeaderClick}
+      onColumnMove={props.onColumnMove}
       onSelectionChange={props.onSelectionChange}
       onCellContextMenu={props.onCellContextMenu}
       onDeleteRows={props.onDeleteRows}

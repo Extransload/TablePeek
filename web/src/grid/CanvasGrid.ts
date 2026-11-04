@@ -9,6 +9,8 @@ import { t } from "../i18n";
 import { IS_MAC } from "../shortcuts";
 import { scrollbarsFor, type ScrollArea } from "../scrollbars";
 import { forgetColumnWidths, loadColumnWidths, saveColumnWidth } from "../columnWidths";
+import { reducedMotion } from "../motion";
+import { moveItem, movedIndex } from "./columnMove";
 
 // Sizes at the default system font size (12px); scaled by syncScale().
 const BASE_FONT_PX = 12;
@@ -97,7 +99,50 @@ interface SelRange {
 type DragState =
   | { kind: "none" }
   | { kind: "resize"; col: number; startX: number; startW: number }
-  | { kind: "select" };
+  | { kind: "select" }
+  | { kind: "carry" };
+
+// A column picked up by its header and carried to another place, the others
+// sliding aside to make room, then settling where it was let go (or back
+// where it came from). Each column is drawn `shift` px from its place (the
+// carried one where the pointer holds it); the slides and the settling are
+// springs played frame by frame.
+interface Carry {
+  col: number;
+  // The pointer holding it; null once it is let go and settling.
+  pointerId: number | null;
+  // Where the pointer took it, from its left edge; where the pointer is.
+  grabX: number;
+  clientX: number;
+  // The place it takes if let go now (its index then).
+  to: number;
+  // Each column's slide from its place, and how fast it moves.
+  shift: Float64Array;
+  vshift: Float64Array;
+  // How raised it looks: 1 held, 0 in place.
+  lift: number;
+  frame: number;
+  last: number;
+}
+
+// What a paint works from: the view, the rows in it and the selection.
+interface PaintFrame {
+  src: RowSource;
+  w: number;
+  h: number;
+  gutterW: number;
+  contentW: number;
+  contentH: number;
+  virtualX: number;
+  virtualY: number;
+  first: number;
+  last: number;
+  sel: SelRange | null;
+  selFill: string;
+  colorsEnabled: boolean;
+  rowAlt: boolean;
+  rowStates: RowState[];
+}
 
 export interface SortIndicator {
   columnIndex: number;
@@ -126,6 +171,10 @@ type HeaderContextMenuHandler = (columnIndex: number, x: number, y: number) => v
 type DeleteRowsHandler = (rows: number[]) => void;
 // Clipboard rows pasted over whole selected rows, each with a field per column.
 type PasteRowsHandler = (rows: string[][]) => void;
+// A column moved from `from` to index `to`: true once the owner has put its
+// rows in that order (the grid then moves its widths and selection along),
+// false to keep the order as it is.
+type ColumnMoveHandler = (from: number, to: number) => boolean;
 
 // A cell's button: "choices" opens the editor's list here; the others go to
 // the accessory handler (a date picker, the row a foreign key points at).
@@ -133,6 +182,13 @@ export type CellAccessory = "choices" | "date" | "link";
 export type AccessoryHandler = (kind: "date" | "link", row: number, col: number) => void;
 
 const CLICK_SLOP = 2;
+// How far a header is dragged sideways before its column is picked up; a
+// shorter press is still a click (a sort), as the home screen's cards keep it.
+const CARRY_SLOP = 4;
+// The springs columns slide and settle on: a little overshoot, as motion.ts's
+// spring has (damping ratio ~0.72).
+const CARRY_STIFFNESS = 560;
+const CARRY_DAMPING = 34;
 
 // Values listed under a cell's editor, as TablePlus offers types and defaults.
 // A strict cell takes only these; others also accept typing.
@@ -233,6 +289,11 @@ export class CanvasGrid {
   private lastNotified = "";
   private pendingHeaderClick: { col: number; x: number; y: number; shiftKey: boolean } | null =
     null;
+  // A press on a header that becomes a carry once it moves CARRY_SLOP sideways.
+  private pendingCarry: { col: number; pointerId: number; x: number; grabX: number } | null = null;
+  private carry: Carry | null = null;
+  // Without one, columns stay where they are.
+  private columnMover: ColumnMoveHandler | null = null;
   // A press on a cell's button acts once the pointer comes up on it.
   private pendingAccessory: (CellPos & { kind: CellAccessory }) | null = null;
   // A plain click on a cell (no drag, no modifier) reports once the pointer
@@ -370,6 +431,8 @@ export class CanvasGrid {
       if (this.editor) {
         this.cancelEdit();
       }
+      // Its springs were set for the old widths.
+      this.finishCarry();
       // The same rows and columns stay in view.
       const top = this.scroller.scrollTop * ratio;
       const left = this.scroller.scrollLeft * ratio;
@@ -429,6 +492,8 @@ export class CanvasGrid {
     if (this.editor) {
       this.cancelEdit();
     }
+    this.finishCarry();
+    this.pendingCarry = null;
     if (this.disposeUpdates) {
       this.disposeUpdates();
       this.disposeUpdates = null;
@@ -602,6 +667,11 @@ export class CanvasGrid {
     this.headerClick = handler;
   }
 
+  setColumnMoveHandler(handler: ColumnMoveHandler | null): void {
+    this.columnMover = handler;
+    this.pendingCarry = null;
+  }
+
   setCellClickHandler(handler: ((row: number, col: number) => void) | null): void {
     this.cellClick = handler;
     this.pendingCellClick = null;
@@ -720,6 +790,7 @@ export class CanvasGrid {
 
   destroy(): void {
     this.stopAutoScroll();
+    this.finishCarry();
     window.clearTimeout(this.holdTimer);
     if (this.editor) {
       this.cancelEdit();
@@ -1117,17 +1188,131 @@ export class CanvasGrid {
     const last = Math.min(rowCount - 1, Math.floor((virtualY + contentH) / ROW_H));
     const sel = this.selectionRange();
     const selFill = this.focused ? palette.selFillFocus : palette.selFill;
-    const startCol = this.firstVisibleCol(virtualX);
-    let endCol = startCol;
-    while (endCol < colCount && gutterW + this.offsets[endCol] - virtualX < w) {
-      endCol++;
-    }
     const settings = drawnSettings();
-    const colorsEnabled = settings.typeColors;
-    const rowAlt = settings.rowAlt;
-    const rowStateOf = src.rowState ? (r: number) => src.rowState!(r) : null;
-    const cellStateOf = src.cellState ? (r: number, c: number) => src.cellState!(r, c) : null;
     const rowStates: RowState[] = [];
+    for (let r = first; r <= last; r++) {
+      rowStates.push(src.rowState ? src.rowState(r) : null);
+    }
+    // A carried column is drawn last, over the others; they slide aside up to
+    // its width (and a spring's overshoot) from their places.
+    const carry = this.carry;
+    const slide = carry === null ? null : carry.shift;
+    const slack = carry === null ? 0 : this.widths[carry.col] * 1.5;
+    const cols: number[] = [];
+    for (
+      let c = this.firstVisibleCol(Math.max(0, virtualX - slack));
+      c < colCount && gutterW + this.offsets[c] - slack - virtualX < w;
+      c++
+    ) {
+      if (carry === null || c !== carry.col) {
+        cols.push(c);
+      }
+    }
+    const leftOf = slide === null ? (c: number) => this.offsets[c] : (c: number) => this.offsets[c] + slide[c];
+    const frame: PaintFrame = {
+      src,
+      w,
+      h,
+      gutterW,
+      contentW,
+      contentH,
+      virtualX,
+      virtualY,
+      first,
+      last,
+      sel,
+      selFill,
+      colorsEnabled: settings.typeColors,
+      rowAlt: settings.rowAlt,
+      rowStates,
+    };
+
+    if (carry !== null) {
+      // The room the others leave where the carried column would land.
+      const gap = gutterW + this.carryGap(carry) - virtualX;
+      const gx = Math.max(gap, gutterW);
+      ctx.globalAlpha = carry.lift;
+      ctx.fillStyle = palette.hoverFill;
+      ctx.fillRect(gx, HEADER_H, Math.max(0, gap + this.widths[carry.col] - gx), contentH);
+      ctx.globalAlpha = 1;
+    }
+    this.paintColumns(frame, cols, leftOf);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, HEADER_H, gutterW, contentH);
+    ctx.clip();
+    ctx.fillStyle = palette.head;
+    ctx.fillRect(0, HEADER_H, gutterW, contentH);
+    ctx.font = FONT;
+    ctx.textAlign = "right";
+    const numX = gutterW - CELL_PAD;
+    for (let r = first; r <= last; r++) {
+      const y = HEADER_H + r * ROW_H - virtualY;
+      const inSel = sel !== null && r >= sel.r0 && r <= sel.r1;
+      if (inSel) {
+        ctx.fillStyle = selFill;
+        ctx.fillRect(0, y, gutterW, ROW_H);
+      }
+      const state = rowStates[r - first];
+      ctx.fillStyle =
+        state === "inserted"
+          ? palette.ok
+          : state === "deleted"
+            ? palette.error
+            : state === "edited"
+              ? palette.warn
+              : r === this.hoverRow || inSel
+                ? palette.accent
+                : palette.faint;
+      ctx.fillText(state === "inserted" ? "+" : String(r + 1), numX, y + ROW_H / 2);
+    }
+    ctx.restore();
+    ctx.strokeStyle = palette.line;
+    ctx.lineWidth = 1;
+    const gx = Math.round(gutterW) - 0.5;
+    ctx.beginPath();
+    ctx.moveTo(gx, HEADER_H);
+    ctx.lineTo(gx, h);
+    ctx.stroke();
+
+    if (this.hoverColEdge !== null && this.hoverColEdge < colCount && carry === null) {
+      const bx = gutterW + this.offsets[this.hoverColEdge] + this.widths[this.hoverColEdge] - virtualX;
+      const lx = Math.round(bx);
+      if (lx >= gutterW && lx <= w) {
+        ctx.fillStyle = palette.selLine;
+        ctx.fillRect(lx - 1, 0, 2, HEADER_H);
+      }
+    }
+
+    ctx.fillStyle = palette.head;
+    ctx.fillRect(0, 0, gutterW, HEADER_H);
+    ctx.fillStyle = palette.line;
+    ctx.fillRect(0, HEADER_H - 1, w, 1);
+    ctx.fillRect(Math.round(gutterW) - 1, 0, 1, HEADER_H);
+
+    // A selection the carried column is in goes with it when it is all of
+    // it (paintCarried), and waits for it to land otherwise.
+    if (sel && (carry === null || this.selMode === "row" || carry.col < sel.c0 || carry.col > sel.c1)) {
+      const rowWide = this.selMode === "row";
+      this.paintOutline(
+        frame,
+        gutterW + (rowWide ? this.offsets[sel.c0] : leftOf(sel.c0)) - virtualX,
+        gutterW + (rowWide ? this.offsets[sel.c1] : leftOf(sel.c1)) + this.widths[sel.c1] - virtualX,
+      );
+    }
+    if (carry !== null) {
+      this.paintCarried(frame, carry, leftOf);
+    }
+  }
+
+  // The cells and headers of `cols`, each at `leftOf` its index (content
+  // coordinates): every column but a carried one, or that one alone.
+  private paintColumns(f: PaintFrame, cols: readonly number[], leftOf: (col: number) => number): void {
+    const ctx = this.ctx;
+    const { src, w, h, gutterW, contentW, contentH, virtualX, virtualY, first, last, sel, selFill, rowStates } = f;
+    const colorsEnabled = f.colorsEnabled;
+    const cellStateOf = src.cellState ? (r: number, c: number) => src.cellState!(r, c) : null;
 
     // Row fills stay out of the header and the gutter, which may be
     // translucent (a see-through window) and would show them through.
@@ -1137,9 +1322,8 @@ export class CanvasGrid {
     ctx.clip();
     for (let r = first; r <= last; r++) {
       const y = HEADER_H + r * ROW_H - virtualY;
-      const state = rowStateOf ? rowStateOf(r) : null;
-      rowStates.push(state);
-      if (rowAlt && (r & 1) === 1) {
+      const state = rowStates[r - first];
+      if (f.rowAlt && (r & 1) === 1) {
         ctx.fillStyle = palette.rowAlt;
         ctx.fillRect(0, y, w, ROW_H);
       }
@@ -1153,8 +1337,8 @@ export class CanvasGrid {
         ctx.fillStyle = palette.hoverFill;
         ctx.fillRect(0, y, w, ROW_H);
       }
-      for (let c = startCol; c < endCol; c++) {
-        const x = gutterW + this.offsets[c] - virtualX;
+      for (const c of cols) {
+        const x = gutterW + leftOf(c) - virtualX;
         const cw = this.widths[c];
         const fx = Math.max(x, gutterW);
         const fw = Math.min(x + cw, w) - fx;
@@ -1186,10 +1370,10 @@ export class CanvasGrid {
     const exprOf = src.cellExpr ? (r: number, c: number) => src.cellExpr!(r, c) : null;
     const badgeOf = src.cellBadge ? (r: number, c: number) => src.cellBadge!(r, c) : null;
     const alignOf = src.cellAlign ? (r: number, c: number) => src.cellAlign!(r, c) : null;
-    for (let c = startCol; c < endCol; c++) {
-      const x = gutterW + this.offsets[c] - virtualX;
+    for (const c of cols) {
+      const x = gutterW + leftOf(c) - virtualX;
       const cw = this.widths[c];
-      if (x + cw <= gutterW) {
+      if (x + cw <= gutterW || x >= w) {
         continue;
       }
       const maxChars = Math.ceil(cw / MIN_CHAR_W) + 1;
@@ -1278,9 +1462,9 @@ export class CanvasGrid {
       ctx.moveTo(gutterW, y);
       ctx.lineTo(w, y);
     }
-    for (let c = startCol; c < endCol; c++) {
-      const bx = gutterW + this.offsets[c] + this.widths[c] - virtualX;
-      if (bx < gutterW) {
+    for (const c of cols) {
+      const bx = gutterW + leftOf(c) + this.widths[c] - virtualX;
+      if (bx < gutterW || bx > w + 1) {
         continue;
       }
       const lx = Math.round(bx) + 0.5;
@@ -1288,7 +1472,7 @@ export class CanvasGrid {
       ctx.lineTo(lx, h);
     }
     ctx.stroke();
-    const rowEnd = Math.min(w, gutterW + this.offsets[colCount] - virtualX);
+    const rowEnd = Math.min(w, gutterW + this.offsets[this.widths.length] - virtualX);
     ctx.strokeStyle = palette.error;
     ctx.beginPath();
     for (let r = first; r <= last; r++) {
@@ -1303,45 +1487,6 @@ export class CanvasGrid {
     ctx.globalAlpha = 1;
     ctx.restore();
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, HEADER_H, gutterW, contentH);
-    ctx.clip();
-    ctx.fillStyle = palette.head;
-    ctx.fillRect(0, HEADER_H, gutterW, contentH);
-    ctx.font = FONT;
-    ctx.textAlign = "right";
-    const numX = gutterW - CELL_PAD;
-    for (let r = first; r <= last; r++) {
-      const y = HEADER_H + r * ROW_H - virtualY;
-      const inSel = sel !== null && r >= sel.r0 && r <= sel.r1;
-      if (inSel) {
-        ctx.fillStyle = selFill;
-        ctx.fillRect(0, y, gutterW, ROW_H);
-      }
-      const state = rowStates[r - first];
-      ctx.fillStyle =
-        state === "inserted"
-          ? palette.ok
-          : state === "deleted"
-            ? palette.error
-            : state === "edited"
-              ? palette.warn
-              : r === this.hoverRow || inSel
-                ? palette.accent
-                : palette.faint;
-      ctx.fillText(state === "inserted" ? "+" : String(r + 1), numX, y + ROW_H / 2);
-    }
-    ctx.restore();
-    ctx.strokeStyle = palette.line;
-    ctx.lineWidth = 1;
-    const gx = Math.round(gutterW) - 0.5;
-    ctx.beginPath();
-    ctx.moveTo(gx, HEADER_H);
-    ctx.lineTo(gx, h);
-    ctx.stroke();
-
-    // The corner is painted once, below.
     ctx.fillStyle = palette.head;
     ctx.fillRect(gutterW, 0, contentW, HEADER_H);
     ctx.font = FONT_HEADER;
@@ -1350,13 +1495,10 @@ export class CanvasGrid {
     ctx.beginPath();
     ctx.rect(gutterW, 0, contentW, HEADER_H);
     ctx.clip();
-    for (let c = startCol; c < colCount; c++) {
-      const x = gutterW + this.offsets[c] - virtualX;
-      if (x >= w) {
-        break;
-      }
+    for (const c of cols) {
+      const x = gutterW + leftOf(c) - virtualX;
       const cw = this.widths[c];
-      if (x + cw <= gutterW) {
+      if (x >= w || x + cw <= gutterW) {
         continue;
       }
       if (this.selMode === "col" && sel && c >= sel.c0 && c <= sel.c1) {
@@ -1420,12 +1562,9 @@ export class CanvasGrid {
     ctx.strokeStyle = palette.line;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let c = startCol; c < colCount; c++) {
-      const bx = gutterW + this.offsets[c] + this.widths[c] - virtualX;
-      if (bx > w) {
-        break;
-      }
-      if (bx < gutterW) {
+    for (const c of cols) {
+      const bx = gutterW + leftOf(c) + this.widths[c] - virtualX;
+      if (bx < gutterW || bx > w + 1) {
         continue;
       }
       const lx = Math.round(bx) + 0.5;
@@ -1434,56 +1573,91 @@ export class CanvasGrid {
     }
     ctx.stroke();
     ctx.restore();
+  }
 
-    if (this.hoverColEdge !== null && this.hoverColEdge < colCount) {
-      const bx = gutterW + this.offsets[this.hoverColEdge] + this.widths[this.hoverColEdge] - virtualX;
-      const lx = Math.round(bx);
-      if (lx >= gutterW && lx <= w) {
-        ctx.fillStyle = palette.selLine;
-        ctx.fillRect(lx - 1, 0, 2, HEADER_H);
-      }
+  // The selection's outline, from x0 to x1 across (canvas coordinates).
+  private paintOutline(f: PaintFrame, x0: number, x1: number): void {
+    const sel = f.sel;
+    if (sel === null) {
+      return;
     }
+    const ctx = this.ctx;
+    const y0 = HEADER_H + sel.r0 * ROW_H - f.virtualY;
+    const y1 = HEADER_H + (sel.r1 + 1) * ROW_H - f.virtualY;
+    let left = x0;
+    let top = y0;
+    let clipX = f.gutterW;
+    let clipY = HEADER_H;
+    let clipW = f.contentW;
+    let clipH = f.contentH;
+    if (this.selMode === "row") {
+      left = 0;
+      clipX = 0;
+      clipW = f.w;
+    } else if (this.selMode === "col") {
+      top = 0;
+      clipY = 0;
+      clipH = f.h;
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(clipX, clipY, clipW, clipH);
+    ctx.clip();
+    ctx.strokeStyle = palette.selLine;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(
+      Math.round(left) + 0.5,
+      Math.round(top) + 0.5,
+      Math.max(0, Math.round(x1) - Math.round(left) - 1),
+      Math.max(0, Math.round(y1) - Math.round(top) - 1),
+    );
+    ctx.restore();
+  }
 
-    ctx.fillStyle = palette.head;
-    ctx.fillRect(0, 0, gutterW, HEADER_H);
-    ctx.fillStyle = palette.line;
-    ctx.fillRect(0, HEADER_H - 1, w, 1);
-    ctx.fillRect(Math.round(gutterW) - 1, 0, 1, HEADER_H);
-
-    if (sel) {
-      const x0 = gutterW + this.offsets[sel.c0] - virtualX;
-      const x1 = gutterW + this.offsets[sel.c1] + this.widths[sel.c1] - virtualX;
-      const y0 = HEADER_H + sel.r0 * ROW_H - virtualY;
-      const y1 = HEADER_H + (sel.r1 + 1) * ROW_H - virtualY;
-      let left = x0;
-      let top = y0;
-      let clipX = gutterW;
-      let clipY = HEADER_H;
-      let clipW = contentW;
-      let clipH = contentH;
-      if (this.selMode === "row") {
-        left = 0;
-        clipX = 0;
-        clipW = w;
-      } else if (this.selMode === "col") {
-        top = 0;
-        clipY = 0;
-        clipH = h;
-      }
+  // The carried column, raised over the others where the pointer holds it
+  // (or on its way to its place): a shadow around it, and nothing of the
+  // cells it passes over showing through.
+  private paintCarried(f: PaintFrame, carry: Carry, leftOf: (col: number) => number): void {
+    const ctx = this.ctx;
+    const c = carry.col;
+    const cw = this.widths[c];
+    const x = f.gutterW + leftOf(c) - f.virtualX;
+    if (x >= f.w || x + cw <= f.gutterW) {
+      return;
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(f.gutterW, 0, f.contentW, f.h);
+    ctx.clip();
+    if (carry.lift > 0) {
       ctx.save();
-      ctx.beginPath();
-      ctx.rect(clipX, clipY, clipW, clipH);
-      ctx.clip();
-      ctx.strokeStyle = palette.selLine;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(
-        Math.round(left) + 0.5,
-        Math.round(top) + 0.5,
-        Math.max(0, Math.round(x1) - Math.round(left) - 1),
-        Math.max(0, Math.round(y1) - Math.round(top) - 1),
-      );
+      ctx.shadowColor = `rgba(0, 0, 0, ${(0.5 * carry.lift).toFixed(3)})`;
+      ctx.shadowBlur = 24 * carry.lift;
+      ctx.fillStyle = palette.head;
+      ctx.fillRect(x, 0, cw, f.h);
       ctx.restore();
     }
+    ctx.clearRect(x, 0, cw, f.h);
+    ctx.beginPath();
+    ctx.rect(x, 0, cw, f.h);
+    ctx.clip();
+    ctx.globalAlpha = carry.lift;
+    ctx.fillStyle = palette.hoverFill;
+    ctx.fillRect(x, HEADER_H, cw, f.contentH);
+    ctx.globalAlpha = 1;
+    this.paintColumns(f, [c], leftOf);
+    ctx.fillStyle = palette.line;
+    ctx.fillRect(x, HEADER_H - 1, cw, 1);
+    ctx.fillRect(x, 0, 1, f.h);
+    const sel = f.sel;
+    if (sel !== null && this.selMode !== "row" && sel.c0 === c && sel.c1 === c) {
+      this.paintOutline(f, x, x + cw);
+    }
+    ctx.globalAlpha = carry.lift;
+    ctx.fillStyle = palette.selLine;
+    ctx.fillRect(x, 0, 1, f.h);
+    ctx.fillRect(x + cw - 1, 0, 1, f.h);
+    ctx.restore();
   }
 
   private localPos(e: { clientX: number; clientY: number }): { x: number; y: number } {
@@ -2123,6 +2297,7 @@ export class CanvasGrid {
     // A source that changed its columns in place gets fresh widths.
     const src = this.source;
     if (src !== null && src.columns.length !== this.widths.length) {
+      this.finishCarry();
       this.widths = src.columns.map(() => Math.round(COL_DEFAULT * SCALE));
       this.applyStoredWidths();
       this.autoFit = true;
@@ -2196,7 +2371,10 @@ export class CanvasGrid {
     const p = this.localPos(e);
     this.canvas.focus({ preventScroll: true });
     this.canvas.setPointerCapture(e.pointerId);
+    // A column still settling lands at once: what is pressed is where it shows.
+    this.finishCarry();
     this.pendingHeaderClick = null;
+    this.pendingCarry = null;
     this.pendingAccessory = null;
     this.pendingCellClick = null;
     if (p.y < HEADER_H) {
@@ -2211,6 +2389,13 @@ export class CanvasGrid {
       if (col === null) {
         return;
       }
+      // A plain press may pick the column up (dragged sideways) instead of
+      // selecting columns along the way; ⇧ still extends the selection.
+      const carriable = this.columnMover !== null && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey;
+      if (carriable) {
+        const left = this.gutterW + this.offsets[col] - this.virtualScrollX();
+        this.pendingCarry = { col, pointerId: e.pointerId, x: e.clientX, grabX: p.x - left };
+      }
       if (this.headerClick && e.button === 0) {
         this.pendingHeaderClick = { col, x: e.clientX, y: e.clientY, shiftKey: e.shiftKey };
         this.drag = { kind: "none" };
@@ -2223,7 +2408,7 @@ export class CanvasGrid {
         this.anchor = { row: 0, col };
         this.cursor = { row: 0, col };
       }
-      this.drag = { kind: "select" };
+      this.drag = carriable ? { kind: "none" } : { kind: "select" };
       this.notifySelection();
       this.schedulePaint();
       return;
@@ -2279,6 +2464,18 @@ export class CanvasGrid {
 
   private readonly onPointerMove = (e: PointerEvent): void => {
     if (!this.source) {
+      return;
+    }
+    const carry = this.carry;
+    if (carry !== null && carry.pointerId === e.pointerId) {
+      // The next frame moves it there (carryTick), edge scrolling included.
+      carry.clientX = e.clientX;
+      return;
+    }
+    const pending = this.pendingCarry;
+    if (pending !== null && pending.pointerId === e.pointerId && Math.abs(e.clientX - pending.x) >= CARRY_SLOP) {
+      this.pendingCarry = null;
+      this.pickUp(pending.col, pending.pointerId, pending.grabX, e.clientX);
       return;
     }
     const drag = this.drag;
@@ -2407,6 +2604,260 @@ export class CanvasGrid {
     this.dragPoint = null;
   }
 
+  private newCarry(col: number, pointerId: number | null, grabX: number, clientX: number): Carry {
+    const count = this.widths.length;
+    return {
+      col,
+      pointerId,
+      grabX,
+      clientX,
+      to: col,
+      shift: new Float64Array(count),
+      vshift: new Float64Array(count),
+      lift: 0,
+      frame: 0,
+      last: performance.now(),
+    };
+  }
+
+  // A header dragged past CARRY_SLOP: its column comes up under the pointer.
+  private pickUp(col: number, pointerId: number, grabX: number, clientX: number): void {
+    if (this.editor) {
+      this.commitEdit(false);
+    }
+    this.pendingHeaderClick = null;
+    this.hoverColEdge = null;
+    this.drag = { kind: "carry" };
+    this.carry = this.newCarry(col, pointerId, grabX, clientX);
+    this.canvas.style.cursor = "grabbing";
+    document.addEventListener("keydown", this.onCarryKey, true);
+    this.runCarry();
+  }
+
+  private runCarry(): void {
+    const carry = this.carry;
+    if (carry !== null && carry.frame === 0) {
+      carry.last = performance.now();
+      carry.frame = requestAnimationFrame(this.carryTick);
+    }
+  }
+
+  private readonly carryTick = (now: number): void => {
+    const carry = this.carry;
+    if (carry === null) {
+      return;
+    }
+    carry.frame = 0;
+    const dt = clamp((now - carry.last) / 1000, 0, 0.05);
+    carry.last = now;
+    if (carry.pointerId !== null) {
+      this.aimCarry(carry);
+    }
+    if (this.stepCarry(carry, dt) && carry.pointerId === null) {
+      this.carry = null;
+    } else {
+      carry.frame = requestAnimationFrame(this.carryTick);
+    }
+    // Drawn in this frame rather than the next.
+    if (this.rafId !== 0) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+    this.paint();
+  };
+
+  // The carried column follows the pointer, scrolling the grid sideways while
+  // the pointer is near or past an edge of the cells; it never goes over the
+  // row numbers nor past the last column. A column it passes gives way once
+  // its leading edge (left going left, right going right) is past that
+  // column's middle, so even a wide column reaches the first and last place.
+  private aimCarry(carry: Carry): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const step = edgeScrollStep(carry.clientX, rect.left + this.gutterW, rect.right);
+    if (step !== 0) {
+      this.scroller.scrollLeft += step;
+    }
+    const count = this.widths.length;
+    const col = carry.col;
+    const cw = this.widths[col];
+    const x = clamp(
+      carry.clientX - rect.left - carry.grabX - this.gutterW + this.virtualScrollX(),
+      0,
+      Math.max(0, this.offsets[count] - cw),
+    );
+    carry.shift[col] = x - this.offsets[col];
+    carry.vshift[col] = 0;
+    let to = 0;
+    for (let c = 0; c < count; c++) {
+      const middle = this.offsets[c] + this.widths[c] / 2;
+      if ((c < col && x >= middle) || (c > col && x + cw > middle)) {
+        to++;
+      }
+    }
+    carry.to = to;
+  }
+
+  // The left edge of the room left for the carried column: right after the
+  // column before its place, wherever that one has slid to.
+  private carryGap(carry: Carry): number {
+    if (carry.to === 0) {
+      return 0;
+    }
+    const before = carry.to - 1 < carry.col ? carry.to - 1 : carry.to;
+    return this.offsets[before] + carry.shift[before] + this.widths[before];
+  }
+
+  // Every spring `dt` seconds on; true once all of them rest. Held, the
+  // others stand aside for the carried column's place; let go, every column
+  // goes to its own. Under Reduce motion each is there at once.
+  private stepCarry(carry: Carry, dt: number): boolean {
+    const held = carry.pointerId !== null;
+    const jump = reducedMotion();
+    const cw = this.widths[carry.col];
+    const steps = Math.ceil(dt * 240);
+    const h = steps === 0 ? 0 : dt / steps;
+    let resting = true;
+    for (let c = 0; c < this.widths.length; c++) {
+      if (held && c === carry.col) {
+        continue;
+      }
+      const target = !held ? 0 : c < carry.col ? (c >= carry.to ? cw : 0) : c - 1 >= carry.to ? 0 : -cw;
+      let pos = carry.shift[c];
+      let vel = carry.vshift[c];
+      if (jump) {
+        pos = target;
+        vel = 0;
+      } else {
+        for (let i = 0; i < steps; i++) {
+          vel += (CARRY_STIFFNESS * (target - pos) - CARRY_DAMPING * vel) * h;
+          pos += vel * h;
+        }
+      }
+      if (Math.abs(target - pos) < 0.5 && Math.abs(vel) < 10) {
+        pos = target;
+        vel = 0;
+      } else {
+        resting = false;
+      }
+      carry.shift[c] = pos;
+      carry.vshift[c] = vel;
+    }
+    const lift = held ? 1 : 0;
+    carry.lift = jump ? lift : carry.lift + (lift - carry.lift) * (1 - Math.exp(-dt / (held ? 0.08 : 0.16)));
+    if (Math.abs(lift - carry.lift) < 0.02) {
+      carry.lift = lift;
+    } else {
+      resting = false;
+    }
+    return resting;
+  }
+
+  // The pointer lets the carried column go. Dropped, it lands where it is
+  // aimed, when the owner takes the new order; otherwise (or cancelled) it
+  // goes back to its place.
+  private letGo(drop: boolean): void {
+    const carry = this.carry;
+    if (carry === null || carry.pointerId === null) {
+      return;
+    }
+    const pointerId = carry.pointerId;
+    carry.pointerId = null;
+    document.removeEventListener("keydown", this.onCarryKey, true);
+    this.drag = { kind: "none" };
+    this.canvas.style.cursor = "default";
+    if (this.canvas.hasPointerCapture(pointerId)) {
+      this.canvas.releasePointerCapture(pointerId);
+    }
+    const from = carry.col;
+    if (drop && carry.to !== from && this.columnMover?.(from, carry.to) === true) {
+      this.land(carry, from, carry.to);
+    }
+    carry.to = carry.col;
+    this.runCarry();
+  }
+
+  // The owner has put column `from` at `to`: widths, remembered widths and
+  // the selection go along, and every column (the carried one too) slides on
+  // from where it shows now to its new place.
+  private land(carry: Carry, from: number, to: number): void {
+    const before = this.offsets;
+    moveItem(this.widths, from, to);
+    this.rebuildOffsets();
+    const stored = [...this.storedCols];
+    this.storedCols.clear();
+    for (const col of stored) {
+      this.storedCols.add(movedIndex(col, from, to));
+    }
+    if (this.selMode !== "row") {
+      if (this.anchor !== null) {
+        this.anchor = { row: this.anchor.row, col: movedIndex(this.anchor.col, from, to) };
+      }
+      if (this.cursor !== null) {
+        this.cursor = { row: this.cursor.row, col: movedIndex(this.cursor.col, from, to) };
+      }
+    }
+    const shift = new Float64Array(carry.shift.length);
+    const vshift = new Float64Array(carry.vshift.length);
+    for (let c = 0; c < shift.length; c++) {
+      const index = movedIndex(c, from, to);
+      shift[index] = before[c] + carry.shift[c] - this.offsets[index];
+      vshift[index] = carry.vshift[c];
+    }
+    carry.shift = shift;
+    carry.vshift = vshift;
+    carry.col = to;
+    carry.to = to;
+  }
+
+  // ⌥← / ⌥→: the column trades places with its neighbour, sliding there.
+  private stepColumn(col: number, delta: -1 | 1): void {
+    const to = col + delta;
+    if (to < 0 || to >= this.widths.length) {
+      return;
+    }
+    this.finishCarry();
+    if (this.columnMover?.(col, to) !== true) {
+      return;
+    }
+    const carry = this.newCarry(col, null, 0, 0);
+    carry.lift = reducedMotion() ? 0 : 0.6;
+    this.carry = carry;
+    this.land(carry, col, to);
+    this.runCarry();
+    if (this.cursor !== null) {
+      this.ensureVisibleFor(this.cursor.row, this.cursor.col);
+    }
+  }
+
+  // Ends a carry at once: a held column stays where it was, a settling one
+  // is where it lands.
+  private finishCarry(): void {
+    const carry = this.carry;
+    if (carry === null) {
+      return;
+    }
+    if (carry.frame !== 0) {
+      cancelAnimationFrame(carry.frame);
+    }
+    if (carry.pointerId !== null) {
+      document.removeEventListener("keydown", this.onCarryKey, true);
+      this.drag = { kind: "none" };
+      this.canvas.style.cursor = "default";
+    }
+    this.carry = null;
+    this.schedulePaint();
+  }
+
+  // Esc while a column is carried takes it back; nothing else hears it.
+  private readonly onCarryKey = (e: KeyboardEvent): void => {
+    if (e.key !== "Escape") {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    this.letGo(false);
+  };
+
   // Capture can go away without a pointerup (the window loses focus, say);
   // the drag ends there too.
   private readonly onLostCapture = (): void => {
@@ -2414,10 +2865,18 @@ export class CanvasGrid {
     if (this.drag.kind === "select") {
       this.drag = { kind: "none" };
     }
+    // A carried column goes back to its place.
+    this.letGo(false);
   };
 
   private readonly onPointerUp = (e: PointerEvent): void => {
     this.stopAutoScroll();
+    this.pendingCarry = null;
+    if (this.carry !== null && this.carry.pointerId === e.pointerId) {
+      // Dropped where it is aimed; a cancelled pointer takes it back.
+      this.letGo(e.type === "pointerup");
+      return;
+    }
     if (this.canvas.hasPointerCapture(e.pointerId)) {
       this.canvas.releasePointerCapture(e.pointerId);
     }
@@ -2674,6 +3133,20 @@ export class CanvasGrid {
         }
         this.deleteRowsHandler(rows);
       }
+      return;
+    }
+    // ⌥← / ⌥→: the current column moves a place, as dragging its header does.
+    if (
+      (key === "ArrowLeft" || key === "ArrowRight") &&
+      e.altKey &&
+      !meta &&
+      !e.shiftKey &&
+      this.columnMover !== null &&
+      this.cursor !== null &&
+      this.selMode !== "row"
+    ) {
+      e.preventDefault();
+      this.stepColumn(this.cursor.col, key === "ArrowLeft" ? -1 : 1);
       return;
     }
     if (src.rowCount === 0 || this.widths.length === 0) {

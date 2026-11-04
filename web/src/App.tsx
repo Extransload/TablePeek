@@ -179,6 +179,7 @@ import { cellMenuItems, deleteRowsLabel, type CellValueChoice } from "./grid/cel
 import { IS_MAC, actionForEvent, formatBinding, matchesBinding, shortcutHint, withHint, type KeyAction } from "./shortcuts";
 import type { GridSelection, SortIndicator } from "./grid/CanvasGrid";
 import { subscribePendingChanges, type StagedExpr, type WindowedRowSource } from "./grid/windowSource";
+import { movedIndex } from "./grid/columnMove";
 import {
   ApiRequestError,
   missingSecretOf,
@@ -1979,6 +1980,62 @@ export default function App() {
       return;
     }
     applyColumns(tab, undefined);
+  }
+
+  // A column dragged by its header (or moved with ⌥←/⌥→) in the grid: the
+  // result in front takes the order as it is, its rows and staged changes
+  // with it, without reading the rows again; a table tab keeps it as its
+  // column order (the Columns picker's), which its next read asks for.
+  function moveGridColumn(from: number, to: number): boolean {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    const tab = current !== null ? activeTabOf(current) : null;
+    const shown = store.getState();
+    const result = shown.result;
+    if (
+      conn === null ||
+      current === null ||
+      tab === null ||
+      result === null ||
+      (tab.kind !== "query" && tab.kind !== "data") ||
+      tab.source !== result.source
+    ) {
+      return false;
+    }
+    // A run or an apply under way replaces or writes these rows.
+    if (store.isApplying() || (shown.status === "running" && shown.connId === conn)) {
+      return false;
+    }
+    const moved = store.moveResultColumn(result, from, to);
+    if (tab.kind === "data") {
+      // What tells rows apart (ClickHouse's part and offset) is read along
+      // with any order, not picked.
+      const identity = new Set(sqlDialect?.rowIdentity ?? []);
+      const order = moved.meta.columns.filter((name) => !identity.has(name));
+      const base = columnEntries.map((entry) => entry.name);
+      const asTable =
+        columnEntries.every((entry) => entry.visible) &&
+        order.length === base.length &&
+        order.every((name, index) => name === base[index]);
+      setTabsFor(conn, patchTab(current, tab.id, { meta: moved.meta, columns: asTable ? undefined : order }));
+    } else {
+      setTabsFor(conn, patchTab(current, tab.id, { meta: moved.meta }));
+    }
+    // Several statements' results: the one shown is this one, moved.
+    setResultSets((prev) => {
+      const set = prev[tab.id];
+      if (set === undefined) {
+        return prev;
+      }
+      const entries = set.entries.map((entry) =>
+        entry.outcome.kind === "ok" && entry.outcome.result.source === result.source
+          ? { ...entry, outcome: { kind: "ok" as const, result: moved } }
+          : entry,
+      );
+      return { ...prev, [tab.id]: { ...set, entries } };
+    });
+    setCellQuickLook((open) => (open === null ? null : { ...open, col: movedIndex(open.col, from, to) }));
+    return true;
   }
 
   function currentTab(): WorkbenchTab | null {
@@ -6786,6 +6843,7 @@ export default function App() {
                             }
                             sortColumns={sortIndicators}
                             onHeaderClick={activeDataTab ? handleHeaderClick : undefined}
+                            onColumnMove={moveGridColumn}
                             onSelectionChange={handleSelectionChange}
                             onCellContextMenu={handleCellContextMenu}
                             onDeleteRows={deleteRows}

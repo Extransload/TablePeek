@@ -1,3 +1,4 @@
+import { moveItem, movedIndex } from "./grid/columnMove";
 import type { PkPair, StagedExpr, WindowedRowSource } from "./grid/windowSource";
 import { cellToString } from "./rowOps";
 import {
@@ -643,6 +644,34 @@ function showSnapshot(conn: string, snapshot: TabSnapshot): void {
     editFailure: state.editFailure?.result === result ? state.editFailure : null,
     status,
   });
+}
+
+// A result's column moved from `from` to index `to` (dragged in the grid), as
+// if it had been read that way: the source moves its rows and staged changes,
+// and the result to show from now on carries a meta in the same order, so
+// every column index (an edit's, a key's, the grid's) still means the same
+// column. Results kept elsewhere for the same source are the caller's to swap.
+function moveResultColumn(result: GridResult, from: number, to: number): GridResult {
+  const { source, meta } = result;
+  source.moveColumn(from, to);
+  const kinds = meta.columnKinds;
+  const columnKinds = kinds === undefined ? undefined : meta.columns.map((_, index) => kinds[index] ?? null);
+  if (columnKinds !== undefined) {
+    moveItem(columnKinds, from, to);
+  }
+  const moved: GridResult = { ...result, meta: { ...meta, columns: source.columns, columnKinds } };
+  resultCache.set(source, moved);
+  if (state.result === result) {
+    const failure = state.editFailure;
+    setState({
+      result: moved,
+      editFailure:
+        failure?.result === result
+          ? { ...failure, result: moved, col: failure.col === null ? null : movedIndex(failure.col, from, to) }
+          : failure,
+    });
+  }
+  return moved;
 }
 
 async function runQuery(
@@ -2284,6 +2313,7 @@ export const store = {
   runDetached,
   cancelQuery,
   editCell,
+  moveResultColumn,
   setCellExpr,
   addToCell,
   revertCell,

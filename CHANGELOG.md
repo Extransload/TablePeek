@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Reorder columns by dragging their headers**, as in TablePlus. Drag a header sideways and the column lifts and follows the pointer while the others slide aside to show where it lands; the grid scrolls near its edges, release drops it, `Esc` sends it back. A short press still sorts or selects and the header's edge still resizes. `⌥←`/`⌥→` moves the current column one place. Staged edits, the selection, widths and sorts stay with their columns, and copy, export, Quick Look and the row detail panel follow the new order. A table tab keeps the order as its column order (shown in the Columns picker) across paging and refreshes without reading the rows again; a query result keeps it until it runs again. Reduce motion makes the moves instant.
+
 ## [0.3.3] - 2026-11-05
 
 ### Changed
