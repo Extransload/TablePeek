@@ -4,6 +4,8 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-04
+
 ### Added
 
 - **Floating surface opacity** (Settings → Appearance → Material, 90% by default, shown when the material isn't Solid; searchable as "floating"). It sets how opaque Quick Look, dialogs, the command palette, menus and pickers and the settings sheet are, apart from the window's opacity, and applies live as the slider moves.
@@ -12,6 +14,7 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 - **Quick Look stays readable under Glass and Clear.** Its large view wasn't one of the glass surfaces, so in a see-through window it took the window's opacity with no blur (at a low opacity, all but invisible), and its popover's glass grew fainter as the window's opacity went down. Both now use the floating surface opacity with the glass blur, the date picker too.
 - **Quick Look and the settings sheet no longer overlap.** With Settings open, the Quick Look popover is placed within the app area left of the sheet (pointing at its cell when there is room), the large view fills that area only, and both follow the sheet's edge as it is resized; clicking the sheet no longer closes Quick Look. Dialogs, the command palette, error toasts, flash notes and the sign-in and file-dialog banners keep to the same area, and menus, pickers and tooltips opened over the app stay left of the sheet.
+- ⌘, opens and closes Settings with Quick Look open too.
 
 ## [0.3.0] - 2026-11-04
 
@@ -90,7 +93,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Extransload/TablePeek/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Extransload/TablePeek/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Extransload/TablePeek/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Extransload/TablePeek/releases/tag/v0.1.0
