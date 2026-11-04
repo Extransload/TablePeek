@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
+Loading shows as gauges that fill the box that waits, and Reduce motion becomes a TablePeek setting that no system preference overrides.
+
 ### Added
 
 - **Reduce motion setting** (Settings → Appearance → Display, off by default). On, every transition and animation is instant: tabs, dialogs, menus, home drag and drop, the schema tree, counts, and the home backdrop as a still frame; turning it on or off applies at once in every window.
@@ -77,6 +81,7 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Extransload/TablePeek/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Extransload/TablePeek/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Extransload/TablePeek/releases/tag/v0.1.0
