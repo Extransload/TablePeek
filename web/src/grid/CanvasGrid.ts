@@ -1190,9 +1190,12 @@ export class CanvasGrid {
       }
       const maxChars = Math.ceil(cw / MIN_CHAR_W) + 1;
       const spec = this.specs?.[c] ?? null;
+      // Clipped at the gutter too: a column scrolled half under it would
+      // show its text through a translucent gutter (a see-through window).
+      const clipLeft = Math.max(x, gutterW);
       ctx.save();
       ctx.beginPath();
-      ctx.rect(x, HEADER_H, cw, contentH);
+      ctx.rect(clipLeft, HEADER_H, x + cw - clipLeft, contentH);
       ctx.clip();
       for (let r = first; r <= last; r++) {
         const v = src.cell(r, c);
