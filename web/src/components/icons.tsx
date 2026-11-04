@@ -115,6 +115,35 @@ export function KeyboardIcon({ size = 12, className }: IconProps) {
   );
 }
 
+// A sun: theme and appearance.
+export function SunIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <circle cx="8" cy="8" r="2.8" />
+      <path d="M8 1.6v1.4M8 13v1.4M1.6 8h1.4M13 8h1.4M3.5 3.5l1 1M11.5 11.5l1 1M3.5 12.5l1-1M11.5 4.5l1-1" />
+    </svg>
+  );
+}
+
+// Two opposite arrows: moving data in and out.
+export function TransferIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M2.6 5.4h10.4M10.2 2.6l2.8 2.8-2.8 2.8M13.4 10.6H3M5.8 7.8 3 10.6l2.8 2.8" />
+    </svg>
+  );
+}
+
+// A padlock: security and the passcode lock.
+export function LockIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" />
+      <path d="M5.4 7V5.2a2.6 2.6 0 0 1 5.2 0V7" />
+    </svg>
+  );
+}
+
 export function SearchIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

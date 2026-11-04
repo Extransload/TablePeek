@@ -59,18 +59,18 @@ import {
   CheckIcon,
   CloseIcon,
   CodeIcon,
-  ColumnsIcon,
   DownloadIcon,
   ExternalIcon,
   KeyboardIcon,
+  LockIcon,
   PanelLeftIcon,
   PlusIcon,
   RefreshIcon,
   SearchIcon,
   SettingsIcon,
-  ShieldIcon,
+  SunIcon,
   TableIcon,
-  UpDownIcon,
+  TransferIcon,
 } from "./icons";
 import { notifyError } from "./ErrorNotice";
 import { Spinner } from "./Spinner";
@@ -107,13 +107,13 @@ interface PageItem {
 // as TablePlus splits its fonts into SQL Editor, Data Table and Sidebars.
 const PAGES: PageItem[] = [
   { id: "general", label: "일반", icon: SettingsIcon },
-  { id: "theme", label: "테마", icon: ColumnsIcon },
+  { id: "theme", label: "테마", icon: SunIcon },
   { id: "editor", label: "SQL 에디터", icon: CodeIcon },
   { id: "grid", label: "데이터 테이블", icon: TableIcon },
   { id: "sidebar", label: "사이드바", icon: PanelLeftIcon },
-  { id: "transfer", label: "가져오기·내보내기", icon: UpDownIcon },
+  { id: "transfer", label: "가져오기·내보내기", icon: TransferIcon },
   { id: "shortcuts", label: "단축키", icon: KeyboardIcon },
-  { id: "security", label: "보안", icon: ShieldIcon },
+  { id: "security", label: "보안", icon: LockIcon },
 ];
 
 const SHEET_WIDTH_KEY = "tablepeek.settings-width";
