@@ -4,6 +4,8 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-05
+
 ### Added
 
 - **Reorder columns by dragging their headers**, as in TablePlus. Drag a header sideways and the column lifts and follows the pointer while the others slide aside to show where it lands; the grid scrolls near its edges, release drops it, `Esc` sends it back. A short press still sorts or selects and the header's edge still resizes. `⌥←`/`⌥→` moves the current column one place. Staged edits, the selection, widths and sorts stay with their columns, and copy, export, Quick Look and the row detail panel follow the new order. A table tab keeps the order as its column order (shown in the Columns picker) across paging and refreshes without reading the rows again; a query result keeps it until it runs again. Reduce motion makes the moves instant.
@@ -115,7 +117,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/Extransload/TablePeek/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Extransload/TablePeek/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Extransload/TablePeek/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Extransload/TablePeek/compare/v0.3.0...v0.3.1
