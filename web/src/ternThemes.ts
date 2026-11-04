@@ -12,8 +12,8 @@ import {
 } from "./termTheme";
 
 // Tern's themes are a chunk of their own (see vite.config.ts), loaded the
-// first time they're wanted: Settings → Theme shows them, a Tern theme file
-// is imported on one of them, or the saved theme is one.
+// first time they're wanted: Settings opens, a Tern theme file is imported
+// on one of them, or a saved theme is one.
 let loading: Promise<TermSource[]> | null = null;
 
 export function loadTernThemes(): Promise<TermSource[]> {
@@ -35,12 +35,14 @@ export function awaitsTernThemes(id: string): boolean {
   return id.startsWith(TERN_PREFIX) && !id.startsWith(TERN_FILE_PREFIX) && !THEMES.some((theme) => theme.id === id);
 }
 
-// Before the app draws: the saved theme's colours are in place, not the
-// default's for a moment. A failed load leaves the default theme.
+// Before the app draws: the saved themes' colours are in place, not the
+// default's for a moment, and settings saved with one theme (`theme`, before
+// the light and dark ones) find its mode. A failed load leaves the defaults.
 export async function loadSavedTheme(): Promise<void> {
   try {
-    const saved = JSON.parse(uiState.getItem(uiState.SETTINGS_KEY) ?? "{}") as { theme?: unknown };
-    if (typeof saved.theme === "string" && awaitsTernThemes(saved.theme)) {
+    const saved = JSON.parse(uiState.getItem(uiState.SETTINGS_KEY) ?? "{}") as Record<string, unknown>;
+    const ids = [saved.themeLight, saved.themeDark, saved.theme];
+    if (ids.some((id) => typeof id === "string" && awaitsTernThemes(id))) {
       await loadTernThemes();
     }
   } catch {

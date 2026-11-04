@@ -4,6 +4,7 @@ import {
   defaultTypeInks,
   subscribeThemes,
   themeById,
+  THEMES,
   VALUE_KINDS,
   type Palette,
   type Theme,
@@ -37,7 +38,9 @@ import {
 import { TABLE_SLOTS, withTable, type TablePicks } from "./termTheme";
 import { awaitsTernThemes, loadTernThemes } from "./ternThemes";
 
-export type ThemeMode = ThemeId;
+// Light, dark, or the system's, as Tern has it: each with a theme of its own.
+export type ThemeMode = "light" | "dark" | "system";
+export const THEME_MODES: readonly ThemeMode[] = ["light", "dark", "system"];
 export type CsvEncoding = "utf-8" | "euc-kr" | "utf-16le";
 // The parts of the data table a colour can be picked for: each kind of value
 // and NULL.
@@ -46,25 +49,32 @@ export type GridColorPicks = Partial<Record<GridColorKey, string>>;
 export const GRID_COLOR_KEYS: GridColorKey[] = [...VALUE_KINDS, "null"];
 
 export interface AppSettings {
+  // The shape these settings are saved in (see SETTINGS_VERSION).
+  version: number;
   language: Language;
-  theme: ThemeMode;
+  themeMode: ThemeMode;
+  themeLight: ThemeId;
+  themeDark: ThemeId;
+  // "" takes the theme's own accent.
   accent: string;
   // The window material (see material.ts): how opaque the background is
   // (0–100) over what shows through, and a clear surface's blur (points).
   material: Material;
   materialOpacity: number;
   materialBlur: number;
-  // Fonts and sizes (px) in three places, as TablePlus has them; menus,
-  // tabs, toolbars and dialogs keep the system's font at its usual size.
-  // The SQL editor's, the console's and code shown elsewhere.
-  fontFamily: string;
-  fontSize: number;
-  // Every table: the data grid, structure, previews.
-  gridFontFamily: string;
-  gridFontSize: number;
-  // The left sidebar and the right detail panel.
-  sidebarFontFamily: string;
-  sidebarFontSize: number;
+  // Fonts, each following the one above it as Tern's do: the interface's
+  // (the sidebars, menus, dialogs), the code font every monospaced text
+  // takes (the SQL editor and console, the data table, code labels), then
+  // the SQL editor's and the data table's own over it. A font of "" and a
+  // size of null follow; sizes are px.
+  uiFont: string;
+  uiFontSize: number;
+  codeFont: string;
+  codeFontSize: number | null;
+  editorFont: string;
+  editorFontSize: number | null;
+  gridFont: string;
+  gridFontSize: number | null;
   rowAlt: boolean;
   typeColors: boolean;
   // The grid's and the editor's scrollbars kept in view on each axis,
@@ -73,7 +83,7 @@ export interface AppSettings {
   scrollbarY: boolean;
   uppercaseKeywords: boolean;
   syntaxPreset: SyntaxPresetId;
-  // Colours picked in Settings → Theme over the syntax colours, by theme:
+  // Colours picked in Settings → Appearance over the syntax colours, by theme:
   // like TablePlus's, a theme's colours stay with it.
   syntaxColors: Record<string, SyntaxColorPicks>;
   // The same for the data table's colours by kind of value, by theme.
@@ -98,32 +108,43 @@ export interface AppSettings {
 export const MAX_ROWS_LIMIT = 500000;
 // A day: the longest query time limit Settings takes.
 export const MAX_QUERY_TIMEOUT = 86400;
-export const EDITOR_FONT_MIN = 10;
-export const EDITOR_FONT_MAX = 24;
-export const GRID_FONT_MIN = 10;
-export const GRID_FONT_MAX = 24;
-export const SIDEBAR_FONT_MIN = 10;
-export const SIDEBAR_FONT_MAX = 18;
+export const UI_FONT_MIN = 10;
+export const UI_FONT_MAX = 18;
+export const CODE_FONT_MIN = 10;
+export const CODE_FONT_MAX = 24;
 // The size the app is drawn at: every px size in styles.css is for it.
 const BASE_UI_PX = 12;
+// Settings saved before version 2 had one theme and a font per area (the
+// SQL editor, the data table, the sidebar): see migrateLegacy.
+const SETTINGS_VERSION = 2;
 
 function clampSize(value: unknown, min: number, max: number, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
 
+// A size that may follow another: null, or a size in range.
+function clampFollowing(value: unknown, min: number, max: number): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : null;
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
+  version: SETTINGS_VERSION,
   language: "ko",
-  theme: "dark",
-  accent: "#4082ee",
+  themeMode: "system",
+  themeLight: "light",
+  themeDark: "dark",
+  accent: "",
   material: "solid",
   materialOpacity: 80,
   materialBlur: 20,
-  fontFamily: SYSTEM_CODE_FONT,
-  fontSize: 12,
-  gridFontFamily: SYSTEM_CODE_FONT,
-  gridFontSize: 12,
-  sidebarFontFamily: SYSTEM_CODE_FONT,
-  sidebarFontSize: 12,
+  uiFont: "",
+  uiFontSize: BASE_UI_PX,
+  codeFont: "",
+  codeFontSize: null,
+  editorFont: "",
+  editorFontSize: null,
+  gridFont: "",
+  gridFontSize: null,
   rowAlt: true,
   typeColors: true,
   scrollbarX: true,
@@ -156,46 +177,37 @@ function readSettings(): AppSettings {
     if (raw === null) {
       return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
     }
-    const { hideScroller, uiFontFamily: _appFont, uiFontSize, ...parsed } = JSON.parse(raw) as Partial<AppSettings> & {
-      hideScroller?: boolean;
-      uiFontFamily?: string;
-      uiFontSize?: number;
-    };
-    // "Hide scrollbars" from earlier versions: neither kept in view.
-    const shown = hideScroller === true ? false : DEFAULT_SETTINGS.scrollbarX;
-    // Earlier versions drew the grid and the sidebar's names in the code
-    // font, at the one size the whole app took: they start from those.
-    const codeFont = typeof parsed.fontFamily === "string" ? parsed.fontFamily : DEFAULT_SETTINGS.fontFamily;
-    return {
+    const saved = JSON.parse(raw) as Record<string, unknown>;
+    const legacy = typeof saved.version !== "number" || saved.version < SETTINGS_VERSION;
+    const merged: Record<string, unknown> = legacy ? { ...saved, ...migrateLegacy(saved) } : saved;
+    // Only today's settings: those earlier versions saved are dropped.
+    const parsed = Object.fromEntries(
+      Object.entries(merged).filter(([key]) => Object.hasOwn(DEFAULT_SETTINGS, key)),
+    ) as Partial<AppSettings>;
+    const settings: AppSettings = {
       ...DEFAULT_SETTINGS,
-      scrollbarX: shown,
-      scrollbarY: shown,
-      gridFontFamily: codeFont,
-      sidebarFontFamily: codeFont,
       ...parsed,
+      version: SETTINGS_VERSION,
       language: parsed.language === "en" ? "en" : "ko",
-      // One of Tern's themes is kept while they load (ternThemes.ts).
-      theme: awaitsTernThemes(parsed.theme ?? "") ? (parsed.theme as string) : themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
+      themeMode: THEME_MODES.includes(parsed.themeMode as ThemeMode) ? (parsed.themeMode as ThemeMode) : DEFAULT_SETTINGS.themeMode,
+      themeLight: readThemeId(parsed.themeLight, DEFAULT_SETTINGS.themeLight),
+      themeDark: readThemeId(parsed.themeDark, DEFAULT_SETTINGS.themeDark),
+      accent: typeof parsed.accent === "string" && /^#[0-9a-f]{6}$/i.test(parsed.accent) ? parsed.accent : "",
       material: MATERIALS.includes(parsed.material as Material) ? (parsed.material as Material) : DEFAULT_SETTINGS.material,
       materialOpacity: Math.round(clampSize(parsed.materialOpacity, 0, 100, DEFAULT_SETTINGS.materialOpacity)),
       materialBlur: Math.round(clampSize(parsed.materialBlur, 0, MATERIAL_BLUR_MAX, DEFAULT_SETTINGS.materialBlur)),
+      uiFont: typeof parsed.uiFont === "string" ? parsed.uiFont : "",
+      uiFontSize: clampSize(parsed.uiFontSize, UI_FONT_MIN, UI_FONT_MAX, DEFAULT_SETTINGS.uiFontSize),
+      codeFont: typeof parsed.codeFont === "string" ? parsed.codeFont : "",
+      codeFontSize: clampFollowing(parsed.codeFontSize, CODE_FONT_MIN, CODE_FONT_MAX),
+      editorFont: typeof parsed.editorFont === "string" ? parsed.editorFont : "",
+      editorFontSize: clampFollowing(parsed.editorFontSize, CODE_FONT_MIN, CODE_FONT_MAX),
+      gridFont: typeof parsed.gridFont === "string" ? parsed.gridFont : "",
+      gridFontSize: clampFollowing(parsed.gridFontSize, CODE_FONT_MIN, CODE_FONT_MAX),
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
       syntaxColors: readColorPicks(parsed.syntaxColors, SYNTAX_COLOR_KEYS),
       gridColors: readColorPicks(parsed.gridColors, GRID_COLOR_KEYS),
       tableColors: readColorPicks(parsed.tableColors, TABLE_SLOTS),
-      fontSize: clampSize(parsed.fontSize, EDITOR_FONT_MIN, EDITOR_FONT_MAX, DEFAULT_SETTINGS.fontSize),
-      gridFontSize: clampSize(
-        parsed.gridFontSize ?? uiFontSize,
-        GRID_FONT_MIN,
-        GRID_FONT_MAX,
-        DEFAULT_SETTINGS.gridFontSize,
-      ),
-      sidebarFontSize: clampSize(
-        parsed.sidebarFontSize ?? uiFontSize,
-        SIDEBAR_FONT_MIN,
-        SIDEBAR_FONT_MAX,
-        DEFAULT_SETTINGS.sidebarFontSize,
-      ),
       maxRows:
         typeof parsed.maxRows === "number" && Number.isFinite(parsed.maxRows)
           ? Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(parsed.maxRows)))
@@ -208,9 +220,63 @@ function readSettings(): AppSettings {
       keymap: normalizeKeymap(parsed.keymap, typeof parsed.keymapVersion === "number" ? parsed.keymapVersion : 1),
       keymapVersion: KEYMAP_VERSION,
     };
+    // Saved back in today's shape at once, so they are moved over once.
+    if (legacy) {
+      uiState.setItem(uiState.SETTINGS_KEY, JSON.stringify(settings));
+    }
+    return settings;
   } catch {
     return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
   }
+}
+
+// A saved theme still offered (one of Tern's is kept while they load, see
+// ternThemes.ts), or `fallback`.
+function readThemeId(value: unknown, fallback: ThemeId): ThemeId {
+  return typeof value === "string" && (awaitsTernThemes(value) || THEMES.some((theme) => theme.id === value))
+    ? value
+    : fallback;
+}
+
+// Settings saved before version 2, moved over. Their one theme is the
+// theme of its mode and the mode is that one (System for the default dark
+// theme, never picked), and an accent that was that theme's own follows
+// whichever theme shows. Each of the SQL editor, the data table and the
+// sidebar had a font and a size: the editor's becomes the code font, the
+// data table's its own where it differs, and the sidebar's, now in the
+// interface's font, that font where it differs and isn't a system face.
+function migrateLegacy(old: Record<string, unknown>): Partial<AppSettings> {
+  const id = typeof old.theme === "string" ? old.theme : "dark";
+  const theme = THEMES.find((item) => item.id === id);
+  const mode = theme?.mode ?? "dark";
+  const accent = typeof old.accent === "string" ? old.accent.toLowerCase() : "";
+  // The default theme's accent was #4f8cff when picked from the gallery.
+  const themesOwn = accent === theme?.accent.toLowerCase() || (id === "dark" && accent === "#4f8cff");
+  const family = (value: unknown, fallback: string): string => (typeof value === "string" ? value : fallback);
+  const editor = family(old.fontFamily, SYSTEM_CODE_FONT);
+  const grid = family(old.gridFontFamily, editor);
+  const sidebar = family(old.sidebarFontFamily, editor);
+  // The oldest versions had one size for the whole app.
+  const editorSize = clampSize(old.fontSize, CODE_FONT_MIN, CODE_FONT_MAX, BASE_UI_PX);
+  const gridSize = clampSize(old.gridFontSize ?? old.uiFontSize, CODE_FONT_MIN, CODE_FONT_MAX, BASE_UI_PX);
+  const uiFontSize = clampSize(old.sidebarFontSize ?? old.uiFontSize, UI_FONT_MIN, UI_FONT_MAX, BASE_UI_PX);
+  // "Hide scrollbars" from earlier still: neither kept in view.
+  const shown = old.hideScroller !== true;
+  return {
+    themeMode: id === "dark" ? "system" : mode,
+    themeLight: mode === "light" ? id : DEFAULT_SETTINGS.themeLight,
+    themeDark: mode === "dark" ? id : DEFAULT_SETTINGS.themeDark,
+    accent: themesOwn ? "" : accent,
+    uiFont: sidebar === editor || sidebar === SYSTEM_CODE_FONT || sidebar === SYSTEM_UI_FONT ? "" : sidebar,
+    uiFontSize,
+    codeFont: editor === SYSTEM_CODE_FONT ? "" : editor,
+    codeFontSize: editorSize === uiFontSize ? null : editorSize,
+    editorFont: "",
+    editorFontSize: null,
+    gridFont: grid === editor ? "" : grid,
+    gridFontSize: gridSize === editorSize ? null : gridSize,
+    ...(typeof old.scrollbarX === "boolean" ? {} : { scrollbarX: shown, scrollbarY: shown }),
+  };
 }
 
 // Saved colour picks: hex colours of known parts only, under each theme.
@@ -248,10 +314,12 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-// The theme's palette as `settings` draw it: their accent, the alternate row
-// background or not, and the data table colours picked for this theme.
+// The theme's palette as `settings` draw it: their accent (or the theme's),
+// the alternate row background or not, and the data table colours picked
+// for this theme.
 function themePalette(theme: Theme, settings: AppSettings): Palette {
-  const { accent, rowAlt } = settings;
+  const { rowAlt } = settings;
+  const accent = settings.accent || theme.accent;
   const palette = { ...theme.palette };
   const { null: nullInk, ...kinds } = settings.gridColors[theme.id] ?? {};
   palette.typeInks = {
@@ -274,15 +342,68 @@ function themePalette(theme: Theme, settings: AppSettings): Palette {
   return palette;
 }
 
-// The theme `settings` draw: the one picked, with the colours picked in its
+const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+// Whether the system is in dark mode, which System follows as it changes.
+export function systemDark(): boolean {
+  return darkScheme.matches;
+}
+
+export function subscribeSystemDark(listener: () => void): () => void {
+  darkScheme.addEventListener("change", listener);
+  return () => darkScheme.removeEventListener("change", listener);
+}
+
+// The theme shown: the light or the dark one, by the mode (the system's
+// under System).
+export function activeThemeId(settings: AppSettings): ThemeId {
+  const dark = settings.themeMode === "system" ? darkScheme.matches : settings.themeMode === "dark";
+  return dark ? settings.themeDark : settings.themeLight;
+}
+
+// The theme `settings` draw: the one shown, with the colours picked in its
 // colour table. One of Tern's themes still loading draws as the default
 // until it is in, then the settings are drawn again.
 function drawnTheme(settings: AppSettings): Theme {
-  if (awaitsTernThemes(settings.theme)) {
+  const id = activeThemeId(settings);
+  if (awaitsTernThemes(id)) {
     void loadTernThemes().catch(() => {});
   }
-  const theme = themeById(settings.theme);
+  const theme = themeById(id);
   return withTable(theme, settings.tableColors[theme.id]);
+}
+
+// The accent drawn: the one picked, or the shown theme's own.
+export function currentAccent(settings: AppSettings): string {
+  return settings.accent || drawnTheme(settings).accent;
+}
+
+export interface DrawnFonts {
+  ui: string;
+  uiSize: number;
+  code: string;
+  codeSize: number;
+  editor: string;
+  editorSize: number;
+  grid: string;
+  gridSize: number;
+}
+
+// Each font as drawn, following the one above it where it isn't set: the
+// system's faces at the top, the code font's size the interface's.
+export function drawnFonts(settings: AppSettings): DrawnFonts {
+  const code = settings.codeFont || SYSTEM_CODE_FONT;
+  const codeSize = settings.codeFontSize ?? settings.uiFontSize;
+  return {
+    ui: settings.uiFont || SYSTEM_UI_FONT,
+    uiSize: settings.uiFontSize,
+    code,
+    codeSize,
+    editor: settings.editorFont || code,
+    editorSize: settings.editorFontSize ?? codeSize,
+    grid: settings.gridFont || code,
+    gridSize: settings.gridFontSize ?? codeSize,
+  };
 }
 
 export function applySettings(settings: AppSettings): void {
@@ -308,8 +429,8 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--accent", palette.accent);
   root.style.setProperty("--accent-hover", palette.accentHover);
   root.style.setProperty("--accent-contrast", palette.onAccent);
-  root.style.setProperty("--accent-soft", hexToRgba(settings.accent, 0.18));
-  root.style.setProperty("--accent-line", hexToRgba(settings.accent, 0.5));
+  root.style.setProperty("--accent-soft", hexToRgba(opaque.accent, 0.18));
+  root.style.setProperty("--accent-line", hexToRgba(opaque.accent, 0.5));
   root.style.setProperty("--error", palette.error);
   root.style.setProperty("--ok", palette.ok);
   root.style.setProperty("--warn", palette.warn);
@@ -318,17 +439,17 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--scrollbar", mixHex(opaque.faint, opaque.bg, 0.25));
   root.style.setProperty("--scrollbar-hover", palette.muted);
   root.style.setProperty("--hover-fill", palette.hoverFill);
-  declareFaces([settings.fontFamily, settings.gridFontFamily, settings.sidebarFontFamily]);
-  root.style.setProperty("--mono", settings.fontFamily);
-  root.style.setProperty("--ui", SYSTEM_UI_FONT);
-  root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
-  // Every px font size in styles.css is multiplied by --ui-scale: 1 for the
-  // app, the sidebar's own inside the sidebars (see styles.css).
-  root.style.setProperty("--ui-scale", "1");
-  root.style.setProperty("--sidebar-font", settings.sidebarFontFamily);
-  root.style.setProperty("--sidebar-scale", String(settings.sidebarFontSize / BASE_UI_PX));
-  root.style.setProperty("--grid-font", settings.gridFontFamily);
-  root.style.setProperty("--grid-scale", String(settings.gridFontSize / BASE_UI_PX));
+  const fonts = drawnFonts(settings);
+  declareFaces([fonts.ui, fonts.code, fonts.editor, fonts.grid]);
+  root.style.setProperty("--ui", fonts.ui);
+  root.style.setProperty("--mono", fonts.code);
+  root.style.setProperty("--editor-font", fonts.editor);
+  root.style.setProperty("--editor-font-size", `${fonts.editorSize}px`);
+  // Every px font size in styles.css is for the default 12px, multiplied by
+  // --ui-scale: the interface's font size, the data table's in its editor.
+  root.style.setProperty("--ui-scale", String(fonts.uiSize / BASE_UI_PX));
+  root.style.setProperty("--grid-font", fonts.grid);
+  root.style.setProperty("--grid-scale", String(fonts.gridSize / BASE_UI_PX));
   const syntax = syntaxColorsWith(settings, theme, palette);
   for (const [key, variable] of Object.entries({ ...SYNTAX_VARIABLES, ...EXTRA_SYNTAX_VARIABLES })) {
     root.style.setProperty(variable, syntax[key as SyntaxColorKey]);
@@ -342,7 +463,7 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--type-null", palette.nullInk);
   root.classList.toggle("scrollbar-x-always", settings.scrollbarX);
   root.classList.toggle("scrollbar-y-always", settings.scrollbarY);
-  applyMaterial(settings, { ...opaque, mode: theme.mode });
+  applyMaterial(settings, { ...opaque, mode: theme.mode }, settings.themeMode === "system");
   window.dispatchEvent(new CustomEvent("tablepeek:theme"));
 }
 
@@ -420,6 +541,8 @@ subscribeMaterial(() => applySettings(current));
 // Tern's themes came in, or a theme file was imported: the saved theme may
 // be one of them.
 subscribeThemes(() => applySettings(current));
+// The system turned light or dark: System follows it.
+subscribeSystemDark(() => applySettings(current));
 // Another window changed the settings: this one follows, so every window
 // draws (and asks the desktop app for) the same look. Only saveSettings
 // writes them back, so following never echoes a change.

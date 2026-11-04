@@ -1,6 +1,7 @@
-// Fonts to pick from in Settings, for the SQL editor, the data table and the
-// sidebar: the system's own, then every face installed on this machine by
-// its PostScript name (JetBrainsMonoNF-Regular), as TablePlus lists them.
+// Fonts to pick from in Settings (the interface's, the code font and the
+// SQL editor's and data table's own): the system's own, then every face
+// installed on this machine by its PostScript name (JetBrainsMonoNF-Regular),
+// as TablePlus lists them.
 
 export interface FontChoice {
   label: string;
@@ -12,8 +13,11 @@ export const SYSTEM_UI_FONT =
   '-apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
 export const SYSTEM_CODE_FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
-const SYSTEM_CODE_CHOICE: FontChoice = { label: "시스템 고정폭", value: SYSTEM_CODE_FONT };
-const SYSTEM_UI_CHOICE: FontChoice = { label: "시스템 기본", value: SYSTEM_UI_FONT };
+// The system's own faces, offered first in every font picker.
+export const SYSTEM_FONT_CHOICES: FontChoice[] = [
+  { label: "시스템 고정폭", value: SYSTEM_CODE_FONT },
+  { label: "시스템 기본", value: SYSTEM_UI_FONT },
+];
 
 // CSS picks fonts by family, so a face is named as a family of its own,
 // declared with @font-face from the font the system has under that name:
@@ -48,8 +52,7 @@ export interface InstalledFont {
 }
 
 export interface FontGroup {
-  // None for the list's first, ungrouped entry.
-  label: string | null;
+  label: string;
   choices: FontChoice[];
 }
 
@@ -116,12 +119,9 @@ function drawsMonospace(family: string): boolean {
   return even;
 }
 
-// What Settings offers for one of its three fonts: the system's own first
-// (for the data table and the sidebar both its monospaced and its plain
-// one, as TablePlus offers), then every installed face, those of
-// monospaced families before the rest.
-export function fontGroups(place: "editor" | "grid" | "sidebar", families: InstalledFont[]): FontGroup[] {
-  const systems = place === "editor" ? [SYSTEM_CODE_CHOICE] : [SYSTEM_CODE_CHOICE, SYSTEM_UI_CHOICE];
+// Every installed face to pick from, those of monospaced families before
+// the rest.
+export function fontGroups(families: InstalledFont[]): FontGroup[] {
   const monospaced: FontChoice[] = [];
   const others: FontChoice[] = [];
   for (const family of families) {
@@ -134,7 +134,6 @@ export function fontGroups(place: "editor" | "grid" | "sidebar", families: Insta
     }
   }
   const groups: FontGroup[] = [
-    { label: null, choices: systems },
     { label: "고정폭 글꼴", choices: monospaced },
     { label: "그 밖의 글꼴", choices: others },
   ];

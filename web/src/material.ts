@@ -1,4 +1,4 @@
-// The window material Settings → Theme picks, as Tern has it:
+// The window material Settings → Appearance picks, as Tern has it:
 //
 // - solid: everything opaque;
 // - glass: translucent, with the system's tint behind it;
@@ -125,8 +125,9 @@ export function seeThroughColors<C extends Omit<MaterialColors, "mode">>(colors:
 }
 
 // Sets the floating surfaces' glass (see styles.css, "Window material") and
-// gives the window its material where it can have one.
-export function applyMaterial(picks: MaterialPicks, colors: MaterialColors): void {
+// gives the window its material where it can have one. Under System the
+// window keeps the system's appearance, which the page follows.
+export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, followsSystem: boolean): void {
   const root = document.documentElement;
   const material = effectiveMaterial(picks);
   root.dataset.material = material;
@@ -150,7 +151,7 @@ export function applyMaterial(picks: MaterialPicks, colors: MaterialColors): voi
     void askWindow();
   }
   if (translucentWindow === true) {
-    queueWindow(JSON.stringify({ material, blur: picks.materialBlur, dark: colors.mode === "dark" }));
+    queueWindow(JSON.stringify({ material, blur: picks.materialBlur, dark: colors.mode === "dark", system: followsSystem }));
   }
 }
 

@@ -1,5 +1,5 @@
-//! The window material Settings → Theme picks: an opaque window, or one the
-//! desktop shows through (glass: the system's translucent material; clear:
+//! The window material Settings → Appearance picks: an opaque window, or one
+//! the desktop shows through (glass: the system's translucent material; clear:
 //! the desktop blurred without the system's tint). A page can't reach its
 //! window, so it asks here (`PUT /api/window`) and the app that embeds the
 //! server applies it through a [`WindowMaterial`]; a server without one
@@ -27,6 +27,10 @@ pub struct WindowLook {
     /// The page's theme is dark: the system's material and the title bar
     /// follow it rather than the system's appearance.
     pub dark: bool,
+    /// The page follows the system's light or dark mode: the window keeps
+    /// the system's appearance (which the page reads) instead of `dark`.
+    #[serde(default)]
+    pub system: bool,
 }
 
 /// The most blur a clear window takes.
@@ -66,13 +70,18 @@ mod tests {
             WindowLook {
                 material: Material::Clear,
                 blur: MAX_BLUR,
-                dark: true
+                dark: true,
+                system: false
             }
         );
         let glass: WindowLook =
             serde_json::from_str(r#"{ "material": "glass", "dark": false }"#).unwrap();
         assert_eq!(glass.material, Material::Glass);
         assert_eq!(glass.blur, 0);
+        let follows: WindowLook =
+            serde_json::from_str(r#"{ "material": "solid", "dark": false, "system": true }"#)
+                .unwrap();
+        assert!(follows.system);
         assert!(
             serde_json::from_str::<WindowLook>(r#"{ "material": "frosted", "dark": false }"#)
                 .is_err()

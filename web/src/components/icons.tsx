@@ -126,7 +126,7 @@ export function SlidersIcon({ size = 12, className }: IconProps) {
   );
 }
 
-// A sun: theme and appearance.
+// A sun: appearance (theme, colours, fonts), as Tern marks it.
 export function SunIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

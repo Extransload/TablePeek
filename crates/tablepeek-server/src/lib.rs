@@ -9505,6 +9505,7 @@ mod tests {
                 material: window_material::Material::Clear,
                 blur: window_material::MAX_BLUR,
                 dark: false,
+                system: false,
             }]
         );
 

@@ -8,7 +8,7 @@ import { paletteSyntax, type SyntaxColors } from "./syntax";
 // Tern uses) makes them: a colour table (the background, the foreground and
 // the 16 ANSI colours) and a few colours for the window around it. Every
 // colour TablePeek draws text in comes from a slot of the table, so a colour
-// picked in the table (Settings → Theme) carries to all the parts it colours.
+// picked in the table (Settings → Appearance) carries to all the parts it colours.
 
 export const ANSI_SLOTS = [
   "ansi0",
@@ -223,7 +223,7 @@ export function termTheme(source: TermSource): Theme {
 }
 
 // Tern's own themes go by their omp file names ("dark-tokyo-night"); the
-// gallery already splits dark from light, so they read as "Tokyo Night".
+// pickers already split dark from light, so they read as "Tokyo Night".
 const NAME_CASE: Record<string, string> = { github: "GitHub" };
 
 function ternLabel(name: string): string {

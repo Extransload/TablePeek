@@ -1,4 +1,4 @@
-//! The window material the page picks in Settings → Theme, on the app's
+//! The window material the page picks in Settings → Appearance, on the app's
 //! windows. Every window is built transparent (see window.rs); the page paints
 //! its background with the opacity it picked, and here the window gets what
 //! shows behind it:
@@ -11,7 +11,8 @@
 //!   private call Ghostty uses), on Windows Acrylic (whose blur is fixed).
 //!
 //! The material and the title bar follow the page's theme (dark or light)
-//! rather than the system's appearance. While the system's "Reduce
+//! rather than the system's appearance, or the system's when the page
+//! follows it (System in Settings). While the system's "Reduce
 //! transparency" is on, every window is solid whatever the page asks for.
 
 use std::sync::Mutex;
@@ -125,7 +126,13 @@ fn transparency_reduced(_app: &AppHandle) -> bool {
 }
 
 fn apply(window: &WebviewWindow, look: WindowLook) -> tauri::Result<()> {
-    window.set_theme(Some(if look.dark { Theme::Dark } else { Theme::Light }))?;
+    // Following the system, the window keeps the system's appearance, which
+    // the page then reads (prefers-color-scheme).
+    window.set_theme(if look.system {
+        None
+    } else {
+        Some(if look.dark { Theme::Dark } else { Theme::Light })
+    })?;
     let effect = match look.material {
         Material::Solid => None,
         Material::Glass => Some(if cfg!(target_os = "macos") {

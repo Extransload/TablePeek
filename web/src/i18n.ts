@@ -355,11 +355,6 @@ const EN: Record<string, string> = {
   "주석": "Comments",
   "그 밖의 글자": "Other text",
   "모두 기본값으로": "Reset all",
-  "색": "Colors",
-  "SQL 에디터와 데이터 테이블의 색은 각 화면 설정에서 고릅니다.": "The SQL Editor's and the Data Table's colors are picked in their own settings.",
-  "지금 테마({theme})에만 저장되며, 구문 강조 위에 덮입니다.": "Saved for the current theme ({theme}) only, over the syntax highlighting.",
-  "지금 테마({theme})에만 저장되며, 표와 MongoDB 문서의 값 색에 쓰입니다.":
-    "Saved for the current theme ({theme}) only, for values in tables and MongoDB documents.",
   "‘타입별 색상’이 꺼져 있어 NULL 말고는 지금 쓰이지 않습니다.": "“Color by type” is off, so only NULL uses these now.",
   "정수": "Integer",
   "실수": "Decimal",
@@ -374,20 +369,40 @@ const EN: Record<string, string> = {
   "편집": "Editing",
   "편집 [버튼]": "Edit",
   "표시": "Display",
-  "에디터와 콘솔에 쓰입니다.": "Used in the editor and the console.",
-  "모든 표와 셀 편집에 쓰입니다.": "Used in every table and its cell editor.",
-  "왼쪽 사이드바와 오른쪽 상세 패널에 쓰입니다.": "Used in the left sidebar and the right detail panel.",
   "정리·축약할 때 키워드를 대문자로": "Uppercase keywords when formatting or minifying",
   "가로 스크롤바 항상 표시": "Always show the horizontal scrollbar",
   "세로 스크롤바 항상 표시": "Always show the vertical scrollbar",
-  "SQL 에디터에도 적용됩니다.": "Also applies to the SQL editor.",
   "기본값에서 바뀜": "Changed from default",
   "재설정": "Reset",
   "색 재설정": "Reset colors",
-  // The colour table and Tern's themes (Settings → Theme, termTheme.ts)
+  "모양": "Appearance",
+  "모드": "Mode",
+  "라이트 테마": "Light theme",
+  "다크 테마": "Dark theme",
+  "가져온 테마": "Imported",
+  "Tern 테마 파일 가져오기…": "Import Tern theme…",
+  "Tern 테마를 불러오는 중…": "Loading Tern's themes…",
+  "{theme}에만 저장됩니다.": "Saved for {theme} only.",
+  "글자 크기": "Font size",
+  "코드 글꼴": "Code font",
+  "코드 글자 크기": "Code font size",
+  "SQL 에디터와 데이터 테이블이 따릅니다.": "The SQL editor and the data table follow it.",
+  "에디터 글꼴": "Editor font",
+  "에디터 글자 크기": "Editor font size",
+  "표 글꼴": "Table font",
+  "표 글자 크기": "Table font size",
+  "코드 글꼴 · {name}": "Code font · {name}",
+  "따름 · {size}px": "Follow · {size}px",
+  "시스템": "System",
+  "구문 색": "Syntax colors",
+  "값 색": "Value colors",
+  "MongoDB와 ClickHouse에 쓰입니다. 0이면 제한이 없습니다.": "For MongoDB and ClickHouse. 0 means no limit.",
+  "브라우저 탭에서는 떠 있는 면만 유리가 됩니다.": "In a browser tab only floating surfaces turn to glass.",
+  "설정 검색 {key}": "Search settings {key}",
+  "더 짧은 단어나 페이지 이름으로 찾아 보세요": "Try a shorter word, or the name of a page.",
+  "맞는 항목이 없습니다": "Nothing matches",
+  // The colour table and Tern's themes (Settings → Appearance, termTheme.ts)
   "색 표": "Color table",
-  "터미널의 바탕·글자와 16색입니다. 구문 강조와 값 색이 이 색에서 나오며, 고른 색은 지금 테마({theme})에만 저장됩니다. ⏎로 고르고 ⌫로 테마의 색으로 되돌립니다.":
-    "The terminal's background, foreground and 16 colors. Syntax and value colors come from them; colors picked here are saved for the current theme ({theme}) only. ⏎ picks, ⌫ goes back to the theme's color.",
   "바탕": "Background",
   "글자": "Foreground",
   "검정": "Black",
@@ -409,21 +424,12 @@ const EN: Record<string, string> = {
   "참거짓": "Booleans",
   "레이블": "Labels",
   "문자열 값": "String values",
-  "Tern 파일에서 가져옴": "Imported from Tern files",
   "Tern 테마를 불러오지 못했습니다.": "Couldn't load the Tern themes.",
-  "Tern 테마 파일 가져오기": "Import a Tern theme file",
-  "Tern의 테마 CSS(~/Library/Application Support/Tern/themes)를 고르면, @import한 기본 테마에 그 파일의 바탕·글자·16색과 면 색을 덮어 파일 이름의 테마로 더합니다. 다른 규칙은 건너뜁니다.":
-    "Pick a Tern theme CSS (~/Library/Application Support/Tern/themes): its background, foreground, 16 colors and surface colors go over the theme it @imports, added as a theme named after the file. Other rules are skipped.",
-  "“{name}”을(를) 가져와 테마로 정했습니다.": "Imported “{name}” and switched to it.",
   "Tern 테마 파일에 기반 테마(@import)가 없습니다.": "The Tern theme file doesn't @import a base theme.",
   "기반 테마 “{name}”이(가) Tern 테마에 없습니다.": "The base theme “{name}” isn't one of Tern's themes.",
-  "가져온 테마 지우기": "Remove imported theme",
-  "“{name}”과(와) 이 테마에 고른 색을 지웁니다.": "Removes “{name}” and the colors picked for it.",
-  "입력해서 검색": "Type to search",
   "설정 검색": "Search settings",
   "설정 페이지": "Settings pages",
   "설정 너비": "Settings width",
-  "‘{query}’에 맞는 설정이 없습니다": "No settings match “{query}”",
   "설정 이동": "Move",
   "페이지 전환": "Switch page",
   "설정 바꾸기": "Change",
@@ -435,17 +441,8 @@ const EN: Record<string, string> = {
   "유리": "Glass",
   "투명": "Clear",
   "시스템의 ‘투명도 줄이기’가 켜져 있어 불투명하게 그립니다.": "The system's “Reduce transparency” is on, so everything is drawn solid.",
-  "유리는 시스템의 반투명 재질을, 투명은 색을 입히지 않고 흐리게 한 바탕화면을 창 뒤에 둡니다. 대화상자, 팔레트, 메뉴도 유리가 됩니다.":
-    "Glass puts the system's translucent material behind the window; Clear puts the desktop blurred, without the system's tint. Dialogs, the palette and menus turn to glass too.",
-  "브라우저 탭 뒤에는 바탕화면이 없어 대화상자, 팔레트, 메뉴 같은 떠 있는 면만 유리가 됩니다. 창이 비쳐 보이는 것은 데스크톱 앱에서만입니다.":
-    "A browser tab has no desktop behind it, so only floating surfaces such as dialogs, the palette and menus turn to glass. See-through windows are desktop app only.",
   "불투명도": "Opacity",
-  "창 바탕이 얼마나 비치지 않는지입니다. 떠 있는 면은 글자가 읽히도록 조금 더 불투명합니다.":
-    "How opaque the window's background is. Floating surfaces stay a little more opaque so their text reads.",
-  "떠 있는 면의 바탕이 얼마나 비치지 않는지입니다. 글자가 읽히도록 아주 투명해지지는 않습니다.":
-    "How opaque floating surfaces are. They never turn fully transparent, so their text reads.",
   "흐림": "Blur",
-  "투명 재질의 뒤를 흐리게 하는 반경입니다.": "How far Clear blurs what is behind it.",
   "TablePeek 단축키가 브라우저 단축키보다 먼저 실행됩니다. {keys}는 브라우저가 먼저 처리합니다.": "TablePeek shortcuts run before the browser's. {keys} are handled by the browser first.",
   "누른 뒤 키 조합을 누르세요. Esc로 취소합니다. 다른 동작에 쓰이던 조합은 이쪽으로 옮겨집니다.": "Click, then press a key combination. Esc cancels. A combination another action used moves here.",
   "단축키 추가": "Add shortcut",
@@ -1318,7 +1315,6 @@ const EN: Record<string, string> = {
   "최대 {count}행까지만 가져왔습니다": "Fetched only the first {count} rows",
   "더 보기": "More",
   "데이터베이스 전환…": "Switch database\u2026",
-  "쿼리 한 번에 가져오는 최대 행 수입니다.": "The most rows one query run fetches.",
   "테이블을 찾을 수 없습니다": "Table not found",
   "세션을 찾을 수 없습니다": "Session not found",
   "이미 트랜잭션이 진행 중입니다": "A transaction is already open",
@@ -1512,8 +1508,6 @@ const EN: Record<string, string> = {
   "SQL 에디터": "SQL Editor",
   "연결할 데이터베이스 종류를 고르세요": "Pick the kind of database to connect to",
   "데이터 테이블": "Data Table",
-  "{name} 글자 크기": "{name} font size",
-  "{name} 글꼴": "{name} font",
   "고정폭 글꼴": "Monospaced fonts",
   "그 밖의 글꼴": "Other fonts",
   "시스템 기본": "System default",
@@ -2742,7 +2736,6 @@ const EN: Record<string, string> = {
   "보여 줄 출력": "Output to show",
   "출력 {n}": "Output {n}",
   "쿼리 시간 제한(초)": "Query time limit (s)",
-  "MongoDB 쿼리, mongosh 스크립트, ClickHouse 문장에 쓰입니다. 0이면 제한이 없습니다.": "Used by MongoDB queries, mongosh scripts and ClickHouse statements. 0 means no limit.",
   // ---- end ShellJS ----
   // ---- MongoDB search indexes, change streams, GridFS (SearchStreamFs) ----
   "(없음)": "(none)",
@@ -3460,6 +3453,12 @@ export function t(key: string, values?: Record<string, string | number>): string
   // English counts: "1 rows" reads "1 row", whichever value holds the 1
   // ("{count} documents and {indexes} indexes").
   return current === "en" && Object.values(values).some((value) => String(value) === "1") ? singular(filled) : filled;
+}
+
+// A key's text in both languages, for a search to find it in either.
+export function bothLanguages(key: string): string {
+  const korean = Object.hasOwn(KO, key) ? KO[key] : key;
+  return Object.hasOwn(EN, key) ? `${korean} ${EN[key]}` : korean;
 }
 
 // A message kept as its key and values and translated where it shows, so

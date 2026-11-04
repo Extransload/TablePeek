@@ -1,6 +1,6 @@
 import type { RowSource, RowState } from "./rowSource";
 import { palette } from "../palette";
-import { getSettings } from "../settings";
+import { drawnFonts, getSettings } from "../settings";
 import { classifyCell } from "./valueKind";
 import { edgeScrollStep } from "./edgeScroll";
 import { isDateKind, type CellKind, type GridColumnSpec } from "./columns";
@@ -31,13 +31,13 @@ const STATE_ALPHA = 0.16;
 const EDIT_ALPHA = 0.24;
 let FONT = "";
 let FONT_HEADER = "";
-// The grid's text, rows and header follow the Data Table font and size
-// (Settings), as every table in the app does.
+// The grid's text, rows and header follow the data table's font and size
+// (Settings: the code font's unless set apart), as every table in the app does.
 let SCALE = 0;
 let FAMILY = "";
 
 function syncScale(): void {
-  const { gridFontSize: size, gridFontFamily: family } = getSettings();
+  const { gridSize: size, grid: family } = drawnFonts(getSettings());
   const scale = size / BASE_FONT_PX;
   if (scale === SCALE && family === FAMILY) {
     return;

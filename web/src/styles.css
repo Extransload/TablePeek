@@ -19,6 +19,7 @@
   --btn-hover: #454548;
   --hover-fill: rgba(255, 255, 255, 0.06);
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --editor-font: var(--mono);
   --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
     "Malgun Gothic", sans-serif;
   --appbar-h: 40px;
@@ -37,8 +38,8 @@ body,
   margin: 0;
 }
 
-/* Text sizes are written in px at the default system font size (12px) and
-   scaled by --ui-scale, which Settings → system font size sets. */
+/* Text sizes are written in px at the default font size (12px) and scaled
+   by --ui-scale, which Settings → Appearance → Font size sets. */
 body {
   background: var(--bg);
   color: var(--ink);
@@ -3303,99 +3304,6 @@ textarea:focus-visible {
   border-radius: var(--r-md);
 }
 
-/* As many cards a line as the sheet's width holds. */
-.theme-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-  gap: 8px;
-}
-
-.theme-card {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 5px;
-  height: auto;
-  padding: 7px;
-  background: transparent;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-md);
-  text-align: left;
-}
-
-.theme-card:hover {
-  background: var(--hover-fill);
-  box-shadow: none;
-}
-
-.theme-card.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.theme-preview {
-  display: flex;
-  flex-direction: column;
-  height: 52px;
-  border: 1px solid;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.theme-preview-head {
-  display: flex;
-  flex: none;
-  height: 12px;
-}
-
-.theme-preview-body {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-  padding: 4px;
-  gap: 4px;
-}
-
-.theme-preview-panel {
-  width: 34%;
-  border-radius: 4px;
-}
-
-.theme-preview-lines {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-}
-
-.theme-preview-lines span {
-  display: block;
-  height: 3px;
-  border-radius: 999px;
-}
-
-.theme-preview-lines span:nth-child(1) {
-  width: 78%;
-}
-
-.theme-preview-lines span:nth-child(2) {
-  width: 58%;
-}
-
-.theme-preview-lines span:nth-child(3) {
-  width: 38%;
-}
-
-.theme-name {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: calc(11px * var(--ui-scale, 1));
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .segmented {
   border-radius: 9px;
 }
@@ -4848,11 +4756,51 @@ body.col-resizing * {
   background: var(--hover-fill);
 }
 
+/* While searching: each page's name as a small eyebrow over its matches,
+   its groups' titles and notes left out. */
 .settings-results-title {
-  margin: 0 0 8px 4px;
-  color: var(--ink);
-  font-size: calc(12.5px * var(--ui-scale, 1));
-  font-weight: 650;
+  margin: 0 0 6px 4px;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-results .settings-group + .settings-group {
+  margin-top: 6px;
+}
+
+.settings-results .settings-group > :is(h4, .settings-group-hint) {
+  display: none;
+}
+
+/* The words searched for, in a row's name and a picker's entries. */
+.settings-row-label mark,
+.settings-picker mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: inherit;
+}
+
+/* A page whose name is searched for: ⏎ opens it. */
+.settings-page-hit {
+  justify-content: flex-start;
+  gap: 10px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.settings-page-hit .settings-row-label {
+  flex: 1;
+}
+
+.settings-page-hit-go {
+  color: var(--faint);
+}
+
+.settings-page-hit:hover {
+  background: var(--hover-fill);
 }
 
 /* A page or group with no row matching the search isn't shown. */
@@ -4985,8 +4933,30 @@ button.settings-row-reset:hover {
   width: 170px;
 }
 
-.settings-font-family {
+/* A row's picker (a theme, a font): what is picked, and a chevron. */
+button.settings-picker-button {
+  gap: 7px;
   width: 210px;
+  height: var(--control-h-sm);
+  padding: 0 8px 0 6px;
+  justify-content: flex-start;
+}
+
+button.settings-picker-button > svg:last-child {
+  flex: none;
+  margin-left: auto;
+  color: var(--faint);
+}
+
+.settings-picker-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A font following another reads as "not set". */
+.settings-font-button.follows .settings-picker-value {
+  color: var(--muted);
 }
 
 .settings-color-value {
@@ -5093,24 +5063,112 @@ input.settings-switch:focus-visible {
   font-size: calc(10.5px * var(--ui-scale, 1));
 }
 
-/* The theme gallery: dark then light, one Tab stop, arrows inside. */
-.theme-gallery {
+/* A theme in small: its background and side panel, ink and accent. */
+.theme-swatch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  width: 28px;
+  height: 16px;
+  padding-right: 3px;
+  overflow: hidden;
+  border: 1px solid;
+  border-radius: 4px;
+}
+
+.theme-swatch-panel {
+  align-self: stretch;
+  width: 8px;
+  margin-right: 2px;
+}
+
+.theme-swatch-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+
+/* A settings row's picker (components/settings/Picker.tsx): a menu panel
+   with its search on top, the list scrolling under it. */
+.context-menu.settings-picker {
+  z-index: 9600;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 8px;
 }
 
-.theme-gallery-caption {
-  display: block;
-  margin: 0 0 6px 2px;
+.settings-picker-search {
+  position: relative;
+  display: flex;
+  flex: none;
+  padding: 6px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--faint);
+}
+
+.settings-picker-search svg {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.settings-picker-search input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px 0 30px;
+}
+
+.settings-picker-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-picker-item {
+  cursor: default;
+  user-select: none;
+}
+
+.settings-picker-item .context-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-picker-item.action {
+  color: var(--accent);
+}
+
+button.settings-picker-remove {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--faint);
+  visibility: hidden;
+}
+
+.settings-picker-item.active button.settings-picker-remove {
+  visibility: visible;
+}
+
+.settings-picker-empty,
+.settings-picker-note {
+  margin: 0;
+  padding: 8px 10px;
   color: var(--faint);
   font-size: calc(11px * var(--ui-scale, 1));
-  font-weight: 600;
 }
 
-.theme-card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+.settings-picker-note {
+  flex: none;
+  border-top: 1px solid var(--line-soft);
 }
 
 /* The theme's colour table: background, foreground and the 8 colours, then
@@ -10633,7 +10691,7 @@ select:not([multiple]) {
   border-top: 1px solid var(--line-soft);
 }
 
-/* Settings → Data Table: the grid's and the editor's bars (pinned) kept in
+/* Settings → Appearance: the grid's and the editor's bars (pinned) kept in
    view, not only while hovered or scrolling. */
 html.scrollbar-y-always .app-scrollbar.pinned.y,
 html.scrollbar-x-always .app-scrollbar.pinned.x {
@@ -10650,18 +10708,14 @@ html .settings-preview .sql-preview .cm-scroller {
   overflow: hidden !important;
 }
 
-/* Settings → Sidebar: the left sidebar and the right detail panel take
-   their own font (names and labels alike) and size; the rest of the app
-   keeps the system's. */
-.schema-sidebar,
-.row-detail {
-  --ui: var(--sidebar-font);
-  --mono: var(--sidebar-font);
-  --ui-scale: var(--sidebar-scale);
-  font-family: var(--ui);
+/* Code editors and the console write in the SQL editor's font: the code
+   font unless Settings → SQL Editor sets one apart. */
+.cm-editor,
+.console-log {
+  --mono: var(--editor-font);
 }
 
-/* The grid's own cell editor and value menu write in the Data Table font
+/* The grid's own cell editor and value menu write in the data table's font
    and size, as the cells they open over. */
 .cell-editor,
 .cell-menu {

@@ -1,8 +1,5 @@
 import {
-  createContext,
-  useContext,
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -12,60 +9,55 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type ReactNode,
-  type RefObject,
 } from "react";
-import { createPortal } from "react-dom";
-import { languageLabel, t, type Language } from "../i18n";
+import { bothLanguages, languageLabel, t, type Language } from "../i18n";
 import { getThemesVersion, subscribeThemes, THEMES, type Theme } from "../palette";
-import { slotUses, TABLE_SLOTS, themeTable, type TablePicks, type TableSlot } from "../termTheme";
+import { type TableSlot } from "../termTheme";
 import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
-import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFont } from "../fonts";
-import { store, type VersionInfo } from "../store";
-import { checkUpdateNow, configureUpdate, getInstall, getUpdate, loadUpdate, refreshUpdate, subscribeInstall, subscribeUpdate } from "../update";
+import { fontGroups, fontListLabel, SYSTEM_CODE_FONT, SYSTEM_UI_FONT, type InstalledFont } from "../fonts";
+import { store } from "../store";
 import { MATERIAL_BLUR_MAX, subscribeMaterial, transparencyReduced, windowTranslucent, type Material } from "../material";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "../panelEdge";
 import {
-  DEFAULT_SETTINGS,
-  MAX_QUERY_TIMEOUT,
-  MAX_ROWS_LIMIT,
+  activeThemeId,
+  CODE_FONT_MAX,
+  CODE_FONT_MIN,
+  currentAccent,
   currentGridColors,
   currentSyntaxColors,
+  DEFAULT_SETTINGS,
+  drawnFonts,
   getPasscodeHash,
+  MAX_QUERY_TIMEOUT,
+  MAX_ROWS_LIMIT,
   setPasscodeHash,
   sha256Hex,
-  EDITOR_FONT_MAX,
-  EDITOR_FONT_MIN,
-  GRID_FONT_MAX,
-  GRID_FONT_MIN,
-  SIDEBAR_FONT_MAX,
-  SIDEBAR_FONT_MIN,
+  subscribeSystemDark,
+  systemDark,
+  UI_FONT_MAX,
+  UI_FONT_MIN,
   type AppSettings,
-  type GridColorKey,
+  type ThemeMode,
 } from "../settings";
 import {
   DEFAULT_KEYMAP,
+  formatBinding,
   KEY_ACTIONS,
   KEY_ACTION_LABELS,
   bindingFromEvent,
-  formatBinding,
   isEditingBinding,
   isReservedBinding,
+  matchesBinding,
   type KeyAction,
   type Keymap,
 } from "../shortcuts";
-import { SYNTAX_PRESETS, type SyntaxColorKey, type SyntaxPresetId } from "../syntax";
+import { SYNTAX_PRESETS, type SyntaxPresetId } from "../syntax";
 import {
-  AlertIcon,
-  CheckIcon,
   CloseIcon,
   CodeIcon,
-  DownloadIcon,
-  ExternalIcon,
   KeyboardIcon,
   LockIcon,
-  PanelLeftIcon,
   PlusIcon,
-  RefreshIcon,
   SearchIcon,
   SlidersIcon,
   SunIcon,
@@ -73,20 +65,34 @@ import {
   TransferIcon,
 } from "./icons";
 import { notifyError } from "./ErrorNotice";
-import { Spinner } from "./Spinner";
-import { UpdateHowDialog, UpdateInstallAction } from "./UpdateBanner";
-import { openSelect, Select } from "./Select";
-import { SqlPreview } from "./SqlEditor";
+import { Select } from "./Select";
+import { ColorRows, ColorTableRow, EditorPreview, GRID_COLOR_ROWS, SYNTAX_COLOR_ROWS } from "./settings/colorRows";
+import { FontRow, SizeRow, ThemeRow } from "./settings/pickerRows";
+import {
+  Choice,
+  focusRow,
+  Highlight,
+  isField,
+  nextChoice,
+  rowControls,
+  ScopeContext,
+  SettingRow,
+  SettingsGroup,
+  Slider,
+  Switch,
+} from "./settings/rows";
+import { VersionSettings } from "./settings/VersionSettings";
 
 // Settings as a sheet docked to the right edge, beside the app so a change
 // shows in it at once, and run from the keyboard as Tern's is: ↑↓ move from
 // setting to setting, ←→ switch pages, ⏎ or Space flips a switch, steps a
-// choice or opens a menu (or goes into a field or a row of buttons, where ←→
-// move between them), typing searches every page, ⌫ puts a changed setting
-// back to its default, and Esc goes back one step (out of a field, then the
-// search, then the sheet). Tab stays in the sheet: the search, the page tabs,
-// the settings, the theme gallery, the close button and the sheet's edge are
-// one stop each, with arrows inside. The edge drags (or ←→ on it) to resize.
+// choice or opens a menu or picker (or goes into a field or a row of
+// buttons, where ←→ move between them), typing (or ⌘F) searches every page,
+// ⌫ puts a changed setting back to its default, and Esc goes back one step
+// (out of a field, then the search, then the sheet). Tab stays in the sheet:
+// the search, the page tabs, the settings, the close button and the sheet's
+// edge are one stop each, with arrows inside. The edge drags (or ←→ on it)
+// to resize.
 
 interface SettingsSheetProps {
   settings: AppSettings;
@@ -95,103 +101,38 @@ interface SettingsSheetProps {
   onClose(): void;
 }
 
-type SettingsPage = "general" | "theme" | "editor" | "grid" | "sidebar" | "transfer" | "shortcuts" | "security";
+type SettingsPage = "general" | "appearance" | "editor" | "data" | "transfer" | "keyboard" | "privacy";
 
 interface PageItem {
   id: SettingsPage;
+  // A message key.
   label: string;
   icon: (props: { size?: number }) => ReactElement;
 }
 
-// The screen's areas each have their own page (its font and what it shows),
-// as TablePlus splits its fonts into SQL Editor, Data Table and Sidebars.
+// Tern's pages: what the app looks like in one place (themes, colours,
+// fonts), then what only the SQL editor and only the data table take.
 const PAGES: PageItem[] = [
   { id: "general", label: "일반", icon: SlidersIcon },
-  { id: "theme", label: "테마", icon: SunIcon },
+  { id: "appearance", label: "모양", icon: SunIcon },
   { id: "editor", label: "SQL 에디터", icon: CodeIcon },
-  { id: "grid", label: "데이터 테이블", icon: TableIcon },
-  { id: "sidebar", label: "사이드바", icon: PanelLeftIcon },
+  { id: "data", label: "데이터 테이블", icon: TableIcon },
   { id: "transfer", label: "가져오기·내보내기", icon: TransferIcon },
-  { id: "shortcuts", label: "단축키", icon: KeyboardIcon },
-  { id: "security", label: "보안", icon: LockIcon },
+  { id: "keyboard", label: "단축키", icon: KeyboardIcon },
+  { id: "privacy", label: "보안", icon: LockIcon },
 ];
 
 const SHEET_WIDTH_KEY = "tablepeek.settings-width";
 const SHEET_DEFAULT = 480;
 const SHEET_MIN = 380;
 const SHEET_MAX = 880;
+const SEARCH_KEY = "Mod+f";
 
 // Wide enough for a row's name beside its control, and leaving the app room.
 function clampSheet(width: number): number {
   const max = Math.max(SHEET_MIN, Math.min(SHEET_MAX, window.innerWidth - 240));
   return Math.round(Math.min(Math.max(width, SHEET_MIN), max));
 }
-
-// Fields whose keys (letters, arrows) are their own while they have focus.
-const FIELD_TYPES: Record<string, true> = {
-  text: true,
-  number: true,
-  password: true,
-  search: true,
-  email: true,
-  url: true,
-  tel: true,
-  range: true,
-};
-
-function isField(element: Element): boolean {
-  return (
-    element instanceof HTMLTextAreaElement ||
-    (element instanceof HTMLInputElement && Object.hasOwn(FIELD_TYPES, element.type)) ||
-    (element instanceof HTMLElement && element.isContentEditable)
-  );
-}
-
-// A row's controls, in order, that can be used now.
-function rowControls(row: HTMLElement): HTMLElement[] {
-  return Array.from(
-    row.querySelectorAll<HTMLElement>(".settings-row-control :is(input, select, textarea, button, a[href])"),
-  ).filter((control) => !(control as HTMLInputElement).disabled);
-}
-
-// ⏎ or Space on a row: a lone switch flips, a menu opens, a field or a
-// colour takes it; a row of several controls is gone into, at its first.
-function activateRow(row: HTMLElement): void {
-  const controls = rowControls(row);
-  const control = controls[0];
-  if (control === undefined) {
-    return;
-  }
-  if (controls.length > 1) {
-    control.focus();
-  } else if (control instanceof HTMLSelectElement) {
-    openSelect(control);
-  } else if (control instanceof HTMLInputElement && (control.type === "checkbox" || control.type === "color")) {
-    control.click();
-  } else if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) {
-    control.focus();
-    if (control.type !== "range") {
-      control.select();
-    }
-  } else {
-    control.click();
-  }
-}
-
-function focusRow(row: HTMLElement): void {
-  row.focus({ preventScroll: true });
-  row.scrollIntoView({ block: "nearest" });
-}
-
-// What the rows inside are matched against while searching: the words typed,
-// and the page and group they are in.
-interface Scope {
-  terms: string[];
-  page: string;
-  group: string;
-}
-
-const ScopeContext = createContext<Scope>({ terms: [], page: "", group: "" });
 
 // The installed families, asked of the server once a session.
 let installedFonts: Promise<InstalledFont[]> | null = null;
@@ -204,824 +145,16 @@ function loadInstalledFonts(): Promise<InstalledFont[]> {
   return installedFonts;
 }
 
-// A titled run of rows, with a note under its title.
-function SettingsGroup({ title, hint, children }: { title?: string; hint?: string; children: ReactNode }) {
-  const scope = useContext(ScopeContext);
-  return (
-    <ScopeContext.Provider value={{ ...scope, group: title ?? "" }}>
-      <section className="settings-group">
-        {title ? <h4>{title}</h4> : null}
-        {hint ? <p className="settings-hint settings-group-hint">{hint}</p> : null}
-        <div className="settings-box">{children}</div>
-      </section>
-    </ScopeContext.Provider>
-  );
-}
-
-// One setting: its name (and a note under it) on the left, its control on
-// the right, or under it when `wide`. Changed from its default, it shows a
-// dot and Reset (⌫ on the row). Rows not matching the search aren't drawn.
-function SettingRow({
-  label,
-  hint,
-  keywords,
-  changed = false,
-  wide = false,
-  onReset,
-  onActivate,
-  children,
-}: {
-  label: string;
-  hint?: string | null;
-  keywords?: string;
-  changed?: boolean;
-  wide?: boolean;
-  onReset?(): void;
-  // ⏎ or Space on the row, instead of its control's own (a choice steps).
-  onActivate?(): void;
-  children: ReactNode;
-}) {
-  const scope = useContext(ScopeContext);
-  const id = useId();
-  if (scope.terms.length > 0) {
-    const text = [scope.page, scope.group, label, hint ?? "", keywords ?? ""].join(" ").toLowerCase();
-    if (!scope.terms.every((term) => text.includes(term))) {
-      return null;
-    }
-  }
-  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (event.target !== event.currentTarget || event.metaKey || event.ctrlKey || event.altKey) {
-      return;
-    }
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (onActivate) {
-        onActivate();
-      } else {
-        activateRow(event.currentTarget);
-      }
-    } else if ((event.key === "Backspace" || event.key === "Delete") && changed && onReset) {
-      event.preventDefault();
-      onReset();
-    }
-  }
-  return (
-    <div
-      className={`settings-row${wide ? " wide" : ""}`}
-      data-row=""
-      data-changed={changed ? "" : undefined}
-      tabIndex={-1}
-      role="group"
-      aria-labelledby={`${id}-label`}
-      aria-describedby={hint ? `${id}-hint` : undefined}
-      onKeyDown={onKeyDown}
-    >
-      <div className="settings-row-text">
-        <div className="settings-row-title">
-          <span className="settings-row-label" id={`${id}-label`}>
-            {label}
-          </span>
-          {changed ? (
-            <>
-              <span className="settings-row-dot" title={t("기본값에서 바뀜")} aria-label={t("기본값에서 바뀜")} />
-              {onReset ? (
-                <button type="button" className="settings-row-reset" tabIndex={-1} onClick={onReset}>
-                  {t("재설정")}
-                </button>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-        {hint ? (
-          <p className="settings-hint" id={`${id}-hint`}>
-            {hint}
-          </p>
-        ) : null}
-      </div>
-      <div className="settings-row-control">{children}</div>
-    </div>
-  );
-}
-
-// A few choices side by side; ⏎ on the row steps to the next.
-function Choice<T extends string>({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: T;
-  options: { value: T; label: string }[];
-  onChange(value: T): void;
-}) {
-  return (
-    <div className="segmented settings-choice" role="radiogroup" aria-label={label}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={value === option.value}
-          className={value === option.value ? "active" : ""}
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function nextChoice<T extends string>(options: { value: T }[], value: T): T {
-  const index = options.findIndex((option) => option.value === value);
-  return options[(index + 1) % options.length].value;
-}
-
-function Switch({
-  label,
-  checked,
-  disabled = false,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange(checked: boolean): void;
-}) {
-  return (
-    <input
-      type="checkbox"
-      role="switch"
-      className="settings-switch"
-      aria-label={label}
-      checked={checked}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.checked)}
-    />
-  );
-}
-
-// A slider and the value it is at.
-function Slider({
-  label,
-  value,
-  max,
-  unit,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  max: number;
-  unit: string;
-  onChange(value: number): void;
-}) {
-  return (
-    <>
-      <input
-        type="range"
-        className="settings-range"
-        aria-label={label}
-        min={0}
-        max={max}
-        step={1}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-      <span className="settings-range-value mono">
-        {value}
-        {unit}
-      </span>
-    </>
-  );
-}
-
-// One of the three fonts: its face (a saved list no longer offered shows
-// under its first family's name) and its size, a row each.
-function FontRows({
-  label,
-  hint,
-  groups,
-  value,
-  size,
-  sizes,
-  defaultValue,
-  defaultSize,
-  onChange,
-  onSize,
-}: {
-  label: string;
-  hint: string;
-  groups: FontGroup[];
-  value: string;
-  size: number;
-  sizes: number[];
-  defaultValue: string;
-  defaultSize: number;
-  onChange(value: string): void;
-  onSize(size: number): void;
-}) {
-  const choices = groups.flatMap((group) => group.choices);
-  const known = choices.some((choice) => choice.value === value);
-  // A face picked before its family changed (its bold installed or removed,
-  // say) is still that face: its saved list is brought up to date.
-  const face = known ? null : pickedFace(value);
-  const updated = face === null ? undefined : choices.find((choice) => pickedFace(choice.value) === face)?.value;
-  useEffect(() => {
-    if (updated !== undefined) {
-      onChange(updated);
-    }
-    // onChange is a new function each render; the update is all that matters.
-  }, [updated]);
-  const options = (group: FontGroup) =>
-    group.choices.map((choice) => (
-      <option key={choice.value} value={choice.value}>
-        {t(choice.label)}
-      </option>
-    ));
-  return (
-    <SettingsGroup title={t("글꼴")}>
-      <SettingRow label={t("글꼴")} hint={hint} changed={value !== defaultValue} onReset={() => onChange(defaultValue)}>
-        <Select
-          className="settings-font-family"
-          aria-label={t("{name} 글꼴", { name: label })}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          {groups.map((group) =>
-            group.label === null ? (
-              options(group)
-            ) : (
-              <optgroup key={group.label} label={t(group.label)}>
-                {options(group)}
-              </optgroup>
-            ),
-          )}
-          {known || updated !== undefined ? null : <option value={value}>{fontListLabel(value)}</option>}
-        </Select>
-      </SettingRow>
-      <SettingRow label={t("크기")} changed={size !== defaultSize} onReset={() => onSize(defaultSize)}>
-        <Select
-          aria-label={t("{name} 글자 크기", { name: label })}
-          value={size}
-          onChange={(event) => onSize(Number(event.target.value))}
-        >
-          {sizes.map((choice) => (
-            <option key={choice} value={choice}>
-              {choice}px
-            </option>
-          ))}
-        </Select>
-      </SettingRow>
-    </SettingsGroup>
-  );
-}
-
-// Whole px sizes to pick from (a list, so a size never lands half typed), plus
-// the current one if older settings saved one off the steps.
-function sizeChoices(min: number, max: number, current: number): number[] {
-  const sizes = Array.from({ length: max - min + 1 }, (_, index) => min + index);
-  return sizes.includes(current) ? sizes : [...sizes, current].sort((a, b) => a - b);
-}
-
-// The SQL editor's every coloured part, drawn as the editor draws it: the
-// live app may have no editor open. Not shown among search results.
-function EditorPreview() {
-  const scope = useContext(ScopeContext);
-  if (scope.terms.length > 0) {
-    return null;
-  }
-  return (
-    <section className="settings-group">
-      <h4>{t("미리보기")}</h4>
-      <div className="settings-preview" aria-hidden="true">
-        <SqlPreview doc={EDITOR_SAMPLE} />
-      </div>
-    </section>
-  );
-}
-
-// Every part the SQL editor colours, and letters that look alike in a font.
-const EDITOR_SAMPLE = [
-  "-- comment · 0O 1lI",
-  "SELECT id, \"Name\", `code`, count(*) AS total, NULL, TRUE",
-  "FROM users WHERE email LIKE '%@example.com' AND age >= 30;",
-].join("\n");
-
-// The colours Settings → SQL Editor offers, as TablePlus lists them; a row may
-// set parts that read as one (NULL and booleans, operators and punctuation).
-const SYNTAX_COLOR_ROWS: { label: string; keys: SyntaxColorKey[] }[] = [
-  { label: "키워드", keys: ["keyword"] },
-  { label: "함수", keys: ["function"] },
-  { label: "타입", keys: ["type"] },
-  { label: "숫자", keys: ["number"] },
-  { label: "NULL·참거짓", keys: ["null", "bool"] },
-  { label: "연산자·기호", keys: ["operator", "punctuation"] },
-  { label: "작은따옴표 문자열", keys: ["string"] },
-  { label: "큰따옴표 문자열", keys: ["stringDouble"] },
-  { label: "백틱 문자열", keys: ["stringBacktick"] },
-  { label: "주석", keys: ["comment"] },
-  { label: "그 밖의 글자", keys: ["text"] },
-];
-
-// Data table colours by kind of value, in the order the grid shows them most.
-const GRID_COLOR_ROWS: { label: string; keys: GridColorKey[] }[] = [
-  { label: "문자열", keys: ["string"] },
-  { label: "정수", keys: ["integer"] },
-  { label: "실수", keys: ["float"] },
-  { label: "큰 정수", keys: ["bigint"] },
-  { label: "불리언", keys: ["boolean"] },
-  { label: "날짜·시각", keys: ["date"] },
-  { label: "시간(TIME)", keys: ["time"] },
-  { label: "JSON", keys: ["json"] },
-  { label: "배열", keys: ["list"] },
-  { label: "열거형", keys: ["enum"] },
-  { label: "UUID", keys: ["uuid"] },
-  { label: "이진", keys: ["binary"] },
-  { label: "NULL", keys: ["null"] },
-];
-
-// The colour picks for the theme in use, a row each, then one putting them
-// all back.
-function ColorRows<K extends string>({
-  rows,
-  colors,
-  picked,
-  hint,
-  onPick,
-}: {
-  rows: { label: string; keys: K[] }[];
-  colors: Record<K, string>;
-  picked: Partial<Record<K, string>>;
-  hint: string;
-  onPick(keys: K[], color: string | null): void;
-}) {
-  return (
-    <>
-      {rows.map((row) => {
-        const color = colors[row.keys[0]];
-        return (
-          <SettingRow
-            key={row.label}
-            label={t(row.label)}
-            changed={row.keys.some((key) => picked[key] !== undefined)}
-            onReset={() => onPick(row.keys, null)}
-          >
-            <span className="settings-color-value mono">{color}</span>
-            <input
-              type="color"
-              aria-label={t(row.label)}
-              value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#000000"}
-              onChange={(event) => onPick(row.keys, event.target.value)}
-            />
-          </SettingRow>
-        );
-      })}
-      <SettingRow label={t("색 재설정")} hint={hint}>
-        <button
-          type="button"
-          disabled={Object.keys(picked).length === 0}
-          onClick={() => onPick(rows.flatMap((row) => row.keys), null)}
-        >
-          {t("모두 기본값으로")}
-        </button>
-      </SettingRow>
-    </>
-  );
-}
-
-// The colour table's slots by the names terminals give them.
-const SLOT_NAMES: Record<TableSlot, string> = {
-  bg: "바탕",
-  fg: "글자",
-  ansi0: "검정",
-  ansi1: "빨강",
-  ansi2: "초록",
-  ansi3: "노랑",
-  ansi4: "파랑",
-  ansi5: "자홍",
-  ansi6: "청록",
-  ansi7: "흰색",
-  ansi8: "밝은 검정",
-  ansi9: "밝은 빨강",
-  ansi10: "밝은 초록",
-  ansi11: "밝은 노랑",
-  ansi12: "밝은 파랑",
-  ansi13: "밝은 자홍",
-  ansi14: "밝은 청록",
-  ansi15: "밝은 흰색",
-};
-
-// The table in two lines: the background, the foreground and the 8 colours,
-// then the 8 bright ones under the colours.
-const TABLE_LINES: TableSlot[][] = [TABLE_SLOTS.slice(0, 10), TABLE_SLOTS.slice(10)];
-
-// The theme's colour table as swatches, one setting: ⏎ goes in, ←→ (↑↓
-// between the lines) move between swatches, ⏎ opens one's colour picker and
-// ⌫ puts a picked one back to the theme's; ⌫ on the row puts them all back.
-function ColorTableRow({
-  theme,
-  picks,
-  hint,
-  onPick,
-}: {
-  theme: Theme;
-  picks: TablePicks;
-  hint: string;
-  onPick(slots: TableSlot[], color: string | null): void;
-}) {
-  const table = themeTable(theme);
-  function onSwatchKey(event: ReactKeyboardEvent<HTMLInputElement>, slot: TableSlot, line: number, column: number): void {
-    if (event.metaKey || event.ctrlKey || event.altKey) {
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      event.currentTarget.click();
-    } else if (event.key === "Backspace" || event.key === "Delete") {
-      event.preventDefault();
-      if (picks[slot] !== undefined) {
-        onPick([slot], null);
-      }
-    } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-      // The bright line sits under the colours, two columns in.
-      const target = TABLE_LINES[line === 0 ? 1 : 0][line === 0 ? column - 2 : column + 2];
-      const swatch =
-        (line === 0) === (event.key === "ArrowDown") && target !== undefined
-          ? event.currentTarget.closest(".color-table")?.querySelector<HTMLInputElement>(`[data-slot="${target}"]`)
-          : null;
-      if (swatch) {
-        event.preventDefault();
-        event.stopPropagation();
-        swatch.focus();
-      }
-    }
-  }
-  return (
-    <SettingRow
-      label={t("색 표")}
-      hint={hint}
-      keywords="color table palette ansi terminal tern 16 팔레트 터미널"
-      wide
-      changed={Object.keys(picks).length > 0}
-      onReset={() => onPick(TABLE_SLOTS, null)}
-    >
-      <div className="color-table">
-        {TABLE_LINES.map((slots, line) => (
-          <div key={line} className={`color-table-line${line === 1 ? " bright" : ""}`}>
-            {slots.map((slot, column) => {
-              const color = picks[slot] ?? table[slot];
-              const uses = slotUses(slot, theme.mode).map((use) => t(use));
-              return (
-                <label key={slot} className={`color-table-cell${picks[slot] !== undefined ? " picked" : ""}`}>
-                  <input
-                    type="color"
-                    data-slot={slot}
-                    aria-label={`${t(SLOT_NAMES[slot])} ${color}`}
-                    title={`${t(SLOT_NAMES[slot])} ${color} — ${uses.join(", ")}`}
-                    value={color}
-                    onChange={(event) => onPick([slot], event.target.value)}
-                    onKeyDown={(event) => onSwatchKey(event, slot, line, column)}
-                  />
-                  <span className="color-table-name">{slot.startsWith("ansi") ? slot.slice(4) : t(SLOT_NAMES[slot])}</span>
-                </label>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-    </SettingRow>
-  );
-}
-
-// The themes as cards, TablePeek's dark then light, then Tern's (and those
-// imported from Tern theme files): one Tab stop, the arrows move between
-// cards (↑ on the top line and ↓ on the bottom one leave for the rows around
-// it), and ⏎, Space or a click takes one.
-function ThemeGallery({
-  value,
-  tern,
-  galleryRef,
-  onPick,
-}: {
-  value: string;
-  // Whether Tern's themes are in yet.
-  tern: "loading" | "ready" | "failed";
-  galleryRef: RefObject<HTMLDivElement | null>;
-  onPick(theme: Theme): void;
-}) {
-  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
-      return;
-    }
-    const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(".theme-card"));
-    const current = (event.target as HTMLElement).closest<HTMLElement>(".theme-card");
-    const index = current === null ? -1 : cards.indexOf(current);
-    if (index < 0) {
-      return;
-    }
-    let next: HTMLElement | undefined;
-    switch (event.key) {
-      case "ArrowLeft":
-        next = cards[index - 1];
-        break;
-      case "ArrowRight":
-        next = cards[index + 1];
-        break;
-      case "Home":
-        next = cards[0];
-        break;
-      case "End":
-        next = cards[cards.length - 1];
-        break;
-      case "ArrowUp":
-      case "ArrowDown": {
-        // The nearest card on the line above or below, by where it sits.
-        const from = cards[index].getBoundingClientRect();
-        const down = event.key === "ArrowDown";
-        let lineTop: number | null = null;
-        let bestGap = Infinity;
-        for (const card of cards) {
-          const box = card.getBoundingClientRect();
-          const beyond = down ? box.top > from.top + 2 : box.top < from.top - 2;
-          if (!beyond) {
-            continue;
-          }
-          if (lineTop === null || (down ? box.top < lineTop - 2 : box.top > lineTop + 2)) {
-            lineTop = box.top;
-            bestGap = Infinity;
-          }
-          if (Math.abs(box.top - lineTop) <= 2) {
-            const gap = Math.abs(box.left + box.width / 2 - (from.left + from.width / 2));
-            if (gap < bestGap) {
-              bestGap = gap;
-              next = card;
-            }
-          }
-        }
-        if (next === undefined) {
-          // Past the first or last line: the sheet moves to the row around.
-          return;
-        }
-        break;
-      }
-      default:
-        return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    if (next !== undefined) {
-      next.focus({ preventScroll: true });
-      next.scrollIntoView({ block: "nearest" });
-    }
-  }
-  const picked = THEMES.some((theme) => theme.id === value) ? value : THEMES[0]?.id;
-  const byLabel = (a: Theme, b: Theme): number => a.label.localeCompare(b.label, "en");
-  const groups: { key: string; caption: string; themes: Theme[] }[] = [
-    ...(["dark", "light"] as const).map((mode) => ({
-      key: mode,
-      caption: mode === "dark" ? t("다크") : t("라이트"),
-      themes: [
-        ...THEMES.filter((theme) => !theme.group && theme.mode === mode),
-        ...THEMES.filter((theme) => theme.group === "tern" && !theme.imported && theme.mode === mode).sort(byLabel),
-      ],
-    })),
-    { key: "tern-files", caption: t("Tern 파일에서 가져옴"), themes: THEMES.filter((theme) => theme.imported).sort(byLabel) },
-  ];
-  return (
-    <div className="theme-gallery" ref={galleryRef} onKeyDown={onKeyDown}>
-      {groups
-        .filter((group) => group.themes.length > 0)
-        .map((group) => (
-          <div key={group.key} className="theme-gallery-group">
-            <span className="theme-gallery-caption">{group.caption}</span>
-            <div className="theme-grid">
-              {group.themes.map((theme) => (
-                <button
-                  key={theme.id}
-                  type="button"
-                  data-theme-id={theme.id}
-                  className={`theme-card${value === theme.id ? " active" : ""}`}
-                  aria-pressed={value === theme.id}
-                  tabIndex={theme.id === picked ? 0 : -1}
-                  title={t(theme.label)}
-                  onClick={() => onPick(theme)}
-                >
-                  <span
-                    className="theme-preview"
-                    style={{
-                      background: theme.palette.bg,
-                      borderColor: theme.palette.line,
-                    }}
-                  >
-                    <span className="theme-preview-head" style={{ background: theme.palette.head }} />
-                    <span className="theme-preview-body">
-                      <span className="theme-preview-panel" style={{ background: theme.palette.panel }} />
-                      <span className="theme-preview-lines">
-                        <span style={{ background: theme.palette.ink }} />
-                        <span style={{ background: theme.palette.muted }} />
-                        <span style={{ background: theme.palette.accent }} />
-                      </span>
-                    </span>
-                  </span>
-                  <span className="theme-name">{t(theme.label)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
-      {tern === "failed" ? <p className="settings-hint">{t("Tern 테마를 불러오지 못했습니다.")}</p> : null}
-    </div>
-  );
-}
-
-// Why the last update check failed, by the server's code: the status's second line.
-function updateErrorText(code: string): string {
-  if (code === "network") {
-    return t("네트워크에 연결할 수 없습니다");
-  }
-  if (code === "timeout") {
-    return t("GitHub가 5초 안에 답하지 않았습니다");
-  }
-  if (code === "rate_limited") {
-    return t("GitHub 요청 한도에 걸렸습니다");
-  }
-  if (code.startsWith("http_")) {
-    return t("GitHub가 HTTP {status}로 답했습니다", { status: code.slice(5) });
-  }
-  return t("GitHub의 릴리스 정보를 읽지 못했습니다");
-}
-
-// General: what this build is, and the check for a newer release.
-function VersionSettings() {
-  const update = useSyncExternalStore(subscribeUpdate, getUpdate);
-  const install = useSyncExternalStore(subscribeInstall, getInstall);
-  const [version, setVersion] = useState<VersionInfo | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [howOpen, setHowOpen] = useState(false);
-
-  useEffect(() => {
-    store.fetchVersion().then(setVersion, (error: unknown) => notifyError(error));
-    loadUpdate().catch((error: unknown) => notifyError(error));
-  }, []);
-
-  async function checkNow(): Promise<void> {
-    setChecking(true);
-    try {
-      await checkUpdateNow();
-    } catch (error) {
-      notifyError(error);
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  async function setEnabled(enabled: boolean): Promise<void> {
-    try {
-      await configureUpdate({ enabled });
-      // Turned on: the server checks now if the last check is a day old.
-      if (enabled) {
-        setChecking(true);
-        await refreshUpdate();
-      }
-    } catch (error) {
-      notifyError(error);
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  const checkedAt = update !== null && update.checked_at !== null ? new Date(update.checked_at * 1000).toLocaleString() : null;
-  const lastChecked = checkedAt === null ? null : t("마지막 확인: {time}", { time: checkedAt });
-  // One status line in the tone of what it says: green when this is the
-  // newest release, orange when a newer one is out, the accent for a build
-  // ahead of the newest release, red when the check failed, muted otherwise.
-  let tone: "ok" | "new" | "ahead" | "error" | "muted" = "muted";
-  let icon: ReactNode = <RefreshIcon size={13} />;
-  let title: string;
-  let detail: string | null = lastChecked;
-  if (update === null || (checking && update.enabled)) {
-    icon = <Spinner size={11} />;
-    title = t("확인하는 중…");
-    detail = null;
-  } else if (!update.enabled) {
-    title = t("새 버전 확인이 꺼져 있습니다");
-    detail = null;
-  } else if (update.newer && update.latest !== null) {
-    tone = "new";
-    icon = <DownloadIcon size={13} />;
-    title = update.latest === update.skipped ? t("{latest}이 나왔습니다 (건너뛴 버전)", { latest: update.latest }) : t("{latest}이 나왔습니다", { latest: update.latest });
-    detail = update.published_at !== null ? t("지금 {current} · {date} 공개", { current: update.current, date: new Date(update.published_at).toLocaleDateString() }) : t("지금 {current}", { current: update.current });
-  } else if (update.error !== null) {
-    tone = "error";
-    icon = <AlertIcon size={13} />;
-    title = t("새 버전을 확인하지 못했습니다");
-    detail = updateErrorText(update.error);
-  } else if (update.checked_at === null) {
-    title = t("아직 확인하지 않았습니다");
-  } else if (update.latest === null) {
-    title = t("아직 공개된 릴리스가 없습니다");
-  } else if (update.latest !== update.current) {
-    tone = "ahead";
-    icon = <CodeIcon size={13} />;
-    title = t("최신 릴리스보다 앞선 빌드입니다");
-    detail = [t("최신 릴리스 {latest}", { latest: update.latest }), lastChecked].filter(Boolean).join(" · ");
-  } else {
-    tone = "ok";
-    icon = <CheckIcon size={13} />;
-    title = t("최신 버전입니다");
-  }
-
-  return (
-    <SettingsGroup title={t("버전")}>
-      <SettingRow label="TablePeek" keywords={`${t("버전")} 버전 업데이트 version update`} wide>
-        <div className="version-head">
-          {version === null ? (
-            <Spinner size={10} />
-          ) : (
-            <>
-              <span className="version-number mono" data-testid="settings-version">
-                v{version.version}
-              </span>
-              <span className="version-chip mono" title={t("커밋")}>
-                {version.commit}
-              </span>
-              <span className="version-chip">
-                {version.dist === "release" ? t("릴리스 바이너리") : version.dist === "desktop" ? t("데스크톱 앱") : t("소스 빌드")}
-              </span>
-            </>
-          )}
-        </div>
-        <div className={`version-status ${tone}`} role="status">
-          <span className="version-status-icon">{icon}</span>
-          <div className="version-status-text">
-            <span className="version-status-title">{title}</span>
-            {detail !== null ? <span className="version-status-detail">{detail}</span> : null}
-          </div>
-          <div className="version-status-actions">
-            {update?.enabled && update.newer && update.latest !== null ? (
-              <>
-                {update.url !== null ? (
-                  <a className="link-button" href={update.url} target="_blank" rel="noreferrer">
-                    {t("변경 내역")}
-                    <ExternalIcon size={10} />
-                  </a>
-                ) : null}
-                {update.skipped !== null && update.skipped === update.latest ? (
-                  <button
-                    type="button"
-                    className="link-button"
-                    onClick={() => {
-                      configureUpdate({ skipped: null }).catch((error: unknown) => notifyError(error));
-                    }}
-                  >
-                    {t("다시 알리기")}
-                  </button>
-                ) : null}
-                {update.installable ? (
-                  <UpdateInstallAction install={install} className="version-update-button" />
-                ) : (
-                  <button type="button" className="version-update-button" onClick={() => setHowOpen(true)}>
-                    {t("업데이트 방법")}
-                  </button>
-                )}
-              </>
-            ) : null}
-            {update?.enabled ? (
-              <button type="button" onClick={() => void checkNow()} disabled={checking}>
-                <RefreshIcon size={11} />
-                {t("지금 확인")}
-              </button>
-            ) : null}
-          </div>
-        </div>
-      </SettingRow>
-      <SettingRow
-        label={t("새 버전 확인")}
-        hint={update?.env_disabled ? t("TABLEPEEK_NO_UPDATE_CHECK 환경 변수가 확인을 껐습니다.") : undefined}
-        changed={update !== null && !update.enabled && !update.env_disabled}
-        onReset={() => void setEnabled(true)}
-      >
-        <Switch
-          label={t("새 버전 확인")}
-          checked={update?.enabled ?? true}
-          disabled={update === null || update.env_disabled}
-          onChange={(enabled) => void setEnabled(enabled)}
-        />
-      </SettingRow>
-      {/* Over the app, not inside the sheet (which may be glass, and so
-          holds what is fixed inside it). */}
-      {howOpen && update !== null && update.latest !== null
-        ? createPortal(<UpdateHowDialog update={update} latest={update.latest} onClose={() => setHowOpen(false)} />, document.body)
-        : null}
-    </SettingsGroup>
-  );
-}
-
 const MATERIAL_OPTIONS: { value: Material; label: string }[] = [
   { value: "solid", label: "불투명" },
   { value: "glass", label: "유리" },
   { value: "clear", label: "투명" },
+];
+
+const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
+  { value: "light", label: "라이트" },
+  { value: "dark", label: "다크" },
+  { value: "system", label: "시스템" },
 ];
 
 // The material's state, to word its note: whether this window can be
@@ -1045,7 +178,6 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   const tabsRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const edgeRef = useRef<HTMLDivElement>(null);
-  const galleryRef = useRef<HTMLDivElement>(null);
   // The row the keys were last on: Tab comes back to it.
   const currentRow = useRef<HTMLElement | null>(null);
   // Where the keys go once a page is drawn: its first row when the sheet
@@ -1059,12 +191,11 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   const [hint, setHint] = useState<FocusHint>({ esc: "", changed: false });
   const [width, setWidth] = useState<number | null>(() => storedWidth(SHEET_WIDTH_KEY, clampSheet));
   const material = useSyncExternalStore(subscribeMaterial, materialState);
-  // The gallery redraws as themes come in (Tern's, an imported file).
+  // The pickers redraw as themes come in (Tern's, an imported file), and the
+  // theme shown changes with the system's mode under System.
   useSyncExternalStore(subscribeThemes, getThemesVersion);
+  useSyncExternalStore(subscribeSystemDark, systemDark);
   const [ternState, setTernState] = useState<"loading" | "ready" | "failed">("loading");
-  const ternFileRef = useRef<HTMLInputElement>(null);
-  // How the last Tern theme file import went, under its row.
-  const [ternNote, setTernNote] = useState<{ error: boolean; text: string } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -1083,7 +214,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   const [passcodeConfirm, setPasscodeConfirm] = useState("");
   const [passcodeMessage, setPasscodeMessage] = useState<string | null>(null);
   const [hasPasscode, setHasPasscode] = useState(() => getPasscodeHash() !== null);
-  // Empty until the server answers: the suggested fonts show meanwhile.
+  // Empty until the server answers: the system's faces show meanwhile.
   const [fontFamilies, setFontFamilies] = useState<InstalledFont[]>([]);
 
   useEffect(() => {
@@ -1097,9 +228,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
       live = false;
     };
   }, []);
-  const editorFontGroups = useMemo(() => fontGroups("editor", fontFamilies), [fontFamilies]);
-  const gridFontGroups = useMemo(() => fontGroups("grid", fontFamilies), [fontFamilies]);
-  const sidebarFontGroups = useMemo(() => fontGroups("sidebar", fontFamilies), [fontFamilies]);
+  const installedGroups = useMemo(() => fontGroups(fontFamilies), [fontFamilies]);
 
   useEffect(() => {
     const sheet = sheetRef.current;
@@ -1227,7 +356,6 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
     const search = searchRef.current;
     const tabs = tabsRef.current;
     const body = bodyRef.current;
-    const gallery = galleryRef.current;
     if (search !== null) {
       stops.push({ box: search, focus: () => search.focus() });
     }
@@ -1244,16 +372,6 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
         },
       });
     }
-    if (gallery !== null && gallery.isConnected) {
-      stops.push({
-        box: gallery,
-        focus: () => {
-          const card = gallery.querySelector<HTMLElement>('.theme-card[tabindex="0"]');
-          card?.focus({ preventScroll: true });
-          card?.scrollIntoView({ block: "nearest" });
-        },
-      });
-    }
     for (const element of [closeRef.current, edgeRef.current]) {
       if (element !== null) {
         stops.push({ box: element, focus: () => element.focus() });
@@ -1264,13 +382,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
 
   function cycleStops(target: HTMLElement, by: 1 | -1): void {
     const stops = tabStops();
-    // The innermost stop holding the keys: the gallery sits among the rows.
-    let index = -1;
-    stops.forEach((stop, at) => {
-      if (stop.box.contains(target)) {
-        index = at;
-      }
-    });
+    const index = stops.findIndex((stop) => stop.box.contains(target));
     const next = index < 0 ? (by > 0 ? 0 : stops.length - 1) : (index + by + stops.length) % stops.length;
     stops[next]?.focus();
   }
@@ -1295,7 +407,15 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   function onSheetKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     const sheet = sheetRef.current;
     const target = event.target as HTMLElement;
-    // A dialog opened from the sheet sits outside it, over the app.
+    // ⌘F goes to the search from anywhere in the sheet, not to the
+    // browser's find.
+    if (sheet !== null && sheet.contains(target) && matchesBinding(event.nativeEvent, SEARCH_KEY)) {
+      event.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+      return;
+    }
+    // A dialog or picker opened from the sheet sits outside it, over the app.
     if (sheet === null || !sheet.contains(target) || event.defaultPrevented || event.nativeEvent.isComposing) {
       return;
     }
@@ -1312,6 +432,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
         focusRow(row);
       } else if (query !== "") {
         setQuery("");
+        searchRef.current?.focus();
       } else {
         onClose();
       }
@@ -1446,10 +567,12 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
     onChange({ keymap: next });
   }
 
-  // A colour picked for parts of the current theme's syntax, data table or
+  const shownId = activeThemeId(settings);
+
+  // A colour picked for parts of the shown theme's syntax, data table or
   // colour table, or none to go back to the theme's own.
   function pickThemeColor(field: "syntaxColors" | "gridColors" | "tableColors", keys: string[], color: string | null): void {
-    const picks: Record<string, string | undefined> = { ...settings[field][settings.theme] };
+    const picks: Record<string, string | undefined> = { ...settings[field][shownId] };
     for (const key of keys) {
       if (color === null) {
         delete picks[key];
@@ -1459,37 +582,40 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
     }
     const next: Record<string, Record<string, string | undefined>> = { ...settings[field] };
     if (Object.keys(picks).length === 0) {
-      delete next[settings.theme];
+      delete next[shownId];
     } else {
-      next[settings.theme] = picks;
+      next[shownId] = picks;
     }
     onChange({ [field]: next });
   }
 
+  // A Tern theme file becomes the theme of its mode, shown at once unless
+  // the mode follows the system.
   async function importTernTheme(file: File): Promise<void> {
     try {
       const imported = await importTernFile(file);
-      onChange({ theme: imported.id, accent: imported.accent });
-      setTernNote({ error: false, text: t("“{name}”을(를) 가져와 테마로 정했습니다.", { name: imported.label }) });
+      onChange({
+        [imported.mode === "light" ? "themeLight" : "themeDark"]: imported.id,
+        ...(settings.themeMode === "system" ? {} : { themeMode: imported.mode }),
+      });
     } catch (error) {
-      setTernNote({ error: true, text: error instanceof Error ? error.message : String(error) });
+      notifyError(error);
     }
   }
 
   // An imported theme removed, with the colours picked for it; the default
-  // theme takes its place.
+  // theme of its mode takes its place.
   function removeImported(theme: Theme): void {
     removeTernFile(theme.id);
     const drop = <T,>(picks: Record<string, T>): Record<string, T> =>
       Object.fromEntries(Object.entries(picks).filter(([id]) => id !== theme.id));
     onChange({
-      theme: DEFAULT_SETTINGS.theme,
-      accent: DEFAULT_SETTINGS.accent,
+      themeLight: settings.themeLight === theme.id ? DEFAULT_SETTINGS.themeLight : settings.themeLight,
+      themeDark: settings.themeDark === theme.id ? DEFAULT_SETTINGS.themeDark : settings.themeDark,
       syntaxColors: drop(settings.syntaxColors),
       gridColors: drop(settings.gridColors),
       tableColors: drop(settings.tableColors),
     });
-    setTernNote(null);
   }
 
   async function applyPasscode(): Promise<void> {
@@ -1533,10 +659,18 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
     };
   }
 
+  // The code font's name, for the fonts following it.
+  function codeFontName(): string {
+    if (settings.codeFont === "") {
+      return t("시스템 고정폭");
+    }
+    const choice = installedGroups.flatMap((group) => group.choices).find((item) => item.value === settings.codeFont);
+    return choice?.label ?? fontListLabel(settings.codeFont);
+  }
+
   function renderPage(id: SettingsPage): ReactNode {
-    const theme = THEMES.find((item) => item.id === settings.theme);
-    // The theme whose colours the SQL Editor and Data Table pages pick.
-    const themeLabel = theme?.label ?? settings.theme;
+    const theme = THEMES.find((item) => item.id === shownId);
+    const fonts = drawnFonts(settings);
     switch (id) {
       case "general": {
         const languages: { value: Language; label: string }[] = (["ko", "en"] as Language[]).map((language) => ({
@@ -1547,7 +681,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
           <>
             <SettingsGroup>
               <SettingRow
-                label={t("언어")}
+                label="언어"
                 keywords="language"
                 {...fromDefault("language")}
                 onActivate={() => onChange({ language: nextChoice(languages, settings.language) })}
@@ -1561,55 +695,151 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
               </SettingRow>
             </SettingsGroup>
             <VersionSettings />
+            <SettingsGroup title="활동 로그">
+              <SettingRow label="보관 기간(일)" keywords="activity log retention days" {...fromDefault("activityDays")}>
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={settings.activityDays}
+                  aria-label={t("보관 기간(일)")}
+                  onChange={(event) =>
+                    onChange({
+                      activityDays: Math.min(90, Math.max(1, Number(event.target.value) || 7)),
+                    })
+                  }
+                />
+              </SettingRow>
+            </SettingsGroup>
           </>
         );
       }
 
-      case "theme": {
+      case "appearance": {
         const [translucent, reduced] = material.split(":");
-        const options = MATERIAL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
-        const darkTheme = THEMES.find((item) => item.id === DEFAULT_SETTINGS.theme);
-        // The accent is the theme's own (taken with it), or the default's
-        // under the default theme.
-        const accent = settings.accent.toLowerCase();
-        const accentChanged =
-          theme !== undefined &&
-          accent !== theme.accent.toLowerCase() &&
-          !(theme.id === DEFAULT_SETTINGS.theme && accent === DEFAULT_SETTINGS.accent.toLowerCase());
+        const materials = MATERIAL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
+        const modes = MODE_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
+        const accent = currentAccent(settings);
         return (
           <>
-            <SettingsGroup>
+            <SettingsGroup title="테마">
               <SettingRow
-                label={t("재질")}
-                keywords="material solid glass clear 투명도"
+                label="모드"
+                keywords="appearance mode light dark system theme 라이트 다크 시스템 테마"
+                {...fromDefault("themeMode")}
+                onActivate={() => onChange({ themeMode: nextChoice(modes, settings.themeMode) })}
+              >
+                <Choice
+                  label={t("모드")}
+                  value={settings.themeMode}
+                  options={modes}
+                  onChange={(themeMode) => onChange({ themeMode })}
+                />
+              </SettingRow>
+              <ThemeRow
+                label="라이트 테마"
+                mode="light"
+                value={settings.themeLight}
+                defaultValue={DEFAULT_SETTINGS.themeLight}
+                tern={ternState}
+                onPick={(themeLight) => onChange({ themeLight })}
+                onImport={(file) => void importTernTheme(file)}
+                onRemove={removeImported}
+              />
+              <ThemeRow
+                label="다크 테마"
+                mode="dark"
+                value={settings.themeDark}
+                defaultValue={DEFAULT_SETTINGS.themeDark}
+                tern={ternState}
+                onPick={(themeDark) => onChange({ themeDark })}
+                onImport={(file) => void importTernTheme(file)}
+                onRemove={removeImported}
+              />
+              <SettingRow
+                label="강조 색"
+                keywords="accent color colour"
+                changed={settings.accent !== ""}
+                onReset={() => onChange({ accent: "" })}
+              >
+                <span className="settings-color-value mono">{accent}</span>
+                <input
+                  type="color"
+                  aria-label={t("강조 색")}
+                  value={accent}
+                  onChange={(event) => onChange({ accent: event.target.value })}
+                />
+              </SettingRow>
+              {theme !== undefined ? (
+                <ColorTableRow
+                  theme={theme}
+                  picks={settings.tableColors[theme.id] ?? {}}
+                  onPick={(slots: TableSlot[], color) => pickThemeColor("tableColors", slots, color)}
+                />
+              ) : null}
+            </SettingsGroup>
+            <SettingsGroup title="글꼴">
+              <FontRow
+                label="글꼴"
+                keywords="font typeface 폰트 interface ui 인터페이스 sidebar 사이드바"
+                value={settings.uiFont}
+                follow={{ label: t("시스템 기본"), value: SYSTEM_UI_FONT }}
+                groups={installedGroups}
+                onChange={(uiFont) => onChange({ uiFont })}
+              />
+              <SizeRow
+                label="글자 크기"
+                keywords="font size 폰트 크기"
+                value={settings.uiFontSize}
+                follows={null}
+                min={UI_FONT_MIN}
+                max={UI_FONT_MAX}
+                defaultValue={DEFAULT_SETTINGS.uiFontSize}
+                onChange={(size) => onChange({ uiFontSize: size ?? DEFAULT_SETTINGS.uiFontSize })}
+              />
+              <FontRow
+                label="코드 글꼴"
+                hint={t("SQL 에디터와 데이터 테이블이 따릅니다.")}
+                keywords="code font monospace mono typeface 폰트 고정폭"
+                value={settings.codeFont}
+                follow={{ label: t("시스템 고정폭"), value: SYSTEM_CODE_FONT }}
+                groups={installedGroups}
+                onChange={(codeFont) => onChange({ codeFont })}
+              />
+              <SizeRow
+                label="코드 글자 크기"
+                keywords="code font size 폰트 크기"
+                value={settings.codeFontSize}
+                follows={settings.uiFontSize}
+                min={CODE_FONT_MIN}
+                max={CODE_FONT_MAX}
+                defaultValue={DEFAULT_SETTINGS.codeFontSize}
+                onChange={(codeFontSize) => onChange({ codeFontSize })}
+              />
+            </SettingsGroup>
+            <SettingsGroup title="재질">
+              <SettingRow
+                label="재질"
+                keywords="material solid glass clear transparency 투명도 유리"
                 hint={
                   reduced === "true"
                     ? t("시스템의 ‘투명도 줄이기’가 켜져 있어 불투명하게 그립니다.")
                     : translucent === "true"
-                      ? t("유리는 시스템의 반투명 재질을, 투명은 색을 입히지 않고 흐리게 한 바탕화면을 창 뒤에 둡니다. 대화상자, 팔레트, 메뉴도 유리가 됩니다.")
-                      : t("브라우저 탭 뒤에는 바탕화면이 없어 대화상자, 팔레트, 메뉴 같은 떠 있는 면만 유리가 됩니다. 창이 비쳐 보이는 것은 데스크톱 앱에서만입니다.")
+                      ? null
+                      : t("브라우저 탭에서는 떠 있는 면만 유리가 됩니다.")
                 }
                 {...fromDefault("material")}
-                onActivate={() => onChange({ material: nextChoice(options, settings.material) })}
+                onActivate={() => onChange({ material: nextChoice(materials, settings.material) })}
               >
                 <Choice
                   label={t("재질")}
                   value={settings.material}
-                  options={options}
+                  options={materials}
                   onChange={(next) => onChange({ material: next })}
                 />
               </SettingRow>
               {settings.material !== "solid" ? (
-                <SettingRow
-                  label={t("불투명도")}
-                  keywords="opacity"
-                  hint={
-                    translucent === "true"
-                      ? t("창 바탕이 얼마나 비치지 않는지입니다. 떠 있는 면은 글자가 읽히도록 조금 더 불투명합니다.")
-                      : t("떠 있는 면의 바탕이 얼마나 비치지 않는지입니다. 글자가 읽히도록 아주 투명해지지는 않습니다.")
-                  }
-                  {...fromDefault("materialOpacity")}
-                >
+                <SettingRow label="불투명도" keywords="opacity" {...fromDefault("materialOpacity")}>
                   <Slider
                     label={t("불투명도")}
                     value={settings.materialOpacity}
@@ -1620,12 +850,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 </SettingRow>
               ) : null}
               {settings.material === "clear" ? (
-                <SettingRow
-                  label={t("흐림")}
-                  keywords="blur radius"
-                  hint={t("투명 재질의 뒤를 흐리게 하는 반경입니다.")}
-                  {...fromDefault("materialBlur")}
-                >
+                <SettingRow label="흐림" keywords="blur radius" {...fromDefault("materialBlur")}>
                   <Slider
                     label={t("흐림")}
                     value={settings.materialBlur}
@@ -1636,84 +861,25 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 </SettingRow>
               ) : null}
             </SettingsGroup>
-            <SettingsGroup title={t("색")}>
-              <SettingRow
-                label={t("강조 색")}
-                keywords="accent"
-                hint={t("SQL 에디터와 데이터 테이블의 색은 각 화면 설정에서 고릅니다.")}
-                changed={accentChanged}
-                onReset={() => theme && onChange({ accent: theme.accent })}
-              >
-                <span className="settings-color-value mono">{settings.accent}</span>
-                <input
-                  type="color"
-                  aria-label={t("강조 색")}
-                  value={settings.accent}
-                  onChange={(event) => onChange({ accent: event.target.value })}
+            <SettingsGroup title="표시">
+              <SettingRow label="줄무늬 행 배경" keywords="alternate row stripe zebra" {...fromDefault("rowAlt")}>
+                <Switch label={t("줄무늬 행 배경")} checked={settings.rowAlt} onChange={(rowAlt) => onChange({ rowAlt })} />
+              </SettingRow>
+              <SettingRow label="가로 스크롤바 항상 표시" keywords="scrollbar" {...fromDefault("scrollbarX")}>
+                <Switch
+                  label={t("가로 스크롤바 항상 표시")}
+                  checked={settings.scrollbarX}
+                  onChange={(scrollbarX) => onChange({ scrollbarX })}
                 />
               </SettingRow>
-              {theme !== undefined ? (
-                <ColorTableRow
-                  theme={theme}
-                  picks={settings.tableColors[theme.id] ?? {}}
-                  hint={t(
-                    "터미널의 바탕·글자와 16색입니다. 구문 강조와 값 색이 이 색에서 나오며, 고른 색은 지금 테마({theme})에만 저장됩니다. ⏎로 고르고 ⌫로 테마의 색으로 되돌립니다.",
-                    { theme: t(themeLabel) },
-                  )}
-                  onPick={(slots, color) => pickThemeColor("tableColors", slots, color)}
-                />
-              ) : null}
-              <SettingRow
-                label={t("테마")}
-                keywords={`tern ${THEMES.map((item) => t(item.label)).join(" ")}`}
-                wide
-                changed={settings.theme !== DEFAULT_SETTINGS.theme}
-                onReset={() => darkTheme && onChange({ theme: darkTheme.id, accent: darkTheme.accent })}
-                onActivate={() => tabStops().find((stop) => stop.box === galleryRef.current)?.focus()}
-              >
-                <ThemeGallery
-                  value={settings.theme}
-                  tern={ternState}
-                  galleryRef={galleryRef}
-                  onPick={(picked) => onChange({ theme: picked.id, accent: picked.accent })}
+              <SettingRow label="세로 스크롤바 항상 표시" keywords="scrollbar" {...fromDefault("scrollbarY")}>
+                <Switch
+                  label={t("세로 스크롤바 항상 표시")}
+                  checked={settings.scrollbarY}
+                  onChange={(scrollbarY) => onChange({ scrollbarY })}
                 />
               </SettingRow>
             </SettingsGroup>
-            <SettingsGroup title="Tern">
-              <SettingRow
-                label={t("Tern 테마 파일 가져오기")}
-                keywords="import css gyu"
-                hint={
-                  ternNote?.text ??
-                  t("Tern의 테마 CSS(~/Library/Application Support/Tern/themes)를 고르면, @import한 기본 테마에 그 파일의 바탕·글자·16색과 면 색을 덮어 파일 이름의 테마로 더합니다. 다른 규칙은 건너뜁니다.")
-                }
-              >
-                <button type="button" onClick={() => ternFileRef.current?.click()}>
-                  {t("파일 선택…")}
-                </button>
-              </SettingRow>
-              {theme?.imported ? (
-                <SettingRow label={t("가져온 테마 지우기")} hint={t("“{name}”과(와) 이 테마에 고른 색을 지웁니다.", { name: theme.label })}>
-                  <button type="button" onClick={() => removeImported(theme)}>
-                    {t("지우기")}
-                  </button>
-                </SettingRow>
-              ) : null}
-            </SettingsGroup>
-            {/* Outside the rows: a row's controls are the ones it shows. */}
-            <input
-              ref={ternFileRef}
-              type="file"
-              accept=".css,text/css"
-              hidden
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = "";
-                if (file !== undefined) {
-                  void importTernTheme(file);
-                }
-              }}
-            />
           </>
         );
       }
@@ -1721,20 +887,28 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
       case "editor":
         return (
           <>
-            <FontRows
-              label={t("SQL 에디터")}
-              hint={t("에디터와 콘솔에 쓰입니다.")}
-              groups={editorFontGroups}
-              value={settings.fontFamily}
-              size={settings.fontSize}
-              sizes={sizeChoices(EDITOR_FONT_MIN, EDITOR_FONT_MAX, settings.fontSize)}
-              defaultValue={DEFAULT_SETTINGS.fontFamily}
-              defaultSize={DEFAULT_SETTINGS.fontSize}
-              onChange={(fontFamily) => onChange({ fontFamily })}
-              onSize={(fontSize) => onChange({ fontSize })}
-            />
-            <SettingsGroup title={t("편집")}>
-              <SettingRow label={t("정리·축약할 때 키워드를 대문자로")} {...fromDefault("uppercaseKeywords")}>
+            <SettingsGroup title="글꼴">
+              <FontRow
+                label="에디터 글꼴"
+                keywords="editor font typeface 폰트 console 콘솔"
+                value={settings.editorFont}
+                follow={{ label: t("코드 글꼴 · {name}", { name: codeFontName() }) }}
+                groups={installedGroups}
+                onChange={(editorFont) => onChange({ editorFont })}
+              />
+              <SizeRow
+                label="에디터 글자 크기"
+                keywords="editor font size 폰트 크기"
+                value={settings.editorFontSize}
+                follows={fonts.codeSize}
+                min={CODE_FONT_MIN}
+                max={CODE_FONT_MAX}
+                defaultValue={DEFAULT_SETTINGS.editorFontSize}
+                onChange={(editorFontSize) => onChange({ editorFontSize })}
+              />
+            </SettingsGroup>
+            <SettingsGroup title="편집">
+              <SettingRow label="정리·축약할 때 키워드를 대문자로" keywords="uppercase keywords format" {...fromDefault("uppercaseKeywords")}>
                 <Switch
                   label={t("정리·축약할 때 키워드를 대문자로")}
                   checked={settings.uppercaseKeywords}
@@ -1742,10 +916,11 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 />
               </SettingRow>
             </SettingsGroup>
-            {/* The colours picked here belong to the theme in use. */}
-            <SettingsGroup title={t("색")}>
+            {/* The colours picked here belong to the theme shown. */}
+            <SettingsGroup title="구문 색">
               <SettingRow
-                label={t("구문 강조")}
+                label="구문 강조"
+                keywords="syntax highlight preset color colour"
                 hint={t(SYNTAX_PRESETS.find((preset) => preset.id === settings.syntaxPreset)?.description ?? "")}
                 {...fromDefault("syntaxPreset")}
               >
@@ -1764,8 +939,9 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
               <ColorRows
                 rows={SYNTAX_COLOR_ROWS}
                 colors={currentSyntaxColors(settings)}
-                picked={settings.syntaxColors[settings.theme] ?? {}}
-                hint={t("지금 테마({theme})에만 저장되며, 구문 강조 위에 덮입니다.", { theme: t(themeLabel) })}
+                picked={settings.syntaxColors[shownId] ?? {}}
+                keywords="syntax color colour"
+                hint={theme ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) }) : undefined}
                 onPick={(keys, color) => pickThemeColor("syntaxColors", keys, color)}
               />
             </SettingsGroup>
@@ -1773,23 +949,31 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
           </>
         );
 
-      case "grid":
+      case "data":
         return (
           <>
-            <FontRows
-              label={t("데이터 테이블")}
-              hint={t("모든 표와 셀 편집에 쓰입니다.")}
-              groups={gridFontGroups}
-              value={settings.gridFontFamily}
-              size={settings.gridFontSize}
-              sizes={sizeChoices(GRID_FONT_MIN, GRID_FONT_MAX, settings.gridFontSize)}
-              defaultValue={DEFAULT_SETTINGS.gridFontFamily}
-              defaultSize={DEFAULT_SETTINGS.gridFontSize}
-              onChange={(gridFontFamily) => onChange({ gridFontFamily })}
-              onSize={(gridFontSize) => onChange({ gridFontSize })}
-            />
-            <SettingsGroup title={t("표시")}>
-              <SettingRow label={t("최대 행")} hint={t("쿼리 한 번에 가져오는 최대 행 수입니다.")} {...fromDefault("maxRows")}>
+            <SettingsGroup title="글꼴">
+              <FontRow
+                label="표 글꼴"
+                keywords="grid table data font typeface 폰트"
+                value={settings.gridFont}
+                follow={{ label: t("코드 글꼴 · {name}", { name: codeFontName() }) }}
+                groups={installedGroups}
+                onChange={(gridFont) => onChange({ gridFont })}
+              />
+              <SizeRow
+                label="표 글자 크기"
+                keywords="grid table font size 폰트 크기"
+                value={settings.gridFontSize}
+                follows={fonts.codeSize}
+                min={CODE_FONT_MIN}
+                max={CODE_FONT_MAX}
+                defaultValue={DEFAULT_SETTINGS.gridFontSize}
+                onChange={(gridFontSize) => onChange({ gridFontSize })}
+              />
+            </SettingsGroup>
+            <SettingsGroup title="쿼리">
+              <SettingRow label="최대 행" keywords="max rows limit" {...fromDefault("maxRows")}>
                 <input
                   type="number"
                   min={1}
@@ -1804,8 +988,9 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 />
               </SettingRow>
               <SettingRow
-                label={t("쿼리 시간 제한(초)")}
-                hint={t("MongoDB 쿼리, mongosh 스크립트, ClickHouse 문장에 쓰입니다. 0이면 제한이 없습니다.")}
+                label="쿼리 시간 제한(초)"
+                keywords="query timeout seconds mongodb clickhouse"
+                hint={t("MongoDB와 ClickHouse에 쓰입니다. 0이면 제한이 없습니다.")}
                 {...fromDefault("queryTimeout")}
               >
                 <input
@@ -1821,37 +1006,10 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                   }
                 />
               </SettingRow>
-              <SettingRow label={t("줄무늬 행 배경")} {...fromDefault("rowAlt")}>
-                <Switch label={t("줄무늬 행 배경")} checked={settings.rowAlt} onChange={(rowAlt) => onChange({ rowAlt })} />
-              </SettingRow>
-              <SettingRow
-                label={t("가로 스크롤바 항상 표시")}
-                hint={t("SQL 에디터에도 적용됩니다.")}
-                keywords="scrollbar"
-                {...fromDefault("scrollbarX")}
-              >
-                <Switch
-                  label={t("가로 스크롤바 항상 표시")}
-                  checked={settings.scrollbarX}
-                  onChange={(scrollbarX) => onChange({ scrollbarX })}
-                />
-              </SettingRow>
-              <SettingRow
-                label={t("세로 스크롤바 항상 표시")}
-                hint={t("SQL 에디터에도 적용됩니다.")}
-                keywords="scrollbar"
-                {...fromDefault("scrollbarY")}
-              >
-                <Switch
-                  label={t("세로 스크롤바 항상 표시")}
-                  checked={settings.scrollbarY}
-                  onChange={(scrollbarY) => onChange({ scrollbarY })}
-                />
-              </SettingRow>
             </SettingsGroup>
-            {/* The colours picked here belong to the theme in use. */}
-            <SettingsGroup title={t("색")}>
-              <SettingRow label={t("타입별 색상")} {...fromDefault("typeColors")}>
+            {/* The colours picked here belong to the theme shown. */}
+            <SettingsGroup title="값 색">
+              <SettingRow label="타입별 색상" keywords="type colors colours value" {...fromDefault("typeColors")}>
                 <Switch
                   label={t("타입별 색상")}
                   checked={settings.typeColors}
@@ -1861,11 +1019,14 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
               <ColorRows
                 rows={GRID_COLOR_ROWS}
                 colors={currentGridColors(settings)}
-                picked={settings.gridColors[settings.theme] ?? {}}
+                picked={settings.gridColors[shownId] ?? {}}
+                keywords="value type color colour"
                 hint={
-                  settings.typeColors
-                    ? t("지금 테마({theme})에만 저장되며, 표와 MongoDB 문서의 값 색에 쓰입니다.", { theme: t(themeLabel) })
-                    : t("‘타입별 색상’이 꺼져 있어 NULL 말고는 지금 쓰이지 않습니다.")
+                  !settings.typeColors
+                    ? t("‘타입별 색상’이 꺼져 있어 NULL 말고는 지금 쓰이지 않습니다.")
+                    : theme
+                      ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) })
+                      : undefined
                 }
                 onPick={(keys, color) => pickThemeColor("gridColors", keys, color)}
               />
@@ -1873,26 +1034,10 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
           </>
         );
 
-      case "sidebar":
-        return (
-          <FontRows
-            label={t("사이드바")}
-            hint={t("왼쪽 사이드바와 오른쪽 상세 패널에 쓰입니다.")}
-            groups={sidebarFontGroups}
-            value={settings.sidebarFontFamily}
-            size={settings.sidebarFontSize}
-            sizes={sizeChoices(SIDEBAR_FONT_MIN, SIDEBAR_FONT_MAX, settings.sidebarFontSize)}
-            defaultValue={DEFAULT_SETTINGS.sidebarFontFamily}
-            defaultSize={DEFAULT_SETTINGS.sidebarFontSize}
-            onChange={(sidebarFontFamily) => onChange({ sidebarFontFamily })}
-            onSize={(sidebarFontSize) => onChange({ sidebarFontSize })}
-          />
-        );
-
       case "transfer":
         return (
           <SettingsGroup title="CSV">
-            <SettingRow label={t("CSV 구분자")} {...fromDefault("csvDelimiter")}>
+            <SettingRow label="CSV 구분자" keywords="delimiter separator" {...fromDefault("csvDelimiter")}>
               <Select
                 aria-label={t("CSV 구분자")}
                 value={settings.csvDelimiter}
@@ -1904,10 +1049,10 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 <option value="|">{t("| (파이프)")}</option>
               </Select>
             </SettingRow>
-            <SettingRow label={t("첫 행을 헤더로 사용")} {...fromDefault("csvHeader")}>
+            <SettingRow label="첫 행을 헤더로 사용" keywords="header" {...fromDefault("csvHeader")}>
               <Switch label={t("첫 행을 헤더로 사용")} checked={settings.csvHeader} onChange={(csvHeader) => onChange({ csvHeader })} />
             </SettingRow>
-            <SettingRow label={t("인코딩")} keywords="encoding" {...fromDefault("csvEncoding")}>
+            <SettingRow label="인코딩" keywords="encoding" {...fromDefault("csvEncoding")}>
               <Select
                 aria-label={t("인코딩")}
                 value={settings.csvEncoding}
@@ -1921,7 +1066,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
           </SettingsGroup>
         );
 
-      case "shortcuts": {
+      case "keyboard": {
         const anyChanged = KEY_ACTIONS.some((action) => settings.keymap[action].join("\n") !== DEFAULT_KEYMAP[action].join("\n"));
         return (
           <SettingsGroup
@@ -1938,8 +1083,8 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
               return (
                 <SettingRow
                   key={action}
-                  label={t(KEY_ACTION_LABELS[action])}
-                  keywords={settings.keymap[action].map(formatBinding).join(" ")}
+                  label={KEY_ACTION_LABELS[action]}
+                  keywords={`shortcut ${settings.keymap[action].map(formatBinding).join(" ")}`}
                   changed={changed}
                   onReset={() => setBindings(action, [...DEFAULT_KEYMAP[action]])}
                   onActivate={startCapture}
@@ -1993,7 +1138,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 </SettingRow>
               );
             })}
-            <SettingRow label={t("모든 단축키를 기본값으로")}>
+            <SettingRow label="모든 단축키를 기본값으로" keywords="shortcut reset">
               <button
                 type="button"
                 disabled={!anyChanged}
@@ -2012,67 +1157,61 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
         );
       }
 
-      case "security":
+      case "privacy":
         return (
-          <>
-            <SettingsGroup title={t("잠금 암호")}>
-              <SettingRow label={t("암호")} keywords="passcode lock">
-                <input
-                  type="password"
-                  aria-label={t("암호")}
-                  placeholder={t("암호")}
-                  value={passcode}
-                  onChange={(event) => setPasscode(event.target.value)}
-                />
-              </SettingRow>
-              <SettingRow label={t("확인")}>
-                <input
-                  type="password"
-                  aria-label={t("확인")}
-                  placeholder={t("확인")}
-                  value={passcodeConfirm}
-                  onChange={(event) => setPasscodeConfirm(event.target.value)}
-                />
-              </SettingRow>
-              <SettingRow label={hasPasscode ? t("암호 변경/해제") : t("새 암호")} hint={passcodeMessage}>
-                <button type="button" onClick={() => void applyPasscode()}>
-                  {hasPasscode ? t("변경") : t("저장")}
-                </button>
-                {hasPasscode ? (
-                  <>
-                    <button type="button" onClick={() => void removePasscode()}>
-                      {t("해제")}
-                    </button>
-                    <button type="button" onClick={onLock}>
-                      {t("지금 잠금")}
-                    </button>
-                  </>
-                ) : null}
-              </SettingRow>
-            </SettingsGroup>
-            <SettingsGroup title={t("활동 로그")}>
-              <SettingRow label={t("보관 기간(일)")} {...fromDefault("activityDays")}>
-                <input
-                  type="number"
-                  min={1}
-                  max={90}
-                  value={settings.activityDays}
-                  aria-label={t("보관 기간(일)")}
-                  onChange={(event) =>
-                    onChange({
-                      activityDays: Math.min(90, Math.max(1, Number(event.target.value) || 7)),
-                    })
-                  }
-                />
-              </SettingRow>
-            </SettingsGroup>
-          </>
+          <SettingsGroup title="잠금 암호">
+            <SettingRow label="암호" keywords="passcode lock password">
+              <input
+                type="password"
+                aria-label={t("암호")}
+                placeholder={t("암호")}
+                value={passcode}
+                onChange={(event) => setPasscode(event.target.value)}
+              />
+            </SettingRow>
+            <SettingRow label="확인" keywords="passcode confirm">
+              <input
+                type="password"
+                aria-label={t("확인")}
+                placeholder={t("확인")}
+                value={passcodeConfirm}
+                onChange={(event) => setPasscodeConfirm(event.target.value)}
+              />
+            </SettingRow>
+            <SettingRow label={hasPasscode ? "암호 변경/해제" : "새 암호"} keywords="passcode lock" hint={passcodeMessage}>
+              <button type="button" onClick={() => void applyPasscode()}>
+                {hasPasscode ? t("변경") : t("저장")}
+              </button>
+              {hasPasscode ? (
+                <>
+                  <button type="button" onClick={() => void removePasscode()}>
+                    {t("해제")}
+                  </button>
+                  <button type="button" onClick={onLock}>
+                    {t("지금 잠금")}
+                  </button>
+                </>
+              ) : null}
+            </SettingRow>
+          </SettingsGroup>
         );
     }
   }
 
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const sheetWidth = clampSheet(width ?? SHEET_DEFAULT);
+  // Pages whose name is searched for: offered first, ⏎ opens one.
+  const pageHits = terms.length === 0 ? [] : PAGES.filter((item) => {
+    const name = bothLanguages(item.label).toLowerCase();
+    return terms.every((term) => name.includes(term));
+  });
+
+  function onPageHitKey(event: ReactKeyboardEvent<HTMLDivElement>, id: SettingsPage): void {
+    if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      switchPage(id, "row");
+    }
+  }
 
   return (
     <>
@@ -2124,7 +1263,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
             ref={searchRef}
             type="text"
             value={query}
-            placeholder={t("입력해서 검색")}
+            placeholder={t("설정 검색 {key}", { key: formatBinding(SEARCH_KEY) })}
             aria-label={t("설정 검색")}
             spellCheck={false}
             autoComplete="off"
@@ -2163,15 +1302,44 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
             <ScopeContext.Provider value={{ terms, page: "", group: "" }}>{renderPage(page)}</ScopeContext.Provider>
           ) : (
             <>
+              {pageHits.length > 0 ? (
+                <section className="settings-results">
+                  <h3 className="settings-results-title">{t("페이지")}</h3>
+                  <div className="settings-box">
+                    {pageHits.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <div
+                          key={item.id}
+                          className="settings-row settings-page-hit"
+                          data-row=""
+                          tabIndex={-1}
+                          role="button"
+                          onKeyDown={(event) => onPageHitKey(event, item.id)}
+                          onClick={() => switchPage(item.id, "row")}
+                        >
+                          <Icon size={13} />
+                          <span className="settings-row-label">
+                            <Highlight text={t(item.label)} terms={terms} />
+                          </span>
+                          <span className="settings-page-hit-go" aria-hidden="true">
+                            →
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
               {PAGES.map((item) => (
-                <ScopeContext.Provider key={item.id} value={{ terms, page: t(item.label), group: "" }}>
+                <ScopeContext.Provider key={item.id} value={{ terms, page: bothLanguages(item.label), group: "" }}>
                   <section className="settings-results">
                     <h3 className="settings-results-title">{t(item.label)}</h3>
                     {renderPage(item.id)}
                   </section>
                 </ScopeContext.Provider>
               ))}
-              {noMatch ? <p className="settings-empty">{t("‘{query}’에 맞는 설정이 없습니다", { query })}</p> : null}
+              {noMatch ? <p className="settings-empty">{t("더 짧은 단어나 페이지 이름으로 찾아 보세요")}</p> : null}
             </>
           )}
         </div>

@@ -92,8 +92,8 @@ export interface Theme {
   // A theme made from a terminal's colour table (Tern's): what it is made
   // from, so a colour picked in its table makes it again (see termTheme.ts).
   source?: TermSource;
-  // "tern": shown in the gallery's Tern group (Tern's own themes, and the
-  // ones imported from a Tern theme file, which are `imported`).
+  // "tern": in the theme pickers' Tern group (Tern's own themes; the ones
+  // imported from a Tern theme file, which are `imported`, have their own).
   group?: "tern";
   imported?: boolean;
   custom?: boolean;
@@ -236,7 +236,7 @@ const tablepeekDark: Palette = makePalette(
     btn: "#33333a",
     btnHover: "#3e3e46",
   },
-  "#4f8cff",
+  "#4082ee",
   "dark",
 );
 
@@ -284,7 +284,7 @@ export const THEMES: Theme[] = [
     id: "dark",
     label: "TablePeek 다크",
     mode: "dark",
-    accent: "#4f8cff",
+    accent: "#4082ee",
     palette: tablepeekDark,
   },
   {
@@ -365,7 +365,7 @@ for (const source of readTernFiles()) {
 }
 
 // THEMES grows while the app runs (Tern's themes load, a file is imported):
-// the gallery redraws on each change.
+// the theme pickers redraw on each change.
 const themeListeners = new Set<() => void>();
 let themesVersion = 0;
 
@@ -378,9 +378,9 @@ export function getThemesVersion(): number {
   return themesVersion;
 }
 
-// Adds `themes`, each in place of one with its id. Tern's own themes share
-// the gallery's dark and light groups with the built-in ones; one that takes
-// a built-in theme's name says where it comes from.
+// Adds `themes`, each in place of one with its id. Tern's own themes are
+// listed beside the built-in ones; one that takes a built-in theme's name
+// says where it comes from.
 export function addThemes(themes: Theme[]): void {
   for (const theme of themes) {
     const named =

@@ -139,6 +139,7 @@ import {
 } from "./tableColors";
 import { columnWidthsKey } from "./columnWidths";
 import {
+  activeThemeId,
   getPasscodeHash,
   getSettings,
   saveSettings,
@@ -6727,7 +6728,7 @@ export default function App() {
                             specs={gridSpecs}
                             fixedKeys={sqlDialect?.fixedKeys === true}
                             onLink={(row, col) => void fkJump(row, col)}
-                            themeKey={`${settings.theme}:${settings.accent}:${settings.rowAlt}`}
+                            themeKey={`${activeThemeId(settings)}:${settings.accent}:${settings.rowAlt}`}
                           />
                           {state.result !== null ? null : resultLoading ? (
                             <LoadingState
@@ -6776,7 +6777,7 @@ export default function App() {
                                   : null
                               }
                               awaiting={resultLoading}
-                              themeKey={`${settings.theme}:${settings.accent}:${settings.rowAlt}`}
+                              themeKey={`${activeThemeId(settings)}:${settings.accent}:${settings.rowAlt}`}
                               onChange={(analysis) => {
                                 const id = analysisTab?.id;
                                 if (id !== undefined) {

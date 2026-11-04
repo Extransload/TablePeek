@@ -518,7 +518,8 @@ const editorLook = [editorTheme, syntaxHighlighting(highlightStyle), quoteColors
 
 // The editor as Settings shows it: the same setup and look over a fixed
 // sample, read-only, so the preview can't drift from the real thing.
-// Its font and size follow the settings through --mono and --editor-font-size.
+// Its font and size follow the settings through --editor-font (as --mono
+// inside .cm-editor) and --editor-font-size.
 export function SqlPreview({ doc }: { doc: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
