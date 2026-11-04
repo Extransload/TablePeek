@@ -2,11 +2,12 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react
 import { createPortal } from "react-dom";
 import { t } from "../../i18n";
 import { store, type VersionInfo } from "../../store";
-import { checkUpdateNow, configureUpdate, getInstall, getUpdate, loadUpdate, refreshUpdate, subscribeInstall, subscribeUpdate } from "../../update";
+import { checkUpdateNow, configureUpdate, getUpdate, loadUpdate, refreshUpdate, subscribeUpdate } from "../../update";
 import { AlertIcon, CheckIcon, CodeIcon, DownloadIcon, ExternalIcon, RefreshIcon } from "../icons";
 import { notifyError } from "../ErrorNotice";
 import { Spinner } from "../Spinner";
-import { UpdateHowDialog, UpdateInstallAction } from "../UpdateBanner";
+import { UpdateHowDialog } from "../UpdateBanner";
+import { UpdatePill } from "../UpdatePill";
 import { SettingRow, SettingsGroup, Switch } from "./rows";
 
 // Why the last update check failed, by the server's code: the status's second line.
@@ -29,7 +30,6 @@ function updateErrorText(code: string): string {
 // General: what this build is, and the check for a newer release.
 export function VersionSettings() {
   const update = useSyncExternalStore(subscribeUpdate, getUpdate);
-  const install = useSyncExternalStore(subscribeInstall, getInstall);
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
@@ -84,8 +84,30 @@ export function VersionSettings() {
   } else if (update.newer && update.latest !== null) {
     tone = "new";
     icon = <DownloadIcon size={13} />;
-    title = update.latest === update.skipped ? t("{latest}이 나왔습니다 (건너뛴 버전)", { latest: update.latest }) : t("{latest}이 나왔습니다", { latest: update.latest });
+    const skipped = update.latest === update.skipped;
+    title = skipped ? t("{latest}이 나왔습니다 (건너뛴 버전)", { latest: update.latest }) : t("{latest}이 나왔습니다", { latest: update.latest });
     detail = update.published_at !== null ? t("지금 {current} · {date} 공개", { current: update.current, date: new Date(update.published_at).toLocaleDateString() }) : t("지금 {current}", { current: update.current });
+    // The desktop app downloads the release on its own: how far it has got.
+    const own = update.install;
+    if (update.installable && !skipped) {
+      if (own.state === "checking") {
+        icon = <Spinner size={11} />;
+        title = t("{latest} 내려받는 중…", { latest: update.latest });
+      } else if (own.state === "downloading") {
+        icon = <Spinner size={11} />;
+        title =
+          own.total !== null && own.total > 0
+            ? t("{latest} 내려받는 중… {percent}%", { latest: own.version, percent: Math.min(100, Math.floor((own.downloaded * 100) / own.total)) })
+            : t("{latest} 내려받는 중…", { latest: own.version });
+      } else if (own.state === "error" && own.during === "prepare") {
+        tone = "error";
+        icon = <AlertIcon size={13} />;
+        title = t("{latest}을 내려받지 못했습니다", { latest: own.version ?? update.latest });
+        detail = own.message;
+      } else if (own.state !== "idle") {
+        title = t("{latest} 내려받음", { latest: own.version ?? update.latest });
+      }
+    }
   } else if (update.error !== null) {
     tone = "error";
     icon = <AlertIcon size={13} />;
@@ -153,7 +175,7 @@ export function VersionSettings() {
                   </button>
                 ) : null}
                 {update.installable ? (
-                  <UpdateInstallAction install={install} className="version-update-button" />
+                  <UpdatePill />
                 ) : (
                   <button type="button" className="version-update-button" onClick={() => setHowOpen(true)}>
                     {t("업데이트 방법")}

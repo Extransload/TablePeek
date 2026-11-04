@@ -1,31 +1,17 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { t } from "../i18n";
 import type { UpdateStatus } from "../store";
-import {
-  configureUpdate,
-  dismissRelease,
-  getInstall,
-  getUpdate,
-  installBusy,
-  installRelease,
-  loadUpdate,
-  offeredRelease,
-  subscribeInstall,
-  subscribeUpdate,
-  type InstallState,
-} from "../update";
+import { configureUpdate, dismissRelease, getUpdate, loadUpdate, offeredRelease, subscribeUpdate } from "../update";
 import { notifyError } from "./ErrorNotice";
 import { CloseIcon, DownloadIcon, ExternalIcon } from "./icons";
-import { Spinner } from "./Spinner";
 
 // A slim bar over the home screen and the workbench when a newer release is
-// out: its release notes, how to update this copy (or, in the desktop app,
-// installing it and restarting), skipping the release, and closing the bar
-// until the next window. Nothing shows while the check is off, offline, or
-// finds nothing newer.
+// out: its release notes, how to update this copy, skipping the release, and
+// closing the bar until the next window. Nothing shows while the check is
+// off, offline, or finds nothing newer, nor in the desktop app, which
+// downloads the release itself and offers to restart into it (UpdatePill).
 export function UpdateBanner() {
   const update = useSyncExternalStore(subscribeUpdate, getUpdate);
-  const install = useSyncExternalStore(subscribeInstall, getInstall);
   const [howOpen, setHowOpen] = useState(false);
 
   useEffect(() => {
@@ -37,8 +23,6 @@ export function UpdateBanner() {
   if (update === null || latest === null) {
     return null;
   }
-  // Skipping or closing the bar would hide an install under way.
-  const busy = installBusy(install);
   return (
     <>
       <section className="update-banner" aria-label={t("새 버전")}>
@@ -56,77 +40,29 @@ export function UpdateBanner() {
             <ExternalIcon size={10} />
           </button>
         ) : null}
-        {update.installable ? (
-          <UpdateInstallAction install={install} />
-        ) : (
-          <button type="button" className="link-button" onClick={() => setHowOpen(true)}>
-            {t("업데이트 방법")}
-          </button>
-        )}
-        {busy ? null : (
-          <>
-            <button
-              type="button"
-              className="link-button update-banner-skip"
-              onClick={() => {
-                configureUpdate({ skipped: latest }).catch((error: unknown) => notifyError(error));
-              }}
-            >
-              {t("이 버전 건너뛰기")}
-            </button>
-            <button
-              type="button"
-              className="icon-button update-banner-close"
-              title={t("닫기")}
-              aria-label={t("닫기")}
-              onClick={() => dismissRelease(latest)}
-            >
-              <CloseIcon size={11} />
-            </button>
-          </>
-        )}
+        <button type="button" className="link-button" onClick={() => setHowOpen(true)}>
+          {t("업데이트 방법")}
+        </button>
+        <button
+          type="button"
+          className="link-button update-banner-skip"
+          onClick={() => {
+            configureUpdate({ skipped: latest }).catch((error: unknown) => notifyError(error));
+          }}
+        >
+          {t("이 버전 건너뛰기")}
+        </button>
+        <button
+          type="button"
+          className="icon-button update-banner-close"
+          title={t("닫기")}
+          aria-label={t("닫기")}
+          onClick={() => dismissRelease(latest)}
+        >
+          <CloseIcon size={11} />
+        </button>
       </section>
       {howOpen ? <UpdateHowDialog update={update} latest={latest} onClose={() => setHowOpen(false)} /> : null}
-    </>
-  );
-}
-
-// Installs the release and restarts (the desktop app): a button, then how far
-// the install has come, or the error it stopped with and a retry. The error's
-// details show as a toast.
-export function UpdateInstallAction({ install, className = "link-button" }: { install: InstallState; className?: string }) {
-  function start(): void {
-    void installRelease().then(() => {
-      const after = getInstall();
-      if (after.phase === "error") {
-        notifyError(after.error, { retry: start });
-      }
-    });
-  }
-
-  if (installBusy(install)) {
-    let text: string;
-    if (install.phase === "download") {
-      text = install.percent === null ? t("내려받는 중…") : t("내려받는 중… {percent}%", { percent: install.percent });
-    } else if (install.phase === "install") {
-      text = t("설치하는 중…");
-    } else {
-      text = t("다시 시작하는 중…");
-    }
-    return (
-      <span className="update-install-progress" role="status">
-        <Spinner size={10} />
-        {text}
-      </span>
-    );
-  }
-  return (
-    <>
-      {install.phase === "error" ? <span className="update-install-error">{t("설치하지 못했습니다")}</span> : null}
-      <button type="button" className={className} onClick={start}>
-        <DownloadIcon size={11} />
-        {install.phase === "error" ? t("다시 시도") : t("설치하고 다시 시작")}
-      </button>
     </>
   );
 }

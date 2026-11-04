@@ -12,6 +12,7 @@
 //!   would (imports, cell values, uploads).
 //! - Windows are transparent, so the page decides how much of the desktop
 //!   shows through (see material.rs); a new one takes the others' material.
+//! - On macOS the page's bar is the title bar (see titlebar.rs).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,7 +36,7 @@ pub fn open(app: &AppHandle, port: u16, url: Url) -> tauri::Result<()> {
     let opener = app.clone();
     let spawner = app.clone();
     let saver = app.clone();
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("TablePeek")
         .inner_size(1440.0, 900.0)
         .min_inner_size(960.0, 600.0)
@@ -81,8 +82,12 @@ pub fn open(app: &AppHandle, port: u16, url: Url) -> tauri::Result<()> {
                 _ => {}
             }
             true
-        })
-        .build()?;
+        });
+    #[cfg(target_os = "macos")]
+    let builder = crate::titlebar::overlay(builder);
+    let window = builder.build()?;
+    #[cfg(target_os = "macos")]
+    crate::titlebar::follow_fullscreen(&window);
     if let Some(material) = app.try_state::<Arc<WindowEffects>>() {
         material.apply_current(&window);
     }

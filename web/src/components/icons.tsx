@@ -399,11 +399,13 @@ export function HomeIcon({ size = 12, className }: IconProps) {
   );
 }
 
+// A gear with rounded teeth: settings. Path from Lucide's "settings" icon
+// (ISC licence), drawn on its 24-unit grid at this set's stroke weight.
 export function SettingsIcon({ size = 12, className }: IconProps) {
   return (
-    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
-      <circle cx="8" cy="8" r="2.2" />
-      <path d="M6.7 2.4h2.6l.3 1.3.9.4 1.1-.8 1.9 1.9-.8 1.1.4.9 1.3.3v2.6l-1.3.3-.4.9.8 1.1-1.9 1.9-1.1-.8-.9.4-.3 1.3H6.7l-.3-1.3-.9-.4-1.1.8-1.9-1.9.8-1.1-.4-.9-1.3-.3V6.7l1.3-.3.4-.9-.8-1.1 1.9-1.9 1.1.8.9-.4z" />
+    <svg {...BASE} viewBox="0 0 24 24" strokeWidth={2.1} width={px(size)} height={px(size)} className={className}>
+      <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   );
 }

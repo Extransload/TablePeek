@@ -20,7 +20,7 @@ pub struct LaunchOptions {
     pub main: Option<(String, Engine)>,
     /// Rows the demo database gets when a page opens one.
     pub demo_rows: usize,
-    /// How this build installs an update itself, when it can.
+    /// How this build updates itself, when it can.
     pub installer: Option<Arc<dyn update::Installer>>,
     /// How this build gives its windows the material the page picks, when
     /// its pages have windows of their own (the desktop app).
@@ -106,7 +106,18 @@ impl Server {
     }
 
     /// Answers requests until the listener fails or the future is dropped.
+    /// A build that updates itself also looks for a release every hour.
     pub async fn run(self) -> std::io::Result<()> {
+        let _watch = AbortOnDrop(tokio::spawn(self.state.update.clone().watch()));
         serve(self.listener, self.state).await
+    }
+}
+
+/// Ends a task when its handle goes out of scope.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }

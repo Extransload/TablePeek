@@ -3317,57 +3317,28 @@ async fn update_configure(
         .map_err(store_error)
 }
 
-/// Installs the newest release where the build can replace itself (the
-/// desktop app), answering in NDJSON as it goes: `{"step": "download",
-/// "downloaded", "total"}` as the download grows, `{"step": "install"}` once
-/// it is verified, then `{"installed": <version>}` (the app restarts right
-/// after) or `{"error": {"code", "message"}}`.
+/// Installs the update the desktop app downloaded on its own (GET
+/// /api/update's `install` is `ready`), answering `{"installed": <version>}`;
+/// the app restarts right after. Refused while it is still downloading or
+/// already installing.
 async fn update_install(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Response, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     if !authorized(&state, &headers, None) {
         return Err(unauthorized());
     }
-    if !state.update.installable() {
-        let err = update::InstallError::Unsupported;
-        return Err(bad_request(err.code(), err.message()));
+    match state.update.apply().await {
+        Ok(version) => Ok(Json(json!({ "installed": version }))),
+        Err(err @ update::InstallError::Failed(_)) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(err.code(), err.message())),
+        )),
+        Err(err) => Err((
+            StatusCode::CONFLICT,
+            Json(ApiError::new(err.code(), err.message())),
+        )),
     }
-    let (lines, mut rx) = mpsc::unbounded_channel::<Bytes>();
-    let update = state.update.clone();
-    tokio::spawn(async move {
-        let line = |value: Value| Bytes::from(format!("{value}\n"));
-        let steps = lines.clone();
-        // One line per percent (per 256 KiB when the size is unknown), not
-        // one per chunk.
-        let reported = std::sync::atomic::AtomicU64::new(u64::MAX);
-        let progress = Box::new(move |step: update::InstallStep| {
-            if let update::InstallStep::Download { downloaded, total } = step {
-                let mark = match total {
-                    Some(total) if total > 0 => downloaded.saturating_mul(100) / total,
-                    _ => downloaded / (256 * 1024),
-                };
-                if reported.swap(mark, Ordering::Relaxed) == mark {
-                    return;
-                }
-            }
-            let _ = steps.send(line(json!(step)));
-        });
-        let last = match update.install(progress).await {
-            Ok(version) => json!({ "installed": version }),
-            Err(err) => json!({ "error": { "code": err.code(), "message": err.message() } }),
-        };
-        let _ = lines.send(line(last));
-    });
-    let stream = futures_util::stream::poll_fn(move |cx| {
-        rx.poll_recv(cx)
-            .map(|line| line.map(Ok::<_, std::convert::Infallible>))
-    });
-    Ok((
-        [(header::CONTENT_TYPE, "application/x-ndjson")],
-        Body::from_stream(stream),
-    )
-        .into_response())
 }
 
 /// The font families installed on this machine, for the settings' font

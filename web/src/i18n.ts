@@ -3334,7 +3334,7 @@ const EN: Record<string, string> = {
   "서로 다른 값 {distinct}개 · 만든 때 {first} ~ {last}": "{distinct} distinct · created {first} ~ {last}",
   "{min}–{max} (평균 {mean})": "{min}–{max} (mean {mean})",
   // ---- end MongoPanel ----
-  // ---- Update check (UpdateBanner, Settings > General) ----
+  // ---- Update check (UpdateBanner, UpdatePill, Settings > General) ----
   "새 버전": "New version",
   "TablePeek {latest}이 나왔습니다 (지금 {current})": "TablePeek {latest} is out (you have {current})",
   "변경 내역": "Release notes",
@@ -3377,15 +3377,19 @@ const EN: Record<string, string> = {
   "지금 확인": "Check now",
   "다시 알리기": "Notify me again",
   "데스크톱 앱": "Desktop app",
-  "설치하고 다시 시작": "Install and restart",
-  "내려받는 중…": "Downloading…",
-  "내려받는 중… {percent}%": "Downloading… {percent}%",
+  "다시 시작해서 업데이트": "Restart to update",
+  "TablePeek {latest}으로 업데이트 (지금 {current})": "Update to TablePeek {latest} (you have {current})",
+  "{latest} 내려받는 중…": "Downloading {latest}…",
+  "{latest} 내려받는 중… {percent}%": "Downloading {latest}… {percent}%",
+  "{latest} 내려받음": "{latest} downloaded",
+  "{latest}을 내려받지 못했습니다": "Couldn't download {latest}",
   "설치하는 중…": "Installing…",
   "다시 시작하는 중…": "Restarting…",
   "설치하지 못했습니다": "Couldn't install",
   "이 빌드는 스스로 업데이트할 수 없습니다": "This build can't update itself",
-  "업데이트를 이미 설치하고 있습니다": "An update is already being installed",
+  "업데이트를 이미 내려받거나 설치하고 있습니다": "The update is already downloading or installing",
   "설치할 새 버전이 없습니다": "There is no newer version to install",
+  "내려받은 업데이트가 없습니다": "No update has been downloaded",
   // ---- end Update check ----
   // ---- Quick Look large JSON view (components/JsonExplorer.tsx) ----
   "크게 보기": "Expand",

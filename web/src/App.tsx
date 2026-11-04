@@ -39,11 +39,13 @@ import { FilterBar } from "./components/FilterBar";
 import { ServerBanner } from "./components/ServerBanner";
 import { OidcLoginBanner } from "./components/OidcLoginBanner";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { UpdatePill } from "./components/UpdatePill";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
 import type { SelectedRows } from "./grid/CanvasGrid";
 import type { RowSource } from "./grid/rowSource";
 import { HomeScreen, type NewConnectionOptions } from "./components/HomeScreen";
+import { DRAG_REGION } from "./titlebar";
 import { HoverTooltip } from "./components/HoverTooltip";
 import { capabilitiesOf, engineById, requireSqlDialect, unsupportedEngine, type SqlDialect } from "./engines";
 import { fieldVisible, valuesFromConfig } from "./engines/connection";
@@ -5911,7 +5913,7 @@ export default function App() {
     <div className="app">
       {/* Home is its own welcome page; the bar belongs to the workspace. */}
       {!home ? (
-        <header className="appbar">
+        <header className="appbar" {...DRAG_REGION}>
           <BrandLogo onClick={goHome} />
           <ConnSwitcher
             conns={conns}
@@ -5926,6 +5928,7 @@ export default function App() {
             onClose={(id) => void closeConn(id)}
           />
           <span className="spacer" />
+          <UpdatePill />
           <button
             type="button"
             className="icon-button appbar-icon"

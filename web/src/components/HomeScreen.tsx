@@ -34,6 +34,8 @@ import { HomeWelcome } from "./HomeWelcome";
 import { CloseIcon, MoreIcon, PlusIcon, SearchIcon, SettingsIcon } from "./icons";
 import { PromptModal } from "./PromptModal";
 import { Spinner } from "./Spinner";
+import { UpdatePill } from "./UpdatePill";
+import { DRAG_REGION } from "../titlebar";
 
 // Names for GROUP_COLORS, in the same order.
 const COLOR_NAMES = ["주황", "파랑", "초록", "보라", "빨강", "청록", "분홍", "회색"];
@@ -70,7 +72,7 @@ interface HomeScreenProps {
   onEditConnection(connection: SavedConnection): void;
   onBackupOrRestore(kind: "backup" | "restore"): void;
   onOpenDemo(): void;
-  // Home has no app bar, so settings open from its corner.
+  // Home has no app bar, so settings open from its top bar's right end.
   onOpenSettings(): void;
   // Current shortcuts, for the tips and tooltips.
   paletteHint: string;
@@ -487,16 +489,21 @@ export function HomeScreen({
         setMenu({ x: event.clientX, y: event.clientY, target: null });
       }}
     >
-      <HomeBackdrop mode={welcome ? "hero" : "quiet"} />
-      <button
-        type="button"
-        className="icon-button home-settings"
-        onClick={onOpenSettings}
-        title={withHint(t("설정"), settingsHint)}
-        aria-label={t("설정")}
-      >
-        <SettingsIcon size={14} />
-      </button>
+      <HomeBackdrop />
+      {/* The top bar's right end, where the workspace's bar has these too;
+          in the desktop app it is the window's title bar (titlebar.ts). */}
+      <div className="home-bar" {...DRAG_REGION}>
+        <UpdatePill />
+        <button
+          type="button"
+          className="icon-button appbar-icon"
+          onClick={onOpenSettings}
+          title={withHint(t("설정"), settingsHint)}
+          aria-label={t("설정")}
+        >
+          <SettingsIcon size={13} />
+        </button>
+      </div>
       {/* One column: the wordmark, then the search and list (or, first run, the ways in). */}
       <div className={`home-column${welcome ? " home-column-welcome" : ""}`}>
         <div className="home-intro">

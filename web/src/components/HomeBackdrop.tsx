@@ -5,12 +5,9 @@ import { palette, type ValueKind } from "../palette";
 // its rows flowing toward the viewer over a slow swell. Each column holds one
 // kind of value in the theme's type colours; cells flicker on as if read,
 // now and then a row is selected, and the pointer is a lens that lifts the
-// cells under it and shows their values. A click sends a ripple out.
-//
-// "hero" is the first-run page; "quiet" sits behind the connection list,
-// dimmer and slower, with no values. Reduced motion gets one still frame.
-
-export type BackdropMode = "hero" | "quiet";
+// cells under it and shows their values. A click sends a ripple out. The
+// same show runs on the first-run page and behind the connection list;
+// reduced motion gets one still frame.
 
 const KINDS: ValueKind[] = ["string", "integer", "date", "boolean", "float", "json", "uuid", "enum"];
 const SAMPLES: Record<string, string[]> = {
@@ -43,18 +40,9 @@ const RIPPLE_SPEED = 1.7;
 const MAX_RIPPLES = 4;
 // The moment the still frame shows (past the entrance).
 const STILL_T = 9.4;
-
-interface ModeSpec {
-  horizon: number; // fraction of the height
-  gain: number;
-  fps: number;
-  values: boolean;
-}
-
-const MODES: Record<BackdropMode, ModeSpec> = {
-  hero: { horizon: 0.6, gain: 1, fps: 60, values: true },
-  quiet: { horizon: 0.74, gain: 0.42, fps: 30, values: false },
-};
+// Where the horizon sits, as a fraction of the height, and the frame rate.
+const HORIZON = 0.6;
+const FPS = 60;
 
 interface Ripple {
   x: number;
@@ -92,7 +80,6 @@ function rgba(hex: string, alpha: number): string {
 
 class Field {
   private readonly ctx: CanvasRenderingContext2D;
-  private mode: ModeSpec;
   private w = 0;
   private h = 0;
   private dpr = 1;
@@ -116,22 +103,12 @@ class Field {
   private camX = 0;
   private ripples: Ripple[] = [];
 
-  constructor(
-    private readonly canvas: HTMLCanvasElement,
-    mode: BackdropMode,
-  ) {
+  constructor(private readonly canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext("2d")!;
-    this.mode = MODES[mode];
   }
 
   get running(): boolean {
     return this.frame !== 0;
-  }
-
-  setMode(mode: BackdropMode): void {
-    this.mode = MODES[mode];
-    this.colors = null;
-    this.resize();
   }
 
   themeChanged(): void {
@@ -172,9 +149,9 @@ class Field {
     this.last = performance.now();
     const tick = (now: number) => {
       this.frame = requestAnimationFrame(tick);
-      // Capped: a 120 Hz display draws every other frame of a 60 fps mode.
+      // Capped: a 120 Hz display draws every other frame.
       const elapsed = now - this.last;
-      if (elapsed < 1000 / this.mode.fps - 2) {
+      if (elapsed < 1000 / FPS - 2) {
         return;
       }
       this.last = now;
@@ -222,11 +199,11 @@ class Field {
 
   private zStart(): number {
     // Just below the bottom edge, with room for the swell.
-    return ((CAM_H * this.focal()) / Math.max(1, this.h * (1 - this.mode.horizon))) * 0.82;
+    return ((CAM_H * this.focal()) / Math.max(1, this.h * (1 - HORIZON))) * 0.82;
   }
 
   private view(): { horizon: number; f: number } {
-    return { horizon: this.h * this.mode.horizon, f: this.focal() };
+    return { horizon: this.h * HORIZON, f: this.focal() };
   }
 
   private readColors(): Colors {
@@ -317,7 +294,7 @@ class Field {
     this.colors ??= this.readColors();
     const colors = this.colors;
     const ctx = this.ctx;
-    const { w, h, half, rows, mode } = this;
+    const { w, h, half, rows } = this;
     const { horizon, f } = this.view();
     const cx = w / 2;
     const cols = half * 2;
@@ -396,7 +373,7 @@ class Field {
         const crest = Math.max(0, (hv[a] + hv[b] + hv[c] + hv[d]) / (4 * SWELL) - 0.55);
         const own = Math.max(flicker * 0.75, lens, ripple * 0.85, crest * 0.35);
         const glow = Math.max(own, selected ? 0.42 : 0);
-        const level = Math.round(glow * depth * mode.gain * LEVELS);
+        const level = Math.round(glow * depth * LEVELS);
         if (level === 0) {
           continue;
         }
@@ -406,7 +383,7 @@ class Field {
         codes[cell] = code;
         counts[code]++;
         lit[litCount++] = cell;
-        if (mode.values && lens > 0.3 && depth > 0.5) {
+        if (lens > 0.3 && depth > 0.5) {
           shown[shownCount++] = cell;
         }
       }
@@ -496,23 +473,15 @@ class Field {
   }
 }
 
-interface HomeBackdropProps {
-  mode: BackdropMode;
-}
-
 // Drawn while the page is shown and the home on screen; the pointer is read
 // from the home itself, the canvas taking no events.
-export function HomeBackdrop({ mode }: HomeBackdropProps) {
+export function HomeBackdrop() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fieldRef = useRef<Field | null>(null);
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
 
   useEffect(() => {
     const canvas = canvasRef.current!;
     const host = canvas.parentElement!;
-    const field = new Field(canvas, modeRef.current);
-    fieldRef.current = field;
+    const field = new Field(canvas);
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     let onScreen = true;
 
@@ -569,7 +538,6 @@ export function HomeBackdrop({ mode }: HomeBackdropProps) {
     host.addEventListener("pointerleave", leave);
     return () => {
       field.stop();
-      fieldRef.current = null;
       sizes.disconnect();
       sight.disconnect();
       document.removeEventListener("visibilitychange", update);
@@ -581,16 +549,5 @@ export function HomeBackdrop({ mode }: HomeBackdropProps) {
     };
   }, []);
 
-  useEffect(() => {
-    const field = fieldRef.current;
-    if (field === null) {
-      return;
-    }
-    field.setMode(mode);
-    if (!field.running) {
-      field.still();
-    }
-  }, [mode]);
-
-  return <canvas ref={canvasRef} className={`home-backdrop home-backdrop-${mode}`} aria-hidden="true" />;
+  return <canvas ref={canvasRef} className="home-backdrop" aria-hidden="true" />;
 }

@@ -48,6 +48,9 @@ pub fn run() {
                     handle.exit(1);
                 }
             });
+            // The page's bar moves the window (see titlebar.rs).
+            #[cfg(target_os = "macos")]
+            crate::titlebar::allow_dragging(app.handle(), port)?;
             window::open(app.handle(), port, url)?;
             Ok(())
         })

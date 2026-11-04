@@ -4349,6 +4349,14 @@ textarea:focus-visible {
   padding: 0 5px 0 2px;
 }
 
+/* Title bar: in the macOS desktop app the bar is the window's title bar
+   (titlebar.ts), its left end under the traffic lights, which the app
+   centres in its 46px. A full-screen window has none, and the bar its
+   usual inset. */
+html[data-titlebar="overlay"] .appbar {
+  padding-left: 78px;
+}
+
 .conn-bar {
   display: flex;
   align-items: center;
@@ -6140,8 +6148,9 @@ button.cm-driver:not(.active) .driver-badge-icon {
   opacity: 0.85;
 }
 
-/* Header-level actions (settings is reachable from home too) */
-.appbar button.appbar-icon {
+/* Header-level actions: the workspace bar's, and home's settings */
+.appbar button.appbar-icon,
+.home-bar button.appbar-icon {
   width: 32px;
   height: 32px;
   flex: none;
@@ -6991,18 +7000,112 @@ textarea[aria-invalid="true"] {
   height: 20px;
 }
 
-/* The desktop app's install: how far it has come, or that it failed. */
-.update-install-progress {
+/* The desktop app's "Restart to update": a pill in the app bar (and the
+   home screen's top bar) once an update is downloaded. It arrives with a
+   wash of color across it while its words come into focus. */
+.update-pill-slot {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
+}
+
+button.update-pill {
+  position: relative;
+  overflow: hidden;
+  height: 24px;
+  padding: 0 11px 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  font-weight: 600;
+  animation: update-pill-in 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+
+button.update-pill:hover {
+  background: color-mix(in srgb, var(--accent) 26%, var(--panel));
+}
+
+button.update-pill:active {
+  background: color-mix(in srgb, var(--accent) 34%, var(--panel));
+}
+
+button.update-pill:disabled {
+  opacity: 1;
+  cursor: progress;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
   color: var(--muted);
 }
 
-.update-install-error {
+button.update-pill.failed {
+  border-color: color-mix(in srgb, var(--error) 55%, transparent);
+  background: color-mix(in srgb, var(--error) 12%, var(--panel));
+}
+
+button.update-pill svg {
   flex: none;
+  color: var(--accent);
+}
+
+/* The wash: a band of the accent and a warmer hue sweeping across once. */
+button.update-pill::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 10%,
+    color-mix(in srgb, var(--accent) 60%, transparent) 40%,
+    color-mix(in srgb, var(--warn) 50%, transparent) 60%,
+    transparent 90%
+  );
+  transform: translateX(110%);
+  animation: update-pill-wash 1.1s cubic-bezier(0.3, 0.6, 0.2, 1) 0.1s backwards;
+  pointer-events: none;
+}
+
+.update-pill-label {
+  position: relative;
+  animation: update-pill-focus 0.8s ease-out 0.2s backwards;
+}
+
+.update-pill-error {
   color: var(--error);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+
+@keyframes update-pill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+@keyframes update-pill-wash {
+  from {
+    transform: translateX(-110%);
+  }
+}
+
+@keyframes update-pill-focus {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.update-pill,
+  .update-pill-label {
+    animation: none;
+  }
+
+  button.update-pill::before {
+    display: none;
+  }
 }
 
 .update-how-modal {
@@ -7240,8 +7343,8 @@ textarea[aria-invalid="true"] {
   }
 }
 
-/* Home's column: settings in the corner, then the wordmark, the search bar,
-   the connection list and tips. */
+/* Home's column: the wordmark, the search bar, the connection list and
+   tips. */
 .home-column {
   /* Positioned, so it paints over the backdrop. */
   position: relative;
@@ -7338,19 +7441,24 @@ textarea[aria-invalid="true"] {
   flex-direction: column;
   min-width: 0;
 }
-button.home-settings {
+/* Home's top bar: no bar of its own to see, only its right end (the update
+   pill, then settings) laid out as the workspace's bar lays it, so settings
+   sits in the same spot on every screen. In the desktop app it is the
+   window's title bar and moves the window (titlebar.ts). */
+.home-bar {
   position: absolute;
-  top: 12px;
-  left: 12px;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  justify-content: center;
-  color: var(--faint);
-}
-
-button.home-settings:hover {
-  color: var(--ink);
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  height: 46px;
+  padding: 0 8px;
+  /* The workspace bar's border, unseen, so the buttons line up with its. */
+  border-bottom: 1px solid transparent;
 }
 
 .home-intro {
@@ -7833,7 +7941,7 @@ button.launcher-welcome-demo:hover .launcher-welcome-demo-arrow {
 }
 
 @media (max-width: 640px) {
-  /* Room for the corner settings button above the content. */
+  /* Room for the top bar's settings button above the content. */
   .home {
     padding-top: 52px;
   }

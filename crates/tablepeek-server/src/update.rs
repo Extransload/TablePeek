@@ -2,7 +2,8 @@
 //! newer release is out.
 //!
 //! The check asks GitHub for the latest release, at most once a day and only
-//! when a page asks for the update status, sending nothing but the request
+//! when a page asks for the update status (or, in a build that updates
+//! itself, when its hourly look comes round), sending nothing but the request
 //! itself (its User-Agent names the running version). The answer is kept in
 //! `update.json` in the settings folder with the user's choices: whether to
 //! check at all and the release they chose to skip. Network, HTTP and rate
@@ -10,10 +11,13 @@
 //! nothing.
 //!
 //! A build that can replace itself (the desktop app, through its updater)
-//! hands the checker an [`Installer`]; the status then says so and the page
-//! offers to install the release and restart instead of the manual steps.
+//! hands the checker an [`Installer`]. When a check finds a newer release
+//! that is not skipped, the checker has it downloaded and verified in the
+//! background on its own; the status then says it is ready, and installing
+//! it and restarting is one request.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -38,6 +42,8 @@ const DISABLE_ENV: &str = "TABLEPEEK_NO_UPDATE_CHECK";
 
 const CACHE_FILE: &str = "update.json";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// How often a build that updates itself asks for the status on its own.
+const WATCH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// How much of the release notes is kept and shown.
 const NOTES_LIMIT: usize = 2000;
@@ -176,27 +182,88 @@ pub struct UpdateStatus {
     pub asset_url: Option<String>,
     /// This build installs updates itself (POST /api/update/install).
     pub installable: bool,
+    /// Where its own update has got to; always idle when it has none.
+    pub install: InstallState,
 }
 
-/// How far an install has come, as POST /api/update/install reports it.
+/// Where the build's own update has got to: GET /api/update's `install`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum InstallState {
+    /// Nothing under way and nothing downloaded.
+    Idle,
+    /// Asking the updater's endpoint what to download.
+    Checking,
+    /// Downloading `version`: `downloaded` bytes, of `total` when known.
+    Downloading {
+        version: String,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    /// Downloaded and its signature checked: restarting installs it.
+    Ready { version: String },
+    /// Installing `version`; the app restarts once it is in.
+    Installing { version: String },
+    /// Getting the update ready (`prepare`) or installing it (`apply`)
+    /// failed. After a failed `apply` the download is still kept, so
+    /// installing can be tried again.
+    Error {
+        during: Stage,
+        version: Option<String>,
+        code: &'static str,
+        message: String,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "step", rename_all = "snake_case")]
-pub enum InstallStep {
-    /// Bytes of the update downloaded so far, of `total` when it is known.
-    Download { downloaded: u64, total: Option<u64> },
-    /// Downloaded and its signature checked; installing, then restarting.
-    Install,
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    Prepare,
+    Apply,
 }
 
-/// Why an install did not happen.
+impl InstallState {
+    fn busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Checking | Self::Downloading { .. } | Self::Installing { .. }
+        )
+    }
+
+    /// The version downloaded and waiting to be installed.
+    fn ready(&self) -> Option<&str> {
+        match self {
+            Self::Ready { version }
+            | Self::Error {
+                during: Stage::Apply,
+                version: Some(version),
+                ..
+            } => Some(version),
+            _ => None,
+        }
+    }
+}
+
+/// How far [`Installer::prepare`] has come.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareStep {
+    /// The endpoint offers `version` (`v1.2.3`); its download starts.
+    Found { version: String },
+    /// Bytes downloaded so far, of `total` when it is known.
+    Download { downloaded: u64, total: Option<u64> },
+}
+
+/// Why an update was not made ready or installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
     /// This build has no installer.
     Unsupported,
-    /// Another install is under way.
+    /// The update is being downloaded or installed already.
     Busy,
     /// The update endpoint offers nothing newer than this build.
     NoUpdate,
+    /// Nothing is downloaded to install.
+    NotReady,
     /// Checking, downloading, verifying or installing failed.
     Failed(String),
 }
@@ -207,6 +274,7 @@ impl InstallError {
             Self::Unsupported => "update_unsupported",
             Self::Busy => "update_busy",
             Self::NoUpdate => "update_none",
+            Self::NotReady => "update_not_ready",
             Self::Failed(_) => "update_failed",
         }
     }
@@ -214,24 +282,31 @@ impl InstallError {
     pub fn message(&self) -> String {
         match self {
             Self::Unsupported => "이 빌드는 스스로 업데이트할 수 없습니다".into(),
-            Self::Busy => "업데이트를 이미 설치하고 있습니다".into(),
+            Self::Busy => "업데이트를 이미 내려받거나 설치하고 있습니다".into(),
             Self::NoUpdate => "설치할 새 버전이 없습니다".into(),
+            Self::NotReady => "내려받은 업데이트가 없습니다".into(),
             Self::Failed(message) => message.clone(),
         }
     }
 }
 
-/// Installs the newest release over the running build: the desktop app does
-/// it with its updater. `progress` hears each step as it goes.
+/// Updates the running build in two steps: the desktop app does it with its
+/// updater.
 #[async_trait::async_trait]
 pub trait Installer: Send + Sync {
-    /// Downloads the update, checks its signature and installs it, answering
-    /// the version installed. The app restarts on its own shortly after, so
-    /// the answer still reaches the page.
-    async fn install(
+    /// Asks the update endpoint for the newest release, downloads it and
+    /// checks its signature, and keeps it for [`Installer::apply`],
+    /// answering its version (`v1.2.3`). A version already kept is not
+    /// downloaded again, and what is kept stays kept when this fails.
+    async fn prepare(
         &self,
-        progress: Box<dyn Fn(InstallStep) + Send + Sync>,
+        progress: Box<dyn Fn(PrepareStep) + Send + Sync>,
     ) -> Result<String, InstallError>;
+
+    /// Installs what `prepare` kept, answering its version. The app
+    /// restarts on its own shortly after, so the answer still reaches the
+    /// page.
+    async fn apply(&self) -> Result<String, InstallError>;
 }
 
 /// A change to the user's choices; fields left out stay as they are.
@@ -290,9 +365,66 @@ pub struct UpdateChecker {
     env_disabled: bool,
     // Held across a check, so pages asking at once share one request.
     file: tokio::sync::Mutex<UpdateFile>,
-    installer: Option<std::sync::Arc<dyn Installer>>,
-    // Held while an install runs, so a second one is refused.
-    installing: tokio::sync::Mutex<()>,
+    own: Option<Arc<OwnUpdate>>,
+}
+
+/// A build's own update: its installer and how far it has got.
+struct OwnUpdate {
+    installer: Arc<dyn Installer>,
+    // Only one step runs at a time: a prepare or apply starts only after
+    // moving this out of a busy state, under the lock.
+    state: Mutex<InstallState>,
+    // The release and the check (its `checked_at`) the last prepare made on
+    // its own was for: it is tried once per check, not on every status.
+    tried: Mutex<Option<(String, Option<u64>)>>,
+}
+
+impl OwnUpdate {
+    /// Downloads the release in the background, from `previous` (now
+    /// `Checking`). A failure leaves a download kept before as it was.
+    async fn prepare(self: Arc<Self>, previous: InstallState) {
+        let own = self.clone();
+        let progress = Box::new(move |step: PrepareStep| {
+            let mut state = lock(&own.state);
+            let next = match step {
+                PrepareStep::Found { version } => InstallState::Downloading {
+                    version,
+                    downloaded: 0,
+                    total: None,
+                },
+                PrepareStep::Download { downloaded, total } => match &*state {
+                    InstallState::Downloading { version, .. } => InstallState::Downloading {
+                        version: version.clone(),
+                        downloaded,
+                        total,
+                    },
+                    _ => return,
+                },
+            };
+            *state = next;
+        });
+        let result = self.installer.prepare(progress).await;
+        let mut state = lock(&self.state);
+        let next = match result {
+            Ok(version) => InstallState::Ready { version },
+            Err(_) if previous.ready().is_some() => previous,
+            Err(InstallError::NoUpdate) => InstallState::Idle,
+            Err(err) => InstallState::Error {
+                during: Stage::Prepare,
+                version: match &*state {
+                    InstallState::Downloading { version, .. } => Some(version.clone()),
+                    _ => None,
+                },
+                code: err.code(),
+                message: err.message(),
+            },
+        };
+        *state = next;
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl UpdateChecker {
@@ -327,31 +459,107 @@ impl UpdateChecker {
             current: current.to_string(),
             env_disabled,
             file: tokio::sync::Mutex::new(file),
-            installer: None,
-            installing: tokio::sync::Mutex::new(()),
+            own: None,
         }
     }
 
-    /// The checker for a build that installs updates with `installer`.
-    pub fn with_installer(mut self, installer: std::sync::Arc<dyn Installer>) -> Self {
-        self.installer = Some(installer);
+    /// The checker for a build that updates itself with `installer`.
+    pub fn with_installer(mut self, installer: Arc<dyn Installer>) -> Self {
+        self.own = Some(Arc::new(OwnUpdate {
+            installer,
+            state: Mutex::new(InstallState::Idle),
+            tried: Mutex::new(None),
+        }));
         self
     }
 
     /// Whether this build installs updates itself.
     pub fn installable(&self) -> bool {
-        self.installer.is_some()
+        self.own.is_some()
     }
 
-    /// Installs the newest release with the build's installer, one install
-    /// at a time.
-    pub async fn install(
-        &self,
-        progress: Box<dyn Fn(InstallStep) + Send + Sync>,
-    ) -> Result<String, InstallError> {
-        let installer = self.installer.as_ref().ok_or(InstallError::Unsupported)?;
-        let _running = self.installing.try_lock().map_err(|_| InstallError::Busy)?;
-        installer.install(progress).await
+    /// Where the build's own update has got to.
+    pub fn install_state(&self) -> InstallState {
+        self.own
+            .as_ref()
+            .map_or(InstallState::Idle, |own| lock(&own.state).clone())
+    }
+
+    /// For a build that updates itself: asks for the status now and then
+    /// every hour, so a release out while the app stays open is found (the
+    /// check itself still runs at most once a day) and downloaded.
+    pub async fn watch(self: Arc<Self>) {
+        if !self.installable() {
+            return;
+        }
+        loop {
+            self.status().await;
+            tokio::time::sleep(WATCH_INTERVAL).await;
+        }
+    }
+
+    /// Installs the downloaded update and has the app restart, answering
+    /// its version. Refused while a download or install is under way.
+    pub async fn apply(&self) -> Result<String, InstallError> {
+        let own = self.own.as_ref().ok_or(InstallError::Unsupported)?;
+        let version = {
+            let mut state = lock(&own.state);
+            if state.busy() {
+                return Err(InstallError::Busy);
+            }
+            let version = state.ready().ok_or(InstallError::NotReady)?.to_string();
+            *state = InstallState::Installing {
+                version: version.clone(),
+            };
+            version
+        };
+        let result = own.installer.apply().await;
+        if let Err(err) = &result {
+            *lock(&own.state) = InstallState::Error {
+                during: Stage::Apply,
+                version: Some(version),
+                code: err.code(),
+                message: err.message(),
+            };
+        }
+        result
+    }
+
+    /// Starts downloading the latest release in the background when this
+    /// build updates itself and `file` says it is newer, not skipped and
+    /// not downloaded yet: once per check of each release.
+    fn prepare_when_due(&self, file: &UpdateFile) {
+        let Some(own) = &self.own else {
+            return;
+        };
+        let Some(release) = file.latest.as_ref().filter(|_| self.enabled(file)) else {
+            return;
+        };
+        if !is_newer(&release.tag, &self.current)
+            || file.skipped.as_deref() == Some(release.tag.as_str())
+        {
+            return;
+        }
+        let attempt = (release.tag.clone(), file.checked_at);
+        let mut tried = lock(&own.tried);
+        if tried.as_ref() == Some(&attempt) {
+            return;
+        }
+        let mut state = lock(&own.state);
+        // Under way: the next status looks again.
+        if state.busy() {
+            return;
+        }
+        *tried = Some(attempt);
+        // A newer release replaces what is downloaded; the same one stays.
+        if state
+            .ready()
+            .is_some_and(|ready| !is_newer(&release.tag, ready))
+        {
+            return;
+        }
+        let previous = std::mem::replace(&mut *state, InstallState::Checking);
+        tokio::spawn(own.clone().prepare(previous));
     }
 
     /// The update status, checking first when checks are on and the last
@@ -366,7 +574,8 @@ impl UpdateChecker {
     }
 
     /// Saves the user's choices. Turning checks off makes no request; turning
-    /// them on waits for the next status to check.
+    /// them on waits for the next status to check. Taking back a skip lets
+    /// the release be downloaded.
     pub async fn configure(&self, settings: UpdateSettings) -> Result<UpdateStatus, String> {
         let mut file = self.file.lock().await;
         let mut next = file.clone();
@@ -380,6 +589,7 @@ impl UpdateChecker {
         }
         self.persist(&next)?;
         *file = next;
+        self.prepare_when_due(&file);
         Ok(self.describe(&file))
     }
 
@@ -407,6 +617,7 @@ impl UpdateChecker {
                 let _ = self.persist(&file);
             }
         }
+        self.prepare_when_due(&file);
         self.describe(&file)
     }
 
@@ -434,6 +645,7 @@ impl UpdateChecker {
             asset_name: None,
             asset_url: None,
             installable: self.installable(),
+            install: self.install_state(),
         };
         if !enabled {
             return status;
@@ -846,92 +1058,234 @@ mod tests {
         assert!(checker.configure(settings).await.unwrap().skipped.is_none());
     }
 
-    /// Reports a download in two chunks, then waits for `release` before it
-    /// says it installed.
+    /// An updater whose endpoint offers `offers`: a download reports half,
+    /// then waits for a permit of `hold` before it is ready.
     struct FakeInstaller {
-        release: tokio::sync::Notify,
+        offers: Mutex<String>,
+        hold: tokio::sync::Semaphore,
+        prepares: AtomicUsize,
+        applies: AtomicUsize,
+        fail_prepare: Mutex<Option<InstallError>>,
+        fail_apply: Mutex<Option<InstallError>>,
+    }
+
+    impl FakeInstaller {
+        fn new(offers: &str, permits: usize) -> Arc<Self> {
+            Arc::new(Self {
+                offers: Mutex::new(offers.into()),
+                hold: tokio::sync::Semaphore::new(permits),
+                prepares: AtomicUsize::new(0),
+                applies: AtomicUsize::new(0),
+                fail_prepare: Mutex::new(None),
+                fail_apply: Mutex::new(None),
+            })
+        }
+
+        fn prepares(&self) -> usize {
+            self.prepares.load(Ordering::SeqCst)
+        }
     }
 
     #[async_trait::async_trait]
     impl Installer for FakeInstaller {
-        async fn install(
+        async fn prepare(
             &self,
-            progress: Box<dyn Fn(InstallStep) + Send + Sync>,
+            progress: Box<dyn Fn(PrepareStep) + Send + Sync>,
         ) -> Result<String, InstallError> {
-            progress(InstallStep::Download {
+            self.prepares.fetch_add(1, Ordering::SeqCst);
+            let version = self.offers.lock().unwrap().clone();
+            progress(PrepareStep::Found {
+                version: version.clone(),
+            });
+            progress(PrepareStep::Download {
                 downloaded: 5,
                 total: Some(10),
             });
-            progress(InstallStep::Download {
-                downloaded: 10,
-                total: Some(10),
-            });
-            progress(InstallStep::Install);
-            self.release.notified().await;
-            Ok("v0.2.0".into())
+            self.hold.acquire().await.unwrap().forget();
+            if let Some(err) = self.fail_prepare.lock().unwrap().clone() {
+                return Err(err);
+            }
+            Ok(version)
+        }
+
+        async fn apply(&self) -> Result<String, InstallError> {
+            self.applies.fetch_add(1, Ordering::SeqCst);
+            match self.fail_apply.lock().unwrap().clone() {
+                Some(err) => Err(err),
+                None => Ok(self.offers.lock().unwrap().clone()),
+            }
+        }
+    }
+
+    /// The install state once nothing is under way.
+    async fn settled(checker: &UpdateChecker) -> InstallState {
+        for _ in 0..1000 {
+            let state = checker.install_state();
+            if !state.busy() {
+                return state;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        panic!("the update is still under way");
+    }
+
+    fn ready(version: &str) -> InstallState {
+        InstallState::Ready {
+            version: version.into(),
         }
     }
 
     #[tokio::test]
-    async fn installs_through_the_builds_installer_one_at_a_time() {
-        let plain = UpdateChecker::new(&temp_dir("no-installer"), String::new(), "0.1.0", true);
-        assert!(!plain.status().await.installable);
-        assert_eq!(
-            plain.install(Box::new(|_| {})).await,
-            Err(InstallError::Unsupported)
-        );
+    async fn downloads_a_newer_release_on_its_own_then_installs_it() {
+        let (mock, url) = mock_server().await;
+        let installer = FakeInstaller::new("v0.2.0", 0);
+        let checker = UpdateChecker::new(&temp_dir("own"), url, "0.1.0", false)
+            .with_installer(installer.clone());
+        assert!(checker.installable());
 
-        let installer = Arc::new(FakeInstaller {
-            release: tokio::sync::Notify::new(),
-        });
-        let checker = Arc::new(
-            UpdateChecker::new(&temp_dir("installer"), String::new(), "0.1.0", true)
-                .with_installer(installer.clone()),
-        );
-        // Installing is offered even with checks off: the page asks only
-        // when a release is shown.
-        assert!(checker.status().await.installable);
-
-        let steps = Arc::new(Mutex::new(Vec::new()));
-        let first = tokio::spawn({
-            let checker = checker.clone();
-            let steps = steps.clone();
-            async move {
-                checker
-                    .install(Box::new(move |step| steps.lock().unwrap().push(step)))
-                    .await
-            }
-        });
-        while steps.lock().unwrap().len() < 3 {
+        // The check that finds the release starts its download.
+        let status = checker.status().await;
+        assert!(status.newer);
+        assert_eq!(status.install, InstallState::Checking);
+        let half = InstallState::Downloading {
+            version: "v0.2.0".into(),
+            downloaded: 5,
+            total: Some(10),
+        };
+        while checker.install_state() != half {
             tokio::task::yield_now().await;
         }
         assert_eq!(
-            checker.install(Box::new(|_| {})).await,
-            Err(InstallError::Busy)
+            serde_json::to_value(&half).unwrap(),
+            serde_json::json!({ "state": "downloading", "version": "v0.2.0", "downloaded": 5, "total": 10 })
         );
-        installer.release.notify_one();
-        assert_eq!(first.await.unwrap(), Ok("v0.2.0".to_string()));
+
+        // One download at a time, and nothing to install until it is done.
+        checker.check_now().await;
+        assert_eq!(checker.apply().await, Err(InstallError::Busy));
+        installer.hold.add_permits(1);
+        assert_eq!(settled(&checker).await, ready("v0.2.0"));
+        assert_eq!(installer.prepares(), 1);
+
+        // A release already downloaded is not downloaded again.
+        checker.check_now().await;
+        assert_eq!(checker.status().await.install, ready("v0.2.0"));
+        assert_eq!(installer.prepares(), 1);
+        assert_eq!(mock.hits(), 3);
+
+        assert_eq!(checker.apply().await, Ok("v0.2.0".to_string()));
         assert_eq!(
-            *steps.lock().unwrap(),
-            vec![
-                InstallStep::Download {
-                    downloaded: 5,
-                    total: Some(10)
-                },
-                InstallStep::Download {
-                    downloaded: 10,
-                    total: Some(10)
-                },
-                InstallStep::Install,
-            ]
+            checker.install_state(),
+            InstallState::Installing {
+                version: "v0.2.0".into()
+            }
+        );
+        assert_eq!(checker.apply().await, Err(InstallError::Busy));
+        assert_eq!(installer.applies.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_newer_release_replaces_the_download_and_failures_keep_it() {
+        let (mock, url) = mock_server().await;
+        let installer = FakeInstaller::new("v0.2.0", 100);
+        let checker = UpdateChecker::new(&temp_dir("replace"), url, "0.1.0", false)
+            .with_installer(installer.clone());
+        checker.status().await;
+        assert_eq!(settled(&checker).await, ready("v0.2.0"));
+
+        mock.answer(StatusCode::OK, release("v0.3.0", false));
+        *installer.offers.lock().unwrap() = "v0.3.0".into();
+        checker.check_now().await;
+        assert_eq!(settled(&checker).await, ready("v0.3.0"));
+        assert_eq!(installer.prepares(), 2);
+
+        // A failed download leaves the one before ready, and is tried again
+        // at the next check, not on every status.
+        mock.answer(StatusCode::OK, release("v0.4.0", false));
+        *installer.fail_prepare.lock().unwrap() = Some(InstallError::Failed("offline".into()));
+        checker.check_now().await;
+        assert_eq!(settled(&checker).await, ready("v0.3.0"));
+        checker.status().await;
+        assert_eq!(settled(&checker).await, ready("v0.3.0"));
+        assert_eq!(installer.prepares(), 3);
+
+        // A failed install keeps the download for another try.
+        *installer.fail_apply.lock().unwrap() = Some(InstallError::Failed("read-only".into()));
+        assert_eq!(
+            checker.apply().await,
+            Err(InstallError::Failed("read-only".into()))
+        );
+        let failed = checker.status().await.install;
+        assert_eq!(
+            failed,
+            InstallState::Error {
+                during: Stage::Apply,
+                version: Some("v0.3.0".into()),
+                code: "update_failed",
+                message: "read-only".into(),
+            }
         );
         assert_eq!(
-            serde_json::to_value(InstallStep::Download {
-                downloaded: 5,
-                total: None
-            })
-            .unwrap(),
-            serde_json::json!({ "step": "download", "downloaded": 5, "total": null })
+            serde_json::to_value(&failed).unwrap()["during"],
+            serde_json::json!("apply")
         );
+        *installer.fail_apply.lock().unwrap() = None;
+        assert!(checker.apply().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn leaves_skipped_releases_and_says_why_a_download_failed() {
+        let plain = UpdateChecker::new(&temp_dir("no-installer"), String::new(), "0.1.0", true);
+        let status = plain.status().await;
+        assert!(!status.installable);
+        assert_eq!(status.install, InstallState::Idle);
+        assert_eq!(plain.apply().await, Err(InstallError::Unsupported));
+
+        let (_mock, url) = mock_server().await;
+        let dir = temp_dir("own-skip");
+        let installer = FakeInstaller::new("v0.2.0", 100);
+        let checker =
+            UpdateChecker::new(&dir, url.clone(), "0.1.0", false).with_installer(installer.clone());
+        let settings: UpdateSettings = serde_json::from_str(r#"{"skipped":"v0.2.0"}"#).unwrap();
+        checker.configure(settings).await.unwrap();
+        assert_eq!(checker.status().await.install, InstallState::Idle);
+        assert_eq!(checker.apply().await, Err(InstallError::NotReady));
+        assert_eq!(installer.prepares(), 0);
+
+        // Taking the skip back downloads it.
+        let settings: UpdateSettings = serde_json::from_str(r#"{"skipped":null}"#).unwrap();
+        checker.configure(settings).await.unwrap();
+        assert_eq!(settled(&checker).await, ready("v0.2.0"));
+
+        // Nothing on the updater's endpoint is not an error.
+        let installer = FakeInstaller::new("v0.2.0", 100);
+        *installer.fail_prepare.lock().unwrap() = Some(InstallError::NoUpdate);
+        let checker =
+            UpdateChecker::new(&dir, url.clone(), "0.1.0", false).with_installer(installer.clone());
+        checker.check_now().await;
+        assert_eq!(settled(&checker).await, InstallState::Idle);
+
+        let installer = FakeInstaller::new("v0.2.0", 100);
+        *installer.fail_prepare.lock().unwrap() =
+            Some(InstallError::Failed("bad signature".into()));
+        let checker =
+            UpdateChecker::new(&dir, url, "0.1.0", false).with_installer(installer.clone());
+        checker.check_now().await;
+        assert_eq!(
+            settled(&checker).await,
+            InstallState::Error {
+                during: Stage::Prepare,
+                version: Some("v0.2.0".into()),
+                code: "update_failed",
+                message: "bad signature".into(),
+            }
+        );
+
+        // Checks turned off download nothing.
+        let installer = FakeInstaller::new("v0.2.0", 100);
+        let checker = UpdateChecker::new(&temp_dir("own-off"), String::new(), "0.1.0", true)
+            .with_installer(installer.clone());
+        checker.check_now().await;
+        assert_eq!(installer.prepares(), 0);
     }
 }

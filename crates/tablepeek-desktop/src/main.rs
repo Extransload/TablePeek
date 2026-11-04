@@ -18,6 +18,8 @@ mod installer;
 mod material;
 #[cfg(target_os = "macos")]
 mod menu;
+#[cfg(target_os = "macos")]
+mod titlebar;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod window;
 

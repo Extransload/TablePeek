@@ -1551,13 +1551,21 @@ export interface UpdateStatus {
   asset_url: string | null;
   // This build installs updates itself (the desktop app): installUpdate.
   installable: boolean;
+  // Where its own update has got to: it downloads a newer release on its own.
+  install: InstallState;
 }
 
-// How far an install has come: the bytes downloaded (of total, when known),
-// then installing once the download's signature checked out.
-export type InstallStep = { step: "download"; downloaded: number; total: number | null } | { step: "install" };
-
-type InstallLine = InstallStep | { installed: string } | { error: { code: string; message: string } };
+// The desktop app's own update (InstallState in update.rs): asking the
+// updater what to download, downloading it (bytes, of total when known),
+// downloaded and verified, installing, or what failed. After a failed
+// install ("apply") the download is still there to install again.
+export type InstallState =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "downloading"; version: string; downloaded: number; total: number | null }
+  | { state: "ready"; version: string }
+  | { state: "installing"; version: string }
+  | { state: "error"; during: "prepare" | "apply"; version: string | null; code: string; message: string };
 
 async function fetchVersion(): Promise<VersionInfo> {
   return api<VersionInfo>("/api/version");
@@ -1576,50 +1584,11 @@ async function configureUpdate(patch: { enabled?: boolean; skipped?: string | nu
   return api<UpdateStatus>("/api/update", { method: "PUT", body: JSON.stringify(patch) });
 }
 
-// Installs the newest release where the build can replace itself (the
-// desktop app), reporting each step: the version installed, after which the
-// app restarts on its own. On Windows the app quits for its installer right
-// after the install step, so the answer can end there: that resolves null.
-async function installUpdate(onStep: (step: InstallStep) => void): Promise<string | null> {
-  const response = await serverFetch("/api/update/install", { method: "POST" });
-  if (!response.ok || response.body === null) {
-    throw new ApiRequestError(appErrorFromBody(await response.json().catch(() => null), response.status));
-  }
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let pending = "";
-  let installing = false;
-  for (;;) {
-    let chunk: ReadableStreamReadResult<string>;
-    try {
-      chunk = await reader.read();
-    } catch {
-      if (installing) {
-        return null;
-      }
-      throw networkError();
-    }
-    if (chunk.done) {
-      if (installing) {
-        return null;
-      }
-      throw networkError();
-    }
-    pending += chunk.value;
-    let newline = pending.indexOf("\n");
-    while (newline >= 0) {
-      const line = JSON.parse(pending.slice(0, newline)) as InstallLine;
-      pending = pending.slice(newline + 1);
-      if ("installed" in line) {
-        return line.installed;
-      }
-      if ("error" in line) {
-        throw new ApiRequestError({ code: line.error.code, message: line.error.message });
-      }
-      installing ||= line.step === "install";
-      onStep(line);
-      newline = pending.indexOf("\n");
-    }
-  }
+// Installs the update the desktop app downloaded, answering its version; the
+// app restarts right after.
+async function installUpdate(): Promise<string> {
+  const answer = await api<{ installed: string }>("/api/update/install", { method: "POST" });
+  return answer.installed;
 }
 
 // Every engine the server can connect to, as it describes them.
