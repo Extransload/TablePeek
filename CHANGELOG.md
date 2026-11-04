@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
+A desktop app for macOS and Windows (also through Homebrew) that updates itself, settings rebuilt the way Tern does them, Tern's themes and color tables, a large JSON explorer, live setting previews, and motion throughout.
+
 ### Added
 
 - **Desktop app for macOS and Windows** (`crates/tablepeek-desktop`, Tauri 2). It starts the same server inside the app on a free port with the same `~/.tablepeek` settings folder, and shows it in native windows: links to other sites open in the system browser, "Open in new window" opens another app window, exports and GridFS downloads go to the Downloads folder (numbered when the name is taken), and file drops reach the page. On macOS ⌘W, ⌘T, ⌘N and ⌘R stay with the page (Close Window is ⇧⌘W). Release builds are ad-hoc signed on macOS and unsigned on Windows; [docs/INSTALL.md](docs/INSTALL.md) covers the first launch.
@@ -64,5 +68,6 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Extransload/TablePeek/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Extransload/TablePeek/releases/tag/v0.1.0

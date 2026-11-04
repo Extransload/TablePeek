@@ -31,7 +31,7 @@ brew install --cask extransload/tap/tablepeek
 
 It opens TablePeek in your browser. Add `--demo` to try it with sample data.
 
-> The desktop app ships from v0.2.0; v0.1.0 has the command line only. The builds are not signed with a paid certificate, so the first launch of a downloaded file needs one extra click. Homebrew handles that for you. See [the install guide](docs/INSTALL.md) for details, updating, and building from source.
+> The builds are not signed with a paid certificate, so the first launch of a downloaded file needs one extra click. Homebrew handles that for you. See [the install guide](docs/INSTALL.md) for details, updating, and building from source.
 
 ## Screenshots
 

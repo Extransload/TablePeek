@@ -57,7 +57,7 @@ Each archive holds a `tablepeek-vX.Y.Z-<platform>` folder with the `tablepeek` b
 ### macOS and Linux
 
 ```sh
-VERSION=v0.1.0                    # the latest release
+VERSION=v0.2.0                    # the latest release
 TARGET=aarch64-apple-darwin       # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 curl -LO "https://github.com/Extransload/TablePeek/releases/download/$VERSION/tablepeek-$VERSION-$TARGET.tar.gz"
 tar -xzf "tablepeek-$VERSION-$TARGET.tar.gz"
@@ -125,7 +125,7 @@ git pull
 make build           # or make run; Windows: cd web; npm install; npm run build; cd ..; cargo build -p tablepeek
 ```
 
-To build a particular release rather than the latest commit, check out its tag, for example `git checkout v0.1.0`. `tablepeek --version` shows which version and commit you are running.
+To build a particular release rather than the latest commit, check out its tag, for example `git checkout v0.2.0`. `tablepeek --version` shows which version and commit you are running.
 
 ## Update check
 
