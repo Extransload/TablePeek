@@ -5,7 +5,6 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { CommandPalette, type PaletteAction, type PaletteSource } from "./components/CommandPalette";
@@ -26,6 +25,7 @@ import {
 import { adoptDrafts, listDrafts, removeDraft, saveDraft, type QueryDraft } from "./drafts";
 import { subscribeConnMeta } from "./connMeta";
 import * as uiState from "./persist";
+import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "./panelEdge";
 import { DefinitionPanel } from "./components/DefinitionPanel";
 import { ExplainPlanPanel } from "./components/ExplainPlanPanel";
 import { ConnectionPickerModal, type PickTarget } from "./components/ConnectionPickerModal";
@@ -55,7 +55,7 @@ import { ParamModal } from "./components/ParamModal";
 import { ReviewModal } from "./components/ReviewModal";
 import { ConsistencyMenu } from "./components/ConsistencyMenu";
 import { SAFE_MODE_LABELS, SafeModeMenu } from "./components/SafeModeMenu";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsSheet } from "./components/SettingsSheet";
 import { ConsolePanel } from "./components/ConsolePanel";
 import { ActivityModal } from "./components/ActivityModal";
 import { BrandLogo } from "./components/BrandLogo";
@@ -263,87 +263,6 @@ function clampDetail(width: number): number {
   return Math.round(Math.min(Math.max(width, DETAIL_MIN), max));
 }
 
-function storedWidth(key: string, clamp: (width: number) => number): number | null {
-  const saved = Number(uiState.getItem(key));
-  return Number.isFinite(saved) && saved > 0 ? clamp(saved) : null;
-}
-
-function storeWidth(key: string, width: number | null): void {
-  if (width === null) {
-    uiState.removeItem(key);
-  } else {
-    uiState.setItem(key, String(width));
-  }
-}
-
-// Drags a side panel's edge. `grow` is 1 when moving right widens the panel
-// (left sidebar) and -1 when moving left does (right panel). With `onClose`,
-// dragging it past half its narrowest width closes it at once and ends the
-// drag, keeping the width it had for when it opens again.
-function dragPanelEdge(
-  event: ReactPointerEvent<HTMLDivElement>,
-  panel: Element | null,
-  grow: 1 | -1,
-  clamp: (width: number) => number,
-  onMove: (width: number) => void,
-  onDone: (width: number) => void,
-  onClose?: () => void,
-): void {
-  if (event.button !== 0) {
-    return;
-  }
-  event.preventDefault();
-  const handle = event.currentTarget;
-  const startX = event.clientX;
-  const startWidth = panel instanceof HTMLElement ? panel.getBoundingClientRect().width : 0;
-  const closeBelow = clamp(0) / 2;
-  let width = startWidth;
-  handle.classList.add("dragging");
-  document.body.classList.add("col-resizing");
-  const end = (): void => {
-    window.removeEventListener("pointermove", move);
-    window.removeEventListener("pointerup", up);
-    handle.classList.remove("dragging");
-    document.body.classList.remove("col-resizing");
-  };
-  const move = (next: PointerEvent): void => {
-    const raw = startWidth + grow * (next.clientX - startX);
-    if (onClose !== undefined && raw < closeBelow) {
-      end();
-      onMove(startWidth);
-      onClose();
-      return;
-    }
-    width = clamp(raw);
-    onMove(width);
-  };
-  const up = (): void => {
-    end();
-    onDone(width);
-  };
-  window.addEventListener("pointermove", move);
-  window.addEventListener("pointerup", up);
-}
-
-// Arrow keys resize a focused panel edge (Shift for bigger steps); Home or
-// Enter returns it to its default width.
-function keyPanelEdge(
-  event: ReactKeyboardEvent<HTMLDivElement>,
-  panel: Element | null,
-  grow: 1 | -1,
-  clamp: (width: number) => number,
-  save: (width: number | null) => void,
-): void {
-  const current = panel instanceof HTMLElement ? panel.getBoundingClientRect().width : 0;
-  const step = event.shiftKey ? 64 : 16;
-  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-    event.preventDefault();
-    save(clamp(current + grow * (event.key === "ArrowLeft" ? -step : step)));
-  } else if (event.key === "Home" || event.key === "Enter") {
-    event.preventDefault();
-    save(null);
-  }
-}
 const WORKSPACES_KEY = "tablepeek.workspaces";
 const PINNED_KEY = "tablepeek.pinned-tables";
 const PERSIST_DROP_KEYS = new Set(["source", "data", "detail", "pageMarks"]);
@@ -6050,6 +5969,7 @@ export default function App() {
           onOpenFile={() => void openSqliteFile()}
           onNewConnection={openNewConnection}
           onBackupOrRestore={(kind) => void startBackupOrRestore(kind)}
+          onOpenDemo={() => void openDemo()}
           onOpenSettings={() => setSettingsOpen(true)}
           paletteHint={shortcutHint(settings.keymap, "palette")}
           settingsHint={shortcutHint(settings.keymap, "openSettings")}
@@ -7401,7 +7321,7 @@ export default function App() {
         <MetricsModal conn={activeConnId} onClose={() => setMetricsOpen(false)} />
       )}
       {settingsOpen && (
-        <SettingsModal
+        <SettingsSheet
           settings={settings}
           onChange={(patch) => setSettings(saveSettings(patch))}
           onLock={() => {

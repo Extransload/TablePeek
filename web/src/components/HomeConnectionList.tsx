@@ -1,6 +1,6 @@
-import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { ConnGroup } from "../connGroups";
-import type { ConnMeta } from "../connMeta";
+import { orderConnections, type ConnMeta } from "../connMeta";
 import { t } from "../i18n";
 import { engineById, unsupportedEngine } from "../engines";
 import { basename, fillTemplate, templateValues } from "../engines/connection";
@@ -16,6 +16,45 @@ export type ListTarget =
 
 // Buttons an open row shows on hover; editing and deleting live in the context menu.
 export type RowAction = "newWindow" | "disconnect";
+
+// Where a dragged connection or group lands: just before or after another.
+interface Spot {
+  id: string;
+  after: boolean;
+}
+
+// Where a dragged connection lands: in a group ("" for none), next to one of
+// its connections, or (null) in one that shows none.
+interface RowSpot {
+  groupId: string;
+  id: string | null;
+  after: boolean;
+}
+
+function sameSpot(a: Spot | RowSpot | null, b: Spot | RowSpot | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return a.id === b.id && a.after === b.after && ("groupId" in a ? a.groupId : "") === ("groupId" in b ? b.groupId : "");
+}
+
+// The slot a pointer at `y` falls in among `elements`, top to bottom: before
+// the first whose middle is below it, else after the last.
+function slotAt(elements: HTMLElement[], y: number): number {
+  const slot = elements.findIndex((element) => {
+    const box = element.getBoundingClientRect();
+    return y < box.top + box.height / 2;
+  });
+  return slot < 0 ? elements.length : slot;
+}
+
+// The spot that slot marks among `ids`; null when it leaves `self` where it is.
+function spotAt(ids: string[], slot: number, self: string | null): Spot | null {
+  if (ids.length === 0 || ids[slot] === self || ids[slot - 1] === self) {
+    return null;
+  }
+  return slot < ids.length ? { id: ids[slot], after: false } : { id: ids[slot - 1], after: true };
+}
 
 interface HomeConnectionListProps {
   // Open connections with no saved profile (the demo, SQLite files, or a
@@ -36,7 +75,9 @@ interface HomeConnectionListProps {
   onRowAction(action: RowAction, target: ListTarget): void;
   // null = empty space in the list.
   onContextMenu(target: ListTarget | null, x: number, y: number): void;
-  onMoveToGroup(savedId: string, groupId: string): void;
+  // A connection dropped into a group ("" for none), just before or after
+  // another there (null: none to go by).
+  onMoveConnection(savedId: string, groupId: string, targetId: string | null, after: boolean): void;
   // A group dropped just before or after another.
   onMoveGroup(groupId: string, targetId: string, after: boolean): void;
 }
@@ -141,10 +182,6 @@ export function tagPills(meta: ConnMeta | undefined): ReactNode {
   ));
 }
 
-export function byLastUsed(a: SavedConnection, b: SavedConnection): number {
-  return (b.last_used ?? 0) - (a.last_used ?? 0);
-}
-
 export function HomeConnectionList({
   unsaved,
   saved,
@@ -160,16 +197,23 @@ export function HomeConnectionList({
   onToggleGroup,
   onRowAction,
   onContextMenu,
-  onMoveToGroup,
+  onMoveConnection,
   onMoveGroup,
 }: HomeConnectionListProps) {
-  // Saved connection being dragged, and the zone under it: a group id, or ""
-  // for "no group".
+  // Saved connection being dragged, and where it would land.
   const [dragId, setDragId] = useState<string | null>(null);
-  const [dropZone, setDropZone] = useState<string | null>(null);
+  const [rowSpot, setRowSpot] = useState<RowSpot | null>(null);
   // Group being dragged to a new place, and where it would land.
   const [dragGroupId, setDragGroupId] = useState<string | null>(null);
-  const [groupSpot, setGroupSpot] = useState<{ id: string; after: boolean } | null>(null);
+  const [groupSpot, setGroupSpot] = useState<Spot | null>(null);
+  // The row or group header ⌥↑↓ just moved, focused again once it's re-rendered.
+  const refocus = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (refocus.current !== null) {
+      containerRef.current?.querySelector<HTMLElement>(refocus.current)?.focus();
+      refocus.current = null;
+    }
+  });
   const needle = query.trim().toLowerCase();
   const searching = needle !== "";
   // Groups folded during the current search only; the saved state returns when it clears.
@@ -182,12 +226,12 @@ export function HomeConnectionList({
   const shown = filterConnections(saved, metaById, groups, query);
   const groupIds = new Set(groups.map((group) => group.id));
   const visibleOpen = unsaved.filter((conn) => openMatches(conn, needle));
-  const ungrouped = saved
-    .filter((connection) => !groupIds.has(metaById[connection.id]?.group ?? "") && shown.has(connection.id))
-    .sort(byLastUsed);
+  const ordered = orderConnections(saved);
+  const allUngrouped = ordered.filter((connection) => !groupIds.has(metaById[connection.id]?.group ?? ""));
+  const ungrouped = allUngrouped.filter((connection) => shown.has(connection.id));
   const grouped = groups.map((group) => ({
     group,
-    members: saved.filter((connection) => metaById[connection.id]?.group === group.id).sort(byLastUsed),
+    members: ordered.filter((connection) => metaById[connection.id]?.group === group.id),
   }));
 
   function toggleGroup(group: ConnGroup): void {
@@ -217,9 +261,15 @@ export function HomeConnectionList({
     }
   }
 
-  // ↑↓ walk the rows and group headers in screen order.
+  // ↑↓ walk the rows and group headers in screen order; ⌥↑↓ move the
+  // connection (within its group) or group under focus one place.
   function onListKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+      return;
+    }
+    if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+      event.preventDefault();
+      moveFocused(event.key === "ArrowUp");
       return;
     }
     const items = [...(containerRef.current?.querySelectorAll<HTMLElement>("[data-nav]") ?? [])];
@@ -235,68 +285,114 @@ export function HomeConnectionList({
     items[Math.max(0, Math.min(items.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
   }
 
+  function moveFocused(up: boolean): void {
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || !focused.hasAttribute("data-nav")) {
+      return;
+    }
+    const savedId = focused.dataset.savedId;
+    const zone = focused.closest<HTMLElement>("[data-group-id]");
+    if (savedId !== undefined && zone !== null) {
+      const rows = [...zone.querySelectorAll<HTMLElement>("[data-saved-id]")];
+      const other = rows[rows.indexOf(focused) + (up ? -1 : 1)]?.dataset.savedId;
+      if (other !== undefined) {
+        refocus.current = `[data-saved-id="${CSS.escape(savedId)}"]`;
+        onMoveConnection(savedId, zone.dataset.groupId ?? "", other, !up);
+      }
+      return;
+    }
+    const groupId = zone?.dataset.groupId;
+    if (groupId !== undefined && zone?.classList.contains("launcher-group")) {
+      const sections = [...(containerRef.current?.querySelectorAll<HTMLElement>(".launcher-group[data-group-id]") ?? [])];
+      const other = sections[sections.indexOf(zone) + (up ? -1 : 1)]?.dataset.groupId;
+      if (other !== undefined) {
+        refocus.current = `.launcher-group[data-group-id="${CSS.escape(groupId)}"] > .launcher-group-head`;
+        onMoveGroup(groupId, other, !up);
+      }
+    }
+  }
+
   function endDrag(): void {
     setDragId(null);
-    setDropZone(null);
+    setRowSpot(null);
     setDragGroupId(null);
     setGroupSpot(null);
   }
 
-  // Where a dragged group lands: before or after the group under the
-  // pointer, by which half of it the pointer is in.
-  function groupSpotAt(event: DragEvent<HTMLElement>): { id: string; after: boolean } | null {
-    const target = event.target instanceof Element ? event.target : null;
-    const section = target?.closest<HTMLElement>(".launcher-group[data-group-id]") ?? null;
-    const id = section?.dataset.groupId;
-    if (section === null || id === undefined || id === dragGroupId) {
-      return null;
-    }
-    const box = section.getBoundingClientRect();
-    return { id, after: event.clientY > box.top + box.height / 2 };
+  // Where a dragged group lands: by the pointer's height against the groups'
+  // middles, so above the first one (over the connections outside any
+  // group too) is the top and below the last one the bottom.
+  function groupSpotAt(y: number): Spot | null {
+    const sections = [...(containerRef.current?.querySelectorAll<HTMLElement>(".launcher-group[data-group-id]") ?? [])];
+    return spotAt(
+      sections.map((section) => section.dataset.groupId ?? ""),
+      slotAt(sections, y),
+      dragGroupId,
+    );
   }
 
-  // Where a drop lands: the group under the pointer, or "" (no group) anywhere else in the list.
-  function zoneAt(target: EventTarget | null): string {
-    const element = target instanceof Element ? target.closest<HTMLElement>("[data-group-id]") : null;
-    return element?.dataset.groupId ?? "";
+  // Where a dragged connection lands: in the group (or the place for none)
+  // under the pointer, the next one down in a gap, the last one below them
+  // all; there, by the pointer's height against its rows' middles. A group
+  // showing none of its rows (folded, or empty) takes it on top.
+  function rowSpotAt(y: number): RowSpot | null {
+    const zones = [...(containerRef.current?.querySelectorAll<HTMLElement>("[data-group-id]") ?? [])];
+    const zone = zones.find((element) => y < element.getBoundingClientRect().bottom) ?? zones.at(-1);
+    if (zone === undefined) {
+      return null;
+    }
+    const groupId = zone.dataset.groupId ?? "";
+    const rows = [...zone.querySelectorAll<HTMLElement>("[data-saved-id]")];
+    if (rows.length === 0) {
+      const members = groupId === "" ? allUngrouped : (grouped.find((entry) => entry.group.id === groupId)?.members ?? []);
+      const first = members.find((connection) => connection.id !== dragId);
+      return { groupId, id: first?.id ?? null, after: false };
+    }
+    const spot = spotAt(
+      rows.map((row) => row.dataset.savedId ?? ""),
+      slotAt(rows, y),
+      dragId,
+    );
+    return spot === null ? null : { groupId, ...spot };
   }
 
   const dropHandlers = {
     onDragOver(event: DragEvent<HTMLElement>) {
-      if (dragGroupId !== null) {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        const spot = groupSpotAt(event);
-        if (spot?.id !== groupSpot?.id || spot?.after !== groupSpot?.after) {
-          setGroupSpot(spot);
-        }
-        return;
-      }
-      if (dragId === null) {
+      if (dragGroupId === null && dragId === null) {
         return;
       }
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
-      const zone = zoneAt(event.target);
-      if (dropZone !== zone) {
-        setDropZone(zone);
+      if (dragGroupId !== null) {
+        const spot = groupSpotAt(event.clientY);
+        if (!sameSpot(spot, groupSpot)) {
+          setGroupSpot(spot);
+        }
+      } else {
+        const spot = rowSpotAt(event.clientY);
+        if (!sameSpot(spot, rowSpot)) {
+          setRowSpot(spot);
+        }
       }
     },
     onDragLeave(event: DragEvent<HTMLElement>) {
       if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-        setDropZone(null);
+        setRowSpot(null);
         setGroupSpot(null);
       }
     },
     onDrop(event: DragEvent<HTMLElement>) {
       event.preventDefault();
       if (dragGroupId !== null) {
-        const spot = groupSpotAt(event);
+        const spot = groupSpotAt(event.clientY);
         if (spot !== null) {
           onMoveGroup(dragGroupId, spot.id, spot.after);
         }
       } else if (dragId !== null) {
-        onMoveToGroup(dragId, zoneAt(event.target));
+        const spot = rowSpotAt(event.clientY);
+        if (spot !== null) {
+          onMoveConnection(dragId, spot.groupId, spot.id, spot.after);
+        }
       }
       endDrag();
     },
@@ -376,11 +472,14 @@ export function HomeConnectionList({
     return (
       <div
         key={`saved:${connection.id}`}
-        className={`launcher-row${open !== undefined ? " is-open has-actions" : ""}${groupId !== "" ? " in-group" : ""}`}
+        className={`launcher-row${open !== undefined ? " is-open has-actions" : ""}${groupId !== "" ? " in-group" : ""}${
+          rowSpot?.id === connection.id && rowSpot.groupId === groupId ? (rowSpot.after ? " drop-after" : " drop-before") : ""
+        }${dragId === connection.id ? " dragging" : ""}`}
         role="button"
         tabIndex={0}
         data-nav=""
         data-saved-id={connection.id}
+        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
         draggable
         onDragStart={(event) => {
           event.dataTransfer.setData("text/plain", connection.id);
@@ -423,6 +522,14 @@ export function HomeConnectionList({
     );
   }
 
+  // A group (or the place for none) lights up as a whole when the dragged
+  // connection lands next to none of the rows it shows.
+  function dropTarget(groupId: string, rows: SavedConnection[]): string {
+    return rowSpot !== null && rowSpot.groupId === groupId && !rows.some((row) => row.id === rowSpot.id)
+      ? " drop-target"
+      : "";
+  }
+
   const groupSections = grouped
     .map(({ group, members }) => {
       const visible = members.filter((connection) => shown.has(connection.id));
@@ -434,7 +541,7 @@ export function HomeConnectionList({
       const target: ListTarget = { kind: "group", group };
       return (
         <div
-          className={`launcher-group${dropZone === group.id ? " drop-target" : ""}${
+          className={`launcher-group${dropTarget(group.id, expanded ? visible : [])}${
             groupSpot?.id === group.id ? (groupSpot.after ? " drop-after" : " drop-before") : ""
           }${dragGroupId === group.id ? " dragging" : ""}`}
           key={`group:${group.id}`}
@@ -446,6 +553,7 @@ export function HomeConnectionList({
             tabIndex={0}
             data-nav=""
             aria-expanded={expanded}
+            aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
             draggable
             onDragStart={(event) => {
               event.dataTransfer.setData("text/plain", group.name);
@@ -488,7 +596,7 @@ export function HomeConnectionList({
     >
       {nothing && searching ? <div className="launcher-empty">{t("검색 결과가 없습니다")}</div> : null}
       {visibleOpen.length > 0 || ungrouped.length > 0 ? (
-        <div className={`launcher-ungrouped${dropZone === "" ? " drop-target" : ""}`} data-group-id="">
+        <div className={`launcher-ungrouped${dropTarget("", ungrouped)}`} data-group-id="">
           {visibleOpen.map(renderOpen)}
           {ungrouped.map((connection) => renderSaved(connection, ""))}
         </div>
@@ -497,7 +605,7 @@ export function HomeConnectionList({
       {/* Below everything, so showing it never moves the row being dragged. */}
       {dragId !== null && ungrouped.length === 0 ? (
         <div
-          className={`launcher-ungrouped launcher-drop-hint${dropZone === "" ? " drop-target" : ""}`}
+          className={`launcher-ungrouped launcher-drop-hint${dropTarget("", [])}`}
           data-group-id=""
         >
           {t("여기에 놓으면 그룹에서 빠집니다")}

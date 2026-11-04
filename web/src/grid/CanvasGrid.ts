@@ -36,12 +36,6 @@ let FONT_HEADER = "";
 let SCALE = 0;
 let FAMILY = "";
 
-// A row's and the header's height at a font size.
-export function gridHeightsAt(size: number): { row: number; header: number } {
-  const scale = size / BASE_FONT_PX;
-  return { row: Math.round(BASE_ROW_H * scale), header: Math.round(BASE_HEADER_H * scale) };
-}
-
 function syncScale(): void {
   const { gridFontSize: size, gridFontFamily: family } = getSettings();
   const scale = size / BASE_FONT_PX;
@@ -50,7 +44,8 @@ function syncScale(): void {
   }
   SCALE = scale;
   FAMILY = family;
-  ({ row: ROW_H, header: HEADER_H } = gridHeightsAt(size));
+  ROW_H = Math.round(BASE_ROW_H * scale);
+  HEADER_H = Math.round(BASE_HEADER_H * scale);
   FONT = `${size}px ${family}`;
   FONT_HEADER = `600 ${size}px ${family}`;
 }
@@ -1098,8 +1093,9 @@ export class CanvasGrid {
     const ctx = this.ctx;
     const w = this.viewW;
     const h = this.viewH;
-    ctx.fillStyle = palette.bg;
-    ctx.fillRect(0, 0, w, h);
+    // The scroller behind paints the background: one layer of it, so a
+    // translucent one (a see-through window) isn't doubled.
+    ctx.clearRect(0, 0, w, h);
 
     const src = this.source;
     if (!src || w === 0 || h === 0) {
@@ -1129,6 +1125,12 @@ export class CanvasGrid {
     const cellStateOf = src.cellState ? (r: number, c: number) => src.cellState!(r, c) : null;
     const rowStates: RowState[] = [];
 
+    // Row fills stay out of the header and the gutter, which may be
+    // translucent (a see-through window) and would show them through.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(gutterW, HEADER_H, contentW, contentH);
+    ctx.clip();
     for (let r = first; r <= last; r++) {
       const y = HEADER_H + r * ROW_H - virtualY;
       const state = rowStateOf ? rowStateOf(r) : null;
@@ -1167,6 +1169,7 @@ export class CanvasGrid {
         }
       }
     }
+    ctx.restore();
 
     // Text is clipped once per column; slicing bounds the cost of very long
     // values, and what still overflows ends in an ellipsis, as in TablePlus.
@@ -1293,6 +1296,10 @@ export class CanvasGrid {
     ctx.globalAlpha = 1;
     ctx.restore();
 
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, HEADER_H, gutterW, contentH);
+    ctx.clip();
     ctx.fillStyle = palette.head;
     ctx.fillRect(0, HEADER_H, gutterW, contentH);
     ctx.font = FONT;
@@ -1318,6 +1325,7 @@ export class CanvasGrid {
                 : palette.faint;
       ctx.fillText(state === "inserted" ? "+" : String(r + 1), numX, y + ROW_H / 2);
     }
+    ctx.restore();
     ctx.strokeStyle = palette.line;
     ctx.lineWidth = 1;
     const gx = Math.round(gutterW) - 0.5;
@@ -1326,8 +1334,9 @@ export class CanvasGrid {
     ctx.lineTo(gx, h);
     ctx.stroke();
 
+    // The corner is painted once, below.
     ctx.fillStyle = palette.head;
-    ctx.fillRect(0, 0, w, HEADER_H);
+    ctx.fillRect(gutterW, 0, contentW, HEADER_H);
     ctx.font = FONT_HEADER;
     ctx.textAlign = "center";
     ctx.save();

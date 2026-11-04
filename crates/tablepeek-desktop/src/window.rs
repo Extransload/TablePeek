@@ -10,13 +10,18 @@
 //!   under the name the page gave, numbered when that name is taken.
 //! - Files dropped on a window reach the page, which takes them as a browser
 //!   would (imports, cell values, uploads).
+//! - Windows are transparent, so the page decides how much of the desktop
+//!   shows through (see material.rs); a new one takes the others' material.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
+
+use crate::material::WindowEffects;
 
 /// Numbers the windows after the first ("main"); labels must be unique.
 static WINDOWS: AtomicUsize = AtomicUsize::new(0);
@@ -30,11 +35,12 @@ pub fn open(app: &AppHandle, port: u16, url: Url) -> tauri::Result<()> {
     let opener = app.clone();
     let spawner = app.clone();
     let saver = app.clone();
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("TablePeek")
         .inner_size(1440.0, 900.0)
         .min_inner_size(960.0, 600.0)
         .center()
+        .transparent(true)
         .disable_drag_drop_handler()
         .on_navigation(move |url| {
             if is_app_page(url, port) || is_inline(url) {
@@ -77,6 +83,9 @@ pub fn open(app: &AppHandle, port: u16, url: Url) -> tauri::Result<()> {
             true
         })
         .build()?;
+    if let Some(material) = app.try_state::<Arc<WindowEffects>>() {
+        material.apply_current(&window);
+    }
     Ok(())
 }
 

@@ -14,6 +14,8 @@
 mod app;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod installer;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod material;
 #[cfg(target_os = "macos")]
 mod menu;
 #[cfg(any(target_os = "macos", target_os = "windows"))]

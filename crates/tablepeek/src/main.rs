@@ -133,6 +133,7 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         main,
         demo_rows: args.demo_rows,
         installer: None,
+        window_material: None,
     })
     .await?;
     let url = server.launch_url();

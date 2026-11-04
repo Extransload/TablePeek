@@ -73,6 +73,8 @@ let channel: BroadcastChannel | null = null;
 let refreshTimer: number | undefined;
 let refreshing = false;
 let refreshAgain = false;
+// Told the keys another page changed, once this page holds their new values.
+const changeListeners = new Set<(key: string) => void>();
 
 // GET /api/ui-state.
 interface SavedUiState {
@@ -96,6 +98,20 @@ export function removeItem(key: string): void {
     return;
   }
   change(key, null);
+}
+
+// Calls `listener` with each key another page (another window, another
+// TablePeek) changed, after this page took the new value: what was read from
+// it at load is out of date. Not called for this page's own changes.
+export function subscribeChangesElsewhere(listener: (key: string) => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+function changedElsewhere(key: string): void {
+  for (const listener of changeListeners) {
+    listener(key);
+  }
 }
 
 // Reads the saved state; resolves either way. When it can't be read the page
@@ -199,6 +215,7 @@ function receive(message: Message): void {
     unsaved.delete(message.key);
     changeNo += 1;
     changedAt.set(message.key, changeNo);
+    changedElsewhere(message.key);
     return;
   }
   for (const [key, value] of message.entries) {
@@ -237,6 +254,7 @@ async function refresh(): Promise<void> {
   const saved = await readSaved();
   refreshing = false;
   if (saved !== null && saving) {
+    const taken: string[] = [];
     for (const key of new Set([...saved.keys(), ...base.keys()])) {
       if (unsettled.has(key) || (changedAt.get(key) ?? 0) > startedAt) {
         continue;
@@ -252,6 +270,10 @@ async function refresh(): Promise<void> {
         base.set(key, value);
         values.set(key, value);
       }
+      taken.push(key);
+    }
+    for (const key of taken) {
+      changedElsewhere(key);
     }
   }
   if (refreshAgain) {

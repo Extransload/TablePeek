@@ -11,7 +11,7 @@ import {
   updateGroup,
   type ConnGroup,
 } from "../connGroups";
-import { listConnMeta, setConnGroup, setConnMeta, subscribeConnMeta } from "../connMeta";
+import { listConnMeta, moveConnection, setConnGroup, setConnMeta, subscribeConnMeta } from "../connMeta";
 import {
   CONNECTIONS_FILE_ACCEPT,
   CONNECTIONS_FILE_NAME,
@@ -23,14 +23,15 @@ import {
 import { t } from "../i18n";
 import { confirmDialog } from "./ConfirmDialog";
 import { inputFromSaved } from "../savedInput";
-import { withHint } from "../shortcuts";
+import { IS_MAC, withHint } from "../shortcuts";
 import { ApiRequestError, store, type ConnSummary, type SavedConnection } from "../store";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
 import { ExportConnectionsModal } from "./ExportConnectionsModal";
 import { HomeConnectionList, type ListTarget, type RowAction } from "./HomeConnectionList";
+import { HomeBackdrop } from "./HomeBackdrop";
 import { HomeWelcome } from "./HomeWelcome";
-import { CloseIcon, DownloadIcon, PlusIcon, SearchIcon, SettingsIcon, UploadIcon } from "./icons";
+import { CloseIcon, MoreIcon, PlusIcon, SearchIcon, SettingsIcon } from "./icons";
 import { PromptModal } from "./PromptModal";
 import { Spinner } from "./Spinner";
 
@@ -68,6 +69,7 @@ interface HomeScreenProps {
   onConnectSaved(id: string): void;
   onEditConnection(connection: SavedConnection): void;
   onBackupOrRestore(kind: "backup" | "restore"): void;
+  onOpenDemo(): void;
   // Home has no app bar, so settings open from its corner.
   onOpenSettings(): void;
   // Current shortcuts, for the tips and tooltips.
@@ -88,6 +90,7 @@ export function HomeScreen({
   onConnectSaved,
   onEditConnection,
   onBackupOrRestore,
+  onOpenDemo,
   onOpenSettings,
   paletteHint,
   settingsHint,
@@ -97,6 +100,8 @@ export function HomeScreen({
   const [savedError, setSavedError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number; target: ListTarget | null } | null>(null);
+  // The "…" beside the search: everything secondary the page doesn't show.
+  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   // Connections (and groups) chosen for an export, waiting for the file password.
@@ -172,6 +177,7 @@ export function HomeScreen({
     (conn) => conn.saved_id === undefined || (listKnown && !savedIds.has(conn.saved_id)),
   );
   const empty = saved !== null && saved.length === 0 && unsaved.length === 0 && groups.length === 0;
+  const welcome = empty && !failed;
 
   function activateSaved(connection: SavedConnection): void {
     const open = openBySaved.get(connection.id);
@@ -193,7 +199,7 @@ export function HomeScreen({
   }
 
   function moveToGroup(savedId: string, groupId: string): void {
-    // Dropping a connection where it already is changes nothing.
+    // Picking the group it's already in changes nothing.
     if ((metaById[savedId]?.group ?? "") !== groupId) {
       setConnGroup(savedId, groupId);
     }
@@ -415,6 +421,18 @@ export function HomeScreen({
     ];
   }
 
+  function moreItems(): ContextMenuItem[] {
+    return [
+      { label: t("새 그룹…"), onSelect: () => setPrompt({ kind: "newGroup" }) },
+      { label: t("SQLite 파일 열기…"), onSelect: onOpenFile },
+      { label: t("연결 가져오기"), submenu: importItems("") },
+      exportSubmenu(null, null),
+      { label: t("데이터베이스 백업…"), separatorBefore: true, onSelect: () => onBackupOrRestore("backup") },
+      { label: t("데이터베이스 복원…"), onSelect: () => onBackupOrRestore("restore") },
+      { label: t("데모 열기"), separatorBefore: true, onSelect: onOpenDemo },
+    ];
+  }
+
   let listArea;
   if (saved === null && !failed) {
     listArea = (
@@ -423,12 +441,13 @@ export function HomeScreen({
         <span>{t("불러오는 중…")}</span>
       </div>
     );
-  } else if (empty && !failed) {
+  } else if (welcome) {
     listArea = (
       <HomeWelcome
-        onNewConnection={onNewConnection}
+        onNewConnection={() => onNewConnection()}
         onOpenFile={onOpenFile}
         onImportFile={() => fileRef.current?.click()}
+        onOpenDemo={onOpenDemo}
       />
     );
   } else {
@@ -448,7 +467,9 @@ export function HomeScreen({
         onToggleGroup={(group) => updateGroup(group.id, { collapsed: !group.collapsed })}
         onRowAction={rowAction}
         onContextMenu={(target, x, y) => setMenu({ x, y, target })}
-        onMoveToGroup={moveToGroup}
+        onMoveConnection={(savedId, groupId, targetId, after) =>
+          moveConnection(saved ?? [], savedId, groupId, targetId, after)
+        }
         onMoveGroup={moveGroup}
       />
     );
@@ -466,6 +487,7 @@ export function HomeScreen({
         setMenu({ x: event.clientX, y: event.clientY, target: null });
       }}
     >
+      <HomeBackdrop mode={welcome ? "hero" : "quiet"} />
       <button
         type="button"
         className="icon-button home-settings"
@@ -475,60 +497,62 @@ export function HomeScreen({
       >
         <SettingsIcon size={14} />
       </button>
-      {/* The welcome page: one column of intro, actions, search, the list, and tips. */}
-      <div className="home-column">
+      {/* One column: the wordmark, then the search and list (or, first run, the ways in). */}
+      <div className={`home-column${welcome ? " home-column-welcome" : ""}`}>
         <div className="home-intro">
           <div className="home-word" aria-hidden="true">
-            Table<span className="brand-word-peek">Peek</span>
+            Table
+            <span className="home-word-peek">
+              <span className="brand-word-peek">Peek</span>
+            </span>
           </div>
           <p className="home-tagline">{t("빠르고 정확한 전문가용 데이터베이스 클라이언트")}</p>
-          <p className="home-specs">{t("Rust 엔진 · Arrow 스트리밍 · 캔버스 그리드")}</p>
-        </div>
-        <div className="home-actions">
-          <button type="button" className="launcher-action" onClick={() => onNewConnection()}>
-            <span className="launcher-action-icon" aria-hidden="true">
-              <PlusIcon size={11} />
-            </span>
-            {t("새 연결 만들기…")}
-          </button>
-          <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("backup")}>
-            <span className="launcher-action-icon" aria-hidden="true">
-              <DownloadIcon size={11} />
-            </span>
-            {t("데이터베이스 백업…")}
-          </button>
-          <button type="button" className="launcher-action" onClick={() => onBackupOrRestore("restore")}>
-            <span className="launcher-action-icon" aria-hidden="true">
-              <UploadIcon size={11} />
-            </span>
-            {t("데이터베이스 복원…")}
-          </button>
         </div>
         <section className="home-list">
-          <div className="launcher-top">
-            <label className="launcher-search">
-              <SearchIcon size={10} className="launcher-search-icon" />
-              <input
-                ref={searchRef}
-                value={query}
-                placeholder={t("연결 검색 (이름·호스트·태그)")}
-                spellCheck={false}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowDown") {
-                    const first = listRef.current?.querySelector<HTMLElement>("[data-nav]");
-                    if (first) {
-                      event.preventDefault();
-                      first.focus();
+          {!welcome ? (
+            <div className="launcher-top">
+              <label className="launcher-search">
+                <SearchIcon size={10} className="launcher-search-icon" />
+                <input
+                  ref={searchRef}
+                  value={query}
+                  placeholder={t("연결 검색 (이름·호스트·태그)")}
+                  spellCheck={false}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown") {
+                      const first = listRef.current?.querySelector<HTMLElement>("[data-nav]");
+                      if (first) {
+                        event.preventDefault();
+                        first.focus();
+                      }
+                    } else if (event.key === "Escape" && query !== "") {
+                      event.stopPropagation();
+                      setQuery("");
                     }
-                  } else if (event.key === "Escape" && query !== "") {
-                    event.stopPropagation();
-                    setQuery("");
-                  }
+                  }}
+                />
+              </label>
+              <button type="button" className="primary launcher-new" onClick={() => onNewConnection()}>
+                <PlusIcon size={11} />
+                {t("새 연결")}
+              </button>
+              <button
+                type="button"
+                className={`icon-button launcher-more${moreMenu !== null ? " active" : ""}`}
+                aria-haspopup="menu"
+                aria-label={t("더 보기")}
+                title={t("더 보기: 내보내기·가져오기·백업")}
+                onClick={(event) => {
+                  const anchor = event.currentTarget;
+                  const rect = anchor.getBoundingClientRect();
+                  setMoreMenu(moreMenu !== null ? null : { x: rect.right - 220, y: rect.bottom + 4, anchor });
                 }}
-              />
-            </label>
-          </div>
+              >
+                <MoreIcon size={13} />
+              </button>
+            </div>
+          ) : null}
           {notice !== null ? (
             <div className="launcher-notice">
               {notice.kind === "error" ? (
@@ -550,22 +574,25 @@ export function HomeScreen({
           ) : null}
           {listArea}
         </section>
-        <ul className="home-tips">
-          {paletteHint !== "" ? (
+        {!welcome ? (
+          <ul className="home-tips">
+            {paletteHint !== "" ? (
+              <li>
+                <kbd>{paletteHint}</kbd>
+                {t("명령 팔레트")}
+              </li>
+            ) : null}
             <li>
-              <kbd>{paletteHint}</kbd>
-              {t("명령 팔레트")}
+              <kbd>{t("오른쪽 클릭")}</kbd>
+              {t("그룹·가져오기·내보내기")}
             </li>
-          ) : null}
-          <li>
-            <kbd>{t("오른쪽 클릭")}</kbd>
-            {t("그룹·가져오기·내보내기")}
-          </li>
-          <li>
-            <kbd>{t("끌어 놓기")}</kbd>
-            {t("그룹으로 옮기기")}
-          </li>
-        </ul>
+            <li>
+              <kbd>{t("끌어 놓기")}</kbd>
+              <kbd>{IS_MAC ? "⌥↑↓" : "Alt+↑↓"}</kbd>
+              {t("순서 바꾸기·그룹으로 옮기기")}
+            </li>
+          </ul>
+        ) : null}
       </div>
       <input
         ref={fileRef}
@@ -590,6 +617,15 @@ export function HomeScreen({
       ) : null}
       {menu !== null ? (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.target)} onClose={() => setMenu(null)} />
+      ) : null}
+      {moreMenu !== null ? (
+        <ContextMenu
+          x={moreMenu.x}
+          y={moreMenu.y}
+          items={moreItems()}
+          anchor={moreMenu.anchor}
+          onClose={() => setMoreMenu(null)}
+        />
       ) : null}
       {prompt?.kind === "newGroup" ? (
         <PromptModal

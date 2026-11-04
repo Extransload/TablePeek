@@ -37,6 +37,7 @@ pub mod transfer;
 pub mod tunnel;
 pub mod ui_state;
 pub mod update;
+pub mod window_material;
 
 #[derive(RustEmbed)]
 #[folder = "$CARGO_MANIFEST_DIR/../../web/dist"]
@@ -508,6 +509,9 @@ pub struct AppState {
     pub update: Arc<update::UpdateChecker>,
     /// Which batch each page last saved (see ui_state).
     pub ui_writers: Arc<ui_state::Writers>,
+    /// How the embedding app (the desktop app) gives its windows the
+    /// material the page picks; none when pages live in browser tabs.
+    pub window_material: Option<Arc<dyn window_material::WindowMaterial>>,
 }
 
 async fn slot_for(
@@ -781,6 +785,7 @@ pub fn app(state: AppState) -> Router {
                 .put(ui_state_put)
                 .layer(axum::extract::DefaultBodyLimit::max(ui_state::MAX_BYTES)),
         )
+        .route("/api/window", get(window_get).put(window_put))
         .route("/api/favorites", get(favorites_list).post(favorites_create))
         .route(
             "/api/favorites/{id}",
@@ -2827,6 +2832,51 @@ async fn ui_state_put(
         ),
         ui_state::UpdateError::Io(message) => store_error(message),
     })?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Whether this server's windows can be see-through: only when the app that
+/// embeds it applies a material (see window_material); and whether the
+/// system reduces transparency, which only that app can read.
+async fn window_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let reduced = match state.window_material.clone() {
+        // The app reads it on its main thread: waited for off the runtime.
+        Some(material) => tokio::task::spawn_blocking(move || material.transparency_reduced())
+            .await
+            .unwrap_or(false),
+        None => false,
+    };
+    Ok(Json(json!({
+        "translucent": state.window_material.is_some(),
+        "reducedTransparency": reduced,
+    })))
+}
+
+/// Gives every window of the embedding app the look the page picked.
+async fn window_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(look): Json<window_material::WindowLook>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !authorized(&state, &headers, None) {
+        return Err(unauthorized());
+    }
+    let Some(material) = state.window_material.clone() else {
+        return Err(bad_request(
+            "window_unsupported",
+            "브라우저 탭에서는 창을 투명하게 할 수 없습니다",
+        ));
+    };
+    tokio::task::spawn_blocking(move || material.apply(look.clamped()))
+        .await
+        .map_err(|err| internal_error(err.to_string()))?
+        .map_err(internal_error)?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -5827,6 +5877,7 @@ mod tests {
                 true,
             )),
             ui_writers: Arc::default(),
+            window_material: None,
         }
     }
 
@@ -9389,6 +9440,80 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(ui_state::read(&dir).unwrap()["tablepeek.language"], "en");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn window_routes_apply_through_the_embedding_apps_material() {
+        struct Recorder(std::sync::Mutex<Vec<window_material::WindowLook>>);
+        impl window_material::WindowMaterial for Recorder {
+            fn apply(&self, look: window_material::WindowLook) -> Result<(), String> {
+                self.0.lock().unwrap().push(look);
+                Ok(())
+            }
+            fn transparency_reduced(&self) -> bool {
+                true
+            }
+        }
+        let dir = temp_dir("window-routes");
+        let headers = test_headers();
+        let look = |value: Value| Json(serde_json::from_value(value).unwrap());
+
+        // A server whose pages live in browser tabs can't change its window.
+        let plain = test_state(&dir);
+        let read = window_get(State(plain.clone()), headers.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            read.0,
+            json!({ "translucent": false, "reducedTransparency": false })
+        );
+        let refused = window_put(
+            State(plain),
+            headers.clone(),
+            look(json!({ "material": "glass", "dark": true })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+        assert_eq!(refused.1 .0.code, "window_unsupported");
+
+        let recorder = Arc::new(Recorder(std::sync::Mutex::new(Vec::new())));
+        let desktop = AppState {
+            window_material: Some(recorder.clone()),
+            ..test_state(&dir)
+        };
+        let read = window_get(State(desktop.clone()), headers.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            read.0,
+            json!({ "translucent": true, "reducedTransparency": true })
+        );
+        let applied = window_put(
+            State(desktop.clone()),
+            headers.clone(),
+            look(json!({ "material": "clear", "blur": 900, "dark": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied.0, json!({ "ok": true }));
+        assert_eq!(
+            *recorder.0.lock().unwrap(),
+            vec![window_material::WindowLook {
+                material: window_material::Material::Clear,
+                blur: window_material::MAX_BLUR,
+                dark: false,
+            }]
+        );
+
+        let mut stale = HeaderMap::new();
+        stale.insert("x-tablepeek-token", "old-token".parse().unwrap());
+        assert_eq!(
+            window_get(State(desktop), stale).await.unwrap_err().0,
+            StatusCode::UNAUTHORIZED
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -72,6 +72,16 @@ function step(entries: Entry[], from: number, by: number): number {
   return found;
 }
 
+// Each field's way to open its list, for openSelect.
+const openers = new WeakMap<HTMLSelectElement, () => void>();
+
+// Opens a Select's list from outside the field, as Enter on it would (a
+// settings row opening its menu).
+export function openSelect(select: HTMLSelectElement): void {
+  select.focus({ preventScroll: true });
+  openers.get(select)?.();
+}
+
 export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   const selectRef = useRef<HTMLSelectElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -232,8 +242,19 @@ export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTM
     }
   }
 
-  const handlers = useRef({ onMenuKey, hide });
-  handlers.current = { onMenuKey, hide };
+  const handlers = useRef({ onMenuKey, hide, show });
+  handlers.current = { onMenuKey, hide, show };
+
+  useEffect(() => {
+    const select = selectRef.current;
+    if (select === null) {
+      return;
+    }
+    openers.set(select, () => handlers.current.show());
+    return () => {
+      openers.delete(select);
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) {

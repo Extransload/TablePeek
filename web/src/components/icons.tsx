@@ -500,6 +500,24 @@ export function FitIcon({ size = 12, className }: IconProps) {
   );
 }
 
+// Arrows out to the corners: open in a larger view.
+export function ExpandIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M9.6 2.6h3.8v3.8M13.4 2.6 9.2 6.8M6.4 13.4H2.6V9.6M2.6 13.4l4.2-4.2" />
+    </svg>
+  );
+}
+
+// Arrows in from the corners: back to the smaller view.
+export function ShrinkIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M13.4 2.6 9.4 6.6M9.4 3.4v3.2h3.2M2.6 13.4l4-4M6.6 12.6V9.4H3.4" />
+    </svg>
+  );
+}
+
 export function GaugeIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

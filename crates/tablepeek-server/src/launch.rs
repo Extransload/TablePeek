@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tablepeek_engine::Engine;
 
-use crate::{serve, store, update, AppState, ConnSlot, Registry};
+use crate::{serve, store, update, window_material, AppState, ConnSlot, Registry};
 
 /// Rows the demo database gets unless `--demo-rows` says otherwise.
 pub const DEFAULT_DEMO_ROWS: usize = 10_000;
@@ -22,6 +22,9 @@ pub struct LaunchOptions {
     pub demo_rows: usize,
     /// How this build installs an update itself, when it can.
     pub installer: Option<Arc<dyn update::Installer>>,
+    /// How this build gives its windows the material the page picks, when
+    /// its pages have windows of their own (the desktop app).
+    pub window_material: Option<Arc<dyn window_material::WindowMaterial>>,
 }
 
 /// A server bound to its port and ready to run.
@@ -73,6 +76,7 @@ impl Server {
             store: Arc::new(tokio::sync::Mutex::new(store::StoreFile::load(&dir))),
             update: Arc::new(update),
             ui_writers: Arc::default(),
+            window_material: options.window_material,
         };
         Ok(Self {
             listener,

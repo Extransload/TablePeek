@@ -3303,9 +3303,10 @@ textarea:focus-visible {
   border-radius: var(--r-md);
 }
 
+/* As many cards a line as the sheet's width holds. */
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
   gap: 8px;
 }
 
@@ -4193,7 +4194,7 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
-.settings-language {
+.settings-choice {
   display: inline-flex;
   gap: 2px;
   padding: 2px;
@@ -4201,14 +4202,14 @@ textarea:focus-visible {
   background: var(--bg);
 }
 
-.settings-language button {
+.settings-choice button {
   height: 24px;
   padding: 0 11px;
   background: transparent;
   color: var(--muted);
 }
 
-.settings-language button.active {
+.settings-choice button.active {
   background: var(--accent);
   color: var(--accent-contrast, #fff);
 }
@@ -4632,230 +4633,453 @@ body.col-resizing * {
   color: var(--accent);
 }
 
-/* Settings: a list of categories on the left, and the picked one's pane:
-   titled boxes of rows, each a right-aligned label and its control. */
-.settings-modal {
-  display: flex;
-  flex-direction: column;
-  width: 820px;
-  max-width: min(820px, 95vw);
-  height: min(660px, calc(100vh - 48px));
-  /* The fixed height above, not .modal's 80vh cap. */
-  max-height: none;
-  overflow: hidden;
+/* Settings: a sheet docked to the right edge at full height, the app in
+   sight beside it (see SettingsSheet): the search, the page tabs, then the
+   page's groups of rows, each a name (and a note) and its control, and the
+   keys along its foot. */
+.settings-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
 }
 
-.settings-modal .modal-foot {
+.settings-sheet {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 240px);
+  border-left: 1px solid var(--line-soft);
+  background: var(--panel);
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.28);
+  outline: none;
+  animation: tablepeek-sheet-in var(--motion-base) var(--ease-out) both;
+}
+
+@keyframes tablepeek-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+/* Its left edge: dragged, or ←→ while it has focus, to resize the sheet. */
+.settings-sheet-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  z-index: 2;
+  width: 7px;
+  cursor: col-resize;
+  outline: none;
+}
+
+.settings-sheet-edge::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  transition: background-color var(--motion-fast) ease;
+}
+
+.settings-sheet-edge:hover::after,
+.settings-sheet-edge.dragging::after,
+.settings-sheet-edge:focus-visible::after {
+  left: 2px;
+  width: 3px;
+  background: var(--accent);
+}
+
+.settings-sheet-head {
+  display: flex;
   flex: none;
-}
-
-.settings-shell {
-  flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: 188px minmax(0, 1fr);
-  min-height: 0;
-  overflow: hidden;
-}
-
-.settings-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 8px;
-  overflow-y: auto;
-  border-right: 1px solid var(--line-soft);
-  background: color-mix(in srgb, var(--panel) 68%, var(--bg));
-}
-
-.settings-nav-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.settings-nav-caption {
-  padding: 10px 10px 4px;
-  color: var(--faint);
-  font-size: calc(10.5px * var(--ui-scale, 1));
-  font-weight: 600;
-}
-
-.settings-nav-sep {
-  height: 1px;
-  margin: 7px 6px;
-  background: var(--line-soft);
-}
-
-.settings-nav button {
-  display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  padding: 12px 12px 4px 18px;
+}
+
+.settings-sheet-title {
+  flex: 1;
+  color: var(--ink);
+  font-size: calc(14px * var(--ui-scale, 1));
+  font-weight: 650;
+}
+
+/* "Type to search": the app's own field, the magnifier inside it. */
+.settings-search {
+  position: relative;
+  display: flex;
+  flex: none;
+  margin: 6px 14px 8px;
+  color: var(--faint);
+}
+
+.settings-search svg {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.settings-search input {
+  flex: 1;
+  min-width: 0;
   height: 30px;
+  padding: 0 10px 0 29px;
+}
+
+/* The pages: one Tab stop, ←→ between them. */
+.settings-tabs {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.settings-tabs button {
+  gap: 6px;
+  height: 26px;
   padding: 0 9px;
   border-color: transparent;
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
-  text-align: left;
 }
 
-.settings-nav button:hover {
+.settings-tabs button:hover {
   background: var(--hover-fill);
   color: var(--ink);
   box-shadow: none;
 }
 
-.settings-nav button.active {
+.settings-tabs button.active {
+  border-color: transparent;
   background: var(--accent-soft);
   color: var(--ink);
 }
 
-.settings-nav button.active svg {
+.settings-tabs button.active svg {
   color: var(--accent);
 }
 
-.settings-pane {
-  min-width: 0;
+/* Searching shows every page's matches: no page is the one shown. */
+.settings-tabs.searching button.active {
+  background: transparent;
+  color: var(--muted);
+}
+
+.settings-tabs.searching button.active svg {
+  color: inherit;
+}
+
+.settings-tabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.settings-sheet-body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 18px 22px 22px;
+  padding: 14px 14px 20px;
 }
 
 .settings-group + .settings-group,
-.settings-box + .settings-actions {
-  margin-top: 18px;
+.settings-results + .settings-results {
+  margin-top: 16px;
 }
 
 .settings-group h4 {
-  margin: 0 0 7px 2px;
+  margin: 0 0 6px 4px;
   color: var(--muted);
   font-size: calc(11.5px * var(--ui-scale, 1));
   font-weight: 600;
 }
 
+.settings-group-hint {
+  margin: 0 4px 8px;
+}
+
 .settings-box {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px;
   border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
   background: var(--hover-fill);
 }
 
-.settings-field {
-  display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
-  align-items: start;
-  column-gap: 14px;
+.settings-results-title {
+  margin: 0 0 8px 4px;
+  color: var(--ink);
+  font-size: calc(12.5px * var(--ui-scale, 1));
+  font-weight: 650;
 }
 
-/* Level with its control's row; a long name wraps tight beside it. */
-.settings-label {
+/* A page or group with no row matching the search isn't shown. */
+.settings-results:not(:has([data-row])),
+.settings-results .settings-group:not(:has([data-row])) {
+  display: none;
+}
+
+.settings-empty {
+  margin: 36px 0;
+  color: var(--faint);
+  text-align: center;
+}
+
+/* A row: its name on the left, its control on the right (under it when
+   wide). The focus ring follows ↑↓; the margin keeps the group's title in
+   sight above a row scrolled to. */
+.settings-row {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  min-height: var(--control-h-sm);
-  color: var(--muted);
-  font-size: calc(12px * var(--ui-scale, 1));
-  line-height: 1.3;
-  text-align: right;
+  gap: 10px 16px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  outline: none;
+  scroll-margin: 30px 0 12px;
 }
 
-.settings-control {
-  display: flex;
+.settings-row + .settings-row {
+  border-top: 1px solid var(--line-soft);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.settings-row:focus-visible {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* In one of its controls (a field, a row of buttons). */
+.settings-row:has(:focus-visible) {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.settings-row.wide {
   flex-direction: column;
-  gap: 4px;
+  align-items: stretch;
+}
+
+.settings-row-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
   min-width: 0;
 }
 
-.settings-inline {
+.settings-row-title {
   display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+}
+
+.settings-row-label {
+  color: var(--ink);
+  font-size: calc(12.5px * var(--ui-scale, 1));
+}
+
+/* Changed from its default: a dot, and Reset beside it. */
+.settings-row-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+button.settings-row-reset {
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+button.settings-row-reset:hover {
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+
+.settings-row-control {
+  display: flex;
+  flex: none;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
-  min-height: var(--control-h-sm);
+  justify-content: flex-end;
+  gap: 6px 8px;
+  max-width: 62%;
+}
+
+.settings-row.wide .settings-row-control {
+  flex-direction: column;
+  align-items: stretch;
+  max-width: none;
 }
 
 .settings-hint {
   margin: 0;
   color: var(--faint);
   font-size: calc(11px * var(--ui-scale, 1));
-}
-
-/* A pane's opening line, above its box. */
-.settings-lead {
-  margin-bottom: 10px;
-}
-
-.settings-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink);
-  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.4;
 }
 
 /* Fields match the 24px buttons beside them. */
-.settings-pane input:is([type="text"], [type="number"], [type="password"], :not([type])),
-.settings-pane select {
+.settings-row-control input:is([type="text"], [type="number"], [type="password"], :not([type])),
+.settings-row-control select {
+  max-width: 100%;
   height: var(--control-h-sm);
   padding: 0 8px;
 }
 
-.settings-pane input[type="number"] {
+.settings-row-control input[type="number"] {
   width: 90px;
 }
 
-.settings-pane input[type="password"] {
-  width: 160px;
+.settings-row-control input[type="password"] {
+  width: 170px;
 }
 
 .settings-font-family {
-  width: 280px;
-  max-width: 100%;
+  width: 210px;
 }
 
-/* Settings → Theme: the syntax colours in two columns (down the first,
-   then the second), each a name, its colour, the value and a reset. */
-.syntax-colors {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(6, auto);
-  grid-auto-flow: column;
-  gap: 6px 18px;
-}
-
-/* The data table's thirteen colours: seven down the first column. */
-.syntax-colors.grid-colors {
-  grid-template-rows: repeat(7, auto);
-}
-
-.syntax-color {
-  display: grid;
-  grid-template-columns: 112px auto minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 10px;
-}
-
-/* A box's own actions, under its rows at the right. */
-.settings-box-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 4px;
-}
-
-.settings-reset {
-  border-color: transparent;
+.settings-color-value {
   color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
-/* Unchanged: hidden but in its place, so every row lines up. */
-.settings-reset.unchanged {
-  visibility: hidden;
+.settings-range {
+  width: 140px;
+  accent-color: var(--accent);
+}
+
+.settings-range-value {
+  min-width: 38px;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  text-align: right;
+}
+
+/* An on/off setting: a switch. */
+input.settings-switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--faint) 35%, transparent);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+
+input.settings-switch::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+
+input.settings-switch:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+input.settings-switch:checked::before {
+  transform: translateX(12px);
+}
+
+input.settings-switch:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+input.settings-switch:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+.settings-sheet-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  overflow: hidden;
+  border-top: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+
+.settings-sheet-foot > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.settings-sheet-foot > .spacer {
+  flex: 1;
+}
+
+/* Esc's hint stays whole when the sheet is narrow. */
+.settings-sheet-foot > span:last-child {
+  flex: none;
+}
+
+.settings-sheet-foot kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--muted);
+  font-family: var(--ui);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+}
+
+/* The theme gallery: dark then light, one Tab stop, arrows inside. */
+.theme-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.theme-gallery-caption {
+  display: block;
+  margin: 0 0 6px 2px;
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+
+.theme-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* What the pane's settings look like, as that part of the app draws it:
@@ -4880,43 +5104,40 @@ body.col-resizing * {
   outline: none;
 }
 
-/* Rows and header take the grid's own heights (set inline); the rest is
-   CanvasGrid's drawing: 1px lines, the header and row numbers on --head,
-   headers centred and bold. */
-.settings-preview-grid {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--bg);
+/* ── Window material (material.ts): glass or clear turn the floating
+   surfaces to tinted glass over the app. Inside one, what paints the page's
+   background or a panel paints a lighter wash of it, so the glass reads
+   through; the dim under a dialog is lighter, for the app to show blurred. ── */
+html:is([data-material="glass"], [data-material="clear"])
+  :is(
+    .modal,
+    .palette,
+    .menu-panel,
+    .context-menu,
+    .conn-menu,
+    .column-picker,
+    .cell-menu,
+    .cell-pop,
+    .page-size-panel,
+    .analysis-picker-panel,
+    .settings-sheet
+  ),
+html:is([data-material="glass"], [data-material="clear"]) .cm-editor .cm-tooltip.cm-tooltip-autocomplete {
+  --bg: var(--glass-well);
+  --panel: var(--glass-raise);
+  --head: var(--glass-raise);
+  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: var(--glass-fill);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
 }
 
-.settings-preview-grid :is(th, td) {
-  padding: 0 8px;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  white-space: nowrap;
+html:is([data-material="glass"], [data-material="clear"]) .modal-backdrop {
+  background: rgba(0, 0, 0, 0.3);
 }
 
-.settings-preview-grid :is(th, td):last-child {
-  border-right: 0;
-}
-
-.settings-preview-grid th {
-  background: var(--head);
-  color: var(--ink);
-  font-weight: 600;
-  text-align: center;
-}
-
-.settings-preview-grid .gutter {
-  width: 48px;
-  background: var(--head);
-  color: var(--faint);
-  font-weight: 400;
-  text-align: right;
-}
-
-.settings-preview-grid td.numeric {
-  text-align: right;
+html:is([data-material="glass"], [data-material="clear"]) .palette-backdrop {
+  background: rgba(0, 0, 0, 0.18);
 }
 
 .sr-only {
@@ -6034,36 +6255,12 @@ button.primary.danger:hover {
   background: color-mix(in srgb, var(--error) 62%, #000000);
 }
 
-/* Settings: shortcuts */
-/* Its rows carry their own spacing and rules. */
-.settings-box.shortcut-list {
-  gap: 0;
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-.shortcut-row {
-  display: grid;
-  grid-template-columns: 200px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.shortcut-row:last-child {
-  border-bottom: 0;
-}
-
-.shortcut-label {
-  color: var(--ink);
-  font-size: calc(12.5px * var(--ui-scale, 1));
-}
-
+/* Settings: shortcuts, each action's combinations as chips and an add. */
 .shortcut-bindings {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -6718,10 +6915,6 @@ textarea[aria-invalid="true"] {
   user-select: all;
 }
 
-.settings-update-error {
-  padding: 0;
-}
-
 /* Settings > General > Version: the build on one line, then a status card
    coloured by what it says (newest, newer out, ahead, failed, muted). */
 .version-head {
@@ -6729,12 +6922,6 @@ textarea[aria-invalid="true"] {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 6px 8px;
-}
-
-.version-name {
-  color: var(--ink);
-  font-size: calc(14px * var(--ui-scale, 1));
-  font-weight: 650;
 }
 
 .version-number {
@@ -6842,12 +7029,6 @@ textarea[aria-invalid="true"] {
   background: color-mix(in srgb, var(--warn) 85%, var(--ink));
 }
 
-.version-check {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
 .panel-error-slot {
   margin: 8px 0;
 }
@@ -6871,7 +7052,7 @@ textarea[aria-invalid="true"] {
   margin: 4px;
 }
 
-/* Home: a floating start window — actions on the left, connections on the right */
+/* Home: the wordmark over the connection list (or, first run, the ways in) */
 .home {
   position: relative;
   display: flex;
@@ -6886,10 +7067,38 @@ textarea[aria-invalid="true"] {
     var(--bg);
 }
 
-/* Home's welcome page: settings in the corner, then one column of intro,
-   actions, search, the connection list and tips. The column centers while it
-   fits and scrolls with the page once the list is long. */
+/* The animated floor behind it all (HomeBackdrop.tsx). It reads the pointer
+   from .home and takes no events itself; its sides fade out. */
+.home-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 16%, #000 84%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 16%, #000 84%, transparent);
+  animation: home-fade 1.2s ease backwards;
+}
+
+@keyframes home-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes home-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(6px);
+  }
+}
+
+/* Home's column: settings in the corner, then the wordmark, the search bar,
+   the connection list and tips. */
 .home-column {
+  /* Positioned, so it paints over the backdrop. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -6912,11 +7121,70 @@ textarea[aria-invalid="true"] {
   min-height: 0;
 }
 
-.home-actions {
-  display: flex;
-  flex-wrap: wrap;
+/* First run: nothing to list, so the wordmark and the ways in sit mid-page. */
+.home-column-welcome {
   justify-content: center;
-  gap: 8px;
+  padding-top: 0;
+  padding-bottom: 12vh;
+}
+
+.home-column-welcome .home-intro {
+  margin-bottom: 8px;
+}
+
+/* First run: the wordmark large, "Peek" peeking up over its line with a
+   sheen passing through now and then, then the rest rising in turn. */
+.home-column-welcome .home-word {
+  font-size: calc(46px * var(--ui-scale, 1));
+  opacity: 1;
+  animation: home-rise 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+
+.home-word-peek {
+  display: inline-block;
+  clip-path: inset(-0.3em -0.2em 0 -0.2em);
+}
+
+.home-word-peek > .brand-word-peek {
+  display: inline-block;
+}
+
+.home-column-welcome .home-word-peek > .brand-word-peek {
+  /* Its first and last thirds are the brand gradient; the sheen between. */
+  background-image: linear-gradient(
+    115deg,
+    #4fa3ff 0%,
+    #6e5bff 16.6%,
+    #a35bff 33.3%,
+    color-mix(in srgb, #a35bff 35%, var(--ink)) 50%,
+    #4fa3ff 66.6%,
+    #6e5bff 83.3%,
+    #a35bff 100%
+  );
+  background-size: 300% 100%;
+  animation:
+    home-peek 0.9s cubic-bezier(0.3, 1.4, 0.5, 1) 0.45s backwards,
+    home-sheen 7s ease-in-out 2s infinite;
+}
+
+@keyframes home-peek {
+  from {
+    transform: translateY(105%);
+  }
+}
+
+@keyframes home-sheen {
+  0%,
+  72% {
+    background-position: 0% 0;
+  }
+  100% {
+    background-position: 100% 0;
+  }
+}
+
+.home-column-welcome .home-tagline {
+  animation: home-rise 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) 0.2s backwards;
 }
 
 .home-list {
@@ -6967,14 +7235,6 @@ button.home-settings:hover {
   font-size: calc(13.5px * var(--ui-scale, 1));
 }
 
-.home-specs {
-  margin: 0;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: calc(11px * var(--ui-scale, 1));
-  letter-spacing: 0.02em;
-}
-
 .home-tips {
   display: flex;
   flex: none;
@@ -7006,7 +7266,6 @@ button.home-settings:hover {
 
 /* Short windows keep the start window whole: the extras go first. */
 @media (max-height: 700px) {
-  .home-specs,
   .home-tips {
     display: none;
   }
@@ -7020,32 +7279,20 @@ button.home-settings:hover {
   }
 }
 
-button.launcher-action {
-  gap: 9px;
-  height: 36px;
-  padding: 0 14px 0 5px;
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--panel) 70%, transparent);
-  color: var(--ink);
+button.launcher-new {
+  flex: none;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
   font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
-button.launcher-action:hover {
-  border-color: var(--line);
-  background: var(--hover-fill);
-}
-
-.launcher-action-icon {
-  display: inline-flex;
+button.launcher-more {
   flex: none;
-  align-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent);
 }
 
 .launcher-top {
@@ -7362,71 +7609,6 @@ button.launcher-action:hover {
   text-align: center;
 }
 
-.launcher-welcome-title {
-  margin: 6px 0 0;
-  color: var(--ink);
-  font-size: calc(17px * var(--ui-scale, 1));
-  font-weight: 650;
-}
-
-.launcher-welcome-lead {
-  margin: -4px 0 0;
-  color: var(--muted);
-  font-size: calc(12.5px * var(--ui-scale, 1));
-}
-
-.launcher-welcome-drivers {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-}
-
-.launcher-welcome-drivers button {
-  gap: 7px;
-  height: 30px;
-  padding: 0 10px 0 6px;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--muted);
-  font-size: calc(12px * var(--ui-scale, 1));
-}
-
-.launcher-welcome-drivers button:hover {
-  border-color: var(--line);
-  color: var(--ink);
-}
-
-.launcher-welcome-info {
-  width: 100%;
-  padding: 12px 14px;
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  background: var(--bg);
-  color: var(--muted);
-  font-size: calc(12px * var(--ui-scale, 1));
-  text-align: left;
-}
-
-.launcher-welcome-label {
-  margin-bottom: 4px;
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.launcher-welcome-info ul {
-  margin: 0;
-  padding-left: 18px;
-  line-height: 1.7;
-}
-
-.launcher-welcome-info p {
-  margin: 6px 0 0;
-  color: var(--faint);
-  font-size: calc(11.5px * var(--ui-scale, 1));
-}
-
 .launcher-welcome-actions {
   display: flex;
   flex-wrap: wrap;
@@ -7440,12 +7622,68 @@ button.launcher-action:hover {
   padding: 0 14px;
   border-radius: 9px;
   font-size: calc(12.5px * var(--ui-scale, 1));
+  animation: home-rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) 0.35s backwards;
 }
 
-.launcher-welcome-note {
-  margin: 0;
-  color: var(--faint);
-  font-size: calc(11px * var(--ui-scale, 1));
+.launcher-welcome-actions button:nth-child(2) {
+  animation-delay: 0.43s;
+}
+
+.launcher-welcome-actions button:nth-child(3) {
+  animation-delay: 0.51s;
+}
+
+/* Leans toward the pointer and lights under it (HomeWelcome.tsx sets the
+   variables). */
+.launcher-welcome-actions button.primary {
+  translate: var(--pull-x, 0) var(--pull-y, 0);
+  box-shadow: 0 6px 20px -8px color-mix(in srgb, var(--accent) 80%, transparent);
+  transition:
+    background-color 0.14s ease,
+    box-shadow 0.25s ease,
+    translate 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 0.08s ease;
+}
+
+.launcher-welcome-actions button.primary:hover {
+  background:
+    radial-gradient(90px circle at var(--spot-x, 50%) var(--spot-y, 50%), rgb(255 255 255 / 0.3), transparent 70%),
+    var(--accent-hover);
+  box-shadow:
+    0 0 0 1px var(--accent-line),
+    0 10px 32px -8px color-mix(in srgb, var(--accent) 90%, transparent);
+}
+
+button.launcher-welcome-demo {
+  height: auto;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+  animation: home-rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) 0.65s backwards;
+}
+
+button.launcher-welcome-demo:hover,
+button.launcher-welcome-demo:active {
+  background: none;
+  box-shadow: none;
+  color: var(--ink);
+}
+
+.launcher-welcome-demo-arrow {
+  transition: translate 0.2s ease;
+}
+
+button.launcher-welcome-demo:hover .launcher-welcome-demo-arrow {
+  translate: 3px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .launcher-welcome-actions button.primary {
+    translate: none;
+  }
 }
 
 @media (max-width: 640px) {
@@ -7458,7 +7696,10 @@ button.launcher-action:hover {
     font-size: calc(26px * var(--ui-scale, 1));
   }
 
-  .home-specs,
+  .home-column-welcome .home-word {
+    font-size: calc(34px * var(--ui-scale, 1));
+  }
+
   .home-tips {
     display: none;
   }
@@ -7574,7 +7815,8 @@ button.picker-row:focus-visible {
   font-weight: 700;
 }
 
-/* Drag a saved connection onto a group (or the top, for none). */
+/* Drag a saved connection into a group (or the top, for none) whose rows
+   don't show; where they do, a line between them marks where it lands. */
 .launcher-ungrouped,
 .launcher-group {
   border: 1px dashed transparent;
@@ -7587,16 +7829,52 @@ button.picker-row:focus-visible {
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
-/* Drag a group by its header: a line marks where it lands. */
-.launcher-group.drop-before {
-  box-shadow: 0 -2px 0 var(--accent);
+/* A dragged group or connection: a line marks where it lands. */
+.launcher-group.drop-before,
+.launcher-group.drop-after,
+.launcher-row.drop-before,
+.launcher-row.drop-after {
+  position: relative;
 }
 
-.launcher-group.drop-after {
-  box-shadow: 0 2px 0 var(--accent);
+.launcher-group.drop-before::after,
+.launcher-group.drop-after::after,
+.launcher-row.drop-before::after,
+.launcher-row.drop-after::after {
+  position: absolute;
+  right: 8px;
+  left: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  content: "";
+  pointer-events: none;
 }
 
-.launcher-group.dragging {
+.launcher-row.in-group.drop-before::after,
+.launcher-row.in-group.drop-after::after {
+  left: 30px;
+}
+
+/* Groups meet border to border, rows edge to edge: the line sits on the seam. */
+.launcher-group.drop-before::after {
+  top: -2px;
+}
+
+.launcher-group.drop-after::after {
+  bottom: -2px;
+}
+
+.launcher-row.drop-before::after {
+  top: -1px;
+}
+
+.launcher-row.drop-after::after {
+  bottom: -1px;
+}
+
+.launcher-group.dragging,
+.launcher-row.dragging {
   opacity: 0.5;
 }
 
@@ -7743,42 +8021,27 @@ button.picker-row:focus-visible {
   transform: rotate(90deg);
 }
 
-.cell-pop-kind {
-  flex: none;
-  min-width: 18px;
-  font-family: var(--mono);
-  font-size: calc(12px * var(--ui-scale, 1));
-  font-weight: 700;
-  text-align: center;
-}
-
-.cell-pop-kind.object {
-  color: var(--accent);
-}
-
-.cell-pop-kind.array {
-  color: var(--ok);
-}
-
-.cell-pop-kind.string {
-  color: var(--syntax-string, var(--warn));
-}
-
-.cell-pop-kind.number,
-.cell-pop-kind.boolean {
-  color: var(--syntax-number, var(--accent));
-}
-
-.cell-pop-kind.null {
-  color: var(--faint);
-}
-
 .cell-pop-key {
   flex: none;
   max-width: 60%;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--ink);
+}
+
+/* An array position: muted so it doesn't compete with real keys. */
+.cell-pop-key.index {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+/* A container's member count after its key: {3}, [3]. */
+.cell-pop-size {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
 }
 
 .cell-pop-colon {
@@ -7809,7 +8072,7 @@ button.picker-row:focus-visible {
   font-style: italic;
 }
 
-.cell-pop-tree:focus .cell-pop-row.selected :is(.cell-pop-kind, .cell-pop-key, .cell-pop-colon, .cell-pop-value, .cell-pop-chevron) {
+.cell-pop-tree:focus .cell-pop-row.selected :is(.cell-pop-key, .cell-pop-colon, .cell-pop-value, .cell-pop-chevron, .cell-pop-size) {
   color: inherit;
 }
 
@@ -7936,6 +8199,262 @@ textarea.cell-pop-text {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   color: var(--ink);
+}
+
+/* ── Quick Look large view (JsonExplorer) ───────────────────────
+   The cell's JSON filling the window: a windowed tree beside the picked
+   node's value, or the whole document as numbered lines. */
+
+.cell-pop-backdrop.big {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.json-view {
+  position: fixed;
+  inset: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  outline: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg, 12px);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+}
+
+.json-view-head,
+.json-view-tools,
+.json-view-path {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.json-view-head {
+  padding-left: 16px;
+}
+
+.json-view-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: calc(13px * var(--ui-scale, 1));
+}
+
+.json-view-title strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.json-view-meta,
+.json-view-depth-label {
+  flex: none;
+  color: var(--faint);
+  font-size: calc(12px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.json-view-search {
+  flex: 0 1 380px;
+  height: 28px;
+  margin: 0;
+}
+
+.json-view-count {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.json-view-count.none {
+  color: var(--faint);
+}
+
+.json-view-depth button {
+  justify-content: center;
+  min-width: 26px;
+  padding: 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.json-view-path {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.json-view-crumbs {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  font-family: var(--mono);
+}
+
+.json-view-crumb-step {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+.json-view-crumb-sep {
+  padding: 0 2px;
+  color: var(--faint);
+}
+
+button.json-view-crumb {
+  display: inline-block;
+  max-width: 240px;
+  height: 22px;
+  padding: 0 6px;
+  overflow: hidden;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  line-height: 22px;
+  text-overflow: ellipsis;
+}
+
+button.json-view-crumb:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+
+button.json-view-crumb.current {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.json-view-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.json-view-list {
+  position: relative;
+  overflow: auto;
+  outline: none;
+}
+
+.json-view-list-inner {
+  position: relative;
+  min-width: 100%;
+}
+
+.json-view-tree {
+  flex: 1 1 55%;
+  min-width: 280px;
+  padding: 6px;
+}
+
+.json-view-tree .cell-pop-row {
+  position: absolute;
+  right: 0;
+  left: 0;
+  box-sizing: border-box;
+}
+
+.json-view-tree .cell-pop-row.match:not(.selected) {
+  box-shadow: inset 0 0 0 1px var(--warn);
+}
+
+.json-view-tools .flip {
+  transform: rotate(180deg);
+}
+
+.json-view mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--warn) 45%, transparent);
+  color: inherit;
+}
+
+.json-view-value {
+  display: flex;
+  flex: 1 1 45%;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.json-view-lines {
+  flex: 1;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.json-view-value .json-view-lines {
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
+.json-view-line {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  min-width: 100%;
+  padding: 0 12px 0 8px;
+  white-space: pre;
+}
+
+.json-view-line.current {
+  background: var(--accent-soft);
+}
+
+.json-view-line-no {
+  flex: none;
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+}
+
+.json-view-line-text {
+  color: var(--ink);
+}
+
+.json-view-line-more {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.json-view-text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  outline: none;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: calc(13px * var(--ui-scale, 1));
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-view-text.null {
+  color: var(--faint);
+  font-style: italic;
+}
+
+button.json-view-text-more {
+  display: flex;
+  margin-top: 10px;
 }
 
 /* The table open in the current tab. */
@@ -10024,8 +10543,7 @@ html .settings-preview .sql-preview .cm-scroller {
    their own font (names and labels alike) and size; the rest of the app
    keeps the system's. */
 .schema-sidebar,
-.row-detail,
-.settings-preview-sidebar {
+.row-detail {
   --ui: var(--sidebar-font);
   --mono: var(--sidebar-font);
   --ui-scale: var(--sidebar-scale);

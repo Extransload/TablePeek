@@ -1,49 +1,40 @@
-import { engines } from "../engines";
+import type { PointerEvent } from "react";
 import { t } from "../i18n";
-import { DriverIcon } from "./DriverIcon";
 import { DownloadIcon, FileIcon, PlusIcon } from "./icons";
 
 interface HomeWelcomeProps {
-  onNewConnection(options?: { driver?: string }): void;
+  onNewConnection(): void;
   onOpenFile(): void;
   onImportFile(): void;
+  onOpenDemo(): void;
 }
 
-// First run: nothing saved, nothing open, no groups yet.
-export function HomeWelcome({ onNewConnection, onOpenFile, onImportFile }: HomeWelcomeProps) {
+// The first button leans toward the pointer and lights where it is
+// (see .launcher-welcome-actions button.primary in styles.css).
+function pull(event: PointerEvent<HTMLButtonElement>): void {
+  const button = event.currentTarget;
+  const rect = button.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  button.style.setProperty("--spot-x", `${x}px`);
+  button.style.setProperty("--spot-y", `${y}px`);
+  button.style.setProperty("--pull-x", `${(x / rect.width - 0.5) * 8}px`);
+  button.style.setProperty("--pull-y", `${(y / rect.height - 0.5) * 5}px`);
+}
+
+function release(event: PointerEvent<HTMLButtonElement>): void {
+  event.currentTarget.style.removeProperty("--pull-x");
+  event.currentTarget.style.removeProperty("--pull-y");
+}
+
+// First run: nothing saved, nothing open, no groups yet. Just the ways in.
+export function HomeWelcome({ onNewConnection, onOpenFile, onImportFile, onOpenDemo }: HomeWelcomeProps) {
   return (
     <div className="launcher-welcome">
-      <h1 className="launcher-welcome-title">{t("첫 데이터베이스를 연결해 보세요")}</h1>
-      <p className="launcher-welcome-lead">
-        {t("테이블을 둘러보고, 쿼리를 실행하고, 데이터를 바로 고칠 수 있습니다.")}
-      </p>
-      <div className="launcher-welcome-drivers">
-        {engines().map((engine) => (
-          <button
-            type="button"
-            key={engine.id}
-            onClick={() => onNewConnection({ driver: engine.id })}
-          >
-            <DriverIcon kind={engine.id} size={20} />
-            <span>{engine.label}</span>
-          </button>
-        ))}
-      </div>
-      <div className="launcher-welcome-info">
-        <div className="launcher-welcome-label">{t("연결할 때 필요한 정보")}</div>
-        <ul>
-          <li>{t("호스트와 포트 (예: 127.0.0.1 : 5432)")}</li>
-          <li>{t("사용자 이름과 비밀번호")}</li>
-          <li>{t("데이터베이스 이름")}</li>
-          <li>{t("필요하면 SSH 터널이나 SSL 인증서")}</li>
-          <li>{t("SQLite라면 데이터베이스 파일 하나면 됩니다")}</li>
-        </ul>
-        <p>{t("postgres://… 같은 연결 URL을 호스트 칸에 붙여 넣으면 나머지가 자동으로 채워집니다.")}</p>
-      </div>
       <div className="launcher-welcome-actions">
-        <button type="button" className="primary" onClick={() => onNewConnection()}>
+        <button type="button" className="primary" onClick={onNewConnection} onPointerMove={pull} onPointerLeave={release}>
           <PlusIcon size={11} />
-          {t("시작하기")}
+          {t("새 연결…")}
         </button>
         <button type="button" onClick={onOpenFile}>
           <FileIcon size={10} />
@@ -54,10 +45,12 @@ export function HomeWelcome({ onNewConnection, onOpenFile, onImportFile }: HomeW
           {t("연결 가져오기…")}
         </button>
       </div>
-      <p className="launcher-welcome-note">
-        {t("연결 정보는 이 컴퓨터(~/.tablepeek)에만 저장됩니다. 비밀번호는 OS 키체인에 보관되며, 연결마다 ‘매번 입력’으로 바꿀 수 있습니다.")}
-      </p>
-      <p className="launcher-welcome-note">{t("데모 데이터로 먼저 둘러보려면 make run DEMO=1 로 실행하세요.")}</p>
+      <button type="button" className="launcher-welcome-demo" onClick={onOpenDemo}>
+        {t("데모 데이터로 둘러보기")}
+        <span className="launcher-welcome-demo-arrow" aria-hidden="true">
+          →
+        </span>
+      </button>
     </div>
   );
 }

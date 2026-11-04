@@ -6,9 +6,10 @@
 use std::sync::Arc;
 
 use tablepeek_server::launch::{LaunchOptions, Server, DEFAULT_DEMO_ROWS};
-use tauri::Url;
+use tauri::{Manager, Url};
 
 use crate::installer::UpdaterInstaller;
+use crate::material::WindowEffects;
 use crate::window;
 
 pub fn run() {
@@ -28,11 +29,15 @@ pub fn run() {
     builder
         .setup(|app| {
             let installer = Arc::new(UpdaterInstaller::new(app.handle().clone()));
+            // Kept as the app's state too: windows opened later take the look.
+            let window_material = Arc::new(WindowEffects::new(app.handle().clone()));
+            app.manage(window_material.clone());
             let server = tauri::async_runtime::block_on(Server::bind(LaunchOptions {
                 port: 0,
                 main: None,
                 demo_rows: DEFAULT_DEMO_ROWS,
                 installer: Some(installer),
+                window_material: Some(window_material),
             }))?;
             let port = server.port();
             let url = Url::parse(&server.launch_url())?;

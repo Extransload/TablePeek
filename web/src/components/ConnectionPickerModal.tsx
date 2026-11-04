@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { listGroups } from "../connGroups";
-import { listConnMeta } from "../connMeta";
+import { listConnMeta, orderConnections } from "../connMeta";
 import { t } from "../i18n";
 import type { ConnSummary, SavedConnection } from "../store";
 import { DriverIcon } from "./DriverIcon";
 import {
-  byLastUsed,
   filterConnections,
   openAddress,
   openMatches,
@@ -54,7 +53,7 @@ export function ConnectionPickerModal({ title, conns, saved, onPick, onClose, on
     (conn) => (conn.saved_id === undefined || !savedIds.has(conn.saved_id)) && openMatches(conn, needle),
   );
   const shown = filterConnections(saved, metaById, groups, query);
-  const visible = [...saved].sort(byLastUsed).filter((connection) => shown.has(connection.id));
+  const visible = orderConnections(saved).filter((connection) => shown.has(connection.id));
   const groupIds = new Set(groups.map((group) => group.id));
   const groupOf = (connection: SavedConnection) => {
     const id = metaById[connection.id]?.group ?? "";

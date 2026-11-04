@@ -820,6 +820,7 @@ mod tests {
                 true,
             )),
             ui_writers: Arc::default(),
+            window_material: None,
         };
         (state, dir)
     }

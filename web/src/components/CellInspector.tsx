@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
 import { t } from "../i18n";
 import type { RowSource } from "../grid/rowSource";
 import { JsonRowSource } from "../grid/rowSource";
+import { containerSize, inlineText, kindOf, type JsonKind } from "../jsonIndex";
+import { formatBinding, matchesBinding, withHint } from "../shortcuts";
 import { FieldBox } from "./FieldBox";
-import { ChevronIcon, LinkIcon, SearchIcon } from "./icons";
+import { ChevronIcon, ExpandIcon, LinkIcon, SearchIcon } from "./icons";
+import { JsonExplorer } from "./JsonExplorer";
 import { TableGrid } from "./TableGrid";
 import { Spinner } from "./Spinner";
 
@@ -40,15 +43,17 @@ interface CellInspectorProps {
   onClose(): void;
 }
 
-type Kind = "object" | "array" | "string" | "number" | "boolean" | "null";
-
 interface TreeRow {
   path: string;
   key: string;
   value: unknown;
-  kind: Kind;
+  kind: JsonKind;
   depth: number;
   parent: string | null;
+  // An array item, its key a position rather than a name.
+  index: boolean;
+  // Members of an object or array, 0 for anything else.
+  size: number;
 }
 
 interface MoreRow {
@@ -64,35 +69,6 @@ const CHILD_PAGE = 500;
 const FIELD_LIMIT = 300;
 const ARROW = 8;
 const MARGIN = 12;
-
-const KIND_ICON: Record<Kind, string> = {
-  object: "{}",
-  array: "[]",
-  string: "Aa",
-  number: "#",
-  boolean: "✓",
-  null: "∅",
-};
-
-function kindOf(value: unknown): Kind {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  if (Array.isArray(value)) {
-    return "array";
-  }
-  switch (typeof value) {
-    case "object":
-      return "object";
-    case "number":
-    case "bigint":
-      return "number";
-    case "boolean":
-      return "boolean";
-    default:
-      return "string";
-  }
-}
 
 function rawText(value: unknown): string {
   if (value === null || value === undefined) {
@@ -152,38 +128,24 @@ function visibleRows(
   limits: Record<string, number>,
 ): (TreeRow | MoreRow)[] {
   const rows: (TreeRow | MoreRow)[] = [];
-  const walk = (value: unknown, path: string, key: string, depth: number, parent: string | null): void => {
+  const walk = (value: unknown, path: string, key: string, depth: number, parent: string | null, index: boolean): void => {
     const kind = kindOf(value);
-    rows.push({ path, key, value, kind, depth, parent });
+    const size = Array.isArray(value) ? value.length : kind === "object" ? Object.keys(value as object).length : 0;
+    rows.push({ path, key, value, kind, depth, parent, index, size });
     if ((kind !== "object" && kind !== "array") || !expanded.has(path)) {
       return;
     }
     const children = childrenOf(value);
     const limit = limits[path] ?? CHILD_PAGE;
     for (const [childKey, child] of children.slice(0, limit)) {
-      walk(child, childPath(path, childKey, kind === "array"), childKey, depth + 1, path);
+      walk(child, childPath(path, childKey, kind === "array"), childKey, depth + 1, path, kind === "array");
     }
     if (children.length > limit) {
       rows.push({ more: children.length - limit, parent: path, depth: depth + 1 });
     }
   };
-  walk(doc, ROOT, "ROOT", 0, null);
+  walk(doc, ROOT, "ROOT", 0, null, false);
   return rows;
-}
-
-function detailText(row: TreeRow): string {
-  if (row.kind === "object" || row.kind === "array") {
-    return JSON.stringify(row.value, null, 2);
-  }
-  return row.kind === "null" ? "null" : String(row.value);
-}
-
-function inlineValue(row: TreeRow): string {
-  if (row.kind === "string") {
-    const text = String(row.value);
-    return `"${text.length > 300 ? `${text.slice(0, 300)}…` : text}"`;
-  }
-  return row.kind === "null" ? "null" : String(row.value);
 }
 
 // TablePlus-style popover beside a cell: a JSON tree on the left, the picked
@@ -201,6 +163,8 @@ export function CellInspector({
 }: CellInspectorProps) {
   const [, setNonce] = useState(0);
   const [raw, setRaw] = useState(false);
+  // The large view (JsonExplorer) in place of the popover.
+  const [big, setBig] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([ROOT]));
   const [limits, setLimits] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState(ROOT);
@@ -243,7 +207,8 @@ export function CellInspector({
   const value = source.cell(row, col);
   const loading = value === undefined || reference === undefined;
   const column = columns[col] ?? `#${col + 1}`;
-  const text = rawText(value);
+  // A document object is indented once, not on every render.
+  const text = useMemo(() => rawText(value), [value]);
   const doc = useMemo(() => documentOf(value), [value]);
   const rows = useMemo(
     () => (doc === null ? [] : visibleRows(doc, expanded, limits)),
@@ -252,8 +217,7 @@ export function CellInspector({
   const nodes = rows.filter((entry): entry is TreeRow => "path" in entry);
   const current = nodes.find((node) => node.path === selected) ?? nodes[0] ?? null;
   const showTree = doc !== null && !raw && !reference;
-  // Serializing a large document is not free; do it once per picked node.
-  const detail = useMemo(() => (current !== null ? detailText(current) : ""), [current]);
+  const canExpand = doc !== null && !reference && !loading;
   // The right side lists a picked object's or array's members as fields, or
   // the picked value alone.
   const fields = useMemo(() => {
@@ -271,6 +235,7 @@ export function CellInspector({
     setLimits({});
     setSelected(ROOT);
     setRaw(false);
+    setBig(false);
   }, [source, row, col]);
 
   // Cells still loading arrive through the source's update stream.
@@ -278,28 +243,36 @@ export function CellInspector({
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent): void {
+      // Esc steps back: from the large view to the popover, then closed.
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        if (big) {
+          setBig(false);
+        } else {
+          onClose();
+        }
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [onClose, big]);
 
   // Keys belong to the popover, never to the grid underneath: the tree takes
   // focus, or the popover itself while the cell is still loading.
   useEffect(() => {
+    if (big) {
+      return;
+    }
     if (showTree) {
       treeRef.current?.focus({ preventScroll: true });
     } else if (loading) {
       popRef.current?.focus({ preventScroll: true });
     }
-  }, [showTree, loading]);
+  }, [showTree, loading, big]);
 
   useEffect(() => {
     treeRef.current?.querySelector(".cell-pop-row.selected")?.scrollIntoView({ block: "nearest" });
-  }, [selected, rows]);
+  }, [selected, rows, big]);
 
   function toggle(path: string): void {
     setExpanded((prev) => {
@@ -317,8 +290,15 @@ export function CellInspector({
     try {
       // The whole document goes out as stored: re-serializing it would round
       // integers past 2^53 and lose the original formatting.
+      const node = showTree && current !== null && current.path !== ROOT ? current : null;
       await navigator.clipboard.writeText(
-        showTree && current !== null && current.path !== ROOT ? detail : text,
+        node === null
+          ? text
+          : node.kind === "object" || node.kind === "array"
+            ? JSON.stringify(node.value, null, 2)
+            : node.kind === "null"
+              ? "null"
+              : String(node.value),
       );
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
@@ -349,7 +329,7 @@ export function CellInspector({
       } else if (current.parent !== null) {
         setSelected(current.parent);
       }
-    } else if ((event.key === "Enter" || event.key === " ") && container) {
+    } else if ((event.key === "Enter" || event.key === " ") && container && !event.metaKey && !event.ctrlKey) {
       toggle(current.path);
     } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
       void copy();
@@ -391,54 +371,90 @@ export function CellInspector({
     }
   }
   const style: CSSProperties = { left, top, width, height };
+  const label = t("{column} 값", { column });
+  const where = (
+    <>
+      {table !== null ? `${table}.` : ""}
+      <strong>{column}</strong>
+      {` · ${t("{count}번째 행", { count: (row + 1).toLocaleString() })}`}
+    </>
+  );
+  const backdrop = {
+    onMouseDown: (event: MouseEvent<HTMLDivElement>) => {
+      if (event.target === event.currentTarget) {
+        onClose();
+      }
+    },
+    onContextMenu: (event: MouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      onClose();
+    },
+  };
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+    // ⌘↩ (Quick Look's own key) switches between the popover and the large view.
+    if (matchesBinding(event.nativeEvent, "Mod+Enter")) {
+      if (canExpand) {
+        event.preventDefault();
+        event.stopPropagation();
+        setBig((value) => !value);
+      }
+      return;
+    }
+    // Tab cycles inside the dialog instead of reaching the editor behind it.
+    if (event.key !== "Tab") {
+      return;
+    }
+    const focusables = [
+      ...(popRef.current?.querySelectorAll<HTMLElement>(
+        '[tabindex="0"], textarea, input, button:not([disabled])',
+      ) ?? []),
+    ];
+    if (focusables.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const index = focusables.indexOf(document.activeElement as HTMLElement);
+    const next = event.shiftKey
+      ? index <= 0
+        ? focusables.length - 1
+        : index - 1
+      : index === -1 || index === focusables.length - 1
+        ? 0
+        : index + 1;
+    event.preventDefault();
+    focusables[next].focus();
+  }
+
+  if (big && doc !== null) {
+    return (
+      <div className="cell-pop-backdrop big" {...backdrop}>
+        <JsonExplorer
+          doc={doc}
+          stored={typeof value === "string" ? value.trim() : null}
+          title={where}
+          label={label}
+          dialogRef={popRef}
+          onDialogKeyDown={onDialogKeyDown}
+          onCollapse={() => setBig(false)}
+          onClose={onClose}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div
-      className="cell-pop-backdrop"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
-    >
+    <div className="cell-pop-backdrop" {...backdrop}>
       <div
         className="cell-pop"
         ref={popRef}
         style={style}
         role="dialog"
         aria-modal="true"
-        aria-label={t("{column} 값", { column })}
+        aria-label={label}
         tabIndex={-1}
         onContextMenu={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          // Tab cycles inside the popover instead of reaching the editor behind it.
-          if (event.key !== "Tab") {
-            return;
-          }
-          const focusables = [
-            ...(popRef.current?.querySelectorAll<HTMLElement>(
-              '[tabindex="0"], textarea, button:not([disabled])',
-            ) ?? []),
-          ];
-          if (focusables.length === 0) {
-            event.preventDefault();
-            return;
-          }
-          const index = focusables.indexOf(document.activeElement as HTMLElement);
-          const next = event.shiftKey
-            ? index <= 0
-              ? focusables.length - 1
-              : index - 1
-            : index === -1 || index === focusables.length - 1
-              ? 0
-              : index + 1;
-          event.preventDefault();
-          focusables[next].focus();
-        }}
+        onKeyDown={onDialogKeyDown}
       >
         {side !== null ? (
           <span className={`cell-pop-arrow ${side}`} style={{ top: arrowTop }} aria-hidden="true" />
@@ -514,6 +530,7 @@ export function CellInspector({
                       }
                       className={`cell-pop-row${entry.path === current?.path ? " selected" : ""}`}
                       style={{ paddingLeft: 10 + entry.depth * 18 }}
+                      title={entry.kind}
                       onMouseDown={() => setSelected(entry.path)}
                       onDoubleClick={() => {
                         if (entry.kind === "object" || entry.kind === "array") {
@@ -535,12 +552,13 @@ export function CellInspector({
                       ) : (
                         <span className="cell-pop-chevron-space" />
                       )}
-                      <span className={`cell-pop-kind ${entry.kind}`}>{KIND_ICON[entry.kind]}</span>
-                      <span className="cell-pop-key">{entry.key}</span>
-                      {entry.kind === "object" || entry.kind === "array" ? null : (
+                      <span className={`cell-pop-key${entry.index ? " index" : ""}`}>{entry.key}</span>
+                      {entry.kind === "object" || entry.kind === "array" ? (
+                        <span className="cell-pop-size">{containerSize(entry.kind, entry.size)}</span>
+                      ) : (
                         <>
                           <span className="cell-pop-colon">:</span>
-                          <span className={`cell-pop-value ${entry.kind}`}>{inlineValue(entry)}</span>
+                          <span className={`cell-pop-value ${entry.kind}`}>{inlineText(entry.kind, entry.value)}</span>
                         </>
                       )}
                     </div>
@@ -585,11 +603,7 @@ export function CellInspector({
           )}
         </div>
         <div className="cell-pop-foot">
-          <span className="cell-pop-where">
-            {table !== null ? `${table}.` : ""}
-            <strong>{column}</strong>
-            {` · ${t("{count}번째 행", { count: (row + 1).toLocaleString() })}`}
-          </span>
+          <span className="cell-pop-where">{where}</span>
           <span className="spacer" />
           {reference && onOpenReference ? (
             <button type="button" onClick={onOpenReference}>
@@ -610,6 +624,16 @@ export function CellInspector({
           <button type="button" disabled={loading} onClick={() => void copy()}>
             {copied ? t("복사했습니다") : t("복사")}
           </button>
+          {canExpand ? (
+            <button
+              type="button"
+              title={withHint(t("크게 보기"), formatBinding("Mod+Enter"))}
+              onClick={() => setBig(true)}
+            >
+              <ExpandIcon size={10} />
+              {t("크게 보기")}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

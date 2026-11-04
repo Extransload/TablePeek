@@ -6,6 +6,7 @@
   "app": {
     "windows": [],
     "withGlobalTauri": false,
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }

@@ -12,6 +12,15 @@ import {
 } from "./palette";
 import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT, declareFaces } from "./fonts";
 import { setLanguage, type Language } from "./i18n";
+import {
+  applyMaterial,
+  MATERIAL_BLUR_MAX,
+  MATERIALS,
+  seeThrough,
+  seeThroughColors,
+  subscribeMaterial,
+  type Material,
+} from "./material";
 import * as uiState from "./persist";
 import { KEYMAP_VERSION, normalizeKeymap, type Keymap } from "./shortcuts";
 import {
@@ -37,6 +46,11 @@ export interface AppSettings {
   language: Language;
   theme: ThemeMode;
   accent: string;
+  // The window material (see material.ts): how opaque the background is
+  // (0–100) over what shows through, and a clear surface's blur (points).
+  material: Material;
+  materialOpacity: number;
+  materialBlur: number;
   // Fonts and sizes (px) in three places, as TablePlus has them; menus,
   // tabs, toolbars and dialogs keep the system's font at its usual size.
   // The SQL editor's, the console's and code shown elsewhere.
@@ -95,6 +109,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: "ko",
   theme: "dark",
   accent: "#4082ee",
+  material: "solid",
+  materialOpacity: 80,
+  materialBlur: 20,
   fontFamily: SYSTEM_CODE_FONT,
   fontSize: 12,
   gridFontFamily: SYSTEM_CODE_FONT,
@@ -152,6 +169,9 @@ function readSettings(): AppSettings {
       ...parsed,
       language: parsed.language === "en" ? "en" : "ko",
       theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
+      material: MATERIALS.includes(parsed.material as Material) ? (parsed.material as Material) : DEFAULT_SETTINGS.material,
+      materialOpacity: Math.round(clampSize(parsed.materialOpacity, 0, 100, DEFAULT_SETTINGS.materialOpacity)),
+      materialBlur: Math.round(clampSize(parsed.materialBlur, 0, MATERIAL_BLUR_MAX, DEFAULT_SETTINGS.materialBlur)),
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
       syntaxColors: readColorPicks(parsed.syntaxColors, SYNTAX_COLOR_KEYS),
       gridColors: readColorPicks(parsed.gridColors, GRID_COLOR_KEYS),
@@ -250,7 +270,10 @@ export function applySettings(settings: AppSettings): void {
   const root = document.documentElement;
   setLanguage(settings.language);
   const theme = themeById(settings.theme);
-  const palette = themePalette(theme, settings);
+  const opaque = themePalette(theme, settings);
+  // In a see-through window the page's own surfaces take the picked opacity;
+  // the colours mixed from them below stay those of the opaque ones.
+  const palette = seeThrough(settings) ? seeThroughColors(opaque, settings) : opaque;
   applyPalette(palette);
   root.dataset.theme = theme.id;
   root.dataset.mode = theme.mode;
@@ -259,7 +282,7 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--panel", palette.panel);
   root.style.setProperty("--head", palette.head);
   root.style.setProperty("--line", palette.line);
-  root.style.setProperty("--line-soft", mixHex(palette.line, palette.bg, 0.4));
+  root.style.setProperty("--line-soft", mixHex(opaque.line, opaque.bg, 0.4));
   root.style.setProperty("--ink", palette.ink);
   root.style.setProperty("--muted", palette.muted);
   root.style.setProperty("--faint", palette.faint);
@@ -273,7 +296,7 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--warn", palette.warn);
   root.style.setProperty("--btn", palette.btn);
   root.style.setProperty("--btn-hover", palette.btnHover);
-  root.style.setProperty("--scrollbar", mixHex(palette.faint, palette.bg, 0.25));
+  root.style.setProperty("--scrollbar", mixHex(opaque.faint, opaque.bg, 0.25));
   root.style.setProperty("--scrollbar-hover", palette.muted);
   root.style.setProperty("--hover-fill", palette.hoverFill);
   declareFaces([settings.fontFamily, settings.gridFontFamily, settings.sidebarFontFamily]);
@@ -300,6 +323,7 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--type-null", palette.nullInk);
   root.classList.toggle("scrollbar-x-always", settings.scrollbarX);
   root.classList.toggle("scrollbar-y-always", settings.scrollbarY);
+  applyMaterial(settings, { ...opaque, mode: theme.mode });
   window.dispatchEvent(new CustomEvent("tablepeek:theme"));
 }
 
@@ -384,3 +408,19 @@ export function setPasscodeHash(hash: string | null): void {
 }
 
 applySettings(current);
+// The window turned out see-through or not, or the system's "reduce
+// transparency" changed: the material is drawn again.
+subscribeMaterial(() => applySettings(current));
+// Another window changed the settings: this one follows, so every window
+// draws (and asks the desktop app for) the same look. Only saveSettings
+// writes them back, so following never echoes a change.
+uiState.subscribeChangesElsewhere((key) => {
+  if (key !== STORAGE_KEY) {
+    return;
+  }
+  current = readSettings();
+  applySettings(current);
+  for (const listener of listeners) {
+    listener(current);
+  }
+});
