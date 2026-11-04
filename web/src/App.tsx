@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -67,7 +68,9 @@ import { OverviewPanel } from "./components/OverviewPanel";
 import { ErDiagram } from "./components/ErDiagram";
 import { CellInspector, type CellAnchor, type FkReference } from "./components/CellInspector";
 import { RowDetailPanel } from "./components/RowDetailPanel";
+import { usePanelMotion } from "./components/panelMotion";
 import { ResultBar, StatementMessages, statementStatus, type ResultView, type ShownResult, type StatementMessage } from "./components/ResultBar";
+import { RollingNumber } from "./components/RollingNumber";
 import { AnalysisPane } from "./components/AnalysisPane";
 import { LoadingState, Spinner } from "./components/Spinner";
 import { SchemaSidebar, type TableAction } from "./components/SchemaSidebar";
@@ -705,6 +708,21 @@ export default function App() {
   // The detail column while a document or search tab fills it: their views
   // portal what they have selected into this element (DocDetailPanel).
   const [docSlot, setDocSlot] = useState<HTMLElement | null>(null);
+  // Those columns slide in and out as RowDetailPanel's does. A ref that
+  // returns a cleanup is never called with null, so the cleanup clears the
+  // slot itself.
+  const detailMotion = usePanelMotion("right");
+  const docSlotRef = useCallback(
+    (element: HTMLElement | null) => {
+      setDocSlot(element);
+      const leave = detailMotion(element);
+      return () => {
+        setDocSlot(null);
+        leave?.();
+      };
+    },
+    [detailMotion],
+  );
   const [splitSide, setSplitSide] = useState<"bottom" | "right">(() =>
     uiState.getItem("tablepeek.split-side") === "right" ? "right" : "bottom",
   );
@@ -5486,7 +5504,8 @@ export default function App() {
         paletteOpenRef.current ||
         cellQuickLookRef.current !== null ||
         lockedRef.current ||
-        document.querySelector(".modal-backdrop") !== null
+        // A closed dialog's copy playing its exit (overlayMotion.ts) isn't one.
+        document.querySelector(".modal-backdrop:not(.motion-ghost, .motion-ghost *)") !== null
       );
     }
     function onKeyDown(event: KeyboardEvent): void {
@@ -5516,7 +5535,7 @@ export default function App() {
         /^Digit[1-9]$/.test(event.code) &&
         !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
         !(target?.closest(".cm-editor") != null && /^[\x20-\x7E]$/.test(event.key)) &&
-        document.querySelector(".context-menu") === null &&
+        document.querySelector(".context-menu:not(.motion-ghost, .motion-ghost *)") === null &&
         !modalOpen() &&
         tabAtRef.current(Number(event.code.slice(5)))
       ) {
@@ -6022,7 +6041,7 @@ export default function App() {
                   onClick={() => setJobsOpen(true)}
                 >
                   <JobsIcon size={13} />
-                  <span className="toolbar-badge">{jobsRunning}</span>
+                  <RollingNumber className="toolbar-badge" value={jobsRunning} />
                 </button>
               ) : null}
               {/* An open transaction (BEGIN in the editor, or Run in transaction)
@@ -6317,7 +6336,7 @@ export default function App() {
                       })}
                     >
                       <span className="pending-dot" aria-hidden="true" />
-                      {t("변경 {count}건", { count: pendingSummary.total })}
+                      <RollingNumber value={t("변경 {count}건", { count: pendingSummary.total })} />
                     </span>
                     <button
                       type="button"
@@ -6893,6 +6912,7 @@ export default function App() {
                           view={paneView}
                           planAvailable={planAvailable}
                           shown={shownResult}
+                          running={connRunning && runningTabId === activeQueryTab.id}
                           canExport={state.result !== null && state.result.meta.columns.length > 0}
                           onView={(view) => {
                             if (view === "grid" || view === "chart" || view === "pivot") {
@@ -6954,9 +6974,9 @@ export default function App() {
                   // A document or search tab's views portal their selection
                   // here; the other tabs of those connections have none.
                   activeTab !== null && Object.hasOwn(DOC_PANEL_TABS, activeTab.kind) ? (
-                    <aside key="slot" ref={setDocSlot} className="row-detail mg-detail" aria-label={t("행 상세")} />
+                    <aside key="slot" ref={docSlotRef} className="row-detail mg-detail" aria-label={t("행 상세")} />
                   ) : (
-                    <aside key="none" className="row-detail mg-detail" aria-label={t("행 상세")}>
+                    <aside key="none" ref={detailMotion} className="row-detail mg-detail" aria-label={t("행 상세")}>
                       <div className="panel-empty mg-detail-empty">{t("이 탭에는 보여 줄 상세 정보가 없습니다")}</div>
                     </aside>
                   )

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { migrateGroupNames } from "./connGroups";
 import { applyServerEngines } from "./engines";
+import { installOverlayMotion } from "./overlayMotion";
 import { installScrollbars } from "./scrollbars";
 import { store } from "./store";
 import "./styles.css";
@@ -10,6 +11,7 @@ import "./styles.css";
 // Group names from older versions become groups once, before anything renders.
 migrateGroupNames();
 installScrollbars();
+installOverlayMotion();
 
 function render(): void {
   createRoot(document.getElementById("root")!).render(

@@ -10,11 +10,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { CheckIcon } from "./icons";
+import { useMenuPreview } from "./menuPreview";
 
 // A <select> whose list opens as one of TablePeek's menus instead of the
 // system's box. The field itself stays a native select (its size, styles,
 // typing to pick, and the form value), and the list is read from its own
-// <option> and <optgroup> children, so it drops in for `select`.
+// <option> and <optgroup> children, so it drops in for `select`. With
+// `onPreview` the highlighted option is shown until one is picked or the
+// list closes (see menuPreview).
 
 type Entry =
   | { kind: "group"; label: string }
@@ -72,6 +75,27 @@ function step(entries: Entry[], from: number, by: number): number {
   return found;
 }
 
+// Under the field, as wide as it at least; above it when there is more room there.
+function placeMenu(select: HTMLSelectElement, menu: HTMLElement): void {
+  const field = select.getBoundingClientRect();
+  // Measured from the corner: a fixed box left near the right edge would
+  // come out narrower than its rows.
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  menu.style.minWidth = `${field.width}px`;
+  const below = window.innerHeight - field.bottom - GAP - EDGE;
+  const above = field.top - GAP - EDGE;
+  const height = Math.min(menu.scrollHeight, MAX_HEIGHT);
+  const upward = height > below && above > below;
+  menu.style.maxHeight = `${Math.max(80, Math.min(MAX_HEIGHT, upward ? above : below))}px`;
+  // Its layout size: following the field while it still scales in, its
+  // drawn box would be smaller.
+  const width = menu.offsetWidth;
+  const tall = menu.offsetHeight;
+  menu.style.left = `${Math.max(EDGE, Math.min(field.left, window.innerWidth - width - EDGE))}px`;
+  menu.style.top = `${upward ? field.top - GAP - tall : field.bottom + GAP}px`;
+}
+
 // Each field's way to open its list, for openSelect.
 const openers = new WeakMap<HTMLSelectElement, () => void>();
 
@@ -82,7 +106,13 @@ export function openSelect(select: HTMLSelectElement): void {
   openers.get(select)?.();
 }
 
-export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+export function Select({
+  onMouseDown,
+  onKeyDown,
+  onPreview,
+  children,
+  ...props
+}: SelectHTMLAttributes<HTMLSelectElement> & { onPreview?(value: string | null): void }) {
   const selectRef = useRef<HTMLSelectElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -90,6 +120,8 @@ export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTM
   const [active, setActive] = useState(-1);
   const typed = useRef({ text: "", at: 0 });
   const listId = useId();
+  const highlighted = entries[active];
+  useMenuPreview(onPreview, open && highlighted?.kind === "option" && !highlighted.disabled ? highlighted.value : null);
 
   function show(): void {
     const select = selectRef.current;
@@ -133,27 +165,10 @@ export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTM
     setEntries(entriesOf(selectRef.current));
   }, [open, children, props.disabled]);
 
-  // Under the field, as wide as it at least; above it when there is more room there.
   useLayoutEffect(() => {
-    const select = selectRef.current;
-    const menu = menuRef.current;
-    if (!open || select === null || menu === null) {
-      return;
+    if (open && selectRef.current !== null && menuRef.current !== null) {
+      placeMenu(selectRef.current, menuRef.current);
     }
-    const field = select.getBoundingClientRect();
-    // Measured from the corner: a fixed box left near the right edge would
-    // come out narrower than its rows.
-    menu.style.left = "0px";
-    menu.style.top = "0px";
-    menu.style.minWidth = `${field.width}px`;
-    const below = window.innerHeight - field.bottom - GAP - EDGE;
-    const above = field.top - GAP - EDGE;
-    const height = Math.min(menu.scrollHeight, MAX_HEIGHT);
-    const upward = height > below && above > below;
-    menu.style.maxHeight = `${Math.max(80, Math.min(MAX_HEIGHT, upward ? above : below))}px`;
-    const size = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(EDGE, Math.min(field.left, window.innerWidth - size.width - EDGE))}px`;
-    menu.style.top = `${upward ? field.top - GAP - size.height : field.bottom + GAP}px`;
   }, [open, entries.length]);
 
   // The highlighted entry stays in sight: centred when the list opens.
@@ -256,6 +271,7 @@ export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTM
     };
   }, []);
 
+  const previews = onPreview !== undefined;
   useEffect(() => {
     if (!open) {
       return;
@@ -266,22 +282,37 @@ export function Select({ onMouseDown, onKeyDown, children, ...props }: SelectHTM
         handlers.current.hide(false);
       }
     };
+    // A preview redraws the app under the list (a bigger font moves the
+    // field and scrolls what holds it): the list follows the field, and
+    // only the wheel turned elsewhere closes it.
+    const follow = (event: Event) => {
+      if (selectRef.current !== null && menuRef.current !== null && !menuRef.current.contains(event.target as Node)) {
+        placeMenu(selectRef.current, menuRef.current);
+      }
+    };
     const key = (event: globalThis.KeyboardEvent) => handlers.current.onMenuKey(event);
     const close = () => handlers.current.hide(false);
-    document.addEventListener("pointerdown", outside, true);
     // Scrolling anything but the list moves the field away from it.
-    document.addEventListener("scroll", outside, true);
+    const scrolled = previews ? follow : outside;
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("scroll", scrolled, true);
+    if (previews) {
+      document.addEventListener("wheel", outside, { capture: true, passive: true });
+      window.addEventListener("tablepeek:theme", follow);
+    }
     window.addEventListener("keydown", key, true);
     window.addEventListener("blur", close);
     window.addEventListener("resize", close);
     return () => {
       document.removeEventListener("pointerdown", outside, true);
-      document.removeEventListener("scroll", outside, true);
+      document.removeEventListener("scroll", scrolled, true);
+      document.removeEventListener("wheel", outside, true);
+      window.removeEventListener("tablepeek:theme", follow);
       window.removeEventListener("keydown", key, true);
       window.removeEventListener("blur", close);
       window.removeEventListener("resize", close);
     };
-  }, [open]);
+  }, [open, previews]);
 
   function onFieldMouseDown(event: MouseEvent<HTMLSelectElement>): void {
     onMouseDown?.(event);

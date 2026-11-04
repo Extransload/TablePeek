@@ -3,13 +3,16 @@ import { createPortal } from "react-dom";
 import { t } from "../../i18n";
 import { THEMES, type Theme, type ThemeId } from "../../palette";
 import { fontListLabel, pickedFace, SYSTEM_FONT_CHOICES, type FontGroup } from "../../fonts";
+import { previewSettings, type AppSettings } from "../../settings";
 import { ChevronDownIcon } from "../icons";
 import { Select } from "../Select";
 import { Picker, type PickerItem } from "./Picker";
 import { SettingRow } from "./rows";
 
 // The settings rows that open a picker (a theme, a font), and the sizes
-// beside the fonts.
+// beside the fonts. Each draws the app with the choice highlighted in its
+// menu (the settings `preview` makes of it) until one is picked or the menu
+// closes.
 
 // A row's picker button and whether its picker is open. Closing it puts the
 // keys back on the row, as Esc from any control does (not after a click
@@ -49,6 +52,7 @@ export function ThemeRow({
   defaultValue,
   tern,
   onPick,
+  preview,
   onImport,
   onRemove,
 }: {
@@ -59,6 +63,7 @@ export function ThemeRow({
   // Whether Tern's themes are in yet.
   tern: "loading" | "ready" | "failed";
   onPick(id: ThemeId): void;
+  preview(id: ThemeId): Partial<AppSettings>;
   onImport(file: File): void;
   onRemove(theme: Theme): void;
 }) {
@@ -125,6 +130,7 @@ export function ThemeRow({
             close(true);
             onPick(id);
           }}
+          onPreview={(id) => previewSettings(id === null ? null : preview(id))}
           onClose={close}
         />
       ) : null}
@@ -163,6 +169,7 @@ export function FontRow({
   follow,
   groups,
   onChange,
+  preview,
 }: {
   label: string;
   keywords: string;
@@ -172,6 +179,7 @@ export function FontRow({
   follow: { label: string; value?: string };
   groups: FontGroup[];
   onChange(value: string): void;
+  preview(value: string): Partial<AppSettings>;
 }) {
   const { buttonRef, open, setOpen, close } = usePicker();
   const systems = SYSTEM_FONT_CHOICES.filter((choice) => choice.value !== follow.value);
@@ -223,6 +231,7 @@ export function FontRow({
             close(true);
             onChange(picked);
           }}
+          onPreview={(highlighted) => previewSettings(highlighted === null ? null : preview(highlighted))}
           onClose={close}
         />
       ) : null}
@@ -242,6 +251,7 @@ export function SizeRow({
   max,
   defaultValue,
   onChange,
+  preview,
 }: {
   label: string;
   keywords: string;
@@ -251,6 +261,7 @@ export function SizeRow({
   max: number;
   defaultValue: number | null;
   onChange(size: number | null): void;
+  preview(size: number | null): Partial<AppSettings>;
 }) {
   const sizes = Array.from({ length: max - min + 1 }, (_, index) => min + index);
   if (value !== null && !sizes.includes(value)) {
@@ -263,6 +274,9 @@ export function SizeRow({
         aria-label={t(label)}
         value={value === null ? "" : String(value)}
         onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}
+        onPreview={(picked) =>
+          previewSettings(picked === null ? null : preview(picked === "" ? null : Number(picked)))
+        }
       >
         {follows !== null ? <option value="">{t("따름 · {size}px", { size: follows })}</option> : null}
         {sizes.map((size) => (

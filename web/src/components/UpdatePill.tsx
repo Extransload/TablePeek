@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { t } from "../i18n";
 import {
   configureUpdate,
@@ -74,7 +74,18 @@ export function UpdatePill({ className }: { className?: string }) {
         }}
       >
         {busy ? <Spinner size={10} /> : <RefreshIcon size={11} />}
-        <span className="update-pill-label">{label}</span>
+        {/* Keyed by its words, so each new label comes into focus word by word. */}
+        <span key={label} className="update-pill-label">
+          {label.split(/(\s+)/).map((word, index) =>
+            index % 2 === 1 ? (
+              word
+            ) : (
+              <span key={index} className="update-pill-word" style={{ "--word": index / 2 } as CSSProperties}>
+                {word}
+              </span>
+            ),
+          )}
+        </span>
       </button>
       {menu !== null ? (
         <ContextMenu

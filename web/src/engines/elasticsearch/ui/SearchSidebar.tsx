@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore, type ReactElement }
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { ChevronIcon, EyeIcon, LinkIcon, ListIcon, MoreIcon, SearchIcon } from "../../../components/icons";
+import { RollingNumber } from "../../../components/RollingNumber";
 import { LoadingState, Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
@@ -260,7 +261,7 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
             <ChevronIcon size={10} />
           </span>
           <span className="schema-section-label">{label}</span>
-          <span className="schema-section-count">{count}</span>
+          <RollingNumber className="schema-section-count" value={count} />
         </div>
         {isOpen ? body : null}
       </div>

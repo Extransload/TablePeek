@@ -1,6 +1,6 @@
 import type { RowSource, RowState } from "./rowSource";
 import { palette } from "../palette";
-import { drawnFonts, getSettings } from "../settings";
+import { drawnFonts, drawnSettings } from "../settings";
 import { classifyCell } from "./valueKind";
 import { edgeScrollStep } from "./edgeScroll";
 import { isDateKind, type CellKind, type GridColumnSpec } from "./columns";
@@ -37,7 +37,7 @@ let SCALE = 0;
 let FAMILY = "";
 
 function syncScale(): void {
-  const { gridSize: size, grid: family } = drawnFonts(getSettings());
+  const { gridSize: size, grid: family } = drawnFonts(drawnSettings());
   const scale = size / BASE_FONT_PX;
   if (scale === SCALE && family === FAMILY) {
     return;
@@ -1118,7 +1118,7 @@ export class CanvasGrid {
     while (endCol < colCount && gutterW + this.offsets[endCol] - virtualX < w) {
       endCol++;
     }
-    const settings = getSettings();
+    const settings = drawnSettings();
     const colorsEnabled = settings.typeColors;
     const rowAlt = settings.rowAlt;
     const rowStateOf = src.rowState ? (r: number) => src.rowState!(r) : null;

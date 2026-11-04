@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { flushSync } from "react-dom";
 import type { ConnGroup } from "../connGroups";
 import { orderConnections, type ConnMeta } from "../connMeta";
 import { t } from "../i18n";
@@ -7,7 +8,9 @@ import { basename, fillTemplate, templateValues } from "../engines/connection";
 import type { ConnSummary, SavedConnection } from "../store";
 import { DriverIcon } from "./DriverIcon";
 import { ChevronIcon, CloseIcon, ExternalIcon, FolderIcon } from "./icons";
+import { RollingNumber } from "./RollingNumber";
 import { Spinner } from "./Spinner";
+import { DURATION, EASE, animate, flip, ghost, measure, reducedMotion, unhook, type Rects } from "../motion";
 
 export type ListTarget =
   | { kind: "saved"; saved: SavedConnection; groupId: string }
@@ -38,14 +41,11 @@ function sameSpot(a: Spot | RowSpot | null, b: Spot | RowSpot | null): boolean {
   return a.id === b.id && a.after === b.after && ("groupId" in a ? a.groupId : "") === ("groupId" in b ? b.groupId : "");
 }
 
-// The slot a pointer at `y` falls in among `elements`, top to bottom: before
-// the first whose middle is below it, else after the last.
-function slotAt(elements: HTMLElement[], y: number): number {
-  const slot = elements.findIndex((element) => {
-    const box = element.getBoundingClientRect();
-    return y < box.top + box.height / 2;
-  });
-  return slot < 0 ? elements.length : slot;
+// The slot a pointer at `y` falls in among items whose middles are `mids`,
+// top to bottom: before the first whose middle is below it, else after the last.
+function slotAt(mids: number[], y: number): number {
+  const slot = mids.findIndex((mid) => y < mid);
+  return slot < 0 ? mids.length : slot;
 }
 
 // The spot that slot marks among `ids`; null when it leaves `self` where it is.
@@ -54,6 +54,94 @@ function spotAt(ids: string[], slot: number, self: string | null): Spot | null {
     return null;
   }
   return slot < ids.length ? { id: ids[slot], after: false } : { id: ids[slot - 1], after: true };
+}
+
+// What's being dragged: a saved connection, or a group (by its header).
+interface Drag {
+  kind: "row" | "group";
+  id: string;
+}
+
+// The list as a drag found it, in its scrolled content's coordinates. Drop
+// spots are worked out against where things were, not where the opening gap
+// has pushed them, so the gap always opens under the card.
+interface Layout {
+  zones: { groupId: string; bottom: number; rows: { id: string; mid: number }[] }[];
+  groups: { id: string; mid: number }[];
+}
+
+function layoutOf(list: HTMLElement): Layout {
+  const middle = (element: HTMLElement) => element.offsetTop + element.offsetHeight / 2;
+  return {
+    zones: [...list.querySelectorAll<HTMLElement>("[data-group-id]")].map((zone) => ({
+      groupId: zone.dataset.groupId ?? "",
+      bottom: zone.offsetTop + zone.offsetHeight,
+      rows: [...zone.querySelectorAll<HTMLElement>("[data-saved-id]")].map((row) => ({
+        id: row.dataset.savedId ?? "",
+        mid: middle(row),
+      })),
+    })),
+    groups: [...list.querySelectorAll<HTMLElement>(".launcher-group[data-group-id]")].map((section) => ({
+      id: section.dataset.groupId ?? "",
+      mid: middle(section),
+    })),
+  };
+}
+
+// The card that follows the pointer: a copy of the row (or group header)
+// above the page, moved by `mover`, lifted and leaning by `tilt`.
+interface Lift {
+  layer: HTMLElement;
+  mover: HTMLElement;
+  tilt: HTMLElement;
+  shadow: HTMLElement;
+  card: HTMLElement;
+  // Where the pointer holds it, and its height (its middle aims the drop).
+  grabX: number;
+  grabY: number;
+  height: number;
+  // Sideways speed, smoothed, and the lean it gives.
+  lastX: number;
+  swing: number;
+  lean: number;
+}
+
+// A press on a row or group header, a drag once it has moved far enough.
+interface Session {
+  drag: Drag;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  source: HTMLElement;
+  // The group the dragged row comes from ("" for none).
+  origin: string;
+  stacked: boolean;
+  lift: Lift | null;
+  layout: Layout | null;
+  spot: Spot | RowSpot | null;
+  frame: number;
+  unlisten(): void;
+}
+
+// How far a press moves before it's a drag rather than a click.
+const DRAG_SLOP = 4;
+// How far past the list the pointer may stray and still aim at it.
+const DROP_SLACK = 24;
+const LIFTED = "scale(1.035) rotate(-1.2deg)";
+// Everything that moves when the list rearranges: rows, headers, hints (not
+// the copies of ones on their way out).
+const LEAVES = ".launcher-row:not(.motion-ghost), .launcher-group-head:not(.motion-ghost), .launcher-drop-hint";
+
+function flipKey(element: HTMLElement): string | undefined {
+  return element.dataset.flip;
+}
+
+function div(className: string): HTMLDivElement {
+  const element = document.createElement("div");
+  element.className = className;
+  return element;
 }
 
 interface HomeConnectionListProps {
@@ -200,12 +288,20 @@ export function HomeConnectionList({
   onMoveConnection,
   onMoveGroup,
 }: HomeConnectionListProps) {
-  // Saved connection being dragged, and where it would land.
-  const [dragId, setDragId] = useState<string | null>(null);
+  // What's being dragged, and where it would land (null: back where it was).
+  const [drag, setDrag] = useState<Drag | null>(null);
   const [rowSpot, setRowSpot] = useState<RowSpot | null>(null);
-  // Group being dragged to a new place, and where it would land.
-  const [dragGroupId, setDragGroupId] = useState<string | null>(null);
   const [groupSpot, setGroupSpot] = useState<Spot | null>(null);
+  // A dropped row or group ("row:<id>", "group:<id>") hidden while its card lands on it.
+  const [settling, setSettling] = useState<string | null>(null);
+  const dragRow = drag?.kind === "row" ? drag.id : null;
+  const dragGroup = drag?.kind === "group" ? drag.id : null;
+  const session = useRef<Session | null>(null);
+  // Cards still landing, taken away if the list goes first.
+  const layers = useRef(new Set<HTMLElement>());
+  // Where things were just before a change, to move them from there once
+  // it's drawn; and copies of the rows it takes away, to see them out.
+  const pending = useRef<{ rects: Rects; leaving: (() => void)[]; at: number } | null>(null);
   // The row or group header ⌥↑↓ just moved, focused again once it's re-rendered.
   const refocus = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -213,7 +309,30 @@ export function HomeConnectionList({
       containerRef.current?.querySelector<HTMLElement>(refocus.current)?.focus();
       refocus.current = null;
     }
+    const plan = pending.current;
+    const list = containerRef.current;
+    pending.current = null;
+    // A plan nothing re-rendered for straight away is stale.
+    if (plan === null || list === null || performance.now() - plan.at > 150) {
+      return;
+    }
+    flip(list.querySelectorAll<HTMLElement>(LEAVES), flipKey, plan.rects, { onEnter: arrive });
+    for (const play of plan.leaving) {
+      play();
+    }
   });
+  useEffect(() => {
+    const cards = layers.current;
+    return () => {
+      session.current?.unlisten();
+      session.current?.lift?.layer.remove();
+      session.current = null;
+      document.documentElement.classList.remove("launcher-dragging");
+      for (const layer of cards) {
+        layer.remove();
+      }
+    };
+  }, []);
   const needle = query.trim().toLowerCase();
   const searching = needle !== "";
   // Groups folded during the current search only; the saved state returns when it clears.
@@ -233,8 +352,56 @@ export function HomeConnectionList({
     group,
     members: ordered.filter((connection) => metaById[connection.id]?.group === group.id),
   }));
+  // What a drag (running from window listeners) reads of the latest render.
+  const latest = useRef({ allUngrouped, grouped, onMoveConnection, onMoveGroup });
+  latest.current = { allUngrouped, grouped, onMoveConnection, onMoveGroup };
+
+  // Notes where everything is before a change that rearranges the list; the
+  // render it causes moves them on from there (rows and headers glide, new
+  // ones fade in, `leaving` ones fade out).
+  function prepareMotion(leaving: HTMLElement[] = []): void {
+    const list = containerRef.current;
+    if (list === null || reducedMotion()) {
+      return;
+    }
+    pending.current = {
+      rects: measure(list.querySelectorAll<HTMLElement>(LEAVES), flipKey),
+      leaving: leaving.map((element) =>
+        ghost(element, [{ opacity: 1 }, { opacity: 0, transform: "translateY(-6px) scale(0.98)" }], {
+          duration: DURATION.base,
+          easing: EASE.out,
+        }),
+      ),
+      at: performance.now(),
+    };
+  }
+
+  // How something new in the list arrives: the gap a drag opens swells in,
+  // rows a group unfolds drop in one after another.
+  function arrive(element: HTMLElement, index: number): void {
+    if (element.closest(".is-settling") !== null) {
+      return;
+    }
+    if (element.closest(".is-placeholder") !== null) {
+      animate(element, [{ opacity: 0, transform: "scale(0.94)" }, { opacity: 1, transform: "none" }], {
+        duration: DURATION.slow,
+        easing: EASE.spring,
+      });
+      return;
+    }
+    animate(element, [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }], {
+      duration: DURATION.slow,
+      easing: EASE.out,
+      delay: Math.min(index, 10) * 18,
+      fill: "backwards",
+    });
+  }
 
   function toggleGroup(group: ConnGroup): void {
+    const section = containerRef.current?.querySelector<HTMLElement>(
+      `.launcher-group[data-group-id="${CSS.escape(group.id)}"]`,
+    );
+    prepareMotion([...(section?.querySelectorAll<HTMLElement>(".launcher-row") ?? [])]);
     if (!searching) {
       onToggleGroup(group);
       return;
@@ -297,6 +464,7 @@ export function HomeConnectionList({
       const other = rows[rows.indexOf(focused) + (up ? -1 : 1)]?.dataset.savedId;
       if (other !== undefined) {
         refocus.current = `[data-saved-id="${CSS.escape(savedId)}"]`;
+        prepareMotion();
         onMoveConnection(savedId, zone.dataset.groupId ?? "", other, !up);
       }
       return;
@@ -307,96 +475,322 @@ export function HomeConnectionList({
       const other = sections[sections.indexOf(zone) + (up ? -1 : 1)]?.dataset.groupId;
       if (other !== undefined) {
         refocus.current = `.launcher-group[data-group-id="${CSS.escape(groupId)}"] > .launcher-group-head`;
+        prepareMotion();
         onMoveGroup(groupId, other, !up);
       }
     }
   }
 
-  function endDrag(): void {
-    setDragId(null);
-    setRowSpot(null);
-    setDragGroupId(null);
-    setGroupSpot(null);
-  }
-
-  // Where a dragged group lands: by the pointer's height against the groups'
+  // Where a dragged group lands: by the card's height against the groups'
   // middles, so above the first one (over the connections outside any
   // group too) is the top and below the last one the bottom.
-  function groupSpotAt(y: number): Spot | null {
-    const sections = [...(containerRef.current?.querySelectorAll<HTMLElement>(".launcher-group[data-group-id]") ?? [])];
+  function groupSpotAt(layout: Layout, y: number, self: string): Spot | null {
     return spotAt(
-      sections.map((section) => section.dataset.groupId ?? ""),
-      slotAt(sections, y),
-      dragGroupId,
+      layout.groups.map((group) => group.id),
+      slotAt(
+        layout.groups.map((group) => group.mid),
+        y,
+      ),
+      self,
     );
   }
 
   // Where a dragged connection lands: in the group (or the place for none)
-  // under the pointer, the next one down in a gap, the last one below them
-  // all; there, by the pointer's height against its rows' middles. A group
+  // under the card, the next one down in a gap, the last one below them
+  // all; there, by the card's height against its rows' middles. A group
   // showing none of its rows (folded, or empty) takes it on top.
-  function rowSpotAt(y: number): RowSpot | null {
-    const zones = [...(containerRef.current?.querySelectorAll<HTMLElement>("[data-group-id]") ?? [])];
-    const zone = zones.find((element) => y < element.getBoundingClientRect().bottom) ?? zones.at(-1);
+  function rowSpotAt(layout: Layout, y: number, self: string): RowSpot | null {
+    const zone = layout.zones.find((entry) => y < entry.bottom) ?? layout.zones.at(-1);
     if (zone === undefined) {
       return null;
     }
-    const groupId = zone.dataset.groupId ?? "";
-    const rows = [...zone.querySelectorAll<HTMLElement>("[data-saved-id]")];
-    if (rows.length === 0) {
-      const members = groupId === "" ? allUngrouped : (grouped.find((entry) => entry.group.id === groupId)?.members ?? []);
-      const first = members.find((connection) => connection.id !== dragId);
-      return { groupId, id: first?.id ?? null, after: false };
+    if (zone.rows.length === 0) {
+      const { allUngrouped: none, grouped: all } = latest.current;
+      const members = zone.groupId === "" ? none : (all.find((entry) => entry.group.id === zone.groupId)?.members ?? []);
+      const first = members.find((connection) => connection.id !== self);
+      return { groupId: zone.groupId, id: first?.id ?? null, after: false };
     }
     const spot = spotAt(
-      rows.map((row) => row.dataset.savedId ?? ""),
-      slotAt(rows, y),
-      dragId,
+      zone.rows.map((row) => row.id),
+      slotAt(
+        zone.rows.map((row) => row.mid),
+        y,
+      ),
+      self,
     );
-    return spot === null ? null : { groupId, ...spot };
+    return spot === null ? null : { groupId: zone.groupId, ...spot };
   }
 
-  const dropHandlers = {
-    onDragOver(event: DragEvent<HTMLElement>) {
-      if (dragGroupId === null && dragId === null) {
+  // A press on a row or group header: a click unless it moves, then a drag
+  // (pointer-driven, so the card, the gap and the landing are all ours).
+  function press(event: PointerEvent<HTMLElement>, target: Drag): void {
+    if (
+      event.button !== 0 ||
+      event.pointerType === "touch" ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      session.current !== null ||
+      (event.target as Element).closest("button") !== null
+    ) {
+      return;
+    }
+    const move = (e: globalThis.PointerEvent) => follow(e);
+    const up = (e: globalThis.PointerEvent) => release(e.pointerId, false);
+    const cancel = (e: globalThis.PointerEvent) => release(e.pointerId, true);
+    const key = (e: globalThis.KeyboardEvent) => {
+      const current = session.current;
+      if (e.key === "Escape" && current?.lift) {
+        e.preventDefault();
+        e.stopPropagation();
+        release(current.pointerId, true);
+      }
+    };
+    const blur = () => {
+      if (session.current !== null) {
+        release(session.current.pointerId, true);
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", key, true);
+    window.addEventListener("blur", blur);
+    const { grouped: all } = latest.current;
+    session.current = {
+      drag: target,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+      source: event.currentTarget,
+      origin: event.currentTarget.closest<HTMLElement>("[data-group-id]")?.dataset.groupId ?? "",
+      stacked: target.kind === "group" && (all.find((entry) => entry.group.id === target.id)?.members.length ?? 0) > 0,
+      lift: null,
+      layout: null,
+      spot: null,
+      frame: 0,
+      unlisten() {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", cancel);
+        window.removeEventListener("keydown", key, true);
+        window.removeEventListener("blur", blur);
+      },
+    };
+  }
+
+  function follow(event: globalThis.PointerEvent): void {
+    const current = session.current;
+    if (current === null || event.pointerId !== current.pointerId) {
+      return;
+    }
+    current.x = event.clientX;
+    current.y = event.clientY;
+    if (current.lift === null && Math.hypot(current.x - current.startX, current.y - current.startY) >= DRAG_SLOP) {
+      pickUp(current);
+    }
+  }
+
+  // The row (or header) comes up off the list as a card under the pointer;
+  // its place stays open as the gap, which then goes where it would land.
+  function pickUp(current: Session): void {
+    const list = containerRef.current;
+    if (list === null) {
+      return;
+    }
+    window.getSelection()?.removeAllRanges();
+    const rect = current.source.getBoundingClientRect();
+    const grabX = current.startX - rect.left;
+    const grabY = current.startY - rect.top;
+    const layer = div("launcher-drag-layer");
+    const mover = div(`launcher-drag-lift${current.stacked ? " has-stack" : ""}`);
+    const tilt = div("launcher-drag-tilt");
+    const shadow = div("launcher-drag-shadow");
+    const card = current.source.cloneNode(true) as HTMLElement;
+    unhook(card);
+    card.classList.add("launcher-drag-card");
+    mover.style.width = `${rect.width}px`;
+    mover.style.transformOrigin = `${grabX}px ${grabY}px`;
+    mover.style.transform = `translate3d(${rect.left}px, ${rect.top}px, 0)`;
+    tilt.style.transformOrigin = `${grabX}px ${grabY}px`;
+    tilt.style.transform = LIFTED;
+    tilt.append(shadow, card);
+    mover.append(tilt);
+    layer.append(mover);
+    document.body.append(layer);
+    animate(tilt, [{ transform: "none" }, { transform: LIFTED }], { duration: DURATION.spring, easing: EASE.springBouncy });
+    animate(shadow, [{ opacity: 0 }, { opacity: 1 }], { duration: DURATION.slow, easing: EASE.out });
+    current.lift = { layer, mover, tilt, shadow, card, grabX, grabY, height: rect.height, lastX: current.x, swing: 0, lean: 0 };
+    document.documentElement.classList.add("launcher-dragging");
+    prepareMotion();
+    flushSync(() => setDrag(current.drag));
+    current.layout = layoutOf(list);
+    current.frame = requestAnimationFrame(tick);
+  }
+
+  // Each frame of a drag: the card follows the pointer, leaning into
+  // sideways moves; the list scrolls at its edges; the gap follows the card.
+  function tick(): void {
+    const current = session.current;
+    const list = containerRef.current;
+    if (current?.lift == null || list === null) {
+      return;
+    }
+    const lift = current.lift;
+    lift.swing = lift.swing * 0.8 + (current.x - lift.lastX) * 0.2;
+    lift.lastX = current.x;
+    const lean = reducedMotion() ? 0 : Math.max(-7, Math.min(7, lift.swing * 0.7));
+    lift.lean += (lean - lift.lean) * 0.2;
+    lift.mover.style.transform = `translate3d(${current.x - lift.grabX}px, ${current.y - lift.grabY}px, 0) rotate(${lift.lean.toFixed(2)}deg)`;
+    const box = list.getBoundingClientRect();
+    const edge = 40;
+    const over = current.y < box.top + edge ? current.y - box.top - edge : current.y > box.bottom - edge ? current.y - box.bottom + edge : 0;
+    if (over !== 0 && current.x >= box.left && current.x <= box.right) {
+      list.scrollTop += Math.sign(over) * Math.min(18, Math.ceil(Math.abs(over) / 3));
+    }
+    const outside =
+      current.x < box.left - DROP_SLACK ||
+      current.x > box.right + DROP_SLACK ||
+      current.y < box.top - DROP_SLACK ||
+      current.y > box.bottom + DROP_SLACK;
+    const y = current.y - lift.grabY + lift.height / 2 - box.top - list.clientTop + list.scrollTop;
+    const spot =
+      outside || current.layout === null
+        ? null
+        : current.drag.kind === "group"
+          ? groupSpotAt(current.layout, y, current.drag.id)
+          : rowSpotAt(current.layout, y, current.drag.id);
+    if (!sameSpot(spot, current.spot)) {
+      current.spot = spot;
+      if (current.drag.kind === "row") {
+        // The card takes on the indent of the place it's over.
+        lift.card.classList.toggle("in-group", (spot !== null && "groupId" in spot ? spot.groupId : current.origin) !== "");
+      }
+      prepareMotion();
+      flushSync(() => {
+        if (current.drag.kind === "group") {
+          setGroupSpot(spot !== null && !("groupId" in spot) ? spot : null);
+        } else {
+          setRowSpot(spot !== null && "groupId" in spot ? spot : null);
+        }
+      });
+      // Over a group that shows no rows the card shrinks back and thins,
+      // letting the group's pulse show through.
+      lift.mover.classList.toggle("is-over-folder", list.querySelector(".drop-target") !== null);
+    }
+    current.frame = requestAnimationFrame(tick);
+  }
+
+  // The pointer lets go (or Esc, or the window loses it): the move happens
+  // at once, and the card settles onto where it went (back, if cancelled).
+  function release(pointerId: number, cancelled: boolean): void {
+    const current = session.current;
+    if (current === null || pointerId !== current.pointerId) {
+      return;
+    }
+    session.current = null;
+    current.unlisten();
+    cancelAnimationFrame(current.frame);
+    document.documentElement.classList.remove("launcher-dragging");
+    const lift = current.lift;
+    if (lift === null) {
+      return;
+    }
+    // The press ends on a row; it isn't a click on it.
+    const swallow = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener("click", swallow, { capture: true, once: true });
+    window.setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+    const spot = cancelled ? null : current.spot;
+    const { drag: moved } = current;
+    prepareMotion();
+    flushSync(() => {
+      if (spot !== null) {
+        if ("groupId" in spot) {
+          latest.current.onMoveConnection(moved.id, spot.groupId, spot.id, spot.after);
+        } else {
+          latest.current.onMoveGroup(moved.id, spot.id, spot.after);
+        }
+      }
+      setDrag(null);
+      setRowSpot(null);
+      setGroupSpot(null);
+      setSettling(reducedMotion() ? null : `${moved.kind}:${moved.id}`);
+    });
+    land(lift, moved, spot !== null && "groupId" in spot ? spot.groupId : current.origin);
+  }
+
+  // The card springs onto the row (or header) where the move put it; into a
+  // folded group, it drops into the folder, which gives a little bounce.
+  function land(lift: Lift, moved: Drag, groupId: string): void {
+    const list = containerRef.current;
+    const head = (id: string) =>
+      list?.querySelector<HTMLElement>(`.launcher-group[data-group-id="${CSS.escape(id)}"] > .launcher-group-head`) ?? null;
+    const row =
+      moved.kind === "row"
+        ? (list?.querySelector<HTMLElement>(`.launcher-row[data-saved-id="${CSS.escape(moved.id)}"]`) ?? null)
+        : head(moved.id);
+    const folder = row === null && moved.kind === "row" ? head(groupId) : null;
+    layers.current.add(lift.layer);
+    let finished = false;
+    const done = () => {
+      if (finished) {
         return;
       }
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      if (dragGroupId !== null) {
-        const spot = groupSpotAt(event.clientY);
-        if (!sameSpot(spot, groupSpot)) {
-          setGroupSpot(spot);
-        }
-      } else {
-        const spot = rowSpotAt(event.clientY);
-        if (!sameSpot(spot, rowSpot)) {
-          setRowSpot(spot);
-        }
+      finished = true;
+      lift.layer.remove();
+      layers.current.delete(lift.layer);
+      setSettling(null);
+      const icon = folder?.querySelector<HTMLElement>(".launcher-group-icon");
+      if (icon != null) {
+        animate(icon, [{ transform: "scale(1)" }, { transform: "scale(1.35)" }, { transform: "scale(1)" }], {
+          duration: DURATION.slower,
+          easing: EASE.out,
+        });
       }
-    },
-    onDragLeave(event: DragEvent<HTMLElement>) {
-      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-        setRowSpot(null);
-        setGroupSpot(null);
-      }
-    },
-    onDrop(event: DragEvent<HTMLElement>) {
-      event.preventDefault();
-      if (dragGroupId !== null) {
-        const spot = groupSpotAt(event.clientY);
-        if (spot !== null) {
-          onMoveGroup(dragGroupId, spot.id, spot.after);
-        }
-      } else if (dragId !== null) {
-        const spot = rowSpotAt(event.clientY);
-        if (spot !== null) {
-          onMoveConnection(dragId, spot.groupId, spot.id, spot.after);
-        }
-      }
-      endDrag();
-    },
-  };
+    };
+    const target = row ?? folder;
+    if (target === null || reducedMotion()) {
+      done();
+      return;
+    }
+    const from = lift.mover.style.transform;
+    let flight: Animation;
+    if (row !== null) {
+      const to = row.getBoundingClientRect();
+      lift.card.classList.add("is-landing");
+      flight = lift.mover.animate(
+        [{ transform: from }, { transform: `translate3d(${to.left}px, ${to.top}px, 0) rotate(0deg)` }],
+        { duration: DURATION.spring, easing: EASE.spring, fill: "forwards" },
+      );
+      lift.tilt.animate([{ transform: LIFTED }, { transform: "none" }], {
+        duration: DURATION.spring,
+        easing: EASE.spring,
+        fill: "forwards",
+      });
+      lift.shadow.animate([{ opacity: 1 }, { opacity: 0 }], { duration: DURATION.slow, easing: EASE.out, fill: "forwards" });
+    } else {
+      const icon = (target.querySelector<HTMLElement>(".launcher-group-icon") ?? target).getBoundingClientRect();
+      const x = icon.left + icon.width / 2 - lift.grabX;
+      const y = icon.top + icon.height / 2 - lift.grabY;
+      flight = lift.mover.animate(
+        [
+          { transform: from, opacity: 1 },
+          { transform: `translate3d(${x}px, ${y}px, 0) rotate(0deg) scale(0.2)`, opacity: 0 },
+        ],
+        { duration: DURATION.slower, easing: EASE.inOut, fill: "forwards" },
+      );
+    }
+    flight.onfinish = done;
+    flight.oncancel = done;
+    // A hidden window may hold the animation; the row mustn't stay hidden.
+    window.setTimeout(done, DURATION.slower + 400);
+  }
 
   // Open connections only: a saved one that isn't open keeps its state on hover.
   function rowActions(target: ListTarget, open: ConnSummary | undefined): ReactNode {
@@ -442,6 +836,7 @@ export function HomeConnectionList({
         role="button"
         tabIndex={0}
         data-nav=""
+        data-flip={`open:${conn.id}`}
         title={`${openName(conn)} — ${openAddress(conn)}`}
         onClick={() => onActivateOpen(conn)}
         onKeyDown={(event) => activateKeys(event, () => onActivateOpen(conn))}
@@ -469,26 +864,21 @@ export function HomeConnectionList({
     const target: ListTarget = { kind: "saved", saved: connection, groupId };
     const activate = () => onActivateSaved(connection);
     const recent = relativeTime(connection.last_used);
+    const placeholder = dragRow === connection.id;
     return (
       <div
         key={`saved:${connection.id}`}
         className={`launcher-row${open !== undefined ? " is-open has-actions" : ""}${groupId !== "" ? " in-group" : ""}${
-          rowSpot?.id === connection.id && rowSpot.groupId === groupId ? (rowSpot.after ? " drop-after" : " drop-before") : ""
-        }${dragId === connection.id ? " dragging" : ""}`}
+          placeholder ? " is-placeholder" : ""
+        }${settling === `row:${connection.id}` ? " is-settling" : ""}`}
         role="button"
         tabIndex={0}
         data-nav=""
         data-saved-id={connection.id}
+        // The gap is new wherever it opens; it swells in rather than sliding over.
+        data-flip={placeholder ? undefined : `row:${connection.id}`}
         aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-        draggable
-        onDragStart={(event) => {
-          event.dataTransfer.setData("text/plain", connection.id);
-          event.dataTransfer.effectAllowed = "move";
-          // Chrome drops a drag whose page changes during dragstart, so the drop
-          // zones show up a tick later.
-          window.setTimeout(() => setDragId(connection.id), 0);
-        }}
-        onDragEnd={endDrag}
+        onPointerDown={(event) => press(event, { kind: "row", id: connection.id })}
         title={`${connection.name} — ${savedDetail(connection)}`}
         onClick={activate}
         onKeyDown={(event) => activateKeys(event, activate)}
@@ -522,6 +912,37 @@ export function HomeConnectionList({
     );
   }
 
+  // The rows a zone shows ("" for the connections outside any group).
+  function shownIn(groupId: string): SavedConnection[] {
+    if (groupId === "") {
+      return ungrouped;
+    }
+    const entry = grouped.find(({ group }) => group.id === groupId);
+    const expanded = entry !== undefined && (searching ? !searchFolded.has(groupId) : !entry.group.collapsed);
+    return expanded ? entry.members.filter((connection) => shown.has(connection.id)) : [];
+  }
+
+  // A zone's rows as the drag would leave them: the dragged one taken out,
+  // and put back where it would land when that's among them. Bound for a
+  // group showing no rows, it keeps its own gap, so nothing shifts under
+  // the pointer while that group lights up.
+  function arranged(groupId: string, rows: SavedConnection[]): SavedConnection[] {
+    if (
+      dragRow === null ||
+      rowSpot === null ||
+      !shownIn(rowSpot.groupId).some((connection) => connection.id === rowSpot.id && connection.id !== dragRow)
+    ) {
+      return rows;
+    }
+    const moving = saved.find((connection) => connection.id === dragRow);
+    const rest = rows.filter((connection) => connection.id !== dragRow);
+    const at = rowSpot.groupId === groupId ? rest.findIndex((connection) => connection.id === rowSpot.id) : -1;
+    if (moving !== undefined && at >= 0) {
+      rest.splice(rowSpot.after ? at + 1 : at, 0, moving);
+    }
+    return rest;
+  }
+
   // A group (or the place for none) lights up as a whole when the dragged
   // connection lands next to none of the rows it shows.
   function dropTarget(groupId: string, rows: SavedConnection[]): string {
@@ -530,7 +951,19 @@ export function HomeConnectionList({
       : "";
   }
 
-  const groupSections = grouped
+  // The groups as a group drag would leave them.
+  let sectionOrder = grouped;
+  if (dragGroup !== null && groupSpot !== null) {
+    const moving = grouped.find((entry) => entry.group.id === dragGroup);
+    const rest = grouped.filter((entry) => entry !== moving);
+    const at = rest.findIndex((entry) => entry.group.id === groupSpot.id);
+    if (moving !== undefined && at >= 0) {
+      rest.splice(groupSpot.after ? at + 1 : at, 0, moving);
+      sectionOrder = rest;
+    }
+  }
+
+  const groupSections = sectionOrder
     .map(({ group, members }) => {
       const visible = members.filter((connection) => shown.has(connection.id));
       // While searching, groups without a hit drop out and the rest open up.
@@ -539,11 +972,13 @@ export function HomeConnectionList({
       }
       const expanded = searching ? !searchFolded.has(group.id) : !group.collapsed;
       const target: ListTarget = { kind: "group", group };
+      // A dragged group travels as its header; its rows wait folded away.
+      const placeholder = dragGroup === group.id;
       return (
         <div
-          className={`launcher-group${dropTarget(group.id, expanded ? visible : [])}${
-            groupSpot?.id === group.id ? (groupSpot.after ? " drop-after" : " drop-before") : ""
-          }${dragGroupId === group.id ? " dragging" : ""}`}
+          className={`launcher-group${dropTarget(group.id, expanded ? visible : [])}${placeholder ? " is-placeholder" : ""}${
+            settling === `group:${group.id}` ? " is-settling" : ""
+          }`}
           key={`group:${group.id}`}
           data-group-id={group.id}
         >
@@ -552,16 +987,10 @@ export function HomeConnectionList({
             role="button"
             tabIndex={0}
             data-nav=""
+            data-flip={placeholder ? undefined : `head:${group.id}`}
             aria-expanded={expanded}
             aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-            draggable
-            onDragStart={(event) => {
-              event.dataTransfer.setData("text/plain", group.name);
-              event.dataTransfer.effectAllowed = "move";
-              // As for a row: Chrome drops a drag whose page changes during dragstart.
-              window.setTimeout(() => setDragGroupId(group.id), 0);
-            }}
-            onDragEnd={endDrag}
+            onPointerDown={(event) => press(event, { kind: "group", id: group.id })}
             onClick={() => toggleGroup(group)}
             onKeyDown={(event) => activateKeys(event, () => toggleGroup(group))}
             onContextMenu={(event) => menuAt(event, target)}
@@ -574,10 +1003,10 @@ export function HomeConnectionList({
             </span>
             <span className="launcher-group-name">{group.name}</span>
             {!expanded || members.length === 0 ? (
-              <span className="launcher-group-count">{members.length}</span>
+              <RollingNumber className="launcher-group-count" value={members.length} />
             ) : null}
           </div>
-          {expanded ? visible.map((connection) => renderSaved(connection, group.id)) : null}
+          {expanded && !placeholder ? arranged(group.id, visible).map((connection) => renderSaved(connection, group.id)) : null}
         </div>
       );
     })
@@ -588,22 +1017,21 @@ export function HomeConnectionList({
 
   return (
     <div
-      className="launcher-list"
+      className={`launcher-list${drag !== null ? " is-dragging" : ""}`}
       ref={containerRef}
       onKeyDown={onListKeyDown}
       onContextMenu={(event) => menuAt(event, null)}
-      {...dropHandlers}
     >
       {nothing && searching ? <div className="launcher-empty">{t("검색 결과가 없습니다")}</div> : null}
       {visibleOpen.length > 0 || ungrouped.length > 0 ? (
         <div className={`launcher-ungrouped${dropTarget("", ungrouped)}`} data-group-id="">
           {visibleOpen.map(renderOpen)}
-          {ungrouped.map((connection) => renderSaved(connection, ""))}
+          {arranged("", ungrouped).map((connection) => renderSaved(connection, ""))}
         </div>
       ) : null}
       {groupSections}
       {/* Below everything, so showing it never moves the row being dragged. */}
-      {dragId !== null && ungrouped.length === 0 ? (
+      {dragRow !== null && ungrouped.length === 0 ? (
         <div
           className={`launcher-ungrouped launcher-drop-hint${dropTarget("", [])}`}
           data-group-id=""

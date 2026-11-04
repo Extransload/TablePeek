@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { writeClipboard } from "../clipboard";
 import {
   explainError,
@@ -9,6 +9,7 @@ import {
   type ErrorContext,
 } from "../errorHelp";
 import { getLanguage, t, tServer } from "../i18n";
+import { DURATION, EASE, flip, ghost, measure, type Rects } from "../motion";
 import { AlertIcon, CheckIcon, CloseIcon, CopyIcon } from "./icons";
 
 // Every error the app shows goes through here (docs/ERRORS.md §3): a box
@@ -294,8 +295,11 @@ const TOAST_LIMIT = 3;
 let toasts: ErrorToast[] = [];
 let toastSeq = 0;
 const toastListeners = new Set<() => void>();
+// Set while ErrorToasts is shown: it notes the stack as it is, before a change.
+let beforeToastsChange: ((next: ErrorToast[]) => void) | null = null;
 
 function setToasts(next: ErrorToast[]): void {
+  beforeToastsChange?.(next);
   toasts = next;
   for (const listener of toastListeners) {
     listener();
@@ -320,16 +324,77 @@ export function notifyError(error: unknown, options: { retry?(): void; context?:
   setToasts([...others, { id: toastSeq, error: appError, ...options }].slice(-TOAST_LIMIT));
 }
 
+// A closed toast slides back toward the edge it came from as it fades.
+const TOAST_EXIT: Keyframe[] = [
+  { opacity: 1, transform: "none" },
+  { opacity: 0, transform: "translateX(48px)" },
+];
+
+function shownToasts(stack: HTMLElement): HTMLElement[] {
+  return Array.from(stack.querySelectorAll<HTMLElement>(":scope > .error-notice:not(.motion-ghost)"));
+}
+
+// The toasts are drawn in the list's order: each one's key is its toast's id.
+function toastKeys(items: HTMLElement[], list: ErrorToast[]): (item: HTMLElement) => string | undefined {
+  return (item) => {
+    const toast = list[items.indexOf(item)];
+    return toast === undefined ? undefined : String(toast.id);
+  };
+}
+
 // `onFix`: the one-click fixes the app can apply wherever a toast came from
 // (refresh the schema, say); using one closes the toast.
 export function ErrorToasts({ onFix }: { onFix?: Partial<Record<ErrorAction, () => void>> }) {
   const list = useSyncExternalStore(subscribeToasts, () => toasts);
-  if (list.length === 0) {
-    return null;
-  }
+  const stackRef = useRef<HTMLDivElement>(null);
+  // The list as last drawn, and (between a change and its drawing) where its
+  // toasts were and copies of the ones going: the others then move up or
+  // down to their new places, and the copies slide off.
+  const drawnRef = useRef(list);
+  const changeRef = useRef<{ before: Rects; leave: Map<string, () => void> } | null>(null);
+
+  useLayoutEffect(() => {
+    beforeToastsChange = (next) => {
+      const stack = stackRef.current;
+      if (stack === null) {
+        return;
+      }
+      const items = shownToasts(stack);
+      const keyOf = toastKeys(items, drawnRef.current);
+      // Changes before the next drawing add to the first one's.
+      const change = (changeRef.current ??= { before: measure(items, keyOf), leave: new Map() });
+      const staying = new Set(next.map((toast) => String(toast.id)));
+      for (const item of items) {
+        const key = keyOf(item);
+        if (key !== undefined && !staying.has(key) && !change.leave.has(key)) {
+          change.leave.set(key, ghost(item, TOAST_EXIT, { duration: DURATION.base, easing: EASE.in }));
+        }
+      }
+    };
+    return () => {
+      beforeToastsChange = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const change = changeRef.current;
+    const stack = stackRef.current;
+    changeRef.current = null;
+    drawnRef.current = list;
+    if (change === null || stack === null) {
+      return;
+    }
+    for (const play of change.leave.values()) {
+      play();
+    }
+    const items = shownToasts(stack);
+    flip(items, toastKeys(items, list), change.before);
+  }, [list]);
+
   const dismiss = (id: number) => setToasts(toasts.filter((toast) => toast.id !== id));
+  // Kept while empty, so the last toast has somewhere to leave from.
   return (
-    <div className="error-toasts">
+    <div className="error-toasts" ref={stackRef}>
       {list.map((toast) => (
         <ErrorNotice
           key={toast.id}

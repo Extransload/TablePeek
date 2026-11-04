@@ -30,8 +30,10 @@ import {
   getPasscodeHash,
   MAX_QUERY_TIMEOUT,
   MAX_ROWS_LIMIT,
+  previewSettings,
   setPasscodeHash,
   sha256Hex,
+  showsDark,
   subscribeSystemDark,
   systemDark,
   UI_FONT_MAX,
@@ -559,6 +561,8 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   }
 
   const shownId = activeThemeId(settings);
+  // A theme tried on from the other mode's list shows in its mode meanwhile.
+  const darkShown = showsDark(settings);
 
   // A colour picked for parts of the shown theme's syntax, data table or
   // colour table, or none to go back to the theme's own.
@@ -711,6 +715,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
         const materials = MATERIAL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const modes = MODE_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const accent = currentAccent(settings);
+        const onlyTheme = theme ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) }) : undefined;
         return (
           <>
             <SettingsGroup title="테마">
@@ -734,6 +739,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 defaultValue={DEFAULT_SETTINGS.themeLight}
                 tern={ternState}
                 onPick={(themeLight) => onChange({ themeLight })}
+                preview={(themeLight) => ({ themeLight, ...(darkShown ? { themeMode: "light" as const } : {}) })}
                 onImport={(file) => void importTernTheme(file)}
                 onRemove={removeImported}
               />
@@ -744,9 +750,13 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 defaultValue={DEFAULT_SETTINGS.themeDark}
                 tern={ternState}
                 onPick={(themeDark) => onChange({ themeDark })}
+                preview={(themeDark) => ({ themeDark, ...(darkShown ? {} : { themeMode: "dark" as const }) })}
                 onImport={(file) => void importTernTheme(file)}
                 onRemove={removeImported}
               />
+            </SettingsGroup>
+            {/* The colours picked here belong to the theme shown. */}
+            <SettingsGroup title="색">
               <SettingRow
                 label="강조 색"
                 keywords="accent color colour"
@@ -769,6 +779,57 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 />
               ) : null}
             </SettingsGroup>
+            <SettingsGroup title="구문 색">
+              <SettingRow
+                label="구문 강조"
+                keywords="syntax highlight preset color colour sql editor 에디터"
+                hint={t(SYNTAX_PRESETS.find((preset) => preset.id === settings.syntaxPreset)?.description ?? "")}
+                {...fromDefault("syntaxPreset")}
+              >
+                <Select
+                  aria-label={t("구문 강조")}
+                  value={settings.syntaxPreset}
+                  onChange={(event) => onChange({ syntaxPreset: event.target.value as SyntaxPresetId })}
+                  onPreview={(id) => previewSettings(id === null ? null : { syntaxPreset: id as SyntaxPresetId })}
+                >
+                  {SYNTAX_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {t(preset.label)}
+                    </option>
+                  ))}
+                </Select>
+              </SettingRow>
+              <ColorRows
+                rows={SYNTAX_COLOR_ROWS}
+                colors={currentSyntaxColors(settings)}
+                picked={settings.syntaxColors[shownId] ?? {}}
+                keywords="syntax color colour sql editor 에디터"
+                hint={onlyTheme}
+                onPick={(keys, color) => pickThemeColor("syntaxColors", keys, color)}
+              />
+            </SettingsGroup>
+            <EditorPreview />
+            <SettingsGroup title="값 색">
+              <SettingRow
+                label="타입별 색상"
+                keywords="type colors colours value data table 데이터 테이블"
+                {...fromDefault("typeColors")}
+              >
+                <Switch
+                  label={t("타입별 색상")}
+                  checked={settings.typeColors}
+                  onChange={(typeColors) => onChange({ typeColors })}
+                />
+              </SettingRow>
+              <ColorRows
+                rows={GRID_COLOR_ROWS}
+                colors={currentGridColors(settings)}
+                picked={settings.gridColors[shownId] ?? {}}
+                keywords="value type color colour data table 데이터 테이블"
+                hint={!settings.typeColors ? t("‘타입별 색상’이 꺼져 있어 NULL 말고는 지금 쓰이지 않습니다.") : onlyTheme}
+                onPick={(keys, color) => pickThemeColor("gridColors", keys, color)}
+              />
+            </SettingsGroup>
             <SettingsGroup title="글꼴">
               <FontRow
                 label="글꼴"
@@ -777,6 +838,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 follow={{ label: t("시스템 기본"), value: SYSTEM_UI_FONT }}
                 groups={installedGroups}
                 onChange={(uiFont) => onChange({ uiFont })}
+                preview={(uiFont) => ({ uiFont })}
               />
               <SizeRow
                 label="글자 크기"
@@ -787,6 +849,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 max={UI_FONT_MAX}
                 defaultValue={DEFAULT_SETTINGS.uiFontSize}
                 onChange={(size) => onChange({ uiFontSize: size ?? DEFAULT_SETTINGS.uiFontSize })}
+                preview={(size) => ({ uiFontSize: size ?? DEFAULT_SETTINGS.uiFontSize })}
               />
               <FontRow
                 label="코드 글꼴"
@@ -796,6 +859,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 follow={{ label: t("시스템 고정폭"), value: SYSTEM_CODE_FONT }}
                 groups={installedGroups}
                 onChange={(codeFont) => onChange({ codeFont })}
+                preview={(codeFont) => ({ codeFont })}
               />
               <SizeRow
                 label="코드 글자 크기"
@@ -806,6 +870,47 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 max={CODE_FONT_MAX}
                 defaultValue={DEFAULT_SETTINGS.codeFontSize}
                 onChange={(codeFontSize) => onChange({ codeFontSize })}
+                preview={(codeFontSize) => ({ codeFontSize })}
+              />
+              <FontRow
+                label="에디터 글꼴"
+                keywords="editor font typeface 폰트 console 콘솔 sql 에디터"
+                value={settings.editorFont}
+                follow={{ label: t("코드 글꼴 · {name}", { name: codeFontName() }) }}
+                groups={installedGroups}
+                onChange={(editorFont) => onChange({ editorFont })}
+                preview={(editorFont) => ({ editorFont })}
+              />
+              <SizeRow
+                label="에디터 글자 크기"
+                keywords="editor font size 폰트 크기 sql 에디터"
+                value={settings.editorFontSize}
+                follows={fonts.codeSize}
+                min={CODE_FONT_MIN}
+                max={CODE_FONT_MAX}
+                defaultValue={DEFAULT_SETTINGS.editorFontSize}
+                onChange={(editorFontSize) => onChange({ editorFontSize })}
+                preview={(editorFontSize) => ({ editorFontSize })}
+              />
+              <FontRow
+                label="표 글꼴"
+                keywords="grid table data font typeface 폰트 데이터 테이블"
+                value={settings.gridFont}
+                follow={{ label: t("코드 글꼴 · {name}", { name: codeFontName() }) }}
+                groups={installedGroups}
+                onChange={(gridFont) => onChange({ gridFont })}
+                preview={(gridFont) => ({ gridFont })}
+              />
+              <SizeRow
+                label="표 글자 크기"
+                keywords="grid table font size 폰트 크기 데이터 테이블"
+                value={settings.gridFontSize}
+                follows={fonts.codeSize}
+                min={CODE_FONT_MIN}
+                max={CODE_FONT_MAX}
+                defaultValue={DEFAULT_SETTINGS.gridFontSize}
+                onChange={(gridFontSize) => onChange({ gridFontSize })}
+                preview={(gridFontSize) => ({ gridFontSize })}
               />
             </SettingsGroup>
             <SettingsGroup title="재질">
@@ -877,152 +982,54 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
 
       case "editor":
         return (
-          <>
-            <SettingsGroup title="글꼴">
-              <FontRow
-                label="에디터 글꼴"
-                keywords="editor font typeface 폰트 console 콘솔"
-                value={settings.editorFont}
-                follow={{ label: t("코드 글꼴 · {name}", { name: codeFontName() }) }}
-                groups={installedGroups}
-                onChange={(editorFont) => onChange({ editorFont })}
+          <SettingsGroup title="편집">
+            <SettingRow label="정리·축약할 때 키워드를 대문자로" keywords="uppercase keywords format" {...fromDefault("uppercaseKeywords")}>
+              <Switch
+                label={t("정리·축약할 때 키워드를 대문자로")}
+                checked={settings.uppercaseKeywords}
+                onChange={(uppercaseKeywords) => onChange({ uppercaseKeywords })}
               />
-              <SizeRow
-                label="에디터 글자 크기"
-                keywords="editor font size 폰트 크기"
-                value={settings.editorFontSize}
-                follows={fonts.codeSize}
-                min={CODE_FONT_MIN}
-                max={CODE_FONT_MAX}
-                defaultValue={DEFAULT_SETTINGS.editorFontSize}
-                onChange={(editorFontSize) => onChange({ editorFontSize })}
-              />
-            </SettingsGroup>
-            <SettingsGroup title="편집">
-              <SettingRow label="정리·축약할 때 키워드를 대문자로" keywords="uppercase keywords format" {...fromDefault("uppercaseKeywords")}>
-                <Switch
-                  label={t("정리·축약할 때 키워드를 대문자로")}
-                  checked={settings.uppercaseKeywords}
-                  onChange={(uppercaseKeywords) => onChange({ uppercaseKeywords })}
-                />
-              </SettingRow>
-            </SettingsGroup>
-            {/* The colours picked here belong to the theme shown. */}
-            <SettingsGroup title="구문 색">
-              <SettingRow
-                label="구문 강조"
-                keywords="syntax highlight preset color colour"
-                hint={t(SYNTAX_PRESETS.find((preset) => preset.id === settings.syntaxPreset)?.description ?? "")}
-                {...fromDefault("syntaxPreset")}
-              >
-                <Select
-                  aria-label={t("구문 강조")}
-                  value={settings.syntaxPreset}
-                  onChange={(event) => onChange({ syntaxPreset: event.target.value as SyntaxPresetId })}
-                >
-                  {SYNTAX_PRESETS.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {t(preset.label)}
-                    </option>
-                  ))}
-                </Select>
-              </SettingRow>
-              <ColorRows
-                rows={SYNTAX_COLOR_ROWS}
-                colors={currentSyntaxColors(settings)}
-                picked={settings.syntaxColors[shownId] ?? {}}
-                keywords="syntax color colour"
-                hint={theme ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) }) : undefined}
-                onPick={(keys, color) => pickThemeColor("syntaxColors", keys, color)}
-              />
-            </SettingsGroup>
-            <EditorPreview />
-          </>
+            </SettingRow>
+          </SettingsGroup>
         );
 
       case "data":
         return (
-          <>
-            <SettingsGroup title="글꼴">
-              <FontRow
-                label="표 글꼴"
-                keywords="grid table data font typeface 폰트"
-                value={settings.gridFont}
-                follow={{ label: t("코드 글꼴 · {name}", { name: codeFontName() }) }}
-                groups={installedGroups}
-                onChange={(gridFont) => onChange({ gridFont })}
-              />
-              <SizeRow
-                label="표 글자 크기"
-                keywords="grid table font size 폰트 크기"
-                value={settings.gridFontSize}
-                follows={fonts.codeSize}
-                min={CODE_FONT_MIN}
-                max={CODE_FONT_MAX}
-                defaultValue={DEFAULT_SETTINGS.gridFontSize}
-                onChange={(gridFontSize) => onChange({ gridFontSize })}
-              />
-            </SettingsGroup>
-            <SettingsGroup title="쿼리">
-              <SettingRow label="최대 행" keywords="max rows limit" {...fromDefault("maxRows")}>
-                <input
-                  type="number"
-                  min={1}
-                  max={MAX_ROWS_LIMIT}
-                  value={settings.maxRows}
-                  aria-label={t("최대 행")}
-                  onChange={(event) =>
-                    onChange({
-                      maxRows: Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(Number(event.target.value)) || 1)),
-                    })
-                  }
-                />
-              </SettingRow>
-              <SettingRow
-                label="쿼리 시간 제한(초)"
-                keywords="query timeout seconds mongodb clickhouse"
-                hint={t("MongoDB와 ClickHouse에 쓰입니다. 0이면 제한이 없습니다.")}
-                {...fromDefault("queryTimeout")}
-              >
-                <input
-                  type="number"
-                  min={0}
-                  max={MAX_QUERY_TIMEOUT}
-                  value={settings.queryTimeout}
-                  aria-label={t("쿼리 시간 제한(초)")}
-                  onChange={(event) =>
-                    onChange({
-                      queryTimeout: Math.min(MAX_QUERY_TIMEOUT, Math.max(0, Math.trunc(Number(event.target.value)) || 0)),
-                    })
-                  }
-                />
-              </SettingRow>
-            </SettingsGroup>
-            {/* The colours picked here belong to the theme shown. */}
-            <SettingsGroup title="값 색">
-              <SettingRow label="타입별 색상" keywords="type colors colours value" {...fromDefault("typeColors")}>
-                <Switch
-                  label={t("타입별 색상")}
-                  checked={settings.typeColors}
-                  onChange={(typeColors) => onChange({ typeColors })}
-                />
-              </SettingRow>
-              <ColorRows
-                rows={GRID_COLOR_ROWS}
-                colors={currentGridColors(settings)}
-                picked={settings.gridColors[shownId] ?? {}}
-                keywords="value type color colour"
-                hint={
-                  !settings.typeColors
-                    ? t("‘타입별 색상’이 꺼져 있어 NULL 말고는 지금 쓰이지 않습니다.")
-                    : theme
-                      ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) })
-                      : undefined
+          <SettingsGroup title="쿼리">
+            <SettingRow label="최대 행" keywords="max rows limit" {...fromDefault("maxRows")}>
+              <input
+                type="number"
+                min={1}
+                max={MAX_ROWS_LIMIT}
+                value={settings.maxRows}
+                aria-label={t("최대 행")}
+                onChange={(event) =>
+                  onChange({
+                    maxRows: Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(Number(event.target.value)) || 1)),
+                  })
                 }
-                onPick={(keys, color) => pickThemeColor("gridColors", keys, color)}
               />
-            </SettingsGroup>
-          </>
+            </SettingRow>
+            <SettingRow
+              label="쿼리 시간 제한(초)"
+              keywords="query timeout seconds mongodb clickhouse"
+              hint={t("MongoDB와 ClickHouse에 쓰입니다. 0이면 제한이 없습니다.")}
+              {...fromDefault("queryTimeout")}
+            >
+              <input
+                type="number"
+                min={0}
+                max={MAX_QUERY_TIMEOUT}
+                value={settings.queryTimeout}
+                aria-label={t("쿼리 시간 제한(초)")}
+                onChange={(event) =>
+                  onChange({
+                    queryTimeout: Math.min(MAX_QUERY_TIMEOUT, Math.max(0, Math.trunc(Number(event.target.value)) || 0)),
+                  })
+                }
+              />
+            </SettingRow>
+          </SettingsGroup>
         );
 
       case "transfer":

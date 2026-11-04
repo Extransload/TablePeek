@@ -13,6 +13,7 @@ import {
 import { store, type Favorite, type FavoriteFolder } from "../store";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice } from "./ErrorNotice";
+import { RollingNumber } from "./RollingNumber";
 import { LoadingState } from "./Spinner";
 import { PromptModal } from "./PromptModal";
 import { SavedQueryModal } from "./SavedQueryModal";
@@ -361,7 +362,7 @@ export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
                   </span>
                   {folder !== null ? <FolderIcon size={11} className="queries-folder-icon" /> : null}
                   <span className="schema-section-label">{group.name}</span>
-                  <span className="schema-section-count">{group.queries.length}</span>
+                  <RollingNumber className="schema-section-count" value={group.queries.length} />
                 </div>
                 {isOpen(group.id)
                   ? group.queries.map((query) => (

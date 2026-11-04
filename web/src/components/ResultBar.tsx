@@ -1,8 +1,12 @@
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type { QueryMeta } from "../net/socket";
 import type { AppError, ErrorAction } from "../errorHelp";
 import { t, tServer } from "../i18n";
+import { DURATION, EASE, animate, useExitGhost } from "../motion";
 import { ErrorNotice } from "./ErrorNotice";
-import { DownloadIcon } from "./icons";
+import { CheckIcon, DownloadIcon } from "./icons";
+import { RollingNumber } from "./RollingNumber";
+import { Spinner } from "./Spinner";
 
 // Chart and Pivot show the same rows as the Data grid, summarised.
 export type ResultView = "grid" | "chart" | "pivot" | "message" | "plan";
@@ -51,15 +55,46 @@ interface ResultBarProps {
   // An EXPLAIN's result also has its plan to switch to.
   planAvailable: boolean;
   shown: ShownResult | null;
+  // The tab's query is running: the status says so, then turns into its result.
+  running: boolean;
   canExport: boolean;
   onView(view: ResultView): void;
   onExport(): void;
 }
 
+// One status turning into the next: the old words lift away and blur out as
+// the new ones rise into focus in their place.
+const STATUS_ENTER: Keyframe[] = [
+  { opacity: 0, transform: "translateY(5px)", filter: "blur(4px)" },
+  { opacity: 1, transform: "none", filter: "blur(0)" },
+];
+const STATUS_LEAVE: Keyframe[] = [
+  { opacity: 1, transform: "none", filter: "blur(0)" },
+  { opacity: 0, transform: "translateY(-5px)", filter: "blur(4px)" },
+];
+
+// The status line, keyed by what it says (running, rows, failure, note), so a
+// new kind of status morphs in over the one it replaces.
+function MorphStatus({ className, title, children }: { className: string; title?: string; children: ReactNode }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useExitGhost(ref, STATUS_LEAVE, { duration: DURATION.slow, easing: EASE.out });
+  useLayoutEffect(() => {
+    const element = ref.current;
+    const entering =
+      element === null ? null : animate(element, STATUS_ENTER, { duration: DURATION.slower, easing: EASE.spring });
+    return () => entering?.cancel();
+  }, []);
+  return (
+    <span ref={ref} className={className} title={title}>
+      {children}
+    </span>
+  );
+}
+
 // The query result's footer, laid out as the Data view's: TablePlus's
 // Data | Message switch (with Chart and Pivot of the rows beside Data), the
 // rows and time of the result shown, and Export.
-export function ResultBar({ view, planAvailable, shown, canExport, onView, onExport }: ResultBarProps) {
+export function ResultBar({ view, planAvailable, shown, running, canExport, onView, onExport }: ResultBarProps) {
   const views: [ResultView, string][] = [
     ["grid", t("데이터")],
     ["chart", t("차트")],
@@ -85,14 +120,22 @@ export function ResultBar({ view, planAvailable, shown, canExport, onView, onExp
         </div>
       </div>
       <div className="footer-middle">
-        {shown === null ? null : shown.kind === "error" ? (
-          <span className="row-range result-bar-status failed">{t("오류")}</span>
+        {running ? (
+          <MorphStatus key="running" className="row-range result-bar-status running">
+            <Spinner size={10} />
+            <span>{t("실행 중…")}</span>
+          </MorphStatus>
+        ) : shown === null ? null : shown.kind === "error" ? (
+          <MorphStatus key="error" className="row-range result-bar-status failed">
+            {t("오류")}
+          </MorphStatus>
         ) : shown.kind === "note" ? (
-          <span className="row-range result-bar-status" title={tServer(shown.text)}>
+          <MorphStatus key={`note:${shown.text}`} className="row-range result-bar-status" title={tServer(shown.text)}>
             {tServer(shown.text)}
-          </span>
+          </MorphStatus>
         ) : (
-          <span className="row-range result-bar-status">
+          <MorphStatus key="ok" className="row-range result-bar-status done">
+            <CheckIcon size={11} className="result-bar-done" />
             <span
               className={shown.meta.truncated ? "warn" : undefined}
               title={
@@ -101,10 +144,10 @@ export function ResultBar({ view, planAvailable, shown, canExport, onView, onExp
                   : undefined
               }
             >
-              {statementStatus(shown.meta)}
+              <RollingNumber value={statementStatus(shown.meta)} />
             </span>
-            <span className="result-bar-time">{elapsedText(shown.meta.elapsedMs)}</span>
-          </span>
+            <RollingNumber className="result-bar-time" value={elapsedText(shown.meta.elapsedMs)} />
+          </MorphStatus>
         )}
       </div>
       <div className="footer-end">

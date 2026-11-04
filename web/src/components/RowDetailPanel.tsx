@@ -7,6 +7,7 @@ import type { TableDetail } from "../store";
 import { FieldBox } from "./FieldBox";
 import { LinkIcon, SearchIcon } from "./icons";
 import { LoadingState } from "./Spinner";
+import { usePanelMotion } from "./panelMotion";
 
 interface RowDetailPanelProps {
   // The rows of the grid the current tab shows, if any: a result's, or the
@@ -95,6 +96,7 @@ export function RowDetailPanel({
 }: RowDetailPanelProps) {
   const [version, setVersion] = useState(0);
   const [query, setQuery] = useState("");
+  const motionRef = usePanelMotion("right");
 
   // Cells still loading, or edits to a structure row, arrive through the
   // source's update stream.
@@ -173,7 +175,7 @@ export function RowDetailPanel({
   }
 
   return (
-    <aside className="row-detail" aria-label={t("행 상세")}>
+    <aside className="row-detail" ref={motionRef} aria-label={t("행 상세")}>
       <label className="field-search">
         <SearchIcon size={12} />
         <input

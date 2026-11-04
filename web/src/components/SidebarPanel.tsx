@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getLanguage, t } from "../i18n";
+import { usePanelMotion } from "./panelMotion";
 
 export type SidebarTab = "items" | "queries" | "history";
 
@@ -26,6 +27,7 @@ const chosen = new Map<string, SidebarTab>();
 export function SidebarPanel({ conn, items, queries, history }: SidebarPanelProps) {
   const [tab, setTab] = useState<SidebarTab>(() => chosen.get(conn) ?? "items");
   const [visited, setVisited] = useState<Set<SidebarTab>>(() => new Set([tab]));
+  const motionRef = usePanelMotion("left");
 
   useEffect(() => {
     chosen.set(conn, tab);
@@ -37,7 +39,7 @@ export function SidebarPanel({ conn, items, queries, history }: SidebarPanelProp
   }
 
   return (
-    <aside className="schema-sidebar">
+    <aside className="schema-sidebar" ref={motionRef}>
       <div className="sidebar-tabs" role="tablist" aria-label={t("사이드바")}>
         {TABS.map((entry) => (
           <button

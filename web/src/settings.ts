@@ -170,6 +170,11 @@ const ACCENT_SOFT = "rgba(64, 130, 238, 0.18)";
 type Listener = (settings: AppSettings) => void;
 const listeners = new Set<Listener>();
 let current = readSettings();
+// A look tried on from a Settings menu (a theme or font highlighted there),
+// drawn over the saved settings until the menu closes: never saved, sent to
+// other windows or handed to listeners. `drawn` is what the app draws.
+let preview: Partial<AppSettings> | null = null;
+let drawn = current;
 
 function readSettings(): AppSettings {
   try {
@@ -354,11 +359,15 @@ export function subscribeSystemDark(listener: () => void): () => void {
   return () => darkScheme.removeEventListener("change", listener);
 }
 
-// The theme shown: the light or the dark one, by the mode (the system's
-// under System).
+// Whether the theme shown is the dark one: by the mode (the system's under
+// System).
+export function showsDark(settings: AppSettings): boolean {
+  return settings.themeMode === "system" ? darkScheme.matches : settings.themeMode === "dark";
+}
+
+// The theme shown: the light or the dark one, by the mode.
 export function activeThemeId(settings: AppSettings): ThemeId {
-  const dark = settings.themeMode === "system" ? darkScheme.matches : settings.themeMode === "dark";
-  return dark ? settings.themeDark : settings.themeLight;
+  return showsDark(settings) ? settings.themeDark : settings.themeLight;
 }
 
 // The theme `settings` draw: the one shown, with the colours picked in its
@@ -499,10 +508,31 @@ export function getSettings(): AppSettings {
   return current;
 }
 
+// The settings the app is drawn with: the saved ones, with a look being
+// tried on from a Settings menu over them. What draws (the data table)
+// reads these; what acts on the settings reads getSettings.
+export function drawnSettings(): AppSettings {
+  return drawn;
+}
+
+function redraw(): void {
+  drawn = preview === null ? current : { ...current, ...preview };
+  applySettings(drawn);
+}
+
+// Draws the app as if `patch` were saved, or as saved again (null).
+export function previewSettings(patch: Partial<AppSettings> | null): void {
+  if (patch === null && preview === null) {
+    return;
+  }
+  preview = patch;
+  redraw();
+}
+
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   current = { ...current, ...patch };
   uiState.setItem(uiState.SETTINGS_KEY, JSON.stringify(current));
-  applySettings(current);
+  redraw();
   for (const listener of listeners) {
     listener(current);
   }
@@ -537,12 +567,12 @@ export function setPasscodeHash(hash: string | null): void {
 applySettings(current);
 // The window turned out see-through or not, or the system's "reduce
 // transparency" changed: the material is drawn again.
-subscribeMaterial(() => applySettings(current));
+subscribeMaterial(redraw);
 // Tern's themes came in, or a theme file was imported: the saved theme may
 // be one of them.
-subscribeThemes(() => applySettings(current));
+subscribeThemes(redraw);
 // The system turned light or dark: System follows it.
-subscribeSystemDark(() => applySettings(current));
+subscribeSystemDark(redraw);
 // Another window changed the settings: this one follows, so every window
 // draws (and asks the desktop app for) the same look. Only saveSettings
 // writes them back, so following never echoes a change.
@@ -551,7 +581,7 @@ uiState.subscribeChangesElsewhere((key) => {
     return;
   }
   current = readSettings();
-  applySettings(current);
+  redraw();
   for (const listener of listeners) {
     listener(current);
   }

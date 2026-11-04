@@ -4,6 +4,7 @@ import type { DataTab } from "../tabs";
 import { t } from "../i18n";
 import { withHint } from "../shortcuts";
 import { ColumnsIcon, FilterIcon, ListIcon, PlusIcon, RefreshIcon } from "./icons";
+import { RollingNumber } from "./RollingNumber";
 import { Spinner } from "./Spinner";
 
 interface NumBoxProps {
@@ -274,7 +275,7 @@ export function DataTabToolbar({
         {progress !== null ? (
           <span className="row-range step-progress" role="status" aria-live="polite">
             <Spinner size={10} />
-            <span>{progress.label}</span>
+            <RollingNumber value={progress.label} />
             {progress.fraction !== null ? (
               <progress className="step-progress-bar" max={1} value={progress.fraction} />
             ) : null}
@@ -296,7 +297,7 @@ export function DataTabToolbar({
             onClick={onCount}
             title={t("정확한 행 수 세기")}
           >
-            {rangeText(Math.max(0, tab.offset), meta.rowCount, total)}
+            <RollingNumber value={rangeText(Math.max(0, tab.offset), meta.rowCount, total)} />
             {counting ? <Spinner size={10} className="delayed-in" /> : null}
           </button>
         ) : running || loading ? (
@@ -355,7 +356,9 @@ export function DataTabToolbar({
             ‹
           </button>
           <span className="page-label" title={t("페이지")}>
-            {pages === null ? page : total?.exact ? `${page} / ${pages}` : `${page} / ≈${pages}`}
+            <RollingNumber
+              value={pages === null ? String(page) : total?.exact ? `${page} / ${pages}` : `${page} / ≈${pages}`}
+            />
           </span>
           <button
             type="button"

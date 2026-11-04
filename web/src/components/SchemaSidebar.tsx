@@ -2,6 +2,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,8 +18,10 @@ import type { SqlDialect } from "../engines/sqlDialect";
 import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
+import { RollingNumber } from "./RollingNumber";
 import { LoadingState, Spinner } from "./Spinner";
 import { TableInfoCard } from "./TableInfoCard";
+import { playTreeMove, prepareTreeMove, type TreeMove } from "./treeMotion";
 import { TABLE_COLORS, tableColorValue } from "../tableColors";
 import {
   ChevronIcon,
@@ -281,11 +284,37 @@ export function SchemaSidebar({
     void load();
   }, [load, nonce, serverEpoch]);
 
-  function toggle(name: string): void {
+  // A node opening or closing animates once the change is on screen.
+  const treeMoveRef = useRef<TreeMove | null>(null);
+  useLayoutEffect(() => {
+    const move = treeMoveRef.current;
+    if (move !== null) {
+      treeMoveRef.current = null;
+      playTreeMove(move);
+    }
+  });
+
+  function toggle(name: string, from: HTMLElement): void {
+    const node = from.closest<HTMLElement>(".schema-table");
+    if (node !== null && listRef.current !== null) {
+      // A ghost of the rows closing a moment ago may still sit beside them.
+      treeMoveRef.current = prepareTreeMove(listRef.current, node, () =>
+        node.querySelector<HTMLElement>(":scope > .schema-cols:not(.motion-ghost)"),
+      );
+    }
     setExpanded((prev) => ({ ...prev, [name]: !(prev[name] ?? false) }));
   }
 
-  function toggleSection(key: string, fallback: boolean): void {
+  function toggleSection(key: string, fallback: boolean, head: HTMLElement): void {
+    if (listRef.current !== null) {
+      treeMoveRef.current = prepareTreeMove(listRef.current, head, () => {
+        let rows = head.nextElementSibling;
+        while (rows !== null && rows.classList.contains("motion-ghost")) {
+          rows = rows.nextElementSibling;
+        }
+        return rows instanceof HTMLElement && rows.classList.contains("schema-rows") ? rows : null;
+      });
+    }
     setSections((prev) => {
       const next = { ...prev, [key]: !(prev[key] ?? fallback) };
       uiState.setItem("tablepeek.sidebar-sections", JSON.stringify(next));
@@ -748,7 +777,7 @@ export function SchemaSidebar({
               }
             } else if (event.key === " ") {
               event.preventDefault();
-              toggle(table.name);
+              toggle(table.name, event.currentTarget);
             }
           }}
         >
@@ -759,7 +788,7 @@ export function SchemaSidebar({
             title={isOpen ? t("컬럼 접기") : t("컬럼 펼치기")}
             onClick={(event) => {
               event.stopPropagation();
-              toggle(table.name);
+              toggle(table.name, event.currentTarget);
             }}
           >
             <ChevronIcon size={10} />
@@ -838,40 +867,47 @@ export function SchemaSidebar({
           <LoadingState variant="compact" label={t("스키마를 불러오는 중…")} />
         ) : (
           <>
-            <div className="schema-section-head" onClick={() => toggleSection("tables", true)}>
+            <div
+              className="schema-section-head"
+              onClick={(event) => toggleSection("tables", true, event.currentTarget)}
+            >
               <span className={`schema-toggle${tablesOpen ? " open" : ""}`}>
                 <ChevronIcon size={10} />
               </span>
               <span className="schema-section-label">{t("테이블")}</span>
-              <span className="schema-section-count">{tableCount}</span>
+              <RollingNumber className="schema-section-count" value={tableCount} />
             </div>
-            {tablesOpen &&
-              (tableCount === 0 ? (
-                <div className="schema-empty">
-                  {query === "" ? t("테이블이 없습니다") : t("검색 결과가 없습니다")}
-                </div>
-              ) : (
-                <>
-                  {orderedTables
-                    .slice(0, renderLimit)
-                    .map((table, index) =>
-                      renderTableRow(
-                        table,
-                        orderedTables[index - 1],
-                        // The next chunk isn't drawn yet: keep this run's bottom closed.
-                        index + 1 < renderLimit ? orderedTables[index + 1] : undefined,
-                      ),
-                    )}
-                  {hasMore ? (
-                    <div
-                      ref={setSpacer}
-                      className="schema-more"
-                      style={{ height: spacerHeight }}
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                </>
-              ))}
+            {/* Each open section's rows sit in one box, which its open and close motion clips. */}
+            {tablesOpen ? (
+              <div className="schema-rows">
+                {tableCount === 0 ? (
+                  <div className="schema-empty">
+                    {query === "" ? t("테이블이 없습니다") : t("검색 결과가 없습니다")}
+                  </div>
+                ) : (
+                  <>
+                    {orderedTables
+                      .slice(0, renderLimit)
+                      .map((table, index) =>
+                        renderTableRow(
+                          table,
+                          orderedTables[index - 1],
+                          // The next chunk isn't drawn yet: keep this run's bottom closed.
+                          index + 1 < renderLimit ? orderedTables[index + 1] : undefined,
+                        ),
+                      )}
+                    {hasMore ? (
+                      <div
+                        ref={setSpacer}
+                        className="schema-more"
+                        style={{ height: spacerHeight }}
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
             {objectFiltered !== null &&
               OBJECT_SECTIONS.map(({ kind, key: listKey, label }) => {
                 const names = objectFiltered[listKey] ?? [];
@@ -884,7 +920,7 @@ export function SchemaSidebar({
                   <div className="schema-section" key={key}>
                     <div
                       className="schema-section-head"
-                      onClick={() => toggleSection(key, false)}
+                      onClick={(event) => toggleSection(key, false, event.currentTarget)}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         setSectionMenu({ x: event.clientX, y: event.clientY, obj: kind });
@@ -894,83 +930,86 @@ export function SchemaSidebar({
                         <ChevronIcon size={10} />
                       </span>
                       <span className="schema-section-label">{t(label)}</span>
-                      <span className="schema-section-count">{names.length}</span>
+                      <RollingNumber className="schema-section-count" value={names.length} />
                     </div>
-                    {isOpen &&
-                      names.map((name) => (
-                        <div
-                          className="schema-object-row"
-                          key={`${kind}:${name}`}
-                          role="button"
-                          tabIndex={0}
-                          title={
-                            opensData(kind)
-                              ? `${name} — ${t("데이터 열기")}`
-                              : `${name} — ${t("정의 보기")}`
-                          }
-                          onClick={(event) => {
-                            if (opensData(kind) && (event.metaKey || event.ctrlKey)) {
-                              onOpenDataNewTab(name);
-                              return;
+                    {isOpen ? (
+                      <div className="schema-rows">
+                        {names.map((name) => (
+                          <div
+                            className="schema-object-row"
+                            key={`${kind}:${name}`}
+                            role="button"
+                            tabIndex={0}
+                            title={
+                              opensData(kind)
+                                ? `${name} — ${t("데이터 열기")}`
+                                : `${name} — ${t("정의 보기")}`
                             }
-                            if (opensData(kind)) {
-                              onOpenData(name);
-                            } else {
-                              onOpenDefinition(kind, name);
-                            }
-                          }}
-                          onDoubleClick={(event) => {
-                            if (opensData(kind) && !event.metaKey && !event.ctrlKey) {
-                              onPinData(name);
-                            }
-                          }}
-                          onAuxClick={(event) => {
-                            if (event.button === 1 && opensData(kind)) {
-                              event.preventDefault();
-                              onOpenDataNewTab(name);
-                            }
-                          }}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            setObjectMenu({ x: event.clientX, y: event.clientY, obj: kind, name });
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              event.preventDefault();
+                            onClick={(event) => {
+                              if (opensData(kind) && (event.metaKey || event.ctrlKey)) {
+                                onOpenDataNewTab(name);
+                                return;
+                              }
                               if (opensData(kind)) {
-                                // ⌘/Ctrl+Return keeps the tab, as on a table.
-                                if (event.metaKey || event.ctrlKey) {
-                                  onPinData(name);
-                                } else {
-                                  onOpenData(name);
-                                }
+                                onOpenData(name);
                               } else {
                                 onOpenDefinition(kind, name);
                               }
-                            }
-                          }}
-                        >
-                          <span className={`schema-object-icon kind-${kind}`} aria-hidden="true">
-                            {objectIcon(kind)}
-                          </span>
-                          <span className="schema-object-name" title={name}>
-                            {name}
-                          </span>
-                          {opensData(kind) ? (
-                            <button
-                              type="button"
-                              className="schema-row-action"
-                              title={t("정의 보기")}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                onOpenDefinition(kind, name);
-                              }}
-                            >
-                              <CodeIcon size={11} />
-                            </button>
-                          ) : null}
-                        </div>
-                      ))}
+                            }}
+                            onDoubleClick={(event) => {
+                              if (opensData(kind) && !event.metaKey && !event.ctrlKey) {
+                                onPinData(name);
+                              }
+                            }}
+                            onAuxClick={(event) => {
+                              if (event.button === 1 && opensData(kind)) {
+                                event.preventDefault();
+                                onOpenDataNewTab(name);
+                              }
+                            }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              setObjectMenu({ x: event.clientX, y: event.clientY, obj: kind, name });
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                if (opensData(kind)) {
+                                  // ⌘/Ctrl+Return keeps the tab, as on a table.
+                                  if (event.metaKey || event.ctrlKey) {
+                                    onPinData(name);
+                                  } else {
+                                    onOpenData(name);
+                                  }
+                                } else {
+                                  onOpenDefinition(kind, name);
+                                }
+                              }
+                            }}
+                          >
+                            <span className={`schema-object-icon kind-${kind}`} aria-hidden="true">
+                              {objectIcon(kind)}
+                            </span>
+                            <span className="schema-object-name" title={name}>
+                              {name}
+                            </span>
+                            {opensData(kind) ? (
+                              <button
+                                type="button"
+                                className="schema-row-action"
+                                title={t("정의 보기")}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onOpenDefinition(kind, name);
+                                }}
+                              >
+                                <CodeIcon size={11} />
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

@@ -17,6 +17,7 @@ import {
   TableIcon,
 } from "./icons";
 import { Spinner } from "./Spinner";
+import { useTabMotion } from "./tabMotion";
 import { tableColorValue } from "../tableColors";
 
 function tabIcon(tab: WorkbenchTab): ReactElement {
@@ -153,6 +154,12 @@ function titleOf(tab: WorkbenchTab): string {
   return defaultTitle(tab.title);
 }
 
+// The temporary tab keeps its element when it shows another table, so it
+// doesn't replay the opening animation (or pour the highlight onto itself).
+function elementKey(tab: WorkbenchTab): string {
+  return tab.kind === "data" && tab.slot !== undefined ? tab.slot : tab.id;
+}
+
 export function TabStrip({
   tabs,
   activeId,
@@ -167,8 +174,12 @@ export function TabStrip({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const stripRef = useRef<HTMLDivElement | null>(null);
+  const indicatorRef = useRef<HTMLSpanElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const cancelledRef = useRef(false);
+  const activeTab = tabs.find((tab) => tab.id === activeId);
+
+  useTabMotion(stripRef, indicatorRef, tabs.map(elementKey), activeTab === undefined ? null : elementKey(activeTab));
 
   useEffect(() => {
     if (renamingId !== null) {
@@ -185,7 +196,8 @@ export function TabStrip({
 
   useEffect(() => {
     const strip = stripRef.current;
-    const active = strip?.querySelector<HTMLElement>(".tab.active");
+    // Not a closed tab's stand-in, still melting away where it was.
+    const active = strip?.querySelector<HTMLElement>(".tab.active:not(.motion-ghost)");
     if (!strip || !active) {
       return;
     }
@@ -233,9 +245,8 @@ export function TabStrip({
         const renaming = tab.id === renamingId;
         return (
           <div
-            // The temporary tab keeps its element when it shows another
-            // table, so it doesn't replay the opening animation.
-            key={tab.kind === "data" && tab.slot !== undefined ? tab.slot : tab.id}
+            key={elementKey(tab)}
+            data-motion-key={elementKey(tab)}
             role="tab"
             aria-selected={active}
             className={`tab tab-${tab.kind}${active ? " active" : ""}${(tab.kind === "query" || tab.kind === "data") && tab.error ? " has-error" : ""}${tab.kind === "data" && tab.preview ? " preview" : ""}`}
@@ -301,6 +312,7 @@ export function TabStrip({
           </div>
         );
       })}
+      <span ref={indicatorRef} className="tab-indicator" aria-hidden="true" />
     </div>
   );
 }

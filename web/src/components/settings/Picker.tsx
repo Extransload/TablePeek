@@ -2,12 +2,15 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { createPortal } from "react-dom";
 import { t } from "../../i18n";
 import { CheckIcon, CloseIcon, SearchIcon } from "../icons";
+import { useMenuPreview } from "../menuPreview";
 import { Highlight } from "./rows";
 
 // A searchable list opened from a settings row's button (a theme, a font):
 // typing filters it, ↑↓ move, ⏎ picks, Esc or Tab close, and a click
 // anywhere else closes it. Actions (importing a theme file) follow the
-// items; ⌘⌫ removes an item that can be removed.
+// items; ⌘⌫ removes an item that can be removed. With `onPreview` the
+// highlighted item is shown in the app until one is picked or the list
+// closes (see menuPreview).
 
 export interface PickerItem {
   // The value picked.
@@ -40,6 +43,7 @@ export function Picker({
   actions = [],
   note,
   onPick,
+  onPreview,
   onClose,
 }: {
   anchor: HTMLElement;
@@ -49,6 +53,7 @@ export function Picker({
   // A line under the list (themes still loading).
   note?: string | null;
   onPick(value: string): void;
+  onPreview?(value: string | null): void;
   // Whether the keys go back to the row's button: not after a click elsewhere.
   onClose(refocus: boolean): void;
 }) {
@@ -75,9 +80,12 @@ export function Picker({
   }, [items, actions, query]);
   const [active, setActive] = useState(() => Math.max(0, items.findIndex((item) => item.selected)));
   const current = Math.min(active, entries.length - 1);
+  const highlighted = entries[current];
+  useMenuPreview(onPreview, highlighted?.kind === "item" ? highlighted.item.value : null);
 
   // Under the button, its right edges lined up, or above it when there is
   // more room there.
+  const previews = onPreview !== undefined;
   useLayoutEffect(() => {
     const box = boxRef.current;
     if (box === null) {
@@ -100,16 +108,31 @@ export function Picker({
         close.current(false);
       }
     };
+    // A preview redraws the app under it (a font moves the button and
+    // scrolls the settings): it follows the button, and only the wheel
+    // turned elsewhere closes it. Otherwise the settings scrolled under it
+    // would leave it behind.
+    const follow = (event: Event) => {
+      if (!box.contains(event.target as Node)) {
+        place();
+      }
+    };
+    const scrolled = previews ? follow : outside;
     document.addEventListener("pointerdown", outside, true);
-    // The settings scrolled under it: it would stay behind.
-    document.addEventListener("scroll", outside, true);
+    document.addEventListener("scroll", scrolled, true);
+    if (previews) {
+      document.addEventListener("wheel", outside, { capture: true, passive: true });
+      window.addEventListener("tablepeek:theme", place);
+    }
     window.addEventListener("resize", place);
     return () => {
       document.removeEventListener("pointerdown", outside, true);
-      document.removeEventListener("scroll", outside, true);
+      document.removeEventListener("scroll", scrolled, true);
+      document.removeEventListener("wheel", outside, true);
+      window.removeEventListener("tablepeek:theme", place);
       window.removeEventListener("resize", place);
     };
-  }, [anchor]);
+  }, [anchor, previews]);
 
   // The highlighted entry stays in sight: centred when the list opens.
   const opened = useRef(false);

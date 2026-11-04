@@ -1,9 +1,10 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { getConnMeta, subscribeConnMeta } from "../connMeta";
 import { t } from "../i18n";
 import type { ConnSummary, Connection } from "../store";
 import { DriverIcon, driverName } from "./DriverIcon";
 import { CloseIcon } from "./icons";
+import { useTabMotion } from "./tabMotion";
 
 interface ConnSwitcherProps {
   conns: ConnSummary[];
@@ -28,12 +29,16 @@ export function ConnSwitcher({
   onClose,
 }: ConnSwitcherProps) {
   const [, setMetaVersion] = useState(0);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const indicatorRef = useRef<HTMLSpanElement | null>(null);
+  const activeConn = conns.find((conn) => conn.id === activeId);
 
   useEffect(() => subscribeConnMeta(() => setMetaVersion((value) => value + 1)), []);
+  useTabMotion(trackRef, indicatorRef, conns.map((conn) => conn.id), activeConn?.id ?? null);
 
   return (
     <div className="conn-bar">
-      <div className="conn-bar-track" role="tablist" aria-label={t("열린 연결")}>
+      <div ref={trackRef} className="conn-bar-track" role="tablist" aria-label={t("열린 연결")}>
         {conns.length === 0 ? (
           <span className="conn-bar-empty">{t("열린 연결이 없습니다")}</span>
         ) : (
@@ -45,7 +50,7 @@ export function ConnSwitcher({
               "--conn-color": meta?.color || "var(--accent)",
             } as CSSProperties;
             return (
-              <span className="conn-tab-wrap" role="presentation" key={conn.id} style={style}>
+              <span className="conn-tab-wrap" role="presentation" key={conn.id} data-motion-key={conn.id} style={style}>
               <button
                 type="button"
                 role="tab"
@@ -86,6 +91,13 @@ export function ConnSwitcher({
             );
           })
         )}
+        {/* The active tab's colour, which it pours from tab to tab. */}
+        <span
+          ref={indicatorRef}
+          className="conn-tab-indicator"
+          aria-hidden="true"
+          style={{ "--conn-color": (activeConn && getConnMeta(activeConn.saved_id)?.color) || "var(--accent)" } as CSSProperties}
+        />
       </div>
     </div>
   );

@@ -1,5 +1,15 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { t } from "../i18n";
+import { animate, DURATION, EASE, ghost } from "../motion";
 import type { RowSource } from "../grid/rowSource";
 import { JsonRowSource } from "../grid/rowSource";
 import { containerSize, inkOf, inlineText, kindOf, type JsonKind } from "../jsonIndex";
@@ -165,6 +175,13 @@ export function CellInspector({
   const [raw, setRaw] = useState(false);
   // The large view (JsonExplorer) in place of the popover.
   const [big, setBig] = useState(false);
+  // Set once the dialog has switched between the two, so the popover's own
+  // entrance (styles.css) doesn't play again on the way back.
+  const [morphed, setMorphed] = useState(false);
+  // The popover and the large view are one dialog changing size: the new box
+  // starts on the old one's rect and settles into its own while a copy of the
+  // old fades off it.
+  const morphRef = useRef<{ from: DOMRect; fade: () => void } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([ROOT]));
   const [limits, setLimits] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState(ROOT);
@@ -247,7 +264,7 @@ export function CellInspector({
       if (event.key === "Escape") {
         event.preventDefault();
         if (big) {
-          setBig(false);
+          resize(false);
         } else {
           onClose();
         }
@@ -256,6 +273,58 @@ export function CellInspector({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, big]);
+
+  useLayoutEffect(() => {
+    const morph = morphRef.current;
+    const element = popRef.current;
+    morphRef.current = null;
+    if (morph === null || element === null) {
+      return;
+    }
+    const to = element.getBoundingClientRect();
+    if (to.width === 0 || to.height === 0) {
+      return;
+    }
+    const { from } = morph;
+    const dx = from.left + from.width / 2 - (to.left + to.width / 2);
+    const dy = from.top + from.height / 2 - (to.top + to.height / 2);
+    animate(
+      element,
+      [
+        { transform: `translate(${dx}px, ${dy}px) scale(${from.width / to.width}, ${from.height / to.height})` },
+        { transform: "none" },
+      ],
+      { duration: DURATION.spring, easing: EASE.spring },
+    );
+    // The content comes in once the box is mostly there, so it isn't seen
+    // stretched.
+    for (const child of element.children) {
+      animate(child, [{ opacity: 0 }, { opacity: 1 }], {
+        duration: DURATION.slow,
+        delay: DURATION.fast,
+        easing: EASE.out,
+        fill: "backwards",
+      });
+    }
+    morph.fade();
+  }, [big]);
+
+  // Between the popover and the large view; the motion starts from where the
+  // dialog is now.
+  function resize(next: boolean): void {
+    if (next === big) {
+      return;
+    }
+    const element = popRef.current;
+    if (element !== null) {
+      morphRef.current = {
+        from: element.getBoundingClientRect(),
+        fade: ghost(element, [{ opacity: 1 }, { opacity: 0 }], { duration: DURATION.base, easing: EASE.out }),
+      };
+    }
+    setMorphed(true);
+    setBig(next);
+  }
 
   // Keys belong to the popover, never to the grid underneath: the tree takes
   // focus, or the popover itself while the cell is still loading.
@@ -397,7 +466,7 @@ export function CellInspector({
       if (canExpand) {
         event.preventDefault();
         event.stopPropagation();
-        setBig((value) => !value);
+        resize(!big);
       }
       return;
     }
@@ -436,7 +505,7 @@ export function CellInspector({
           label={label}
           dialogRef={popRef}
           onDialogKeyDown={onDialogKeyDown}
-          onCollapse={() => setBig(false)}
+          onCollapse={() => resize(false)}
           onClose={onClose}
         />
       </div>
@@ -446,7 +515,7 @@ export function CellInspector({
   return (
     <div className="cell-pop-backdrop" {...backdrop}>
       <div
-        className="cell-pop"
+        className={`cell-pop${morphed ? " morphing" : ""}`}
         ref={popRef}
         style={style}
         role="dialog"
@@ -631,7 +700,7 @@ export function CellInspector({
               type="button"
               title={withHint(t("크게 보기"), formatBinding("Mod+Enter"))}
               aria-label={t("크게 보기")}
-              onClick={() => setBig(true)}
+              onClick={() => resize(true)}
             >
               <ExpandIcon size={11} />
             </button>

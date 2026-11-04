@@ -70,7 +70,8 @@ export function ContextMenu({ x, y, items, anchor, onClose }: ContextMenuProps) 
       if (element === null) {
         return;
       }
-      const size = element.getBoundingClientRect();
+      // Its laid-out size: a panel still growing in (overlayMotion.ts) measures small.
+      const size = { width: element.offsetWidth, height: element.offsetHeight };
       let left = x;
       let top = y;
       if (level > 0) {

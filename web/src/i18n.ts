@@ -396,6 +396,7 @@ const EN: Record<string, string> = {
   "시스템": "System",
   "구문 색": "Syntax colors",
   "값 색": "Value colors",
+  "색": "Colors",
   "MongoDB와 ClickHouse에 쓰입니다. 0이면 제한이 없습니다.": "For MongoDB and ClickHouse. 0 means no limit.",
   "브라우저 탭에서는 떠 있는 면만 유리가 됩니다.": "In a browser tab only floating surfaces turn to glass.",
   "설정 검색 {key}": "Search settings {key}",

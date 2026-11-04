@@ -18,6 +18,7 @@ import { loadRelations, loadSchema, peekRelations, peekSchema } from "../schemaC
 import type { Relation, TableSchema } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { FitIcon, KeyIcon, LinkIcon, MinusIcon, PlusIcon, RefreshIcon, SearchIcon, TableIcon } from "./icons";
+import { RollingNumber } from "./RollingNumber";
 import { LoadingState, Spinner } from "./Spinner";
 
 interface ErDiagramProps {
@@ -908,9 +909,10 @@ export function ErDiagram({ conn, refreshKey, storageKey, tabId, focus, focusSeq
             }}
           />
           {query !== "" ? (
-            <span className="er-search-count">
-              {matches.length === 0 ? t("없음") : `${matchIndex + 1}/${matches.length}`}
-            </span>
+            <RollingNumber
+              className="er-search-count"
+              value={matches.length === 0 ? t("없음") : `${matchIndex + 1}/${matches.length}`}
+            />
           ) : null}
         </div>
         <span className="spacer" />

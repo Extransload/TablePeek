@@ -6,6 +6,7 @@ import { store } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 import { SqlText } from "./SqlText";
 import { TrashIcon } from "./icons";
+import { usePanelMotion } from "./panelMotion";
 
 interface ConsolePanelProps {
   conn: string;
@@ -55,6 +56,7 @@ export function ConsolePanel({ conn, height }: ConsolePanelProps) {
   const pinnedRef = useRef(true);
   // What's shown, readable from the socket listener without waiting a render.
   const listRef = useRef<ConsoleEntry[] | null>(null);
+  const motionRef = usePanelMotion("bottom");
 
   useEffect(() => {
     let alive = true;
@@ -140,7 +142,7 @@ export function ConsolePanel({ conn, height }: ConsolePanelProps) {
   }
 
   return (
-    <section className="console-panel" style={{ height }} aria-label={t("콘솔")}>
+    <section className="console-panel" ref={motionRef} style={{ height }} aria-label={t("콘솔")}>
       {error !== null ? <ErrorNotice error={error} variant="compact" /> : null}
       {entries !== null && entries.length === 0 ? (
         <div className="console-empty">{t("이 연결에서 실행되는 SQL이 여기에 기록됩니다")}</div>
