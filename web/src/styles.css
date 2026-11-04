@@ -7332,11 +7332,15 @@ html.reduce-motion button.update-pill::after {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
+/* The icon and the words take the first line; the actions stay beside them
+   while they fit and move to a line of their own, right-aligned, when the
+   sheet is narrow. */
 .version-status {
   --tone: var(--muted);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
   padding: 9px 10px 9px 12px;
   border: 1px solid color-mix(in srgb, var(--tone) 32%, var(--line-soft));
   border-radius: var(--r-md);
@@ -7373,7 +7377,7 @@ html.reduce-motion button.update-pill::after {
 
 .version-status-text {
   display: flex;
-  flex: 1;
+  flex: 1 1 160px;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
@@ -7396,7 +7400,7 @@ html.reduce-motion button.update-pill::after {
 
 .version-status-actions {
   display: flex;
-  flex: none;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
