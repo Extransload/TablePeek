@@ -5498,7 +5498,9 @@ export default function App() {
         reviewPromptRef.current !== null ||
         dumpTabRef.current !== null ||
         jobsOpenRef.current ||
-        settingsOpenRef.current ||
+        // The docked settings sheet holds the keys only while focus is in it;
+        // the app beside it keeps its shortcuts.
+        (settingsOpenRef.current && document.activeElement?.closest(".settings-sheet") != null) ||
         activityOpenRef.current ||
         metricsOpenRef.current ||
         paletteOpenRef.current ||
@@ -5553,6 +5555,19 @@ export default function App() {
       }
       const action = actionForEvent(event, settingsRef.current.keymap);
       if (action === null) {
+        return;
+      }
+      // ⌘, opens the settings sheet and closes it again, wherever focus is,
+      // unless a dialog sits over it.
+      if (
+        action === "openSettings" &&
+        settingsOpenRef.current &&
+        !event.isComposing &&
+        document.querySelector(".modal-backdrop:not(.motion-ghost, .motion-ghost *)") === null
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSettingsOpen(false);
         return;
       }
       // ⌥ types characters on macOS (⌥T → †); text fields keep them. The SQL

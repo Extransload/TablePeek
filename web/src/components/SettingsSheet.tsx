@@ -1198,6 +1198,19 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
 
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const sheetWidth = clampSheet(width ?? SHEET_DEFAULT);
+  // Docked, not floating: the app gives up the sheet's width (styles.css,
+  // html.settings-docked) and keeps working beside it.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--settings-dock", `${sheetWidth}px`);
+  }, [sheetWidth]);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.classList.add("settings-docked");
+    return () => {
+      root.classList.remove("settings-docked");
+      root.style.removeProperty("--settings-dock");
+    };
+  }, []);
   // Pages whose name is searched for: offered first, ⏎ opens one.
   const pageHits = terms.length === 0 ? [] : PAGES.filter((item) => {
     const name = bothLanguages(item.label).toLowerCase();
@@ -1213,13 +1226,10 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
 
   return (
     <>
-      {/* The app stays in sight beside the sheet; a click on it closes the sheet. */}
-      <div className="settings-scrim" onPointerDown={onClose} />
       <div
         ref={sheetRef}
         className="settings-sheet"
         role="dialog"
-        aria-modal="true"
         aria-label={t("설정")}
         tabIndex={-1}
         style={{ width: sheetWidth }}

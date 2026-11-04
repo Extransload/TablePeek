@@ -4610,14 +4610,12 @@ body.col-resizing * {
   color: var(--accent);
 }
 
-/* Settings: a sheet docked to the right edge at full height, the app in
-   sight beside it (see SettingsSheet): the search, the page tabs, then the
-   page's groups of rows, each a name (and a note) and its control, and the
-   keys along its foot. */
-.settings-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 44;
+/* Settings: a sheet docked to the right edge at full height. It takes its
+   width from the app, which keeps working beside it (see SettingsSheet):
+   the search, the page tabs, then the page's groups of rows, each a name
+   (and a note) and its control, and the keys along its foot. */
+html.settings-docked .app {
+  padding-right: var(--settings-dock, 0px);
 }
 
 .settings-sheet {
@@ -4631,7 +4629,6 @@ body.col-resizing * {
   max-width: calc(100vw - 240px);
   border-left: 1px solid var(--line-soft);
   background: var(--panel);
-  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.28);
   outline: none;
   animation: tablepeek-sheet-in var(--motion-spring) var(--ease-spring) backwards;
 }
