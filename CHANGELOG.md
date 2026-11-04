@@ -4,6 +4,12 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-04
+
+### Fixed
+
+- The update status in Settings › General no longer breaks in a narrow sheet: with a release downloaded, its text broke after every word and Check now spilled out of the card. The buttons now move to a line of their own, right-aligned, when they don't fit beside the text.
+
 ## [0.3.1] - 2026-11-04
 
 ### Added
@@ -93,7 +99,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/Extransload/TablePeek/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Extransload/TablePeek/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Extransload/TablePeek/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Extransload/TablePeek/compare/v0.1.0...v0.2.0
