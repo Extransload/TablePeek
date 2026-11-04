@@ -115,6 +115,17 @@ export function KeyboardIcon({ size = 12, className }: IconProps) {
   );
 }
 
+// Two slider tracks with their knobs: general settings.
+export function SlidersIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M2.4 5.2h11.2M2.4 10.8h11.2" />
+      <circle cx="10.2" cy="5.2" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="5.8" cy="10.8" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 // A sun: theme and appearance.
 export function SunIcon({ size = 12, className }: IconProps) {
   return (

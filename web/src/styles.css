@@ -4731,61 +4731,90 @@ body.col-resizing * {
 .settings-search input {
   flex: 1;
   min-width: 0;
-  height: 30px;
-  padding: 0 10px 0 29px;
+  height: 34px;
+  padding: 0 12px 0 31px;
+  border-radius: 10px;
+}
+
+/* Focused, the field glows in the accent (the global focus ring's
+   :not() chain outweighs a plain class selector, hence its repeat). */
+.settings-search input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):focus-visible {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 14px 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.settings-search:focus-within svg {
+  color: var(--muted);
 }
 
 /* The pages as icons in one row (names in their tooltips): one Tab stop,
-   ←→ between them. */
+   ←→ between them. The page shown has its icon in the accent over a short
+   accent bar. */
 .settings-tabs {
   display: flex;
   flex: none;
   gap: 2px;
-  padding: 0 12px 8px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--line-soft);
 }
 
 .settings-tabs button {
+  position: relative;
   flex: 1 1 0;
   justify-content: center;
   min-width: 0;
-  height: 28px;
+  height: 38px;
   padding: 0;
   border-color: transparent;
-  border-radius: 7px;
+  border-radius: 7px 7px 0 0;
   background: transparent;
-  color: var(--muted);
+  color: var(--faint);
+  transition: color 120ms ease;
+}
+
+.settings-tabs button::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 26px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: translateX(-50%) scaleX(0);
+  transition: transform 160ms ease;
 }
 
 .settings-tabs button:hover {
-  background: var(--hover-fill);
+  background: transparent;
   color: var(--ink);
   box-shadow: none;
 }
 
 .settings-tabs button.active {
   border-color: transparent;
-  background: var(--accent-soft);
-  color: var(--ink);
+  background: transparent;
+  color: var(--accent);
 }
 
-.settings-tabs button.active svg {
-  color: var(--accent);
+.settings-tabs button.active::after {
+  transform: translateX(-50%) scaleX(1);
 }
 
 /* Searching shows every page's matches: no page is the one shown. */
 .settings-tabs.searching button.active {
-  background: transparent;
-  color: var(--muted);
+  color: var(--faint);
 }
 
-.settings-tabs.searching button.active svg {
-  color: inherit;
+.settings-tabs.searching button.active::after {
+  transform: translateX(-50%) scaleX(0);
 }
 
 .settings-tabs button:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline-offset: -4px;
 }
 
 .settings-sheet-body {

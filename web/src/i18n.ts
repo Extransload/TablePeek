@@ -409,8 +409,6 @@ const EN: Record<string, string> = {
   "참거짓": "Booleans",
   "레이블": "Labels",
   "문자열 값": "String values",
-  "Tern 다크": "Tern dark",
-  "Tern 라이트": "Tern light",
   "Tern 파일에서 가져옴": "Imported from Tern files",
   "Tern 테마를 불러오지 못했습니다.": "Couldn't load the Tern themes.",
   "Tern 테마 파일 가져오기": "Import a Tern theme file",

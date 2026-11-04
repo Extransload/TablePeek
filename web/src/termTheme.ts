@@ -211,7 +211,7 @@ export function termTheme(source: TermSource): Theme {
   }
   return {
     id: source.id,
-    label: source.label,
+    label: source.id.startsWith(TERN_PREFIX) && !source.id.startsWith(TERN_FILE_PREFIX) ? ternLabel(source.label) : source.label,
     mode,
     accent,
     palette,
@@ -220,6 +220,18 @@ export function termTheme(source: TermSource): Theme {
     group: source.id.startsWith(TERN_PREFIX) ? "tern" : undefined,
     imported: source.id.startsWith(TERN_FILE_PREFIX) || undefined,
   };
+}
+
+// Tern's own themes go by their omp file names ("dark-tokyo-night"); the
+// gallery already splits dark from light, so they read as "Tokyo Night".
+const NAME_CASE: Record<string, string> = { github: "GitHub" };
+
+function ternLabel(name: string): string {
+  return name
+    .replace(/^(dark|light)-/, "")
+    .split("-")
+    .map((word) => NAME_CASE[word] ?? word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }
 
 // A theme's colour table: its own, or for a theme not made from one, the

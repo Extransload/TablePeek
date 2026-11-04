@@ -67,7 +67,7 @@ import {
   PlusIcon,
   RefreshIcon,
   SearchIcon,
-  SettingsIcon,
+  SlidersIcon,
   SunIcon,
   TableIcon,
   TransferIcon,
@@ -106,7 +106,7 @@ interface PageItem {
 // The screen's areas each have their own page (its font and what it shows),
 // as TablePlus splits its fonts into SQL Editor, Data Table and Sidebars.
 const PAGES: PageItem[] = [
-  { id: "general", label: "일반", icon: SettingsIcon },
+  { id: "general", label: "일반", icon: SlidersIcon },
   { id: "theme", label: "테마", icon: SunIcon },
   { id: "editor", label: "SQL 에디터", icon: CodeIcon },
   { id: "grid", label: "데이터 테이블", icon: TableIcon },
@@ -777,25 +777,24 @@ function ThemeGallery({
   }
   const picked = THEMES.some((theme) => theme.id === value) ? value : THEMES[0]?.id;
   const byLabel = (a: Theme, b: Theme): number => a.label.localeCompare(b.label, "en");
-  const groups: { key: string; caption: string; themes: Theme[]; note?: string }[] = [
-    { key: "dark", caption: t("다크"), themes: THEMES.filter((theme) => !theme.group && theme.mode === "dark") },
-    { key: "light", caption: t("라이트"), themes: THEMES.filter((theme) => !theme.group && theme.mode === "light") },
+  const groups: { key: string; caption: string; themes: Theme[] }[] = [
     ...(["dark", "light"] as const).map((mode) => ({
-      key: `tern-${mode}`,
-      caption: mode === "dark" ? t("Tern 다크") : t("Tern 라이트"),
-      themes: THEMES.filter((theme) => theme.group === "tern" && !theme.imported && theme.mode === mode).sort(byLabel),
-      note: tern === "loading" ? t("불러오는 중…") : tern === "failed" ? t("Tern 테마를 불러오지 못했습니다.") : undefined,
+      key: mode,
+      caption: mode === "dark" ? t("다크") : t("라이트"),
+      themes: [
+        ...THEMES.filter((theme) => !theme.group && theme.mode === mode),
+        ...THEMES.filter((theme) => theme.group === "tern" && !theme.imported && theme.mode === mode).sort(byLabel),
+      ],
     })),
     { key: "tern-files", caption: t("Tern 파일에서 가져옴"), themes: THEMES.filter((theme) => theme.imported).sort(byLabel) },
   ];
   return (
     <div className="theme-gallery" ref={galleryRef} onKeyDown={onKeyDown}>
       {groups
-        .filter((group) => group.themes.length > 0 || group.note !== undefined)
+        .filter((group) => group.themes.length > 0)
         .map((group) => (
           <div key={group.key} className="theme-gallery-group">
             <span className="theme-gallery-caption">{group.caption}</span>
-            {group.themes.length === 0 ? <p className="settings-hint">{group.note}</p> : null}
             <div className="theme-grid">
               {group.themes.map((theme) => (
                 <button
@@ -831,6 +830,7 @@ function ThemeGallery({
             </div>
           </div>
         ))}
+      {tern === "failed" ? <p className="settings-hint">{t("Tern 테마를 불러오지 못했습니다.")}</p> : null}
     </div>
   );
 }

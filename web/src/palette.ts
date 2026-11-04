@@ -378,14 +378,22 @@ export function getThemesVersion(): number {
   return themesVersion;
 }
 
-// Adds `themes`, each in place of one with its id.
+// Adds `themes`, each in place of one with its id. Tern's own themes share
+// the gallery's dark and light groups with the built-in ones; one that takes
+// a built-in theme's name says where it comes from.
 export function addThemes(themes: Theme[]): void {
   for (const theme of themes) {
-    const at = THEMES.findIndex((item) => item.id === theme.id);
+    const named =
+      theme.group === "tern" &&
+      !theme.imported &&
+      THEMES.some((item) => !item.group && item.label.toLowerCase() === theme.label.toLowerCase())
+        ? { ...theme, label: `${theme.label} (Tern)` }
+        : theme;
+    const at = THEMES.findIndex((item) => item.id === named.id);
     if (at >= 0) {
-      THEMES[at] = theme;
+      THEMES[at] = named;
     } else {
-      THEMES.push(theme);
+      THEMES.push(named);
     }
   }
   themesVersion += 1;
