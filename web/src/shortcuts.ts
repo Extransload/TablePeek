@@ -43,6 +43,10 @@ export const KEY_ACTIONS: KeyAction[] = [
   "duplicateRows",
 ];
 
+// The desktop app marks the page's root before any of its scripts run (see
+// crates/tablepeek-desktop/src/window.rs); browser tabs carry no mark.
+export const IN_DESKTOP_APP = typeof document !== "undefined" && document.documentElement.dataset.app === "desktop";
+
 // Browsers reserve ⌘/Ctrl + W, T, N for themselves, so each of those actions
 // also gets an Alt alternative that pages are allowed to handle.
 export const DEFAULT_KEYMAP: Keymap = {
@@ -55,8 +59,9 @@ export const DEFAULT_KEYMAP: Keymap = {
   closeTab: ["Mod+w", "Alt+w"],
   nextTab: ["Alt+]"],
   prevTab: ["Alt+["],
-  // TablePlus refreshes with ⌘R, but in a browser that key reloads the page.
-  refresh: ["F5"],
+  // TablePlus refreshes with ⌘R. In a browser tab that key reloads the page
+  // (bind it in Settings to take it over); the desktop app has no page reload.
+  refresh: IN_DESKTOP_APP ? ["F5", "Mod+r"] : ["F5"],
   toggleSidebar: ["Mod+b"],
   toggleDetail: ["Mod+i"],
   // TablePlus uses ⇧⌘C, but Chrome keeps that for its element picker.
@@ -284,20 +289,35 @@ const LEGACY_DEFAULTS: Partial<Record<KeyAction, string>> = {
 };
 
 // Bumped when a default changes in a way stored keymaps should pick up once.
-// 2: ⌘R joined Refresh. 3: ⌘R went back to reloading the page.
-export const KEYMAP_VERSION = 3;
+// 2: ⌘R joined Refresh. 3: ⌘R went back to reloading the page. 4: ⌘R
+// refreshes in the desktop app, and keymaps are stored as the actions changed
+// from the defaults, which now differ between the app and a browser tab.
+export const KEYMAP_VERSION = 4;
 
-// Whole default lists earlier versions stored: on the first load after an
-// upgrade, a stored list still equal to one was never changed, so it follows
-// today's default. Later choices (⌘R recorded again) stay as made.
-const OLD_DEFAULT_LISTS: Partial<Record<KeyAction, string[][]>> = {
-  refresh: [["F5", "Mod+r"]],
-};
+// Whole default lists earlier versions stored, each up to the version that
+// replaced it: on the first load after an upgrade, a stored list still equal
+// to one was never changed, so it follows today's default. Later choices
+// (⌘R recorded again) stay as made.
+const OLD_DEFAULT_LISTS: { action: KeyAction; list: string[]; before: number }[] = [
+  { action: "refresh", list: ["F5", "Mod+r"], before: 3 },
+  { action: "refresh", list: ["F5"], before: 4 },
+];
 
-function isOldDefault(action: KeyAction, entries: string[]): boolean {
-  return (OLD_DEFAULT_LISTS[action] ?? []).some(
-    (list) => list.length === entries.length && list.every((binding, index) => binding === entries[index]),
-  );
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((binding, index) => binding === b[index]);
+}
+
+// The keymap as saved: only the actions changed from this page's defaults,
+// so an untouched action follows the defaults of wherever the settings are
+// read next (⌘R refreshes in the app, not in a browser tab).
+export function storedKeymap(keymap: Keymap): Partial<Keymap> {
+  const out: Partial<Keymap> = {};
+  for (const action of KEY_ACTIONS) {
+    if (!sameList(keymap[action], DEFAULT_KEYMAP[action])) {
+      out[action] = keymap[action];
+    }
+  }
+  return out;
 }
 
 // Only bindings the recorder could produce today: a parseable key with ⌘/Ctrl
@@ -333,7 +353,10 @@ export function normalizeKeymap(raw: unknown, storedVersion = KEYMAP_VERSION): K
       : typeof value === "string" && value !== LEGACY_DEFAULTS[action]
         ? [value]
         : null;
-    if (entries === null || (storedVersion < KEYMAP_VERSION && isOldDefault(action, entries))) {
+    const oldDefault =
+      entries !== null &&
+      OLD_DEFAULT_LISTS.some((old) => old.action === action && storedVersion < old.before && sameList(old.list, entries));
+    if (entries === null || oldDefault) {
       continue;
     }
     const valid = entries.filter(isValidBinding);

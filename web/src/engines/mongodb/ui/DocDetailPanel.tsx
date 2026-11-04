@@ -19,7 +19,7 @@ import { collStats, isAbort, listIndexes, type CollStats, type IndexInfo, type N
 import { deepEqual, isDocument, typeName, type BsonDocument, type BsonValue } from "../bson";
 import { toShell } from "../format";
 import type { DocEdit } from "../guard";
-import { cellValue, type DocTable } from "../table";
+import { INK_KIND, cellValue, type DocTable } from "../table";
 import { DocFields, docKey } from "./CardView";
 import { ShellText } from "./ShellText";
 import type { SaveEdits } from "./types";
@@ -283,6 +283,9 @@ function SharedValues({ table, rows, query }: { table: DocTable; rows: SelectedR
                   ? toShell(first)
                   : valueText(first)
           }
+          // Scalars in the grid's colour for their type; documents and
+          // arrays are shell text, drawn plain as the table's previews are.
+          kind={same && first !== undefined && first !== null ? (INK_KIND[typeName(first)] ?? null) : null}
           note={!same ? t("여러 값") : first === undefined ? t("필드 없음") : undefined}
         />
       ))}

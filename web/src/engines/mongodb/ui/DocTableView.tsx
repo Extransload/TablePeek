@@ -17,12 +17,12 @@ import type { GridEditHandlers, GridSelection, SelectedRows, SortIndicator } fro
 import type { GridColumnSpec } from "../../../grid/columns";
 import type { RowSource } from "../../../grid/rowSource";
 import { phrase, phraseError, t } from "../../../i18n";
-import { palette, type ValueKind } from "../../../palette";
+import { palette } from "../../../palette";
 import { getSettings } from "../../../settings";
 import { Int32, deepEqual, isDocument, isNumber, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { preview, toShell } from "../format";
 import type { DocEdit } from "../guard";
-import { buildTable, cellPath, cellValue, sortRows, type DocTable, type TableColumn, type TableRow } from "../table";
+import { INK_KIND, buildTable, cellPath, cellValue, sortRows, type DocTable, type TableColumn, type TableRow } from "../table";
 import { DocDetailPanel, TableDetail, useDetailSlot } from "./DocDetailPanel";
 import { confirmTypeChange, copyDocsItem, copyPathItem, copyValueItems, docEditItems, filterItems, hideItem, plainText, sortItems, trimSeparators, useDocActions, useOnItemsChange, ValueQuickLook, type QuickLookTarget, type SortControl } from "./docMenus";
 import { GridIcon } from "./icons";
@@ -33,22 +33,6 @@ import "./panels.css";
 
 // What a missing field shows, dimmed (a null shows NULL).
 const MISSING = "—";
-
-// The grid's type colours for BSON types.
-const INK_KIND: Partial<Record<BsonTypeName, ValueKind>> = {
-  String: "string",
-  Int32: "integer",
-  Int64: "bigint",
-  Double: "float",
-  Decimal128: "float",
-  Boolean: "boolean",
-  Date: "date",
-  ObjectId: "uuid",
-  Binary: "binary",
-  Timestamp: "time",
-  Regex: "enum",
-  Code: "string",
-};
 
 // The table's cells for the canvas grid: scalars as their edit text,
 // documents and arrays as a tag and a one-line preview.

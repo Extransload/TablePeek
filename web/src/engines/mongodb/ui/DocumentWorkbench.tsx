@@ -24,7 +24,7 @@ import { idFilter } from "../guard";
 import type { AggDraft } from "../pipeline";
 import { AggregationPanel } from "./AggregationPanel";
 import { BulkModal, type BulkMode } from "./BulkModal";
-import { CardView, docKey } from "./CardView";
+import { CardView, docKey, useCardsRefresh } from "./CardView";
 import { DocDetail, DocDetailPanel, FactsList, NothingSelected, useCollectionFacts } from "./DocDetailPanel";
 import { ConfirmModal, ConflictModal, type ConfirmRequest } from "./DocModals";
 import { DocTableView } from "./DocTableView";
@@ -548,13 +548,9 @@ export function DocumentWorkbench({
     return () => window.removeEventListener("keydown", onKey);
   }, [active, sub, switchView]);
 
-  // The app's refresh (F5) reloads the page and the stats.
-  const firstRefresh = useRef(refreshSeq);
-  useEffect(() => {
-    if (refreshSeq !== firstRefresh.current) {
-      reload();
-    }
-  }, [refreshSeq, reload]);
+  // The app's refresh (F5) reloads the page and the stats, after asking
+  // about unsaved card edits.
+  const { refresh, cardsKey } = useCardsRefresh(dirtyCount, reload, refreshSeq);
 
   // ---- Rendering ----
 
@@ -622,6 +618,7 @@ export function DocumentWorkbench({
   if (view === "cards") {
     body = (
       <CardView
+        key={cardsKey}
         docs={docs}
         offset={start}
         readOnly={!editable}
@@ -817,7 +814,7 @@ export function DocumentWorkbench({
                 </button>
               </div>
               <div className="footer-end">
-                <button type="button" className="icon-button" title={t("새로고침 (F5)")} aria-label={t("새로고침")} onClick={reload}>
+                <button type="button" className="icon-button" title={t("새로고침 (F5)")} aria-label={t("새로고침")} onClick={refresh}>
                   <RefreshIcon size={12} />
                 </button>
                 <button

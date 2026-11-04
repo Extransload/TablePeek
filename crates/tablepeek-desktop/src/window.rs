@@ -13,6 +13,9 @@
 //! - Windows are transparent, so the page decides how much of the desktop
 //!   shows through (see material.rs); a new one takes the others' material.
 //! - On macOS the page's bar is the title bar (see titlebar.rs).
+//! - The page is told it runs in the app (`data-app="desktop"` on its root,
+//!   set before its scripts run), so its keys can differ from a browser
+//!   tab's: ⌘R refreshes the view, as in TablePlus, where a browser reloads.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,6 +26,9 @@ use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::material::WindowEffects;
+
+/// Marks the page as the app's before any of its scripts run.
+const MARK_APP: &str = "document.documentElement.dataset.app = 'desktop';";
 
 /// Numbers the windows after the first ("main"); labels must be unique.
 static WINDOWS: AtomicUsize = AtomicUsize::new(0);
@@ -43,6 +49,7 @@ pub fn open(app: &AppHandle, port: u16, url: Url) -> tauri::Result<()> {
         .center()
         .transparent(true)
         .disable_drag_drop_handler()
+        .initialization_script(MARK_APP)
         .on_navigation(move |url| {
             if is_app_page(url, port) || is_inline(url) {
                 return true;

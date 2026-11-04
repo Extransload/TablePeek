@@ -796,6 +796,7 @@ const EN: Record<string, string> = {
   "변경 {count}건": "{count} changes",
   "적용하지 않은 변경사항 버리기": "Discard unapplied changes",
   "버리기": "Discard",
+  "저장하지 않은 문서 변경 사항을 모두 버리고 새로고침할까요?": "Discard all unsaved document changes and refresh?",
   "변경사항 적용": "Apply changes",
   "변경 대기": "Stage change",
   "변경 대기 중 ({count}개 컬럼) — ⌘S로 적용": "Staged {count} column changes — press ⌘S to apply",

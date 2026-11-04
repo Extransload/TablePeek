@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import type { SelectedRows } from "../grid/CanvasGrid";
+import type { GridColumnSpec } from "../grid/columns";
 import type { RowSource } from "../grid/rowSource";
+import { classifyCell } from "../grid/valueKind";
 import { formatBytes, formatRowEstimate } from "../format";
 import { t } from "../i18n";
 import type { TableDetail } from "../store";
@@ -17,6 +19,9 @@ interface RowDetailPanelProps {
   columns: string[];
   // The selected rows; one row shows its values, several show what they share.
   rows: SelectedRows | null;
+  // The grid's column specs for the rows, when it has them: a value is
+  // coloured by its column's declared kind, as the grid colours it.
+  specs: (GridColumnSpec | null)[] | null;
   // The rows are the table's own (a result), so their types and foreign keys
   // apply; a structure row's fields are not the table's columns.
   tableRows: boolean;
@@ -87,6 +92,7 @@ export function RowDetailPanel({
   source,
   columns,
   rows,
+  specs,
   tableRows,
   table,
   detail,
@@ -145,6 +151,7 @@ export function RowDetailPanel({
           name={column}
           type={types.get(column.toLowerCase())?.toLowerCase() ?? null}
           value={value}
+          kind={classifyCell(value, specs?.[index]?.kind)}
           note={common === "mixed" ? t("여러 값") : undefined}
           action={
             single && foreignKey !== undefined && value !== null && value !== undefined ? (

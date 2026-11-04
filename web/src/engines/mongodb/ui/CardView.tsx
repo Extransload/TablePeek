@@ -9,8 +9,9 @@
 // and a card head's right-click (a row's ⌥-click too) open their menus, and
 // a middle-click (⌘↩ on the list for the picked card) opens Quick Look.
 
-import { useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
+import { confirmDialog } from "../../../components/ConfirmDialog";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon } from "../../../components/icons";
@@ -940,4 +941,40 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
       {look !== null ? <ValueQuickLook target={look} where={null} onClose={() => setLook(null)} /> : null}
     </div>
   );
+}
+
+// The app's refresh (F5, ⌘R in the desktop app) and the footer's refresh
+// button over cards holding unsaved edits: as with staged grid rows, the
+// edits are dropped and the page read again only once the user agrees, and
+// Cancel keeps both. A reload of the view's own (after a save or a delete)
+// leaves drafts alone. `cardsKey` keys the CardView: a new one starts clean.
+export function useCardsRefresh(dirtyCount: number, reload: () => void, refreshSeq: number): { refresh(): void; cardsKey: number } {
+  const [cardsKey, setCardsKey] = useState(0);
+  const dirtyRef = useRef(dirtyCount);
+  dirtyRef.current = dirtyCount;
+  const refresh = useCallback(() => {
+    if (dirtyRef.current === 0) {
+      reload();
+      return;
+    }
+    void confirmDialog({
+      title: t("경고"),
+      message: t("저장하지 않은 문서 변경 사항을 모두 버리고 새로고침할까요?"),
+      confirmLabel: t("버리기"),
+      danger: true,
+    }).then((ok) => {
+      if (ok) {
+        setCardsKey((key) => key + 1);
+        reload();
+      }
+    });
+  }, [reload]);
+  const seenRefresh = useRef(refreshSeq);
+  useEffect(() => {
+    if (refreshSeq !== seenRefresh.current) {
+      seenRefresh.current = refreshSeq;
+      refresh();
+    }
+  }, [refreshSeq, refresh]);
+  return { refresh, cardsKey };
 }

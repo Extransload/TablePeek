@@ -18,7 +18,7 @@ import { formatBytes } from "../../../format";
 import { t } from "../../../i18n";
 import { store } from "../../../store";
 import { Int32, isNumber, jsonObject, type BsonDocument, type BsonValue } from "../../mongodb/bson";
-import { CardView, docKey } from "../../mongodb/ui/CardView";
+import { CardView, docKey, useCardsRefresh } from "../../mongodb/ui/CardView";
 import { DocDetail, DocDetailPanel, FactsList, NothingSelected, type Fact } from "../../mongodb/ui/DocDetailPanel";
 import { DocActionsContext, type DocActions } from "../../mongodb/ui/docMenus";
 import { ConflictModal } from "../../mongodb/ui/DocModals";
@@ -434,12 +434,9 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
     return () => window.removeEventListener("keydown", onKey);
   }, [active, sub]);
 
-  const firstRefresh = useRef(refreshSeq);
-  useEffect(() => {
-    if (refreshSeq !== firstRefresh.current) {
-      reload();
-    }
-  }, [refreshSeq, reload]);
+  // The app's refresh (F5) reloads the page, after asking about unsaved card
+  // edits.
+  const { refresh, cardsKey } = useCardsRefresh(dirtyCount, reload, refreshSeq);
 
   // ---- Rendering ----
 
@@ -589,6 +586,7 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
   if (view === "cards") {
     body = (
       <CardView
+        key={cardsKey}
         docs={docs}
         offset={start}
         readOnly={!editable}
@@ -764,7 +762,7 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
                 </span>
               </div>
               <div className="footer-end">
-                <button type="button" className="icon-button" title={t("새로고침 (F5)")} aria-label={t("새로고침")} onClick={reload}>
+                <button type="button" className="icon-button" title={t("새로고침 (F5)")} aria-label={t("새로고침")} onClick={refresh}>
                   <RefreshIcon size={12} />
                 </button>
                 <button

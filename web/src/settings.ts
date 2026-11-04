@@ -23,7 +23,7 @@ import {
   type Material,
 } from "./material";
 import * as uiState from "./persist";
-import { KEYMAP_VERSION, normalizeKeymap, type Keymap } from "./shortcuts";
+import { KEYMAP_VERSION, normalizeKeymap, storedKeymap, type Keymap } from "./shortcuts";
 import {
   EXTRA_SYNTAX_VARIABLES,
   paletteSyntax,
@@ -237,12 +237,17 @@ function readSettings(): AppSettings {
     };
     // Saved back in today's shape at once, so they are moved over once.
     if (legacy) {
-      uiState.setItem(uiState.SETTINGS_KEY, JSON.stringify(settings));
+      writeSettings(settings);
     }
     return settings;
   } catch {
     return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
   }
+}
+
+// The keymap is saved as its changes only (see storedKeymap).
+function writeSettings(settings: AppSettings): void {
+  uiState.setItem(uiState.SETTINGS_KEY, JSON.stringify({ ...settings, keymap: storedKeymap(settings.keymap) }));
 }
 
 // A saved theme still offered (one of Tern's is kept while they load, see
@@ -545,7 +550,7 @@ export function previewSettings(patch: Partial<AppSettings> | null): void {
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   current = { ...current, ...patch };
-  uiState.setItem(uiState.SETTINGS_KEY, JSON.stringify(current));
+  writeSettings(current);
   redraw();
   for (const listener of listeners) {
     listener(current);

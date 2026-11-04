@@ -3,7 +3,25 @@
 // A drilled level has one row per object, or per array element, with the
 // parent document's _id and the element's position alongside.
 
+import type { ValueKind } from "../../palette";
 import { Int32, compareForSort, isDocument, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "./bson";
+
+// The grid's type colours for BSON types (the table's cells, the detail
+// panel's shared values).
+export const INK_KIND: Partial<Record<BsonTypeName, ValueKind>> = {
+  String: "string",
+  Int32: "integer",
+  Int64: "bigint",
+  Double: "float",
+  Decimal128: "float",
+  Boolean: "boolean",
+  Date: "date",
+  ObjectId: "uuid",
+  Binary: "binary",
+  Timestamp: "time",
+  Regex: "enum",
+  Code: "string",
+};
 
 export interface TableColumn {
   // "field": a key of the row's document. The rest appear only in drilled

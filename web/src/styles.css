@@ -8584,8 +8584,9 @@ html.launcher-dragging .hover-tooltip {
   text-overflow: ellipsis;
 }
 
-/* JSON in Quick Look (tree rows and field boxes) in the data grid's colours
-   by kind of value; keys in the ordinary ink, punctuation faint. */
+/* JSON in Quick Look (tree rows and field boxes) and the values of the row
+   detail panel in the data grid's colours by kind of value; keys in the
+   ordinary ink, punctuation faint. */
 .jv-string {
   color: var(--type-string, var(--syntax-string));
 }
@@ -8612,6 +8613,26 @@ html.launcher-dragging .hover-tooltip {
 
 .jv-list {
   color: var(--type-list, var(--ink));
+}
+
+.jv-date {
+  color: var(--type-date, var(--ink));
+}
+
+.jv-time {
+  color: var(--type-time, var(--ink));
+}
+
+.jv-enum {
+  color: var(--type-enum, var(--ink));
+}
+
+.jv-uuid {
+  color: var(--type-uuid, var(--ink));
+}
+
+.jv-binary {
+  color: var(--type-binary, var(--ink));
 }
 
 .jv-null {
@@ -9676,6 +9697,12 @@ button.field-box-link {
 .field-box-value.placeholder {
   color: var(--faint);
   opacity: 0.7;
+}
+
+/* NULL in the data grid's NULL ink. */
+.field-box-value.placeholder.null {
+  color: var(--type-null, var(--faint));
+  opacity: 1;
 }
 
 button.field-box-copy {

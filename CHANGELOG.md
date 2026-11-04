@@ -4,6 +4,16 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- **⌘R refreshes in the desktop app**, as in TablePlus: the schema is read again and the table in front reloads (F5 still works). A browser tab keeps ⌘R for reloading the page unless you bind it in Settings › Shortcuts. Shortcuts are now saved as the ones you changed only, so a Refresh you never changed follows each place's default; a Refresh left at the old default picks up ⌘R in the app once.
+- **The row detail panel (⌘I) colors values by type** like the data grid: numbers, booleans, dates, times, UUIDs, binary and enums in their type colors, JSON objects and arrays token by token, and NULL in the grid's NULL color. With "Color by type" off, values read plain. The MongoDB table view's shared values for several selected rows are colored the same way.
+
+### Fixed
+
+- Refreshing a MongoDB or Elasticsearch collection whose cards hold unsaved edits (F5, ⌘R in the app, or the footer's refresh button) now asks before discarding them; Cancel keeps the edits and the page, Discard drops them and reloads. Before, the reload kept the drafts over the documents read again.
+- Moving through a table with the keyboard highlights the current cell's row; before, the highlight stayed on the row under the mouse pointer.
+
 ## [0.3.2] - 2026-11-04
 
 ### Fixed

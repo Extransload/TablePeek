@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { writeClipboard } from "../clipboard";
 import { t } from "../i18n";
 import { inkOf, jsonSpans, type JsonKind } from "../jsonIndex";
+import type { ValueKind } from "../palette";
 import { CopyIcon } from "./icons";
 
 interface FieldBoxProps {
@@ -19,6 +20,9 @@ interface FieldBoxProps {
   // The value's JSON kind: the value is drawn in the data grid's colour for
   // that kind, an object or array token by token.
   json?: JsonKind;
+  // Or the value's kind as the data grid tells it (classifyCell): drawn in
+  // the grid's colour for it, JSON objects and arrays token by token.
+  kind?: ValueKind | null;
   // Extra control beside the name (a foreign-key jump, say).
   action?: ReactNode;
   // Shown faint in place of the value ("Multiple values", say).
@@ -62,9 +66,9 @@ function displayText(text: string): string {
 }
 
 // One labelled value in TablePlus style: name and type above a boxed value,
-// with NULL and empty strings shown as faint placeholders. Copy takes the
-// value as stored, not the indented view.
-export function FieldBox({ name, type, value, text, showAll, json, action, note }: FieldBoxProps) {
+// with NULL (in the grid's NULL ink) and empty strings shown as placeholders.
+// Copy takes the value as stored, not the indented view.
+export function FieldBox({ name, type, value, text, showAll, json, kind, action, note }: FieldBoxProps) {
   const [copied, setCopied] = useState<string | null>(null);
   // The text drawn whole after "show all"; another value starts cut again.
   const [whole, setWhole] = useState<string | null>(null);
@@ -73,6 +77,7 @@ export function FieldBox({ name, type, value, text, showAll, json, action, note 
   const placeholder =
     note ??
     (text !== undefined ? null : value === undefined ? "…" : value === null ? "NULL" : value === "" ? "EMPTY" : null);
+  const isNull = note === undefined && text === undefined && value === null;
   const copyText = useMemo(
     () => (placeholder !== null ? "" : (text ?? valueText(value))),
     [placeholder, text, value],
@@ -87,11 +92,20 @@ export function FieldBox({ name, type, value, text, showAll, json, action, note 
     [cut, pretty, showAll],
   );
   const drawn = useMemo((): ReactNode => {
-    if (json === undefined || shown === "") {
+    // The ink of the whole value, or "tokens" for JSON drawn token by token.
+    const ink =
+      json !== undefined
+        ? json === "object" || json === "array"
+          ? "tokens"
+          : inkOf(json, value)
+        : kind === "json" || kind === "list"
+          ? "tokens"
+          : kind;
+    if (ink === undefined || ink === null || shown === "") {
       return shown;
     }
-    if (json !== "object" && json !== "array") {
-      return <span className={`jv-${inkOf(json, value)}`}>{shown}</span>;
+    if (ink !== "tokens") {
+      return <span className={`jv-${ink}`}>{shown}</span>;
     }
     if (shown.length > INK_MAX) {
       return shown;
@@ -111,7 +125,7 @@ export function FieldBox({ name, type, value, text, showAll, json, action, note 
     }
     parts.push(shown.slice(at));
     return parts;
-  }, [json, value, shown]);
+  }, [json, kind, value, shown]);
 
   return (
     <div className="field-box">
@@ -123,7 +137,7 @@ export function FieldBox({ name, type, value, text, showAll, json, action, note 
         <span className="spacer" />
         {type ? <span className="field-box-type">{type}</span> : null}
       </div>
-      <div className={`field-box-value${placeholder !== null ? " placeholder" : ""}`}>
+      <div className={`field-box-value${placeholder !== null ? " placeholder" : ""}${isNull ? " null" : ""}`}>
         {placeholder ?? drawn}
         {cut && showAll ? (
           <button type="button" className="field-box-more" onClick={() => setWhole(pretty)}>

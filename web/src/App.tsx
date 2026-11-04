@@ -7030,6 +7030,7 @@ export default function App() {
                     source={structureRows?.source ?? detailResult?.source ?? null}
                     columns={structureRows?.source.columns ?? detailResult?.meta.columns ?? EMPTY_TABLES}
                     rows={structureRows?.rows ?? detailRows}
+                    specs={structureRows === null ? gridSpecs : null}
                     tableRows={structureRows === null}
                     table={detailTable}
                     detail={panelDetail}
