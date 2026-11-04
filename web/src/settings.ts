@@ -1,8 +1,8 @@
+import { contrastInk, mixHex } from "./color";
 import {
   applyPalette,
-  contrastInk,
   defaultTypeInks,
-  mixHex,
+  subscribeThemes,
   themeById,
   VALUE_KINDS,
   type Palette,
@@ -25,6 +25,7 @@ import * as uiState from "./persist";
 import { KEYMAP_VERSION, normalizeKeymap, type Keymap } from "./shortcuts";
 import {
   EXTRA_SYNTAX_VARIABLES,
+  paletteSyntax,
   SYNTAX_COLOR_KEYS,
   syntaxColors,
   syntaxPresetById,
@@ -33,6 +34,8 @@ import {
   type SyntaxColorPicks,
   type SyntaxPresetId,
 } from "./syntax";
+import { TABLE_SLOTS, withTable, type TablePicks } from "./termTheme";
+import { awaitsTernThemes, loadTernThemes } from "./ternThemes";
 
 export type ThemeMode = ThemeId;
 export type CsvEncoding = "utf-8" | "euc-kr" | "utf-16le";
@@ -75,6 +78,9 @@ export interface AppSettings {
   syntaxColors: Record<string, SyntaxColorPicks>;
   // The same for the data table's colours by kind of value, by theme.
   gridColors: Record<string, GridColorPicks>;
+  // Colours picked in a theme's colour table (its terminal colours), by
+  // theme: they carry to the syntax and data table colours they map to.
+  tableColors: Record<string, TablePicks>;
   activityDays: number;
   csvDelimiter: string;
   csvHeader: boolean;
@@ -126,6 +132,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   syntaxPreset: "tablepeek",
   syntaxColors: {},
   gridColors: {},
+  tableColors: {},
   activityDays: 7,
   csvDelimiter: ",",
   csvHeader: true,
@@ -136,7 +143,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   keymapVersion: KEYMAP_VERSION,
 };
 
-const STORAGE_KEY = "tablepeek.settings";
 const PASSCODE_KEY = "tablepeek.passcode-hash";
 const ACCENT_SOFT = "rgba(64, 130, 238, 0.18)";
 
@@ -146,7 +152,7 @@ let current = readSettings();
 
 function readSettings(): AppSettings {
   try {
-    const raw = uiState.getItem(STORAGE_KEY);
+    const raw = uiState.getItem(uiState.SETTINGS_KEY);
     if (raw === null) {
       return { ...DEFAULT_SETTINGS, keymap: normalizeKeymap(null) };
     }
@@ -168,13 +174,15 @@ function readSettings(): AppSettings {
       sidebarFontFamily: codeFont,
       ...parsed,
       language: parsed.language === "en" ? "en" : "ko",
-      theme: themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
+      // One of Tern's themes is kept while they load (ternThemes.ts).
+      theme: awaitsTernThemes(parsed.theme ?? "") ? (parsed.theme as string) : themeById(parsed.theme ?? DEFAULT_SETTINGS.theme).id,
       material: MATERIALS.includes(parsed.material as Material) ? (parsed.material as Material) : DEFAULT_SETTINGS.material,
       materialOpacity: Math.round(clampSize(parsed.materialOpacity, 0, 100, DEFAULT_SETTINGS.materialOpacity)),
       materialBlur: Math.round(clampSize(parsed.materialBlur, 0, MATERIAL_BLUR_MAX, DEFAULT_SETTINGS.materialBlur)),
       syntaxPreset: syntaxPresetById(parsed.syntaxPreset).id,
       syntaxColors: readColorPicks(parsed.syntaxColors, SYNTAX_COLOR_KEYS),
       gridColors: readColorPicks(parsed.gridColors, GRID_COLOR_KEYS),
+      tableColors: readColorPicks(parsed.tableColors, TABLE_SLOTS),
       fontSize: clampSize(parsed.fontSize, EDITOR_FONT_MIN, EDITOR_FONT_MAX, DEFAULT_SETTINGS.fontSize),
       gridFontSize: clampSize(
         parsed.gridFontSize ?? uiFontSize,
@@ -266,10 +274,21 @@ function themePalette(theme: Theme, settings: AppSettings): Palette {
   return palette;
 }
 
+// The theme `settings` draw: the one picked, with the colours picked in its
+// colour table. One of Tern's themes still loading draws as the default
+// until it is in, then the settings are drawn again.
+function drawnTheme(settings: AppSettings): Theme {
+  if (awaitsTernThemes(settings.theme)) {
+    void loadTernThemes().catch(() => {});
+  }
+  const theme = themeById(settings.theme);
+  return withTable(theme, settings.tableColors[theme.id]);
+}
+
 export function applySettings(settings: AppSettings): void {
   const root = document.documentElement;
   setLanguage(settings.language);
-  const theme = themeById(settings.theme);
+  const theme = drawnTheme(settings);
   const opaque = themePalette(theme, settings);
   // In a see-through window the page's own surfaces take the picked opacity;
   // the colours mixed from them below stay those of the opaque ones.
@@ -332,20 +351,7 @@ export function applySettings(settings: AppSettings): void {
 function syntaxColorsWith(settings: AppSettings, theme: Theme, palette: Palette): Record<SyntaxColorKey, string> {
   const syntax = { ...syntaxColors(settings.syntaxPreset, theme.mode) };
   if (settings.syntaxPreset === "tablepeek") {
-    Object.assign(syntax, theme.syntax ?? {
-      keyword: palette.accent,
-      string: palette.ok,
-      number: palette.warn,
-      comment: palette.faint,
-      variable: palette.ink,
-      type: palette.muted,
-      operator: palette.muted,
-      punctuation: palette.muted,
-      bool: palette.error,
-      null: palette.error,
-      function: palette.accent,
-      label: palette.warn,
-    });
+    Object.assign(syntax, theme.syntax ?? paletteSyntax(palette));
   }
   return {
     ...syntax,
@@ -358,13 +364,13 @@ function syntaxColorsWith(settings: AppSettings, theme: Theme, palette: Palette)
 
 // The syntax colours `settings` draw in, for Settings to show.
 export function currentSyntaxColors(settings: AppSettings): Record<SyntaxColorKey, string> {
-  const theme = themeById(settings.theme);
+  const theme = drawnTheme(settings);
   return syntaxColorsWith(settings, theme, themePalette(theme, settings));
 }
 
 // The data table colours `settings` draw in, for Settings to show.
 export function currentGridColors(settings: AppSettings): Record<GridColorKey, string> {
-  const palette = themePalette(themeById(settings.theme), settings);
+  const palette = themePalette(drawnTheme(settings), settings);
   return { ...palette.typeInks, null: palette.nullInk };
 }
 
@@ -374,7 +380,7 @@ export function getSettings(): AppSettings {
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   current = { ...current, ...patch };
-  uiState.setItem(STORAGE_KEY, JSON.stringify(current));
+  uiState.setItem(uiState.SETTINGS_KEY, JSON.stringify(current));
   applySettings(current);
   for (const listener of listeners) {
     listener(current);
@@ -411,11 +417,14 @@ applySettings(current);
 // The window turned out see-through or not, or the system's "reduce
 // transparency" changed: the material is drawn again.
 subscribeMaterial(() => applySettings(current));
+// Tern's themes came in, or a theme file was imported: the saved theme may
+// be one of them.
+subscribeThemes(() => applySettings(current));
 // Another window changed the settings: this one follows, so every window
 // draws (and asks the desktop app for) the same look. Only saveSettings
 // writes them back, so following never echoes a change.
 uiState.subscribeChangesElsewhere((key) => {
-  if (key !== STORAGE_KEY) {
+  if (key !== uiState.SETTINGS_KEY) {
     return;
   }
   current = readSettings();

@@ -105,6 +105,16 @@ export function KeyIcon({ size = 11, className }: IconProps) {
   );
 }
 
+// A keyboard: shortcuts.
+export function KeyboardIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <rect x="1.6" y="3.8" width="12.8" height="8.4" rx="1.6" />
+      <path d="M4.4 6.6h.01M6.8 6.6h.01M9.2 6.6h.01M11.6 6.6h.01M4.4 9.4h.01M11.6 9.4h.01M6.6 9.4h2.8" />
+    </svg>
+  );
+}
+
 export function SearchIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

@@ -64,6 +64,90 @@ export function inlineText(kind: JsonKind, value: unknown): string {
   return kind === "null" ? "null" : String(value);
 }
 
+// The data grid's colour (its --type-* ink) a JSON value is drawn in, or a
+// key or punctuation in indented JSON.
+export type JsonInk = "string" | "integer" | "float" | "bigint" | "boolean" | "null" | "json" | "list" | "key" | "punct";
+
+export function inkOf(kind: JsonKind, value: unknown): JsonInk {
+  switch (kind) {
+    case "number":
+      return typeof value !== "number" || !Number.isInteger(value)
+        ? "float"
+        : Number.isSafeInteger(value)
+          ? "integer"
+          : "bigint";
+    case "object":
+      return "json";
+    case "array":
+      return "list";
+    default:
+      return kind;
+  }
+}
+
+export interface JsonSpan {
+  from: number;
+  to: number;
+  ink: JsonInk;
+}
+
+// { } [ ] , :
+function isPunctuation(code: number): boolean {
+  return code === 123 || code === 125 || code === 91 || code === 93 || code === 44 || code === 58;
+}
+
+// The coloured ranges of JSON text (indented or not, and possibly cut off
+// mid-value); whitespace between them stays plain.
+export function jsonSpans(text: string): JsonSpan[] {
+  const spans: JsonSpan[] = [];
+  const n = text.length;
+  let at = 0;
+  while (at < n) {
+    const code = text.charCodeAt(at);
+    let end = at + 1;
+    let ink: JsonInk | null = null;
+    if (code === 34) {
+      while (end < n && text.charCodeAt(end) !== 34) {
+        end += text.charCodeAt(end) === 92 ? 2 : 1;
+      }
+      end = Math.min(end + 1, n);
+      let next = end;
+      while (next < n && isSpace(text.charCodeAt(next))) {
+        next += 1;
+      }
+      ink = text.charCodeAt(next) === 58 ? "key" : "string";
+    } else if (code === 45 || (code >= 48 && code <= 57)) {
+      let fraction = false;
+      for (; end < n; end += 1) {
+        const next = text.charCodeAt(end);
+        if (next === 46 || next === 101 || next === 69 || next === 43 || next === 45) {
+          fraction = true;
+        } else if (next < 48 || next > 57) {
+          break;
+        }
+      }
+      ink = fraction ? "float" : Number.isSafeInteger(Number(text.slice(at, end))) ? "integer" : "bigint";
+    } else if (text.startsWith("true", at) || text.startsWith("false", at)) {
+      end = at + (code === 116 ? 4 : 5);
+      ink = "boolean";
+    } else if (text.startsWith("null", at)) {
+      end = at + 4;
+      ink = "null";
+    } else if (isPunctuation(code)) {
+      // A run of brackets and commas (with the spaces between) is one span.
+      while (end < n && (isPunctuation(text.charCodeAt(end)) || isSpace(text.charCodeAt(end)))) {
+        end += 1;
+      }
+      ink = "punct";
+    }
+    if (ink !== null) {
+      spans.push({ from: at, to: end, ink });
+    }
+    at = end;
+  }
+  return spans;
+}
+
 export function isContainer(index: JsonIndex, id: number): boolean {
   return index.kinds[id] <= ARRAY;
 }
@@ -180,6 +264,17 @@ export function openToDepth(index: JsonIndex, open: Uint8Array, depth: number): 
 
 export function setSubtree(index: JsonIndex, open: Uint8Array, id: number, value: 0 | 1): void {
   open.fill(value, id, index.ends[id]);
+}
+
+// A container's direct children, in document order (none for a primitive).
+export function childIds(index: JsonIndex, id: number): Int32Array {
+  const ids = new Int32Array(index.sizes[id]);
+  let at = 0;
+  for (let child = id + 1; child < index.ends[id]; child = index.ends[child]) {
+    ids[at] = child;
+    at += 1;
+  }
+  return ids;
 }
 
 // What a node's value reads as on one line or in the value pane.

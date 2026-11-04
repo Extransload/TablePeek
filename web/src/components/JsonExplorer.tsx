@@ -1,4 +1,6 @@
 import {
+  memo,
+  useCallback,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -11,12 +13,15 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
+import { flushSync } from "react-dom";
 import { writeClipboard } from "../clipboard";
 import { formatBytes } from "../format";
 import { t } from "../i18n";
 import {
   buildIndex,
+  childIds,
   containerSize,
+  inkOf,
   inlineText,
   isContainer,
   kindAt,
@@ -35,11 +40,13 @@ import {
   type LineSpans,
 } from "../jsonIndex";
 import { IS_MAC, formatBinding, matchesBinding, withHint } from "../shortcuts";
+import { FieldBox } from "./FieldBox";
 import { ChevronDownIcon, ChevronIcon, CloseIcon, CopyIcon, SearchIcon, ShrinkIcon } from "./icons";
 
 // Quick Look's large view of a JSON value: a windowed tree that stays fast at
 // hundreds of thousands of nodes, search over keys and values, the picked
-// node's path and value, and the whole document as indented text.
+// node's members as field boxes (as the popover shows them), and the whole
+// document as indented text.
 
 interface JsonExplorerProps {
   doc: object;
@@ -89,8 +96,10 @@ const OVERSCAN = 8;
 const SEARCH_DELAY_MS = 150;
 // Characters of a text line drawn; the full value is in the tree.
 const LINE_CAP = 4000;
-// Characters of a string value shown before "show all".
-const TEXT_CAP = 100_000;
+// A field box's height (with the gap below it) until one of its kind is
+// measured: a primitive's one line of value, an object's or array's few.
+const FIELD_ESTIMATES = [60, 140];
+const FIELD_OVERSCAN = 4;
 const DEPTHS = [1, 2, 3, 4, 5];
 const EMPTY = new Int32Array(0);
 
@@ -134,9 +143,9 @@ function afterKey(line: string, at: number): number {
   }
 }
 
-// A container's lines as the value pane shows them. They come from the
-// document's cached lines, so picking a node costs no re-indenting and keeps
-// numbers exactly as stored.
+// A container's lines as its field box and copy give them. They come from
+// the document's cached lines, so showing a node costs no re-indenting and
+// keeps numbers exactly as stored.
 function sliceOf(state: ExplorerState, doc: object, stored: string | null, id: number): LineSlice | null {
   const lines = linesOf(state, doc, stored);
   if (state.spans === null) {
@@ -361,8 +370,6 @@ function VirtualList({
 
 interface LinesViewProps {
   lines: string[];
-  // When given, only this part of `lines` is drawn.
-  slice?: LineSlice;
   needle: string;
   // The line the search is on, drawn as current.
   current: number;
@@ -372,37 +379,21 @@ interface LinesViewProps {
 }
 
 // Indented JSON as numbered lines, windowed like the tree.
-function LinesView({ lines, slice, needle, current, request, label, listRef }: LinesViewProps) {
-  const from = slice?.from ?? 0;
-  const count = slice?.count ?? lines.length;
-  const indent = slice?.indent ?? 0;
-  const digits = String(count).length;
-  const longest = useMemo(() => {
-    let most = 0;
-    for (let at = from; at < from + count; at += 1) {
-      most = Math.max(most, lines[at].length - indent);
-    }
-    return most;
-  }, [lines, from, count, indent]);
+function LinesView({ lines, needle, current, request, label, listRef }: LinesViewProps) {
+  const digits = String(lines.length).length;
+  const longest = useMemo(() => lines.reduce((most, line) => Math.max(most, line.length), 0), [lines]);
   return (
     <VirtualList
       className="json-view-lines"
       listRef={listRef}
       tabIndex={0}
       aria-label={label}
-      count={count}
+      count={lines.length}
       rowHeight={LINE_HEIGHT}
       request={request}
       contentWidth={`calc(${Math.min(longest, LINE_CAP + 12) + digits + 2}ch + 32px)`}
       renderRow={(position, style) => {
-        const line =
-          slice === undefined
-            ? lines[position]
-            : position === 0
-              ? slice.head
-              : position === count - 1
-                ? slice.tail
-                : lines[from + position].slice(indent);
+        const line = lines[position];
         const clipped = line.length > LINE_CAP;
         return (
           <div key={position} className={`json-view-line${position === current ? " current" : ""}`} style={style}>
@@ -419,6 +410,191 @@ function LinesView({ lines, slice, needle, current, request, label, listRef }: L
         );
       }}
     />
+  );
+}
+
+interface ExplorerFieldProps {
+  state: ExplorerState;
+  doc: object;
+  stored: string | null;
+  id: number;
+}
+
+// One node as a field box: its key, its type, and its value, an object or
+// array indented as stored.
+const ExplorerField = memo(function ExplorerField({ state, doc, stored, id }: ExplorerFieldProps) {
+  const { index } = state;
+  const text = useMemo(() => {
+    if (!isContainer(index, id)) {
+      return undefined;
+    }
+    const slice = sliceOf(state, doc, stored, id);
+    return slice === null ? undefined : sliceText(slice);
+  }, [state, doc, stored, id]);
+  const kind = kindAt(index, id);
+  return <FieldBox name={index.keys[id]} type={kind} value={index.values[id]} text={text} showAll json={kind} />;
+});
+
+interface FieldListProps {
+  state: ExplorerState;
+  doc: object;
+  stored: string | null;
+  ids: Int32Array;
+  label: string;
+}
+
+// A container's members as field boxes, drawing only those in view. Boxes
+// differ in height: each is measured once drawn, the rest are taken at the
+// average of those measured, and the box at the view's top stays put while
+// the guesses firm up.
+function FieldList({ state, doc, stored, ids, label }: FieldListProps) {
+  const { index } = state;
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewport, setViewport] = useState(0);
+  // Heights by box, and their sums and counts by kind (0 a primitive or an
+  // empty container, 1 a container with members).
+  const [sizes] = useState(() => ({
+    heights: new Float64Array(ids.length),
+    known: new Uint8Array(ids.length),
+    kinds: Uint8Array.from(ids, (id) => (isContainer(index, id) && index.sizes[id] > 0 ? 1 : 0)),
+    sum: [0, 0],
+    count: [0, 0],
+  }));
+  // Counts measurements that changed a height.
+  const [measured, setMeasured] = useState(0);
+  const tops = useMemo(() => {
+    const { heights, known, kinds, sum, count } = sizes;
+    const guess = [0, 1].map((kind) => (count[kind] > 0 ? sum[kind] / count[kind] : FIELD_ESTIMATES[kind]));
+    const out = new Float64Array(ids.length + 1);
+    for (let at = 0; at < ids.length; at += 1) {
+      out[at + 1] = out[at] + (known[at] === 1 ? heights[at] : guess[kinds[at]]);
+    }
+    return out;
+  }, [sizes, ids, measured]);
+  const full = tops[ids.length];
+  const height = Math.min(full, MAX_SCROLL_HEIGHT);
+  const ratio = full > height && height > viewport ? (full - viewport) / (height - viewport) : 1;
+  const offset = scrollTop * ratio;
+  // The last box starting at or above the view's top.
+  let low = 0;
+  let high = ids.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (tops[middle] <= offset) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  let last = low;
+  while (last < ids.length && tops[last] < offset + viewport) {
+    last += 1;
+  }
+  const first = Math.max(0, low - FIELD_OVERSCAN);
+  last = Math.min(ids.length, last + FIELD_OVERSCAN);
+  // The box at the view's top as last drawn, and how far into it.
+  const anchor = useRef({ position: 0, into: 0 });
+
+  const [observer] = useState(
+    () =>
+      new ResizeObserver((entries) => {
+        const { heights, known, kinds, sum, count } = sizes;
+        let changed = false;
+        for (const entry of entries) {
+          const node = entry.target as HTMLElement;
+          const position = Number(node.dataset.position);
+          const size = entry.borderBoxSize?.[0]?.blockSize ?? node.offsetHeight;
+          if (!(position < heights.length) || size <= 0) {
+            continue;
+          }
+          const kind = kinds[position];
+          if (known[position] === 0) {
+            known[position] = 1;
+            count[kind] += 1;
+          } else if (Math.abs(size - heights[position]) < 0.5) {
+            continue;
+          } else {
+            sum[kind] -= heights[position];
+          }
+          sum[kind] += size;
+          heights[position] = size;
+          changed = true;
+        }
+        // Placed again before the frame is painted, so boxes never overlap.
+        if (changed) {
+          flushSync(() => setMeasured((value) => value + 1));
+        }
+      }),
+  );
+  useEffect(() => () => observer.disconnect(), [observer]);
+  const measure = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (node === null) {
+        return;
+      }
+      observer.observe(node);
+      return () => observer.unobserve(node);
+    },
+    [observer],
+  );
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (host === null) {
+      return;
+    }
+    setViewport(host.clientHeight);
+    const resize = new ResizeObserver(() => setViewport(host.clientHeight));
+    resize.observe(host);
+    return () => resize.disconnect();
+  }, []);
+
+  // Measuring moved the boxes: the one at the view's top goes back to where
+  // it was drawn.
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    const { position, into } = anchor.current;
+    if (host === null || position >= ids.length) {
+      return;
+    }
+    const target = Math.max(0, (tops[position] + into) / ratio);
+    if (Math.abs(host.scrollTop - target) >= 1) {
+      host.scrollTop = target;
+      setScrollTop(host.scrollTop);
+    }
+  }, [tops]);
+
+  useLayoutEffect(() => {
+    anchor.current = { position: low, into: offset - tops[low] };
+  });
+
+  const boxes: ReactNode[] = [];
+  for (let position = first; position < last; position += 1) {
+    boxes.push(
+      <div
+        key={position}
+        className="json-view-field"
+        data-position={position}
+        ref={measure}
+        style={{ top: scrollTop + tops[position] - offset }}
+      >
+        <ExplorerField state={state} doc={doc} stored={stored} id={ids[position]} />
+      </div>,
+    );
+  }
+  return (
+    <div
+      className="json-view-list json-view-fields"
+      ref={hostRef}
+      tabIndex={0}
+      aria-label={label}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+    >
+      <div className="json-view-list-inner" style={{ height }}>
+        {boxes}
+      </div>
+    </div>
   );
 }
 
@@ -443,7 +619,6 @@ export function JsonExplorer({
   const [matchAt, setMatchAt] = useState(-1);
   const [treeRequest, setTreeRequest] = useState<{ id: number; align: ScrollRequest["align"] } | null>(null);
   const [lineRequest, setLineRequest] = useState<ScrollRequest | null>(null);
-  const [fullText, setFullText] = useState(-1);
   const [copied, setCopied] = useState<"path" | "value" | null>(null);
   const treeRef = useRef<HTMLDivElement | null>(null);
   const rawRef = useRef<HTMLDivElement | null>(null);
@@ -465,10 +640,7 @@ export function JsonExplorer({
   // The value pane follows the pick in a deferred render: the tree paints
   // first, and stepping through large subtrees never waits on indenting them.
   const shown = useDeferredValue(selected, -1);
-  const shownSlice = useMemo(
-    () => (shown < 0 || !isContainer(index, shown) ? null : sliceOf(state, doc, stored, shown)),
-    [state, index, doc, stored, shown],
-  );
+  const members = useMemo(() => (shown < 0 ? EMPTY : childIds(index, shown)), [index, shown]);
   const treeScroll = useMemo<ScrollRequest | null>(
     () => (treeRequest === null ? null : { position: positionOf(visible, treeRequest.id), align: treeRequest.align }),
     // A request scrolls once, against the rows it was made for.
@@ -646,20 +818,7 @@ export function JsonExplorer({
     }
   }
 
-  const shownKind = shown < 0 ? null : kindAt(index, shown);
-  const shownText = shownKind === null || isContainer(index, shown) ? "" : primitiveText(index.values[shown]);
-  const textShown = fullText === shown || shownText.length <= TEXT_CAP ? shownText : shownText.slice(0, TEXT_CAP);
   const subtreeHint = t("{key}+클릭: 하위까지 모두 펼치기·접기", { key: IS_MAC ? "⌥" : "Alt" });
-  // The picked node's type and size: the tree rows leave the type to color.
-  const kindDetail =
-    shownKind === "object"
-      ? t("필드 {count}개", { count: index.sizes[shown].toLocaleString() })
-      : shownKind === "array"
-        ? t("항목 {count}개", { count: index.sizes[shown].toLocaleString() })
-        : shownKind === "string"
-          ? t("{count}자", { count: shownText.length.toLocaleString() })
-          : null;
-  const kindLabel = kindDetail === null ? shownKind : `${shownKind} · ${kindDetail}`;
 
   return (
     <div
@@ -888,7 +1047,7 @@ export function JsonExplorer({
                     ) : (
                       <>
                         <span className="cell-pop-colon">:</span>
-                        <span className={`cell-pop-value ${kind}`}>
+                        <span className={`cell-pop-value jv-${inkOf(kind, index.values[id])}`}>
                           {marked(inlineText(kind, index.values[id]), lowerNeedle)}
                         </span>
                       </>
@@ -897,34 +1056,17 @@ export function JsonExplorer({
                 );
               }}
             />
+            {/* The picked node as the popover's right side shows it: an
+                object's or array's members as field boxes, or the value alone. */}
             <div className="json-view-value">
-              {shownKind === null ? null : (
-                <>
-                  <div className="cell-pop-detail-head">
-                    <span className="cell-pop-detail-key">{shown === 0 ? "ROOT" : index.keys[shown]}</span>
-                    <span className="cell-pop-detail-kind">{kindLabel}</span>
-                  </div>
-                  {shownSlice !== null ? (
-                    <LinesView
-                      key={shown}
-                      lines={shownSlice.lines}
-                      slice={shownSlice}
-                      needle={lowerNeedle}
-                      current={-1}
-                      request={null}
-                      label={t("값")}
-                    />
-                  ) : (
-                    <div className={`json-view-text ${shownKind}`} tabIndex={0}>
-                      {marked(textShown, textShown.length <= TEXT_CAP ? lowerNeedle : "")}
-                      {textShown.length < shownText.length ? (
-                        <button type="button" className="json-view-text-more" onClick={() => setFullText(shown)}>
-                          {t("전체 표시 ({count}자)", { count: shownText.length.toLocaleString() })}
-                        </button>
-                      ) : null}
-                    </div>
-                  )}
-                </>
+              {shown < 0 ? null : !isContainer(index, shown) ? (
+                <div className="field-list json-view-single">
+                  <ExplorerField key={shown} state={state} doc={doc} stored={stored} id={shown} />
+                </div>
+              ) : members.length === 0 ? (
+                <div className="panel-empty">{kindAt(index, shown) === "array" ? "[]" : "{}"}</div>
+              ) : (
+                <FieldList key={shown} state={state} doc={doc} stored={stored} ids={members} label={t("값")} />
               )}
             </div>
           </div>

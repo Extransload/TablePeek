@@ -4735,20 +4735,22 @@ body.col-resizing * {
   padding: 0 10px 0 29px;
 }
 
-/* The pages: one Tab stop, ←→ between them. */
+/* The pages as icons in one row (names in their tooltips): one Tab stop,
+   ←→ between them. */
 .settings-tabs {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
   gap: 2px;
   padding: 0 12px 8px;
   border-bottom: 1px solid var(--line-soft);
 }
 
 .settings-tabs button {
-  gap: 6px;
-  height: 26px;
-  padding: 0 9px;
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
   border-color: transparent;
   border-radius: 7px;
   background: transparent;
@@ -5080,6 +5082,63 @@ input.settings-switch:focus-visible {
 .theme-card:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* The theme's colour table: background, foreground and the 8 colours, then
+   the bright 8 under the colours. A dot marks a colour picked over the
+   theme's own. */
+.color-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.color-table-line {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 34px));
+  gap: 6px;
+}
+
+.color-table-line.bright > :first-child {
+  grid-column-start: 3;
+}
+
+.color-table-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.color-table-cell input[type="color"] {
+  width: 100%;
+}
+
+.color-table-cell input[type="color"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.color-table-cell.picked::after {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--panel);
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
+}
+
+.color-table-name {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: calc(10px * var(--ui-scale, 1));
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* What the pane's settings look like, as that part of the app draws it:
@@ -8055,21 +8114,47 @@ button.picker-row:focus-visible {
   text-overflow: ellipsis;
 }
 
-.cell-pop-value.string {
-  color: var(--syntax-string, var(--warn));
+/* JSON in Quick Look (tree rows and field boxes) in the data grid's colours
+   by kind of value; keys in the ordinary ink, punctuation faint. */
+.jv-string {
+  color: var(--type-string, var(--syntax-string));
 }
 
-.cell-pop-value.number {
-  color: var(--syntax-number, var(--accent));
+.jv-integer {
+  color: var(--type-integer, var(--syntax-number));
 }
 
-.cell-pop-value.boolean {
-  color: var(--syntax-bool, var(--accent));
+.jv-float {
+  color: var(--type-float, var(--syntax-number));
 }
 
-.cell-pop-value.null {
-  color: var(--syntax-null, var(--faint));
+.jv-bigint {
+  color: var(--type-bigint, var(--syntax-number));
+}
+
+.jv-boolean {
+  color: var(--type-boolean, var(--syntax-bool));
+}
+
+.jv-json {
+  color: var(--type-json, var(--ink));
+}
+
+.jv-list {
+  color: var(--type-list, var(--ink));
+}
+
+.jv-null {
+  color: var(--type-null, var(--faint));
   font-style: italic;
+}
+
+.jv-key {
+  color: var(--ink);
+}
+
+.jv-punct {
+  color: var(--faint);
 }
 
 .cell-pop-tree:focus .cell-pop-row.selected :is(.cell-pop-key, .cell-pop-colon, .cell-pop-value, .cell-pop-chevron, .cell-pop-size) {
@@ -8383,7 +8468,7 @@ button.json-view-crumb.current {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 
 .json-view-lines {
@@ -8391,11 +8476,6 @@ button.json-view-crumb.current {
   background: var(--bg);
   font-family: var(--mono);
   font-size: calc(12px * var(--ui-scale, 1));
-}
-
-.json-view-value .json-view-lines {
-  border: 1px solid var(--line-soft);
-  border-radius: 6px;
 }
 
 .json-view-line {
@@ -8430,31 +8510,24 @@ button.json-view-crumb.current {
   font-style: italic;
 }
 
-.json-view-text {
+/* The picked node's members as field boxes, like the popover's right side,
+   drawn only in view: each box sits where its measured height puts it. */
+.json-view-fields {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 8px 10px;
-  border: 1px solid var(--line-soft);
-  border-radius: 6px;
-  outline: none;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: calc(13px * var(--ui-scale, 1));
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
-.json-view-text.null {
-  color: var(--faint);
-  font-style: italic;
+.json-view-field {
+  position: absolute;
+  right: 2px;
+  left: 0;
+  box-sizing: border-box;
+  padding-bottom: 10px;
 }
 
-button.json-view-text-more {
-  display: flex;
-  margin-top: 10px;
+/* A picked primitive is one box, as tall as its value. */
+.json-view-value .json-view-single .field-box-value {
+  max-height: none;
 }
 
 /* The table open in the current tab. */
@@ -9163,12 +9236,21 @@ button.field-box-copy:hover {
   color: var(--ink);
 }
 
-/* In the popover the fields fill the right pane and scroll together. */
-.cell-pop-detail .field-list {
+/* "Show all" under a value cut short. */
+button.field-box-more {
+  display: flex;
+  margin-top: 8px;
+}
+
+/* In the popover (and Quick Look's large view) the fields fill the right
+   pane and scroll together. */
+.cell-pop-detail .field-list,
+.json-view-value .field-list {
   padding: 0 2px 4px 0;
 }
 
-.cell-pop-detail .field-box-value {
+.cell-pop-detail .field-box-value,
+.json-view-value .field-box-value {
   max-height: 260px;
 }
 

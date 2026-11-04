@@ -16,7 +16,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { languageLabel, t, type Language } from "../i18n";
-import { THEMES, type Theme } from "../palette";
+import { getThemesVersion, subscribeThemes, THEMES, type Theme } from "../palette";
+import { slotUses, TABLE_SLOTS, themeTable, type TablePicks, type TableSlot } from "../termTheme";
+import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
 import { fontGroups, fontListLabel, pickedFace, type FontGroup, type InstalledFont } from "../fonts";
 import { store, type VersionInfo } from "../store";
 import { checkUpdateNow, configureUpdate, getInstall, getUpdate, loadUpdate, refreshUpdate, subscribeInstall, subscribeUpdate } from "../update";
@@ -60,7 +62,7 @@ import {
   ColumnsIcon,
   DownloadIcon,
   ExternalIcon,
-  KeyIcon,
+  KeyboardIcon,
   PanelLeftIcon,
   PlusIcon,
   RefreshIcon,
@@ -70,7 +72,7 @@ import {
   TableIcon,
   UpDownIcon,
 } from "./icons";
-import { ErrorNotice, notifyError } from "./ErrorNotice";
+import { notifyError } from "./ErrorNotice";
 import { Spinner } from "./Spinner";
 import { UpdateHowDialog, UpdateInstallAction } from "./UpdateBanner";
 import { openSelect, Select } from "./Select";
@@ -110,7 +112,7 @@ const PAGES: PageItem[] = [
   { id: "grid", label: "데이터 테이블", icon: TableIcon },
   { id: "sidebar", label: "사이드바", icon: PanelLeftIcon },
   { id: "transfer", label: "가져오기·내보내기", icon: UpDownIcon },
-  { id: "shortcuts", label: "단축키", icon: KeyIcon },
+  { id: "shortcuts", label: "단축키", icon: KeyboardIcon },
   { id: "security", label: "보안", icon: ShieldIcon },
 ];
 
@@ -588,15 +590,123 @@ function ColorRows<K extends string>({
   );
 }
 
-// The themes as cards, dark then light: one Tab stop, the arrows move between
+// The colour table's slots by the names terminals give them.
+const SLOT_NAMES: Record<TableSlot, string> = {
+  bg: "바탕",
+  fg: "글자",
+  ansi0: "검정",
+  ansi1: "빨강",
+  ansi2: "초록",
+  ansi3: "노랑",
+  ansi4: "파랑",
+  ansi5: "자홍",
+  ansi6: "청록",
+  ansi7: "흰색",
+  ansi8: "밝은 검정",
+  ansi9: "밝은 빨강",
+  ansi10: "밝은 초록",
+  ansi11: "밝은 노랑",
+  ansi12: "밝은 파랑",
+  ansi13: "밝은 자홍",
+  ansi14: "밝은 청록",
+  ansi15: "밝은 흰색",
+};
+
+// The table in two lines: the background, the foreground and the 8 colours,
+// then the 8 bright ones under the colours.
+const TABLE_LINES: TableSlot[][] = [TABLE_SLOTS.slice(0, 10), TABLE_SLOTS.slice(10)];
+
+// The theme's colour table as swatches, one setting: ⏎ goes in, ←→ (↑↓
+// between the lines) move between swatches, ⏎ opens one's colour picker and
+// ⌫ puts a picked one back to the theme's; ⌫ on the row puts them all back.
+function ColorTableRow({
+  theme,
+  picks,
+  hint,
+  onPick,
+}: {
+  theme: Theme;
+  picks: TablePicks;
+  hint: string;
+  onPick(slots: TableSlot[], color: string | null): void;
+}) {
+  const table = themeTable(theme);
+  function onSwatchKey(event: ReactKeyboardEvent<HTMLInputElement>, slot: TableSlot, line: number, column: number): void {
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.click();
+    } else if (event.key === "Backspace" || event.key === "Delete") {
+      event.preventDefault();
+      if (picks[slot] !== undefined) {
+        onPick([slot], null);
+      }
+    } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      // The bright line sits under the colours, two columns in.
+      const target = TABLE_LINES[line === 0 ? 1 : 0][line === 0 ? column - 2 : column + 2];
+      const swatch =
+        (line === 0) === (event.key === "ArrowDown") && target !== undefined
+          ? event.currentTarget.closest(".color-table")?.querySelector<HTMLInputElement>(`[data-slot="${target}"]`)
+          : null;
+      if (swatch) {
+        event.preventDefault();
+        event.stopPropagation();
+        swatch.focus();
+      }
+    }
+  }
+  return (
+    <SettingRow
+      label={t("색 표")}
+      hint={hint}
+      keywords="color table palette ansi terminal tern 16 팔레트 터미널"
+      wide
+      changed={Object.keys(picks).length > 0}
+      onReset={() => onPick(TABLE_SLOTS, null)}
+    >
+      <div className="color-table">
+        {TABLE_LINES.map((slots, line) => (
+          <div key={line} className={`color-table-line${line === 1 ? " bright" : ""}`}>
+            {slots.map((slot, column) => {
+              const color = picks[slot] ?? table[slot];
+              const uses = slotUses(slot, theme.mode).map((use) => t(use));
+              return (
+                <label key={slot} className={`color-table-cell${picks[slot] !== undefined ? " picked" : ""}`}>
+                  <input
+                    type="color"
+                    data-slot={slot}
+                    aria-label={`${t(SLOT_NAMES[slot])} ${color}`}
+                    title={`${t(SLOT_NAMES[slot])} ${color} — ${uses.join(", ")}`}
+                    value={color}
+                    onChange={(event) => onPick([slot], event.target.value)}
+                    onKeyDown={(event) => onSwatchKey(event, slot, line, column)}
+                  />
+                  <span className="color-table-name">{slot.startsWith("ansi") ? slot.slice(4) : t(SLOT_NAMES[slot])}</span>
+                </label>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </SettingRow>
+  );
+}
+
+// The themes as cards, TablePeek's dark then light, then Tern's (and those
+// imported from Tern theme files): one Tab stop, the arrows move between
 // cards (↑ on the top line and ↓ on the bottom one leave for the rows around
 // it), and ⏎, Space or a click takes one.
 function ThemeGallery({
   value,
+  tern,
   galleryRef,
   onPick,
 }: {
   value: string;
+  // Whether Tern's themes are in yet.
+  tern: "loading" | "ready" | "failed";
   galleryRef: RefObject<HTMLDivElement | null>;
   onPick(theme: Theme): void;
 }) {
@@ -666,63 +776,78 @@ function ThemeGallery({
     }
   }
   const picked = THEMES.some((theme) => theme.id === value) ? value : THEMES[0]?.id;
+  const byLabel = (a: Theme, b: Theme): number => a.label.localeCompare(b.label, "en");
+  const groups: { key: string; caption: string; themes: Theme[]; note?: string }[] = [
+    { key: "dark", caption: t("다크"), themes: THEMES.filter((theme) => !theme.group && theme.mode === "dark") },
+    { key: "light", caption: t("라이트"), themes: THEMES.filter((theme) => !theme.group && theme.mode === "light") },
+    ...(["dark", "light"] as const).map((mode) => ({
+      key: `tern-${mode}`,
+      caption: mode === "dark" ? t("Tern 다크") : t("Tern 라이트"),
+      themes: THEMES.filter((theme) => theme.group === "tern" && !theme.imported && theme.mode === mode).sort(byLabel),
+      note: tern === "loading" ? t("불러오는 중…") : tern === "failed" ? t("Tern 테마를 불러오지 못했습니다.") : undefined,
+    })),
+    { key: "tern-files", caption: t("Tern 파일에서 가져옴"), themes: THEMES.filter((theme) => theme.imported).sort(byLabel) },
+  ];
   return (
     <div className="theme-gallery" ref={galleryRef} onKeyDown={onKeyDown}>
-      {(["dark", "light"] as const).map((mode) => (
-        <div key={mode} className="theme-gallery-group">
-          <span className="theme-gallery-caption">{mode === "dark" ? t("다크") : t("라이트")}</span>
-          <div className="theme-grid">
-            {THEMES.filter((theme) => theme.mode === mode).map((theme) => (
-              <button
-                key={theme.id}
-                type="button"
-                data-theme-id={theme.id}
-                className={`theme-card${value === theme.id ? " active" : ""}`}
-                aria-pressed={value === theme.id}
-                tabIndex={theme.id === picked ? 0 : -1}
-                title={t(theme.label)}
-                onClick={() => onPick(theme)}
-              >
-                <span
-                  className="theme-preview"
-                  style={{
-                    background: theme.palette.bg,
-                    borderColor: theme.palette.line,
-                  }}
+      {groups
+        .filter((group) => group.themes.length > 0 || group.note !== undefined)
+        .map((group) => (
+          <div key={group.key} className="theme-gallery-group">
+            <span className="theme-gallery-caption">{group.caption}</span>
+            {group.themes.length === 0 ? <p className="settings-hint">{group.note}</p> : null}
+            <div className="theme-grid">
+              {group.themes.map((theme) => (
+                <button
+                  key={theme.id}
+                  type="button"
+                  data-theme-id={theme.id}
+                  className={`theme-card${value === theme.id ? " active" : ""}`}
+                  aria-pressed={value === theme.id}
+                  tabIndex={theme.id === picked ? 0 : -1}
+                  title={t(theme.label)}
+                  onClick={() => onPick(theme)}
                 >
-                  <span className="theme-preview-head" style={{ background: theme.palette.head }} />
-                  <span className="theme-preview-body">
-                    <span className="theme-preview-panel" style={{ background: theme.palette.panel }} />
-                    <span className="theme-preview-lines">
-                      <span style={{ background: theme.palette.ink }} />
-                      <span style={{ background: theme.palette.muted }} />
-                      <span style={{ background: theme.palette.accent }} />
+                  <span
+                    className="theme-preview"
+                    style={{
+                      background: theme.palette.bg,
+                      borderColor: theme.palette.line,
+                    }}
+                  >
+                    <span className="theme-preview-head" style={{ background: theme.palette.head }} />
+                    <span className="theme-preview-body">
+                      <span className="theme-preview-panel" style={{ background: theme.palette.panel }} />
+                      <span className="theme-preview-lines">
+                        <span style={{ background: theme.palette.ink }} />
+                        <span style={{ background: theme.palette.muted }} />
+                        <span style={{ background: theme.palette.accent }} />
+                      </span>
                     </span>
                   </span>
-                </span>
-                <span className="theme-name">{t(theme.label)}</span>
-              </button>
-            ))}
+                  <span className="theme-name">{t(theme.label)}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        ))}
     </div>
   );
 }
 
-// Why the last update check failed, by the server's code.
+// Why the last update check failed, by the server's code: the status's second line.
 function updateErrorText(code: string): string {
   if (code === "network") {
-    return t("네트워크에 연결할 수 없어 새 버전을 확인하지 못했습니다");
+    return t("네트워크에 연결할 수 없습니다");
   }
   if (code === "timeout") {
-    return t("GitHub가 5초 안에 답하지 않아 새 버전을 확인하지 못했습니다");
+    return t("GitHub가 5초 안에 답하지 않았습니다");
   }
   if (code === "rate_limited") {
-    return t("GitHub 요청 한도에 걸려 새 버전을 확인하지 못했습니다. 잠시 뒤 다시 확인하세요");
+    return t("GitHub 요청 한도에 걸렸습니다");
   }
   if (code.startsWith("http_")) {
-    return t("GitHub가 HTTP {status}로 답해 새 버전을 확인하지 못했습니다", { status: code.slice(5) });
+    return t("GitHub가 HTTP {status}로 답했습니다", { status: code.slice(5) });
   }
   return t("GitHub의 릴리스 정보를 읽지 못했습니다");
 }
@@ -791,6 +916,7 @@ function VersionSettings() {
     tone = "error";
     icon = <AlertIcon size={13} />;
     title = t("새 버전을 확인하지 못했습니다");
+    detail = updateErrorText(update.error);
   } else if (update.checked_at === null) {
     title = t("아직 확인하지 않았습니다");
   } else if (update.latest === null) {
@@ -869,17 +995,10 @@ function VersionSettings() {
             ) : null}
           </div>
         </div>
-        {update?.enabled && update.error !== null && !checking ? (
-          <ErrorNotice error={updateErrorText(update.error)} variant="compact" onRetry={() => void checkNow()} />
-        ) : null}
       </SettingRow>
       <SettingRow
         label={t("새 버전 확인")}
-        hint={
-          update?.env_disabled
-            ? t("TABLEPEEK_NO_UPDATE_CHECK 환경 변수가 확인을 껐습니다.")
-            : t("하루에 한 번 GitHub에서 최신 릴리스를 확인합니다. 지금 버전(User-Agent) 말고는 아무것도 보내지 않습니다.")
-        }
+        hint={update?.env_disabled ? t("TABLEPEEK_NO_UPDATE_CHECK 환경 변수가 확인을 껐습니다.") : undefined}
         changed={update !== null && !update.enabled && !update.env_disabled}
         onReset={() => void setEnabled(true)}
       >
@@ -940,6 +1059,23 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   const [hint, setHint] = useState<FocusHint>({ esc: "", changed: false });
   const [width, setWidth] = useState<number | null>(() => storedWidth(SHEET_WIDTH_KEY, clampSheet));
   const material = useSyncExternalStore(subscribeMaterial, materialState);
+  // The gallery redraws as themes come in (Tern's, an imported file).
+  useSyncExternalStore(subscribeThemes, getThemesVersion);
+  const [ternState, setTernState] = useState<"loading" | "ready" | "failed">("loading");
+  const ternFileRef = useRef<HTMLInputElement>(null);
+  // How the last Tern theme file import went, under its row.
+  const [ternNote, setTernNote] = useState<{ error: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    loadTernThemes().then(
+      () => live && setTernState("ready"),
+      () => live && setTernState("failed"),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const [capturing, setCapturing] = useState<KeyAction | null>(null);
   const [captureHint, setCaptureHint] = useState<string | null>(null);
@@ -1310,9 +1446,9 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
     onChange({ keymap: next });
   }
 
-  // A colour picked for parts of the current theme's syntax or data table, or
-  // none to go back to the theme's own.
-  function pickThemeColor(field: "syntaxColors" | "gridColors", keys: string[], color: string | null): void {
+  // A colour picked for parts of the current theme's syntax, data table or
+  // colour table, or none to go back to the theme's own.
+  function pickThemeColor(field: "syntaxColors" | "gridColors" | "tableColors", keys: string[], color: string | null): void {
     const picks: Record<string, string | undefined> = { ...settings[field][settings.theme] };
     for (const key of keys) {
       if (color === null) {
@@ -1328,6 +1464,32 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
       next[settings.theme] = picks;
     }
     onChange({ [field]: next });
+  }
+
+  async function importTernTheme(file: File): Promise<void> {
+    try {
+      const imported = await importTernFile(file);
+      onChange({ theme: imported.id, accent: imported.accent });
+      setTernNote({ error: false, text: t("“{name}”을(를) 가져와 테마로 정했습니다.", { name: imported.label }) });
+    } catch (error) {
+      setTernNote({ error: true, text: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // An imported theme removed, with the colours picked for it; the default
+  // theme takes its place.
+  function removeImported(theme: Theme): void {
+    removeTernFile(theme.id);
+    const drop = <T,>(picks: Record<string, T>): Record<string, T> =>
+      Object.fromEntries(Object.entries(picks).filter(([id]) => id !== theme.id));
+    onChange({
+      theme: DEFAULT_SETTINGS.theme,
+      accent: DEFAULT_SETTINGS.accent,
+      syntaxColors: drop(settings.syntaxColors),
+      gridColors: drop(settings.gridColors),
+      tableColors: drop(settings.tableColors),
+    });
+    setTernNote(null);
   }
 
   async function applyPasscode(): Promise<void> {
@@ -1490,9 +1652,20 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                   onChange={(event) => onChange({ accent: event.target.value })}
                 />
               </SettingRow>
+              {theme !== undefined ? (
+                <ColorTableRow
+                  theme={theme}
+                  picks={settings.tableColors[theme.id] ?? {}}
+                  hint={t(
+                    "터미널의 바탕·글자와 16색입니다. 구문 강조와 값 색이 이 색에서 나오며, 고른 색은 지금 테마({theme})에만 저장됩니다. ⏎로 고르고 ⌫로 테마의 색으로 되돌립니다.",
+                    { theme: t(themeLabel) },
+                  )}
+                  onPick={(slots, color) => pickThemeColor("tableColors", slots, color)}
+                />
+              ) : null}
               <SettingRow
                 label={t("테마")}
-                keywords={THEMES.map((item) => t(item.label)).join(" ")}
+                keywords={`tern ${THEMES.map((item) => t(item.label)).join(" ")}`}
                 wide
                 changed={settings.theme !== DEFAULT_SETTINGS.theme}
                 onReset={() => darkTheme && onChange({ theme: darkTheme.id, accent: darkTheme.accent })}
@@ -1500,11 +1673,47 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
               >
                 <ThemeGallery
                   value={settings.theme}
+                  tern={ternState}
                   galleryRef={galleryRef}
                   onPick={(picked) => onChange({ theme: picked.id, accent: picked.accent })}
                 />
               </SettingRow>
             </SettingsGroup>
+            <SettingsGroup title="Tern">
+              <SettingRow
+                label={t("Tern 테마 파일 가져오기")}
+                keywords="import css gyu"
+                hint={
+                  ternNote?.text ??
+                  t("Tern의 테마 CSS(~/Library/Application Support/Tern/themes)를 고르면, @import한 기본 테마에 그 파일의 바탕·글자·16색과 면 색을 덮어 파일 이름의 테마로 더합니다. 다른 규칙은 건너뜁니다.")
+                }
+              >
+                <button type="button" onClick={() => ternFileRef.current?.click()}>
+                  {t("파일 선택…")}
+                </button>
+              </SettingRow>
+              {theme?.imported ? (
+                <SettingRow label={t("가져온 테마 지우기")} hint={t("“{name}”과(와) 이 테마에 고른 색을 지웁니다.", { name: theme.label })}>
+                  <button type="button" onClick={() => removeImported(theme)}>
+                    {t("지우기")}
+                  </button>
+                </SettingRow>
+              ) : null}
+            </SettingsGroup>
+            {/* Outside the rows: a row's controls are the ones it shows. */}
+            <input
+              ref={ternFileRef}
+              type="file"
+              accept=".css,text/css"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file !== undefined) {
+                  void importTernTheme(file);
+                }
+              }}
+            />
           </>
         );
       }
@@ -1931,18 +2140,20 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
           {PAGES.map((item) => {
             const Icon = item.icon;
             const selected = page === item.id;
+            const name = t(item.label);
             return (
               <button
                 key={item.id}
                 type="button"
                 role="tab"
                 aria-selected={selected}
+                aria-label={name}
+                title={name}
                 tabIndex={selected ? 0 : -1}
                 className={selected ? "active" : ""}
                 onClick={() => switchPage(item.id, null)}
               >
-                <Icon size={12} />
-                <span>{t(item.label)}</span>
+                <Icon size={13} />
               </button>
             );
           })}

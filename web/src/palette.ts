@@ -1,6 +1,8 @@
+import { contrastInk, mixHex, saturation, withAlpha } from "./color";
 import * as uiState from "./persist";
 import type { SyntaxColors } from "./syntax";
 import { THEME_CATALOG, type ThemeSpec } from "./themeCatalog";
+import { LIGHT_NOIR, DARK_NOIR, readTernFiles, termTheme, type TermSource } from "./termTheme";
 
 export type ValueKind =
   | "string"
@@ -87,6 +89,13 @@ export interface Theme {
   // Editor colors for the "follow the theme" syntax preset; without them the
   // preset derives keywords and literals from the accent and status colors.
   syntax?: SyntaxColors;
+  // A theme made from a terminal's colour table (Tern's): what it is made
+  // from, so a colour picked in its table makes it again (see termTheme.ts).
+  source?: TermSource;
+  // "tern": shown in the gallery's Tern group (Tern's own themes, and the
+  // ones imported from a Tern theme file, which are `imported`).
+  group?: "tern";
+  imported?: boolean;
   custom?: boolean;
 }
 
@@ -101,52 +110,6 @@ function makePalette(
     accentHover: mixHex(accent, mode === "light" ? "#000000" : "#ffffff", 0.14),
     onAccent: contrastInk(accent),
   };
-}
-
-export function mixHex(a: string, b: string, amount: number): string {
-  const pa = parseHex(a);
-  const pb = parseHex(b);
-  if (pa === null || pb === null) {
-    return a;
-  }
-  const mix = (x: number, y: number): number =>
-    Math.round(x + (y - x) * amount);
-  return `#${[mix(pa[0], pb[0]), mix(pa[1], pb[1]), mix(pa[2], pb[2])]
-    .map((value) => value.toString(16).padStart(2, "0"))
-    .join("")}`;
-}
-
-export function contrastInk(hex: string): string {
-  const rgb = parseHex(hex);
-  if (rgb === null) {
-    return "#ffffff";
-  }
-  const [r, g, b] = rgb.map((value) => {
-    const channel = value / 255;
-    return channel <= 0.03928
-      ? channel / 12.92
-      : ((channel + 0.055) / 1.055) ** 2.4;
-  });
-  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  // White stays on saturated accents until it drops under 3:1 contrast,
-  // so pastel accents (Rosé Pine, Dracula) get dark text.
-  return luminance > 0.3 ? "#1f2230" : "#ffffff";
-}
-
-function withAlpha(hex: string, alpha: number): string {
-  const rgb = parseHex(hex) ?? [0, 0, 0];
-  return `rgba(${rgb.join(", ")}, ${alpha})`;
-}
-
-function saturation(hex: string): number {
-  const rgb = parseHex(hex);
-  if (rgb === null) {
-    return 0;
-  }
-  const max = Math.max(...rgb) / 255;
-  const min = Math.min(...rgb) / 255;
-  const lightness = (max + min) / 2;
-  return max === min ? 0 : (max - min) / (1 - Math.abs(2 * lightness - 1));
 }
 
 // A theme's inks for every kind, each its own colour. Kinds go in order of how
@@ -236,25 +199,6 @@ function themeFromSpec(spec: ThemeSpec): Theme {
       mode,
     ),
   };
-}
-
-function parseHex(hex: string): [number, number, number] | null {
-  const value = hex.replace("#", "");
-  const full =
-    value.length === 3
-      ? value
-          .split("")
-          .map((c) => c + c)
-          .join("")
-      : value;
-  if (!/^[0-9a-fA-F]{6}$/.test(full)) {
-    return null;
-  }
-  return [
-    Number.parseInt(full.slice(0, 2), 16),
-    Number.parseInt(full.slice(2, 4), 16),
-    Number.parseInt(full.slice(4, 6), 16),
-  ];
 }
 
 const tablepeekDark: Palette = makePalette(
@@ -350,7 +294,8 @@ export const THEMES: Theme[] = [
     accent: "#3b82f6",
     palette: tablepeekLight,
   },
-  ...THEME_CATALOG.map(themeFromSpec).sort((a, b) =>
+  // The two Noir themes are made from a terminal's colour table, as Tern's.
+  ...[...THEME_CATALOG.map(themeFromSpec), termTheme(DARK_NOIR), termTheme(LIGHT_NOIR)].sort((a, b) =>
     a.label.localeCompare(b.label, "en"),
   ),
 ];
@@ -410,5 +355,48 @@ for (const record of readCustomThemes()) {
   const existing = THEMES.findIndex((theme) => theme.id === record.id);
   if (existing < 0) {
     THEMES.push({ ...record, custom: true });
+  }
+}
+
+// Themes imported from Tern theme files are kept whole (see termTheme.ts), so
+// they are offered from the start; Tern's own load later (ternThemes.ts).
+for (const source of readTernFiles()) {
+  THEMES.push(termTheme(source));
+}
+
+// THEMES grows while the app runs (Tern's themes load, a file is imported):
+// the gallery redraws on each change.
+const themeListeners = new Set<() => void>();
+let themesVersion = 0;
+
+export function subscribeThemes(listener: () => void): () => void {
+  themeListeners.add(listener);
+  return () => themeListeners.delete(listener);
+}
+
+export function getThemesVersion(): number {
+  return themesVersion;
+}
+
+// Adds `themes`, each in place of one with its id.
+export function addThemes(themes: Theme[]): void {
+  for (const theme of themes) {
+    const at = THEMES.findIndex((item) => item.id === theme.id);
+    if (at >= 0) {
+      THEMES[at] = theme;
+    } else {
+      THEMES.push(theme);
+    }
+  }
+  themesVersion += 1;
+  themeListeners.forEach((listener) => listener());
+}
+
+export function removeTheme(id: string): void {
+  const at = THEMES.findIndex((item) => item.id === id);
+  if (at >= 0) {
+    THEMES.splice(at, 1);
+    themesVersion += 1;
+    themeListeners.forEach((listener) => listener());
   }
 }

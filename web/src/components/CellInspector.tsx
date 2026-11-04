@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import { t } from "../i18n";
 import type { RowSource } from "../grid/rowSource";
 import { JsonRowSource } from "../grid/rowSource";
-import { containerSize, inlineText, kindOf, type JsonKind } from "../jsonIndex";
+import { containerSize, inkOf, inlineText, kindOf, type JsonKind } from "../jsonIndex";
 import { formatBinding, matchesBinding, withHint } from "../shortcuts";
 import { FieldBox } from "./FieldBox";
 import { ChevronIcon, ExpandIcon, LinkIcon, SearchIcon } from "./icons";
@@ -558,7 +558,9 @@ export function CellInspector({
                       ) : (
                         <>
                           <span className="cell-pop-colon">:</span>
-                          <span className={`cell-pop-value ${entry.kind}`}>{inlineText(entry.kind, entry.value)}</span>
+                          <span className={`cell-pop-value jv-${inkOf(entry.kind, entry.value)}`}>
+                            {inlineText(entry.kind, entry.value)}
+                          </span>
                         </>
                       )}
                     </div>
@@ -568,7 +570,7 @@ export function CellInspector({
               <div className="cell-pop-detail">
                 <div className="field-list">
                   {fields.slice(0, FIELD_LIMIT).map((field) => (
-                    <FieldBox key={field.key} name={field.key} type={field.kind} value={field.value} />
+                    <FieldBox key={field.key} name={field.key} type={field.kind} value={field.value} json={field.kind} />
                   ))}
                   {fields.length > FIELD_LIMIT ? (
                     <div className="cell-pop-fields-more">
@@ -628,10 +630,10 @@ export function CellInspector({
             <button
               type="button"
               title={withHint(t("크게 보기"), formatBinding("Mod+Enter"))}
+              aria-label={t("크게 보기")}
               onClick={() => setBig(true)}
             >
-              <ExpandIcon size={10} />
-              {t("크게 보기")}
+              <ExpandIcon size={11} />
             </button>
           ) : null}
         </div>

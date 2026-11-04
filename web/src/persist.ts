@@ -81,6 +81,10 @@ interface SavedUiState {
   values: Record<string, string>;
 }
 
+// The settings' key: settings.ts keeps them under it, and main.tsx reads the
+// saved theme from it before the app loads.
+export const SETTINGS_KEY = "tablepeek.settings";
+
 export function getItem(key: string): string | null {
   return values.get(key) ?? null;
 }

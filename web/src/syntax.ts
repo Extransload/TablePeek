@@ -1,3 +1,5 @@
+import type { Palette } from "./palette";
+
 export type SyntaxPresetId =
   | "tablepeek"
   | "palenight"
@@ -240,6 +242,27 @@ export function syntaxColors(
 ): SyntaxColors {
   const preset = syntaxPresetById(id);
   return mode === "light" ? preset.light : preset.dark;
+}
+
+// The "theme default" colours of a theme without its own: keywords and
+// literals from its accent and status colours.
+export function paletteSyntax(
+  palette: Pick<Palette, "accent" | "ok" | "warn" | "faint" | "ink" | "muted" | "error">,
+): SyntaxColors {
+  return {
+    keyword: palette.accent,
+    string: palette.ok,
+    number: palette.warn,
+    comment: palette.faint,
+    variable: palette.ink,
+    type: palette.muted,
+    operator: palette.muted,
+    punctuation: palette.muted,
+    bool: palette.error,
+    null: palette.error,
+    function: palette.accent,
+    label: palette.warn,
+  };
 }
 
 export const SYNTAX_VARIABLES: Record<keyof SyntaxColors, string> = {
