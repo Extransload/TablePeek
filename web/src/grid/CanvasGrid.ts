@@ -199,8 +199,12 @@ export class CanvasGrid {
   private offsets: number[] = [0];
   private gutterW = GUTTER_MIN;
 
+  // The highlighted row: under the pointer, or the current cell's after the
+  // keyboard moved it, until the pointer itself moves again.
   private hoverRow: number | null = null;
   private hoverColEdge: number | null = null;
+  private rowFromKeys = false;
+  private lastPointer: { x: number; y: number } | null = null;
 
   private selMode: SelMode = "cell";
   private anchor: CellPos | null = null;
@@ -2301,6 +2305,14 @@ export class CanvasGrid {
     if (e.buttons !== 0) {
       return;
     }
+    // A scroll under a still pointer may send a move: the keyboard's row
+    // stays highlighted until the pointer really moves.
+    const moved = this.lastPointer === null || this.lastPointer.x !== e.clientX || this.lastPointer.y !== e.clientY;
+    this.lastPointer = { x: e.clientX, y: e.clientY };
+    if (this.rowFromKeys && !moved) {
+      return;
+    }
+    this.rowFromKeys = false;
     const p = this.localPos(e);
     let row: number | null = null;
     let edge: number | null = null;
@@ -2724,6 +2736,9 @@ export class CanvasGrid {
       this.anchor = { row, col };
     }
     this.cursor = { row, col };
+    // The current cell's row takes the highlight from the pointer's.
+    this.hoverRow = row;
+    this.rowFromKeys = true;
     this.ensureVisible();
     this.notifySelection();
     this.schedulePaint();
