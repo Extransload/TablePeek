@@ -153,6 +153,16 @@ export function subscribeGroups(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+// Groups another window (a browser tab, the desktop app) changed show here
+// without a reload.
+uiState.subscribeChangesElsewhere((key) => {
+  if (key === STORAGE_KEY) {
+    for (const listener of listeners) {
+      listener();
+    }
+  }
+});
+
 // Earlier versions kept a group name on each connection; turn each name into
 // a group and point the connection at its id; an id whose group is gone is
 // cleared. Safe to run on every start.

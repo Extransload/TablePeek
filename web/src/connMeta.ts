@@ -153,3 +153,13 @@ export function subscribeConnMeta(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
+
+// A connection's group, colour, tags or place changed in another window
+// (a browser tab, the desktop app): the home list here follows.
+uiState.subscribeChangesElsewhere((key) => {
+  if (key === STORAGE_KEY || key === ORDER_KEY) {
+    for (const listener of listeners) {
+      listener();
+    }
+  }
+});
