@@ -4,8 +4,9 @@
 // - glass: translucent, with the system's tint behind it;
 // - clear: the desktop blurred without the system's tint.
 //
-// The floating surfaces (dialogs, the command palette, menus, pickers, the
-// settings sheet) turn to tinted glass over the app in every window. Only the
+// The floating surfaces (Quick Look, dialogs, the command palette, menus,
+// pickers, the settings sheet) turn to tinted glass over the app in every
+// window, at an opacity of their own (Settings → Appearance). Only the
 // desktop app's windows can let the desktop itself show through: there the
 // page paints its own background at the picked opacity, and the app puts the
 // system's material (or a plain blur) behind the window, asked for through
@@ -27,6 +28,9 @@ export interface MaterialPicks {
   // How opaque the background is over what shows through, 0–100.
   materialOpacity: number;
   materialBlur: number;
+  // How opaque the floating surfaces are, 0–100: their own pick, apart
+  // from the window's, so they stay readable over a see-through window.
+  floatingOpacity: number;
 }
 
 // The colours a translucent surface is tinted with: the theme's own.
@@ -108,11 +112,10 @@ export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, foll
   root.dataset.material = material;
   root.classList.toggle("see-through", seeThrough(picks));
   if (material !== "solid") {
-    const opacity = picks.materialOpacity / 100;
-    const light = colors.mode === "light";
-    // A floor under the picked opacity keeps text on a floating surface
-    // readable over whatever is behind it; clear is the lighter of the two.
-    const fill = material === "glass" ? (light ? 0.55 : 0.4) + 0.35 * opacity : (light ? 0.4 : 0.25) + 0.45 * opacity;
+    // The floating surfaces take their own opacity, not the window's: over
+    // a see-through window the page under them is as clear as the window,
+    // so the window's opacity would leave their text over the desktop.
+    const fill = picks.floatingOpacity / 100;
     root.style.setProperty("--glass-fill", rgba(colors.panel, fill));
     root.style.setProperty("--glass-well", rgba(colors.bg, fill * 0.55));
     root.style.setProperty("--glass-raise", rgba(colors.head, fill * 0.45));

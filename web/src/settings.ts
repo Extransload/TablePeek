@@ -58,10 +58,13 @@ export interface AppSettings {
   // "" takes the theme's own accent.
   accent: string;
   // The window material (see material.ts): how opaque the background is
-  // (0–100) over what shows through, and a clear surface's blur (points).
+  // (0–100) over what shows through, a clear surface's blur (points), and
+  // how opaque the floating surfaces (Quick Look, dialogs, the command
+  // palette, menus, this sheet) are (0–100).
   material: Material;
   materialOpacity: number;
   materialBlur: number;
+  floatingOpacity: number;
   // Fonts, each following the one above it as Tern's do: the interface's
   // (the sidebars, menus, dialogs), the code font every monospaced text
   // takes (the SQL editor and console, the data table, code labels), then
@@ -140,6 +143,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   material: "solid",
   materialOpacity: 80,
   materialBlur: 20,
+  floatingOpacity: 90,
   uiFont: "",
   uiFontSize: BASE_UI_PX,
   codeFont: "",
@@ -206,6 +210,7 @@ function readSettings(): AppSettings {
       material: MATERIALS.includes(parsed.material as Material) ? (parsed.material as Material) : DEFAULT_SETTINGS.material,
       materialOpacity: Math.round(clampSize(parsed.materialOpacity, 0, 100, DEFAULT_SETTINGS.materialOpacity)),
       materialBlur: Math.round(clampSize(parsed.materialBlur, 0, MATERIAL_BLUR_MAX, DEFAULT_SETTINGS.materialBlur)),
+      floatingOpacity: Math.round(clampSize(parsed.floatingOpacity, 0, 100, DEFAULT_SETTINGS.floatingOpacity)),
       uiFont: typeof parsed.uiFont === "string" ? parsed.uiFont : "",
       uiFontSize: clampSize(parsed.uiFontSize, UI_FONT_MIN, UI_FONT_MAX, DEFAULT_SETTINGS.uiFontSize),
       codeFont: typeof parsed.codeFont === "string" ? parsed.codeFont : "",

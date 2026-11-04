@@ -878,7 +878,8 @@ select {
 
 .modal-backdrop {
   position: fixed;
-  inset: 0;
+  /* The app area only: left of the docked settings sheet (dock.ts). */
+  inset: 0 var(--settings-dock, 0px) 0 0;
   background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;
@@ -1681,7 +1682,7 @@ select {
 
 .palette-backdrop {
   position: fixed;
-  inset: 0;
+  inset: 0 var(--settings-dock, 0px) 0 0;
   z-index: 70;
   background: rgba(0, 0, 0, 0.35);
   display: flex;
@@ -3882,7 +3883,7 @@ input[type="color"]::-webkit-color-swatch {
   --loading-delay: 0ms;
   position: fixed;
   top: 14px;
-  left: 50%;
+  left: calc(50% - var(--settings-dock, 0px) / 2);
   z-index: 80;
   display: inline-flex;
   align-items: center;
@@ -4597,9 +4598,17 @@ body.col-resizing * {
 /* Settings: a sheet docked to the right edge at full height. It takes its
    width from the app, which keeps working beside it (see SettingsSheet):
    the search, the page tabs, then the page's groups of rows, each a name
-   (and a note) and its control, and the keys along its foot. */
+   (and a note) and its control, and the keys along its foot. The overlays
+   that span or centre on the window (dialogs, the command palette, Quick
+   Look, toasts, banners) keep to the app area left of it, the
+   --settings-dock dock.ts sets; those placed beside an anchor keep to the
+   side they open on. */
 html.settings-docked .app {
   padding-right: var(--settings-dock, 0px);
+}
+
+html.settings-docked :is(.modal-backdrop, .palette-backdrop) > * {
+  max-width: calc(100% - 24px);
 }
 
 .settings-sheet {
@@ -5334,7 +5343,8 @@ button.settings-picker-remove {
 }
 
 /* ── Window material (material.ts): glass or clear turn the floating
-   surfaces to tinted glass over the app. Inside one, what paints the page's
+   surfaces to tinted glass over the app, at the opacity Settings picks for
+   them (--glass-fill), not the window's. Inside one, what paints the page's
    background or a panel paints a lighter wash of it, so the glass reads
    through; the dim under a dialog is lighter, for the app to show blurred. ── */
 html:is([data-material="glass"], [data-material="clear"])
@@ -5347,6 +5357,8 @@ html:is([data-material="glass"], [data-material="clear"])
     .column-picker,
     .cell-menu,
     .cell-pop,
+    .json-view,
+    .date-picker,
     .page-size-panel,
     .analysis-picker-panel,
     .settings-sheet
@@ -5361,7 +5373,13 @@ html:is([data-material="glass"], [data-material="clear"]) .cm-editor .cm-tooltip
   backdrop-filter: var(--glass-filter);
 }
 
-html:is([data-material="glass"], [data-material="clear"]) .modal-backdrop {
+/* The popover's arrow sits outside its box: it takes the popover's fill,
+   not the lighter wash its --panel is inside. */
+html:is([data-material="glass"], [data-material="clear"]) .cell-pop-arrow {
+  background: var(--glass-fill);
+}
+
+html:is([data-material="glass"], [data-material="clear"]) :is(.modal-backdrop, .cell-pop-backdrop.big) {
   background: rgba(0, 0, 0, 0.3);
 }
 
@@ -6826,13 +6844,13 @@ button.error-notice-icon-button:last-child {
    success flash they take the pointer, so the text can be selected and copied. */
 .error-toasts {
   position: fixed;
-  right: 16px;
+  right: calc(var(--settings-dock, 0px) + 16px);
   bottom: 16px;
   z-index: 9500;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: min(460px, calc(100vw - 32px));
+  width: min(460px, calc(100vw - var(--settings-dock, 0px) - 32px));
 }
 
 .error-toasts > .error-notice {
@@ -7010,10 +7028,10 @@ textarea[aria-invalid="true"] {
 .oidc-banner {
   position: fixed;
   top: 12px;
-  left: 50%;
+  left: calc(50% - var(--settings-dock, 0px) / 2);
   z-index: 10001;
   align-items: center;
-  width: min(620px, calc(100vw - 32px));
+  width: min(620px, calc(100vw - var(--settings-dock, 0px) - 32px));
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 10%, var(--panel));
@@ -8419,7 +8437,7 @@ html.launcher-dragging .hover-tooltip {
 
 .cell-pop-backdrop {
   position: fixed;
-  inset: 0;
+  inset: 0 var(--settings-dock, 0px) 0 0;
   z-index: 45;
 }
 
@@ -8744,7 +8762,7 @@ textarea.cell-pop-text {
 
 .json-view {
   position: fixed;
-  inset: 16px;
+  inset: 16px calc(var(--settings-dock, 0px) + 16px) 16px 16px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -10640,7 +10658,7 @@ button.result-set.failed .result-set-status {
 .flash-toast {
   position: fixed;
   bottom: 56px;
-  left: 50%;
+  left: calc(50% - var(--settings-dock, 0px) / 2);
   z-index: 9500;
   padding: 7px 14px;
   border: 1px solid var(--line);

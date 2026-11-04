@@ -8,6 +8,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { appAreaWidth } from "./dock";
 import { CommandPalette, type PaletteAction, type PaletteSource } from "./components/CommandPalette";
 import { ColumnPicker, type ColumnEntry } from "./components/ColumnPicker";
 import { ConnectModal } from "./components/ConnectModal";
@@ -3467,7 +3468,7 @@ export default function App() {
         return;
       case "dbSwitch":
         if (serverConnRef.current) {
-          void openDbMenu(window.innerWidth / 2 - 110, 92);
+          void openDbMenu(appAreaWidth() / 2 - 110, 92);
         } else {
           editorRef.current?.focus();
         }
@@ -5579,17 +5580,17 @@ export default function App() {
       if (action === null) {
         return;
       }
-      // ⌘, opens the settings sheet and closes it again, wherever focus is,
-      // unless a dialog sits over it.
+      // ⌘, opens the settings sheet and closes it again, wherever focus is
+      // and with Quick Look up beside it, unless a dialog sits over the app.
       if (
         action === "openSettings" &&
-        settingsOpenRef.current &&
         !event.isComposing &&
+        !lockedRef.current &&
         document.querySelector(".modal-backdrop:not(.motion-ghost, .motion-ghost *)") === null
       ) {
         event.preventDefault();
         event.stopPropagation();
-        setSettingsOpen(false);
+        setSettingsOpen(!settingsOpenRef.current);
         return;
       }
       // ⌥ types characters on macOS (⌥T → †); text fields keep them. The SQL

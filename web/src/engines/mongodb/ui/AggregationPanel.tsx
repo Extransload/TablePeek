@@ -11,6 +11,7 @@
 // picked result document or plan stage shows in the app's detail panel.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { overlayRight } from "../../../dock";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, CloseIcon, CodeIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, RefreshIcon, StopIcon, TableIcon, TrashIcon } from "../../../components/icons";
 import { Gauge, useTabWork, type GaugeOutcome } from "../../../components/Gauge";
@@ -387,7 +388,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
     event.stopPropagation();
     const r = event.currentTarget.getBoundingClientRect();
     const height = 430;
-    setPicker({ x: Math.min(r.left, window.innerWidth - 440), y: r.bottom + 4 + height > window.innerHeight ? Math.max(8, r.top - 4 - height) : r.bottom + 4, at, replace });
+    setPicker({ x: Math.min(r.left, overlayRight(r.left) - 440), y: r.bottom + 4 + height > window.innerHeight ? Math.max(8, r.top - 4 - height) : r.bottom + 4, at, replace });
   };
 
   const moveStage = (fromId: number, toId: number, after: boolean) =>

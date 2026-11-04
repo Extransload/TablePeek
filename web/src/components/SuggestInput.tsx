@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type InputHTMLAttributes, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { overlayRight } from "../dock";
 
 // A text field with suggestions that open as one of TablePeek's menus instead
 // of the system's <datalist> box. The field stays a plain input (typing is
@@ -59,7 +60,7 @@ export function SuggestInput({ suggestions, onFocus, onBlur, onKeyDown, ...props
     const upward = height > below && above > below;
     menu.style.maxHeight = `${Math.max(80, Math.min(MAX_HEIGHT, upward ? above : below))}px`;
     const size = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(EDGE, Math.min(field.left, window.innerWidth - size.width - EDGE))}px`;
+    menu.style.left = `${Math.max(EDGE, Math.min(field.left, overlayRight(field.left) - size.width - EDGE))}px`;
     menu.style.top = `${upward ? field.top - GAP - size.height : field.bottom + GAP}px`;
   }, [visible, shown.length]);
 

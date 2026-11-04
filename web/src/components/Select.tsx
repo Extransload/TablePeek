@@ -9,6 +9,7 @@ import {
   type SelectHTMLAttributes,
 } from "react";
 import { createPortal } from "react-dom";
+import { overlayRight } from "../dock";
 import { CheckIcon } from "./icons";
 import { useMenuPreview } from "./menuPreview";
 
@@ -92,7 +93,7 @@ function placeMenu(select: HTMLSelectElement, menu: HTMLElement): void {
   // drawn box would be smaller.
   const width = menu.offsetWidth;
   const tall = menu.offsetHeight;
-  menu.style.left = `${Math.max(EDGE, Math.min(field.left, window.innerWidth - width - EDGE))}px`;
+  menu.style.left = `${Math.max(EDGE, Math.min(field.left, overlayRight(field.left) - width - EDGE))}px`;
   menu.style.top = `${upward ? field.top - GAP - tall : field.bottom + GAP}px`;
 }
 

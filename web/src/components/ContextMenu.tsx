@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { overlayRight } from "../dock";
 import { CheckIcon } from "./icons";
 
 export interface ContextMenuItem {
@@ -61,7 +62,8 @@ export function ContextMenu({ x, y, items, anchor, onClose }: ContextMenuProps) 
   }
 
   // Root at the pointer; each submenu beside its parent item, flipped to the
-  // other side or pulled up when it would leave the window. Once a level has
+  // other side or pulled up when it would leave the window (or, opened over
+  // the app, the app area left of a docked settings sheet). Once a level has
   // flipped left, deeper levels keep going left so they don't cover the root.
   useLayoutEffect(() => {
     let towardLeft = false;
@@ -82,13 +84,13 @@ export function ContextMenu({ x, y, items, anchor, onClose }: ContextMenuProps) 
           const onLeft = parentPanel.getBoundingClientRect().left - size.width - 2;
           const onRight = item.right + 2;
           const fitsLeft = onLeft >= EDGE;
-          const fitsRight = onRight + size.width <= window.innerWidth - EDGE;
+          const fitsRight = onRight + size.width <= overlayRight(x) - EDGE;
           towardLeft = towardLeft ? fitsLeft || !fitsRight : !fitsRight && fitsLeft;
           left = towardLeft ? onLeft : onRight;
           top = item.top - 5;
         }
       }
-      element.style.left = `${Math.max(EDGE, Math.min(left, window.innerWidth - size.width - EDGE))}px`;
+      element.style.left = `${Math.max(EDGE, Math.min(left, overlayRight(x) - size.width - EDGE))}px`;
       element.style.top = `${Math.max(EDGE, Math.min(top, window.innerHeight - size.height - EDGE))}px`;
     });
   }, [x, y, path.join(",")]);

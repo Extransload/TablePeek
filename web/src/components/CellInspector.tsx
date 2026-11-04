@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
+import { useAppAreaWidth } from "../dock";
 import { t } from "../i18n";
 import { animate, DURATION, EASE, ghost } from "../motion";
 import type { RowSource } from "../grid/rowSource";
@@ -172,6 +173,9 @@ export function CellInspector({
   onClose,
 }: CellInspectorProps) {
   const [, setNonce] = useState(0);
+  // Laid out in the app area, left of a docked settings sheet, again as the
+  // window or the sheet resizes.
+  const area = useAppAreaWidth();
   const [raw, setRaw] = useState(false);
   // The large view (JsonExplorer) in place of the popover.
   const [big, setBig] = useState(false);
@@ -412,18 +416,20 @@ export function CellInspector({
 
   // Beside the cell, pointing at it: to the right when that leaves a usable
   // width (narrowing to fit), else to the left, else centered over the grid.
+  // All of it within the app area: a cell the settings sheet now covers is
+  // pointed at no more.
   const preferred = doc !== null || reference ? 880 : 560;
   const minWidth = doc !== null || reference ? 520 : 360;
   const height = Math.min(doc !== null ? 560 : reference ? 300 : 320, window.innerHeight - MARGIN * 2);
-  let width = Math.min(preferred, window.innerWidth - MARGIN * 2);
-  let left = (window.innerWidth - width) / 2;
+  let width = Math.max(0, Math.min(preferred, area - MARGIN * 2));
+  let left = (area - width) / 2;
   let top = (window.innerHeight - height) / 2;
   let side: "left" | "right" | null = null;
   let arrowTop = 0;
-  if (anchor !== null) {
+  if (anchor !== null && anchor.left < area - MARGIN) {
     const pointX = Math.min(anchor.right, anchor.left + 160);
     const pointY = (anchor.top + anchor.bottom) / 2;
-    const roomRight = window.innerWidth - pointX - ARROW - MARGIN;
+    const roomRight = area - pointX - ARROW - MARGIN;
     const roomLeft = anchor.left - ARROW - MARGIN;
     if (roomRight >= minWidth) {
       side = "right";

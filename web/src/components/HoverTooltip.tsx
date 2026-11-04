@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { overlayRight } from "../dock";
 
 const SHOW_DELAY_MS = 350;
 
@@ -152,7 +153,7 @@ export function HoverTooltip() {
     }
     const width = node.offsetWidth;
     const height = node.offsetHeight;
-    const left = Math.min(Math.max(tip.x - width / 2, EDGE), window.innerWidth - width - EDGE);
+    const left = Math.min(Math.max(tip.x - width / 2, EDGE), overlayRight(tip.x) - width - EDGE);
     const below = tip.bottom + GAP + height + EDGE <= window.innerHeight;
     node.style.left = `${Math.max(EDGE, left)}px`;
     node.style.top = `${below ? tip.bottom + GAP : Math.max(EDGE, tip.top - GAP - height)}px`;

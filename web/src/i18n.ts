@@ -444,6 +444,8 @@ const EN: Record<string, string> = {
   "투명": "Clear",
   "불투명도": "Opacity",
   "흐림": "Blur",
+  "떠 있는 창 불투명도": "Floating surface opacity",
+  "Quick Look, 대화 상자, 명령 팔레트, 메뉴, 설정 창의 바탕입니다.": "The background of Quick Look, dialogs, the command palette, menus and this sheet.",
   "TablePeek 단축키가 브라우저 단축키보다 먼저 실행됩니다. {keys}는 브라우저가 먼저 처리합니다.": "TablePeek shortcuts run before the browser's. {keys} are handled by the browser first.",
   "누른 뒤 키 조합을 누르세요. Esc로 취소합니다. 다른 동작에 쓰이던 조합은 이쪽으로 옮겨집니다.": "Click, then press a key combination. Esc cancels. A combination another action used moves here.",
   "단축키 추가": "Add shortcut",

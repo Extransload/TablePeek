@@ -16,6 +16,7 @@ import { type TableSlot } from "../termTheme";
 import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
 import { fontGroups, fontListLabel, SYSTEM_CODE_FONT, SYSTEM_UI_FONT, type InstalledFont } from "../fonts";
 import { store } from "../store";
+import { setSettingsDock } from "../dock";
 import { MATERIAL_BLUR_MAX, subscribeMaterial, windowTranslucent, type Material } from "../material";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "../panelEdge";
 import {
@@ -923,13 +924,29 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
                 />
               </SettingRow>
               {settings.material !== "solid" ? (
-                <SettingRow label="불투명도" keywords="opacity" {...fromDefault("materialOpacity")}>
+                <SettingRow label="불투명도" keywords="opacity window" {...fromDefault("materialOpacity")}>
                   <Slider
                     label={t("불투명도")}
                     value={settings.materialOpacity}
                     max={100}
                     unit="%"
                     onChange={(materialOpacity) => onChange({ materialOpacity })}
+                  />
+                </SettingRow>
+              ) : null}
+              {settings.material !== "solid" ? (
+                <SettingRow
+                  label="떠 있는 창 불투명도"
+                  keywords="floating surface opacity quick look dialog palette menu popover sheet 퀵룩 대화 상자 메뉴"
+                  hint={t("Quick Look, 대화 상자, 명령 팔레트, 메뉴, 설정 창의 바탕입니다.")}
+                  {...fromDefault("floatingOpacity")}
+                >
+                  <Slider
+                    label={t("떠 있는 창 불투명도")}
+                    value={settings.floatingOpacity}
+                    max={100}
+                    unit="%"
+                    onChange={(floatingOpacity) => onChange({ floatingOpacity })}
                   />
                 </SettingRow>
               ) : null}
@@ -1197,19 +1214,12 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
 
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const sheetWidth = clampSheet(width ?? SHEET_DEFAULT);
-  // Docked, not floating: the app gives up the sheet's width (styles.css,
-  // html.settings-docked) and keeps working beside it.
+  // Docked, not floating: the app gives up the sheet's width and keeps
+  // working beside it, its overlays kept left of the sheet (dock.ts).
   useLayoutEffect(() => {
-    document.documentElement.style.setProperty("--settings-dock", `${sheetWidth}px`);
+    setSettingsDock(sheetWidth);
   }, [sheetWidth]);
-  useLayoutEffect(() => {
-    const root = document.documentElement;
-    root.classList.add("settings-docked");
-    return () => {
-      root.classList.remove("settings-docked");
-      root.style.removeProperty("--settings-dock");
-    };
-  }, []);
+  useLayoutEffect(() => () => setSettingsDock(null), []);
   // Pages whose name is searched for: offered first, ⏎ opens one.
   const pageHits = terms.length === 0 ? [] : PAGES.filter((item) => {
     const name = bothLanguages(item.label).toLowerCase();

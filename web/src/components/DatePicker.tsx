@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { overlayRight } from "../dock";
 import type { CellKind } from "../grid/columns";
 import { getLanguage, t } from "../i18n";
 
@@ -120,12 +121,13 @@ export function DatePicker({ kind, value, nullable, anchor, onPick, onClose }: D
   const showDays = kind !== "time";
   const showTime = kind !== "date";
 
-  // Under the cell, or above it when the window ends first; inside the window.
+  // Under the cell, or above it when the window ends first; inside the window
+  // (left of a docked settings sheet, dock.ts).
   useLayoutEffect(() => {
     const height = rootRef.current?.offsetHeight ?? 0;
     const below = anchor.bottom + 2;
     const top = below + height > window.innerHeight - 8 ? Math.max(8, anchor.top - height - 2) : below;
-    const left = Math.min(Math.max(8, anchor.left), window.innerWidth - PICKER_W - 8);
+    const left = Math.min(Math.max(8, anchor.left), overlayRight(anchor.left) - PICKER_W - 8);
     setPlace({ left, top });
   }, [anchor]);
 

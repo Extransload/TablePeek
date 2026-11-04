@@ -4,6 +4,15 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Floating surface opacity** (Settings → Appearance → Material, 90% by default, shown when the material isn't Solid; searchable as "floating"). It sets how opaque Quick Look, dialogs, the command palette, menus and pickers and the settings sheet are, apart from the window's opacity, and applies live as the slider moves.
+
+### Fixed
+
+- **Quick Look stays readable under Glass and Clear.** Its large view wasn't one of the glass surfaces, so in a see-through window it took the window's opacity with no blur (at a low opacity, all but invisible), and its popover's glass grew fainter as the window's opacity went down. Both now use the floating surface opacity with the glass blur, the date picker too.
+- **Quick Look and the settings sheet no longer overlap.** With Settings open, the Quick Look popover is placed within the app area left of the sheet (pointing at its cell when there is room), the large view fills that area only, and both follow the sheet's edge as it is resized; clicking the sheet no longer closes Quick Look. Dialogs, the command palette, error toasts, flash notes and the sign-in and file-dialog banners keep to the same area, and menus, pickers and tooltips opened over the app stay left of the sheet.
+
 ## [0.3.0] - 2026-11-04
 
 Loading shows as gauges that fill the box that waits, and Reduce motion becomes a TablePeek setting that no system preference overrides.
