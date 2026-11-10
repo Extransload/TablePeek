@@ -25,7 +25,7 @@ export const AI_FAMILIES: { id: AiFamily; label: string }[] = [
 
 // Each way of reaching a family's models, a connection of its own (one
 // provider id): `method` names it in its family's rows, `short` beside a
-// model ("haiku · Claude Code"), `group` heads its models in the picker.
+// model ("gpt-5.6-luna · Codex CLI"), `group` heads its models in the picker.
 export interface AiMethod {
   id: AiProvider;
   family: AiFamily;
@@ -38,7 +38,6 @@ export const AI_METHODS: AiMethod[] = [
   { id: "chatgpt", family: "gpt", method: "ChatGPT 로그인", short: "ChatGPT", group: "GPT · ChatGPT" },
   { id: "codex", family: "gpt", method: "Codex CLI", short: "Codex CLI", group: "GPT · Codex CLI" },
   { id: "openai", family: "gpt", method: "API 키 [연결]", short: "OpenAI", group: "GPT · API 키" },
-  { id: "claude", family: "claude", method: "Claude Code CLI", short: "Claude Code", group: "Claude · Claude Code" },
   { id: "anthropic", family: "claude", method: "API 키 [연결]", short: "Anthropic", group: "Claude · API 키" },
   { id: "gemini", family: "gemini", method: "API 키 [연결]", short: "Gemini", group: "Gemini · API 키" },
   { id: "openrouter", family: "other", method: "OpenRouter", short: "OpenRouter", group: "OpenRouter" },
@@ -50,7 +49,7 @@ function aiMethod(provider: AiProvider): AiMethod | undefined {
   return AI_METHODS.find((method) => method.id === provider);
 }
 
-// The connection beside a model: "ChatGPT", "Claude Code", "Gemini".
+// The connection beside a model: "ChatGPT", "Codex CLI", "Gemini".
 export function aiProviderLabel(provider: AiProvider): string {
   return t(aiMethod(provider)?.short ?? provider);
 }

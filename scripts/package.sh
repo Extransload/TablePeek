@@ -5,7 +5,7 @@
 #   scripts/package.sh archive <tag> <target> <binary> <out-dir>
 #       tablepeek-<tag>-<target>.tar.gz (or .zip for Windows targets) in
 #       out-dir, holding a tablepeek-<tag>-<target>/ folder with the binary,
-#       README.md and LICENSE when the repository has one.
+#       README.md and LICENSE.
 #   scripts/package.sh desktop <tag> <target> <bundle-dir> <out-dir>
 #       The desktop app's bundles from tauri's bundle-dir (target/<target>/
 #       release/bundle) under release names in out-dir: on macOS

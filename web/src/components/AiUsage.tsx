@@ -139,7 +139,7 @@ function agoText(at: number): string {
   return seconds < 60 ? t("방금") : t("{span} 전", { span: span(seconds, false) });
 }
 
-// The plan and workspace ("Team · Research Factory", "Claude Max"), the
+// The plan and workspace ("Team · Research Factory", "Plus"), the
 // plan capitalized; null when neither is known.
 function planLine(usage: AiUsage): string | null {
   const account = usage.account;

@@ -704,11 +704,20 @@ pub fn app(state: AppState) -> Router {
         .route("/api/schema", get(schema_route))
         .route("/api/relations", get(relations_route))
         .route("/api/count", get(count_route))
-        .route("/api/exec", post(exec_route))
+        // A statement is as long as its author wrote it: a dump's multi-row
+        // INSERT runs to megabytes, past axum's 2 MB default; the database's
+        // own limit (MySQL's max_allowed_packet, say) is the one that applies.
+        .route(
+            "/api/exec",
+            post(exec_route).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/api/job", post(job_route))
         .route("/api/databases", get(databases_route))
         .route("/api/switch-db", post(switch_db_route))
-        .route("/api/query", post(query))
+        .route(
+            "/api/query",
+            post(query).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/api/table", get(table_info))
         .route("/api/connection-info", get(connection_info_route))
         .route("/api/version", get(version_route))

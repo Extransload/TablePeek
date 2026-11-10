@@ -98,8 +98,6 @@ pub enum Provider {
     Chatgpt,
     /// The user's Codex CLI, signed in in a terminal.
     Codex,
-    /// The user's Claude Code, signed in in a terminal.
-    Claude,
     Openai,
     Anthropic,
     Gemini,
@@ -109,10 +107,9 @@ pub enum Provider {
 }
 
 impl Provider {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 8] = [
         Self::Chatgpt,
         Self::Codex,
-        Self::Claude,
         Self::Openai,
         Self::Anthropic,
         Self::Gemini,
@@ -129,7 +126,6 @@ impl Provider {
         match self {
             Self::Chatgpt => "chatgpt",
             Self::Codex => "codex",
-            Self::Claude => "claude",
             Self::Openai => "openai",
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
@@ -142,10 +138,7 @@ impl Provider {
     /// Offered now; the API-key and local-server providers are listed as
     /// coming soon.
     fn available(self) -> bool {
-        matches!(
-            self,
-            Self::Chatgpt | Self::Codex | Self::Claude | Self::Gemini
-        )
+        matches!(self, Self::Chatgpt | Self::Codex | Self::Gemini)
     }
 
     /// Quick enough for suggestions as you type: an API, not a program
@@ -158,7 +151,6 @@ impl Provider {
     fn cli(self) -> Option<Cli> {
         match self {
             Self::Codex => Some(Cli::Codex),
-            Self::Claude => Some(Cli::Claude),
             _ => None,
         }
     }
@@ -182,7 +174,7 @@ impl Provider {
             Self::Openrouter => OPENROUTER_BASE,
             Self::Ollama => OLLAMA_BASE,
             Self::Lmstudio => LMSTUDIO_BASE,
-            Self::Chatgpt | Self::Codex | Self::Claude | Self::Anthropic => "",
+            Self::Chatgpt | Self::Codex | Self::Anthropic => "",
         }
     }
 }
@@ -191,7 +183,7 @@ fn unavailable(provider: Provider) -> (StatusCode, Json<ApiError>) {
     bad_request(
         "provider_unavailable",
         format!(
-            "{}는 곧 지원합니다. 설정 › AI에서 ChatGPT, Codex CLI, Claude Code, Gemini 중 하나를 고르세요",
+            "{}는 곧 지원합니다. 설정 › AI에서 ChatGPT, Codex CLI, Gemini 중 하나를 고르세요",
             provider.id()
         ),
     )
@@ -633,8 +625,8 @@ struct UsageQuery {
 }
 
 /// GET /api/ai/usage?provider=: a connection's account and the usage left,
-/// as far as it says: live from the Codex CLI, from the last answer of
-/// Claude Code and ChatGPT, counted here for Gemini (Google reports none).
+/// as far as it says: live from the Codex CLI, from ChatGPT's last answer,
+/// counted here for Gemini (Google reports none).
 async fn usage_of(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -670,13 +662,6 @@ async fn usage_of(
         "as_of": null,
         "source": "none",
     });
-    let from_answers = |answer: &mut Value| {
-        if let Some((windows, at)) = &last {
-            answer["windows"] = json!(windows);
-            answer["as_of"] = json!(at);
-            answer["source"] = json!("last_answer");
-        }
-    };
     match provider {
         Provider::Codex => {
             let path = state.ai.ready_cli(Cli::Codex).await?;
@@ -686,23 +671,18 @@ async fn usage_of(
             }
             answer["source"] = json!("live");
         }
-        Provider::Claude => {
-            state.ai.ready_cli(Cli::Claude).await?;
-            let status = state.ai.cli_status(Cli::Claude, false).await;
-            answer["account"] = json!({
-                "email": status.email,
-                "plan": status.account,
-                "workspace": status.workspace,
-            });
-            from_answers(&mut answer);
-        }
         Provider::Chatgpt => {
             let status = state.ai.chatgpt.status().await;
             if status.signed_in {
                 answer["account"] =
                     json!({ "email": status.email, "plan": null, "workspace": null });
             }
-            from_answers(&mut answer);
+            // What ChatGPT's last answer said is left of the plan.
+            if let Some((windows, at)) = &last {
+                answer["windows"] = json!(windows);
+                answer["as_of"] = json!(at);
+                answer["source"] = json!("last_answer");
+            }
         }
         // Google tells no remaining quota: what was sent from here today,
         // against the daily limit its last refusal named.
@@ -2147,8 +2127,7 @@ enum Wire {
 #[derive(Debug, PartialEq)]
 enum Event {
     Text(String),
-    /// What is left of the plan (Claude Code's `rate_limit_event`, ChatGPT's
-    /// headers).
+    /// What is left of the plan, from ChatGPT's answer headers.
     Limits(Vec<Window>),
     /// The answer is complete (Responses says so; the others just end).
     Done,
@@ -2507,7 +2486,6 @@ mod tests {
         };
         // No CLI unless a test puts a fake one: the user's are never run.
         state.ai.use_cli(Cli::Codex, dir.join("no-codex"));
-        state.ai.use_cli(Cli::Claude, dir.join("no-claude"));
         (state, dir)
     }
 
@@ -2736,33 +2714,8 @@ mod tests {
         path
     }
 
-    /// A signed-in Claude Code that keeps its arguments and stdin in `dir`,
-    /// then prints `out` (JSONL) as its answer.
-    #[cfg(unix)]
-    fn fake_claude(dir: &Path, out: &[&str]) -> PathBuf {
-        // printf, not echo: sh's echo turns the JSON's `\n` into a line break.
-        let lines: String = out
-            .iter()
-            .map(|line| format!("printf '%s\\n' '{line}'\n"))
-            .collect();
-        let dir_text = dir.display();
-        fake_cli(
-            dir,
-            "claude",
-            &format!(
-                "case \"$1\" in\n\
-                 --version) echo '2.1.0 (Claude Code)'; exit 0;;\n\
-                 auth) echo '{{\"loggedIn\":true,\"email\":\"me@example.com\",\"authMethod\":\"claude.ai\",\"subscriptionType\":\"max\",\"orgName\":\"Research Factory\"}}'; exit 0;;\n\
-                 esac\n\
-                 printf '%s\\n' \"$@\" > '{dir_text}/claude-args'\n\
-                 cat > '{dir_text}/claude-stdin'\n\
-                 {lines}"
-            ),
-        )
-    }
-
     #[tokio::test]
-    async fn settings_offer_three_providers_and_survive_a_restart() {
+    async fn settings_offer_three_connections_and_survive_a_restart() {
         let (state, dir) = state("settings");
         let initial = status(
             State(state.clone()),
@@ -2780,10 +2733,7 @@ mod tests {
             .filter(|(_, status)| status.available)
             .map(|(provider, _)| *provider)
             .collect();
-        assert_eq!(
-            offered,
-            [Provider::Codex, Provider::Claude, Provider::Gemini]
-        );
+        assert_eq!(offered, [Provider::Codex, Provider::Gemini]);
         assert_eq!(initial.providers[&Provider::Gemini].has_key, Some(false));
         assert_eq!(initial.providers[&Provider::Codex].has_key, None);
         assert!(initial.providers[&Provider::Codex].cli.is_some());
@@ -2792,40 +2742,42 @@ mod tests {
         let set = configure(
             State(state.clone()),
             headers(),
-            patch(json!({ "enabled": true, "provider": "claude", "model": "haiku" })),
+            patch(json!({ "enabled": true, "provider": "codex", "model": "gpt-6.1-terra" })),
         )
         .await
         .unwrap()
         .0;
         assert_eq!(
             (set.provider, set.model.as_str()),
-            (Provider::Claude, "haiku")
+            (Provider::Codex, "gpt-6.1-terra")
         );
         // Another provider's model, then back.
         let other = configure(
             State(state.clone()),
             headers(),
-            patch(json!({ "provider": "codex", "model": "gpt-6.1-terra" })),
+            patch(json!({ "provider": "gemini", "model": "gemini-3-flash-preview" })),
         )
         .await
         .unwrap()
         .0;
-        assert_eq!(other.model, "gpt-6.1-terra");
+        assert_eq!(other.model, "gemini-3-flash-preview");
         let back = configure(
             State(state.clone()),
             headers(),
-            patch(json!({ "provider": "claude" })),
+            patch(json!({ "provider": "codex" })),
         )
         .await
         .unwrap()
         .0;
-        assert_eq!(back.model, "haiku");
+        assert_eq!(back.model, "gpt-6.1-terra");
 
         for (patch_value, code) in [
             (json!({ "provider": "openai" }), "provider_unavailable"),
             (json!({ "provider": "custom" }), "invalid_request"),
+            // Claude Code's CLI was offered once; it is no connection now.
+            (json!({ "provider": "claude" }), "invalid_request"),
             (
-                json!({ "complete_model": { "provider": "claude", "model": "haiku" } }),
+                json!({ "complete_model": { "provider": "codex", "model": "gpt-6.1-terra" } }),
                 "ai_complete_unsupported",
             ),
         ] {
@@ -2839,7 +2791,7 @@ mod tests {
         assert!(reloaded.enabled);
         assert_eq!(
             (reloaded.provider, reloaded.model()),
-            (Provider::Claude, "haiku")
+            (Provider::Codex, "gpt-6.1-terra")
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2847,8 +2799,8 @@ mod tests {
     #[test]
     fn an_earlier_settings_file_keeps_what_this_version_knows() {
         let file = AiFile::read(
-            br#"{"enabled":true,"provider":"custom","base_urls":{"custom":"http://x/v1"},
-                "models":{"custom":"llama3","gemini":"gemini-flash-latest","chatgpt":"gpt-sol"},
+            br#"{"enabled":true,"provider":"claude","base_urls":{"custom":"http://x/v1"},
+                "models":{"custom":"llama3","claude":"haiku","gemini":"gemini-flash-latest","chatgpt":"gpt-sol"},
                 "complete_model":{"provider":"custom","model":"m"},"autocomplete":true}"#,
         );
         assert!(file.enabled && file.autocomplete);
@@ -2974,7 +2926,7 @@ mod tests {
         let _ = configure(
             State(state.clone()),
             headers(),
-            patch(json!({ "enabled": true, "provider": "claude", "model": "haiku" })),
+            patch(json!({ "enabled": true, "provider": "codex", "model": "gpt-6.1-terra" })),
         )
         .await
         .unwrap();
@@ -3084,105 +3036,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn claude_code_streams_the_sql_with_no_tools_and_the_schema_on_stdin() {
-        let (state, dir) = state("claude");
-        let claude = fake_claude(
-            &dir,
-            &[
-                r#"{"type":"system","subtype":"init"}"#,
-                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"seven_day":{"utilization":0.16,"resetsAt":1794722400,"status":"allowed"}}}}"#,
-                r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"-- 행 수\nSELECT count(*)"}}}"#,
-                r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" FROM demo;"}}}"#,
-                r#"{"type":"result","subtype":"success","is_error":false,"result":"-- 행 수\nSELECT count(*) FROM demo;"}"#,
-            ],
-        );
-        state.ai.use_cli(Cli::Claude, claude);
-        let _ = configure(
-            State(state.clone()),
-            headers(),
-            patch(json!({ "enabled": true, "provider": "claude", "model": "haiku" })),
-        )
-        .await
-        .unwrap();
-        let response = generate(State(state.clone()), headers(), ask("demo 행 수"))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.headers()[header::CONTENT_TYPE],
-            "application/x-ndjson"
-        );
-        let lines = body_lines(response).await;
-        // Where it is, then the answer with where the time went.
-        assert_eq!(lines[0], json!({ "status": "schema" }));
-        assert_eq!(lines[1], json!({ "status": "model", "tables": 1 }));
-        let done = &lines.last().unwrap()["done"];
-        assert_eq!(
-            (done["sql"].as_str(), done["read_only"].as_bool()),
-            (Some("-- 행 수\nSELECT count(*) FROM demo;"), Some(true))
-        );
-        let timing = &done["timing"];
-        assert!(
-            timing["schema_ms"].as_u64() <= timing["first_ms"].as_u64()
-                && timing["first_ms"].as_u64() <= timing["total_ms"].as_u64(),
-            "{timing}"
-        );
-
-        let args = std::fs::read_to_string(dir.join("claude-args")).unwrap();
-        let args: Vec<&str> = args.lines().collect();
-        let after = |flag: &str| args[args.iter().position(|arg| *arg == flag).unwrap() + 1];
-        assert_eq!((after("--model"), after("--tools")), ("haiku", ""));
-        assert!(after("--system-prompt").starts_with("You write SQLite queries"));
-        assert!(
-            args.contains(&"--strict-mcp-config") && args.contains(&"--no-session-persistence")
-        );
-        let stdin = std::fs::read_to_string(dir.join("claude-stdin")).unwrap();
-        assert!(
-            stdin.contains("SQLite schema:\ndemo(id INTEGER PK, name TEXT"),
-            "{stdin}"
-        );
-        assert!(stdin.contains("\nRequest: demo 행 수\n"), "{stdin}");
-
-        // What is left of the plan, as that answer told it.
-        let usage = usage_for(&state, "claude").await.unwrap();
-        assert_eq!(
-            (usage["source"].as_str(), usage["account"]["plan"].as_str()),
-            (Some("last_answer"), Some("Claude Max"))
-        );
-        assert_eq!(
-            (
-                usage["account"]["email"].as_str(),
-                usage["account"]["workspace"].as_str()
-            ),
-            (Some("me@example.com"), Some("Research Factory"))
-        );
-        assert_eq!(usage["windows"][0]["kind"], "seven_day");
-        assert_eq!(
-            usage["windows"][0]["used_percent"].as_f64().map(f64::round),
-            Some(16.0)
-        );
-
-        // Its refusal, as the stream's last line.
-        let claude = fake_claude(
-            &dir,
-            &[
-                r#"{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}"#,
-            ],
-        );
-        state.ai.use_cli(Cli::Claude, claude);
-        let response = generate(State(state.clone()), headers(), ask("rows"))
-            .await
-            .unwrap();
-        let lines = body_lines(response).await;
-        assert_eq!(
-            lines.last().unwrap()["error"]["message"],
-            "AI 제공자 오류: Not logged in · Please run /login"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn codex_answers_whole_and_a_crash_says_what_it_printed() {
+    async fn codex_answers_whole_with_the_schema_on_stdin_and_says_why_it_failed() {
         let (state, dir) = state("codex");
         let dir_text = dir.display();
         let codex = fake_cli(
@@ -3191,7 +3045,7 @@ mod tests {
             &format!(
                 "case \"$1\" in --version) echo 'codex-cli 0.1.0'; exit 0;; login) echo 'Logged in using ChatGPT' >&2; exit 0;; app-server) exit 1;; esac\n\
                  printf '%s\\n' \"$@\" > '{dir_text}/codex-args'\n\
-                 cat > /dev/null\n\
+                 cat > '{dir_text}/codex-stdin'\n\
                  echo '{{\"type\":\"thread.started\"}}'\n\
                  printf '%s\\n' '{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"-- 최근 10명\\nSELECT * FROM demo LIMIT 10;\"}}}}'\n\
                  echo '{{\"type\":\"turn.completed\"}}'"
@@ -3205,16 +3059,39 @@ mod tests {
         )
         .await
         .unwrap();
-        let lines = body_lines(
-            generate(State(state.clone()), headers(), ask("최근 10명"))
-                .await
-                .unwrap(),
-        )
-        .await;
+        let response = generate(State(state.clone()), headers(), ask("최근 10명"))
+            .await
+            .unwrap();
         assert_eq!(
-            lines.last().unwrap()["done"]["sql"],
-            "-- 최근 10명\nSELECT * FROM demo LIMIT 10;"
+            response.headers()[header::CONTENT_TYPE],
+            "application/x-ndjson"
         );
+        let lines = body_lines(response).await;
+        // Where it is, then the answer with where the time went.
+        assert_eq!(lines[0], json!({ "status": "schema" }));
+        assert_eq!(lines[1], json!({ "status": "model", "tables": 1 }));
+        let done = &lines.last().unwrap()["done"];
+        assert_eq!(
+            (done["sql"].as_str(), done["read_only"].as_bool()),
+            (
+                Some("-- 최근 10명\nSELECT * FROM demo LIMIT 10;"),
+                Some(true)
+            )
+        );
+        let timing = &done["timing"];
+        assert!(
+            timing["schema_ms"].as_u64() <= timing["first_ms"].as_u64()
+                && timing["first_ms"].as_u64() <= timing["total_ms"].as_u64(),
+            "{timing}"
+        );
+        // The instructions lead the prompt; the schema and request follow.
+        let stdin = std::fs::read_to_string(dir.join("codex-stdin")).unwrap();
+        assert!(stdin.starts_with("You write SQLite queries"), "{stdin}");
+        assert!(
+            stdin.contains("SQLite schema:\ndemo(id INTEGER PK, name TEXT"),
+            "{stdin}"
+        );
+        assert!(stdin.contains("\nRequest: 최근 10명\n"), "{stdin}");
         let args = std::fs::read_to_string(dir.join("codex-args")).unwrap();
         let args: Vec<&str> = args.lines().collect();
         assert_eq!(args[..2], ["exec", "--json"]);
@@ -3223,6 +3100,24 @@ mod tests {
             .any(|pair| pair == ["--sandbox", "read-only"]));
         assert!(args.windows(2).any(|pair| pair == ["-m", "gpt-6.1-terra"]));
         assert_eq!(args.last(), Some(&"-"));
+
+        // Its refusal, as the stream's last line.
+        let refusing = fake_cli(
+            &dir,
+            "codex-refuse",
+            "case \"$1\" in --version) echo v;; login) echo 'Logged in using ChatGPT';; app-server) exit 1;; *) cat > /dev/null; printf '%s\\n' '{\"type\":\"turn.failed\",\"error\":{\"message\":\"model not supported\"}}';; esac",
+        );
+        state.ai.use_cli(Cli::Codex, refusing);
+        let lines = body_lines(
+            generate(State(state.clone()), headers(), ask("rows"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            lines.last().unwrap()["error"]["message"],
+            "AI 제공자 오류: model not supported"
+        );
 
         let crashing = fake_cli(
             &dir,
@@ -3431,15 +3326,12 @@ esac"#,
             r#"echo '{"models":[{"slug":"gpt-6.1-terra","display_name":"GPT-6.1 Terra","visibility":"list"},{"slug":"codex-auto-review","display_name":"Auto Review","visibility":"hide"}]}'"#,
         );
         state.ai.use_cli(Cli::Codex, codex);
-        state.ai.use_cli(Cli::Claude, fake_claude(&dir, &[]));
         assert_eq!(
             list_models(&state, "codex").await.unwrap(),
             json!({ "models": [{ "id": "gpt-6.1-terra", "name": "GPT-6.1 Terra" }] })
         );
-        assert_eq!(
-            list_models(&state, "claude").await.unwrap()["models"][0],
-            json!({ "id": "haiku", "name": "Haiku" })
-        );
+        let refused = list_models(&state, "claude").await.unwrap_err();
+        assert_eq!(refused.1 .0.code, "invalid_request");
         let refused = list_models(&state, "openai").await.unwrap_err();
         assert_eq!(refused.1 .0.code, "provider_unavailable");
         std::fs::remove_dir_all(&dir).unwrap();

@@ -1,6 +1,6 @@
 //! What a connection says of its account and of the usage left: read live
-//! from the Codex CLI, kept from the last answer of Claude Code and ChatGPT,
-//! counted here for Gemini (Google reports no remaining quota). Kept in
+//! from the Codex CLI, kept from ChatGPT's last answer, counted here for
+//! Gemini (Google reports no remaining quota). Kept in
 //! `~/.tablepeek/ai-usage.json` so a restart doesn't forget it.
 
 use std::collections::BTreeMap;
@@ -147,37 +147,6 @@ pub(crate) fn limit_seen(details: Option<&Value>, at: i64) -> LimitSeen {
         free_tier: details["free_tier"].as_bool().unwrap_or(false),
         retry_after_s: details["retry_after_s"].as_u64(),
         at,
-    }
-}
-
-/// Claude Code's `rate_limit_event`: `unifiedWindows` named by kind, each
-/// with `utilization` (0–1) and `resetsAt`.
-pub(crate) fn claude_windows(info: &Value) -> Vec<Window> {
-    let mut windows: Vec<Window> = info["unifiedWindows"]
-        .as_object()
-        .map(|windows| {
-            windows
-                .iter()
-                .filter_map(|(kind, window)| {
-                    Some(Window {
-                        kind: kind.clone(),
-                        minutes: minutes_of(kind),
-                        used_percent: window["utilization"].as_f64()? * 100.0,
-                        resets_at: window["resetsAt"].as_i64(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    windows.sort_by_key(|window| window.minutes.unwrap_or(u64::MAX));
-    windows
-}
-
-fn minutes_of(kind: &str) -> Option<u64> {
-    match kind {
-        "five_hour" => Some(300),
-        "seven_day" | "seven_day_opus" | "seven_day_sonnet" => Some(10_080),
-        _ => None,
     }
 }
 
@@ -363,18 +332,6 @@ mod tests {
 
     #[test]
     fn windows_read_from_each_source() {
-        let claude = serde_json::json!({ "unifiedWindows": {
-            "seven_day": { "utilization": 0.16, "resetsAt": 1794722400 },
-            "five_hour": { "utilization": 0.5, "resetsAt": 1794310000 },
-        } });
-        let windows = claude_windows(&claude);
-        assert_eq!(
-            windows
-                .iter()
-                .map(|w| (w.kind.as_str(), w.used_percent.round()))
-                .collect::<Vec<_>>(),
-            [("five_hour", 50.0), ("seven_day", 16.0)]
-        );
         let codex = serde_json::json!({ "usedPercent": 66, "windowDurationMins": 300, "resetsAt": 1794310026 });
         assert_eq!(
             codex_window(&codex, "primary"),

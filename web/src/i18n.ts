@@ -445,7 +445,7 @@ const EN: Record<string, string> = {
   "불투명도": "Opacity",
   "흐림": "Blur",
   "떠 있는 창 불투명도": "Floating surface opacity",
-  "Quick Look, 대화 상자, 명령 팔레트, 메뉴, 설정 창의 바탕입니다.": "The background of Quick Look, dialogs, the command palette, menus and this sheet.",
+  "Quick Look, 대화 상자, 명령 팔레트, 메뉴, 알림, 설정 창의 바탕입니다. 글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.": "The background of Quick Look, dialogs, the command palette, menus, notices and this sheet. So their text reads, it stays at least 60% opaque over a blur of 8px or more, and is opaque over less.",
   "TablePeek 단축키가 브라우저 단축키보다 먼저 실행됩니다. {keys}는 브라우저가 먼저 처리합니다.": "TablePeek shortcuts run before the browser's. {keys} are handled by the browser first.",
   "누른 뒤 키 조합을 누르세요. Esc로 취소합니다. 다른 동작에 쓰이던 조합은 이쪽으로 옮겨집니다.": "Click, then press a key combination. Esc cancels. A combination another action used moves here.",
   "단축키 추가": "Add shortcut",
@@ -1197,7 +1197,6 @@ const EN: Record<string, string> = {
   "{table}: {count}행에서 잘림 (상한)": "{table}: cut off at {count} rows (limit)",
   "백업 파일을 만들었습니다": "Backup file created",
   "백업에 실패했습니다": "Backup failed",
-  "{count}개 문장": "{count} statements",
   "복원": "Restore",
   "{count}개 문장을 실행했습니다": "Ran {count} statements",
   "복원에 실패했습니다": "Restore failed",
@@ -1567,7 +1566,7 @@ const EN: Record<string, string> = {
   "트랜잭션이 열려 있습니다. 커밋하거나 롤백한 뒤 다시 시도하세요.": "A transaction is open. Commit or roll it back, then try again.",
   "{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.": "Stopped after {count} statements. The statements that ran are not undone.",
   "{error} (문장 {index}, {line}번째 줄에서 중단)": "{error} (stopped at statement {index}, line {line})",
-  "{done} / {total}개 문장 실행 중": "Running {done} / {total} statements",
+  "{count}개 문장 실행 · {done} / {total} 읽음": "Ran {count} statements · read {done} / {total}",
   "문장 단위로 나누어 현재 데이터베이스에서 순서대로 실행합니다. 실패하면 그 문장에서 멈추고, 앞서 실행한 문장은 남습니다.": "Splits the file into statements and runs them in order on the current database. It stops at a failing statement; the ones before it stay.",
   "CSV에서…": "From CSV…",
   "JSON에서…": "From JSON…",
@@ -3488,23 +3487,19 @@ const EN: Record<string, string> = {
   "AI 제공자에 연결할 수 없습니다": "Can't reach the AI provider",
   "네트워크로 AI 제공자에 닿지 못했습니다.": "The AI provider couldn't be reached over the network.",
   "인터넷에 연결되어 있는지 확인하세요.": "Check that you're connected to the internet.",
-  "CLI가 설치되어 있지 않습니다": "The CLI isn't installed",
-  "고른 모델의 CLI를 이 컴퓨터에서 찾지 못했습니다.": "The CLI of the model picked wasn't found on this computer.",
-  "Codex CLI: 터미널에서 npm i -g @openai/codex 또는 brew install codex로 설치하세요.":
-    "Codex CLI: install it from a terminal with npm i -g @openai/codex or brew install codex.",
-  "Claude Code CLI: 터미널에서 curl -fsSL https://claude.ai/install.sh | bash로 설치하세요.":
-    "Claude Code CLI: install it from a terminal with curl -fsSL https://claude.ai/install.sh | bash.",
+  "Codex CLI가 설치되어 있지 않습니다": "Codex CLI isn't installed",
+  "이 컴퓨터에서 Codex CLI를 찾지 못했습니다.": "Codex CLI wasn't found on this computer.",
+  "터미널에서 npm i -g @openai/codex 또는 brew install codex로 설치하세요.": "Install it from a terminal with npm i -g @openai/codex or brew install codex.",
+  "Codex CLI에 로그인하지 않았습니다": "Codex CLI isn't signed in",
+  "이 컴퓨터의 Codex CLI가 로그인되어 있지 않습니다.": "The Codex CLI on this computer isn't signed in.",
+  "터미널에서 codex login을 실행하세요.": "Run codex login in a terminal.",
   "설치한 뒤 설정 › AI에서 다시 확인을 누르세요.": "Once installed, press Check again in Settings › AI.",
-  "CLI에 로그인하지 않았습니다": "The CLI isn't signed in",
-  "고른 모델의 CLI가 이 컴퓨터에서 로그인되어 있지 않습니다.": "The CLI of the model picked isn't signed in on this computer.",
-  "Codex CLI: 터미널에서 codex login을 실행하세요.": "Codex CLI: run codex login in a terminal.",
-  "Claude Code CLI: 터미널에서 claude를 실행한 뒤 /login을 입력하세요.": "Claude Code CLI: run claude in a terminal, then type /login.",
   "로그인한 뒤 설정 › AI에서 다시 확인을 누르세요.": "Once signed in, press Check again in Settings › AI.",
   "아직 쓸 수 없는 제공자입니다": "This provider isn't available yet",
   "고른 모델의 제공자는 곧 지원합니다.": "The provider of the model picked is coming soon.",
   "CLI는 답마다 몇 초 걸려 입력 중 제안에 쓸 수 없습니다.": "A CLI takes seconds per answer, too slow for suggestions as you type.",
-  "설정 › AI에서 지금 쓸 수 있는 연결(ChatGPT 로그인, Codex CLI, Claude Code CLI, Gemini API 키)의 모델을 고르세요.":
-    "Pick a model from a connection you can use now (ChatGPT sign-in, Codex CLI, Claude Code CLI, Gemini API key) in Settings › AI.",
+  "설정 › AI에서 지금 쓸 수 있는 연결(ChatGPT 로그인, Codex CLI, Gemini API 키)의 모델을 고르세요.":
+    "Pick a model from a connection you can use now (ChatGPT sign-in, Codex CLI, Gemini API key) in Settings › AI.",
   "입력하는 동안 제안은 ChatGPT나 Gemini로만 됩니다": "Suggestions as you type need ChatGPT or Gemini",
   "설정 › AI에서 자동 완성 모델로 ChatGPT나 Gemini 모델을 고르세요.":
     "Pick a ChatGPT or Gemini model as the autocomplete model in Settings › AI.",
@@ -3554,24 +3549,19 @@ const EN: Record<string, string> = {
   // What the server says about the ChatGPT sign-in (ai.rs).
   "ChatGPT에 로그인하지 않았습니다. 설정 › AI에서 로그인하세요": "You're not signed in to ChatGPT. Sign in in Settings › AI",
   "ChatGPT 로그인이 끝났습니다. 다시 로그인하세요": "Your ChatGPT sign-in has ended. Sign in again",
-  "회사(Business·Enterprise) 워크스페이스 계정은 관리자 승인 없이는 로그인되지 않을 수 있습니다. 그럴 때는 Codex CLI나 Claude Code CLI를 쓰세요.":
-    "Company (Business, Enterprise) workspace accounts may not be able to sign in without an admin's approval. If so, use Codex CLI or Claude Code CLI.",
+  "회사(Business·Enterprise) 워크스페이스 계정은 관리자 승인 없이는 로그인되지 않을 수 있습니다. 그럴 때는 Codex CLI나 Gemini API 키를 쓰세요.":
+    "Company (Business, Enterprise) workspace accounts may not be able to sign in without an admin's approval. If so, use Codex CLI or a Gemini API key.",
   // What the server says about the model picked (ai.rs).
   "모델을 고르지 않았습니다. 설정 › AI에서 모델을 고르세요": "No model is selected. Pick one in Settings › AI",
-  // What the server says about the Codex and Claude Code CLIs (ai.rs, ai/cli.rs).
+  // What the server says about the Codex CLI (ai.rs, ai/cli.rs).
   "Codex CLI를 찾을 수 없습니다. `npm i -g @openai/codex` 또는 `brew install codex`로 설치하세요":
     "Codex CLI wasn't found. Install it with `npm i -g @openai/codex` or `brew install codex`",
-  "Claude Code를 찾을 수 없습니다. `curl -fsSL https://claude.ai/install.sh | bash`로 설치하세요":
-    "Claude Code wasn't found. Install it with `curl -fsSL https://claude.ai/install.sh | bash`",
   "Codex CLI에 로그인하지 않았습니다. 터미널에서 `codex login`을 실행하세요":
     "Codex CLI isn't signed in. Run `codex login` in a terminal",
-  "Claude Code에 로그인하지 않았습니다. 터미널에서 `claude`를 실행해 /login 하세요":
-    "Claude Code isn't signed in. Run `claude` in a terminal, then /login",
   "CLI는 응답에 몇 초 걸려 입력 중 제안에 쓸 수 없습니다. 제안 모델은 ChatGPT나 Gemini에서 고르세요":
     "A CLI takes seconds per answer, too slow for suggestions as you type. Pick a ChatGPT or Gemini model for suggestions",
   "CLI가 응답하지 않습니다 (시간 초과)": "The CLI stopped answering (timed out)",
   "`codex debug models`가 실패했습니다": "`codex debug models` failed",
-  "Claude Code가 답하지 못했습니다": "Claude Code couldn't answer",
   "Codex가 답하지 못했습니다": "Codex couldn't answer",
   "Codex 오류": "Codex error",
   // A connection's account and limits (AiUsage.tsx).
@@ -3612,14 +3602,13 @@ const EN: Record<string, string> = {
   "로그인 중": "Signing in",
   "키 없음": "No key",
   "답까지 약 6초, 한 번에": "answers in about 6 s, all at once",
-  "답까지 약 5초": "answers in about 5 s",
   "터미널에서 설치한 뒤 다시 확인을 누르세요. Homebrew라면 brew install codex도 됩니다.": "Install it from a terminal, then press Check again. With Homebrew, brew install codex works too.",
   "터미널에서 로그인한 뒤 다시 확인을 누르세요.": "Sign in from a terminal, then press Check again.",
-  "터미널에서 claude를 실행해 /login으로 로그인한 뒤 다시 확인을 누르세요.": "Run claude in a terminal, sign in with /login, then press Check again.",
-  "터미널에서 설치한 뒤 다시 확인을 누르세요.": "Install it from a terminal, then press Check again.",
   "키는 OS 키체인에 저장되고 다시 보이지 않습니다. 무료 등급은 하루 한도가 있고 요청이 Google의 모델 개선에 쓰일 수 있습니다.": "The key is kept in the OS keychain and never shown again. The free tier has daily limits, and Google may use its requests to improve its models.",
-  "CLI 연결은 이 컴퓨터에 설치한 CLI와 그 요금제로 요청합니다. TablePeek은 로그인 정보를 저장하지 않습니다.": "CLI connections send requests through the CLI installed on this computer, on its own plan. TablePeek stores no sign-in details.",
-  "ChatGPT 로그인이나 Gemini API 키가 필요합니다. Codex·Claude Code CLI로는 쓸 수 없습니다 (답마다 몇 초 걸림).": "Needs the ChatGPT sign-in or a Gemini API key. Codex and Claude Code CLIs can't do it (seconds per answer).",
+  "Codex CLI 연결은 이 컴퓨터에 설치한 Codex CLI와 그 요금제로 요청합니다. TablePeek은 로그인 정보를 저장하지 않습니다.":
+    "The Codex CLI connection sends requests through the Codex CLI installed on this computer, on its own plan. TablePeek stores no sign-in details.",
+  "ChatGPT 로그인이나 Gemini API 키가 필요합니다. Codex CLI로는 쓸 수 없습니다 (답마다 몇 초 걸림).":
+    "Needs the ChatGPT sign-in or a Gemini API key. Codex CLI can't do it (seconds per answer).",
   // ---- end AI SQL ----
 };
 
@@ -3867,12 +3856,12 @@ const SERVER_PREFIXES: [RegExp, string][] = [
   [/^ChatGPT 모델 목록을 읽지 못했습니다: /, "Couldn't read the ChatGPT models: "],
   [/^토큰 교환 실패 \((\d+)\): /, "Token exchange failed ($1): "],
   [/^응답이 끝나지 않았습니다 \((.*)\)$/, "The answer didn't finish ($1)"],
-  [/^(\S+)는 곧 지원합니다\. 설정 › AI에서 ChatGPT, Codex CLI, Claude Code, Gemini 중 하나를 고르세요$/, "$1 is coming soon. Pick ChatGPT, Codex CLI, Claude Code or Gemini in Settings › AI"],
+  [/^(\S+)는 곧 지원합니다\. 설정 › AI에서 ChatGPT, Codex CLI, Gemini 중 하나를 고르세요$/, "$1 is coming soon. Pick ChatGPT, Codex CLI or Gemini in Settings › AI"],
   [/^Codex 모델 목록을 읽지 못했습니다: /, "Couldn't read the Codex models: "],
   [/^작업 폴더를 만들 수 없습니다: /, "Can't create the working folder: "],
-  [/^(Codex CLI|Claude Code)를 실행할 수 없습니다: /, "Can't run $1: "],
-  [/^(Codex CLI|Claude Code)의 출력을 읽을 수 없습니다$/, "Can't read $1's output"],
-  [/^(Codex CLI|Claude Code)가 실패했습니다 \((.*)\)$/, "$1 failed ($2)"],
+  [/^Codex CLI를 실행할 수 없습니다: /, "Can't run Codex CLI: "],
+  [/^Codex CLI의 출력을 읽을 수 없습니다$/, "Can't read Codex CLI's output"],
+  [/^Codex CLI가 실패했습니다 \((.*)\)$/, "Codex CLI failed ($1)"],
   [/^CLI의 출력을 읽지 못했습니다: /, "Couldn't read the CLI's output: "],
 ];
 

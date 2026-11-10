@@ -68,7 +68,7 @@ git push origin v0.2.0
    | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `.tar.gz` |
    | `x86_64-pc-windows-msvc` | `windows-latest` | `.zip` |
 
-   파일 이름은 `tablepeek-v0.2.0-<target>.tar.gz`(Windows는 `.zip`)이고, 안에는 `tablepeek-v0.2.0-<target>/` 폴더에 바이너리와 `README.md`(저장소에 `LICENSE`가 생기면 그것도)가 들어간다. 서명·공증은 하지 않는다.
+   파일 이름은 `tablepeek-v0.2.0-<target>.tar.gz`(Windows는 `.zip`)이고, 안에는 `tablepeek-v0.2.0-<target>/` 폴더에 바이너리와 `README.md`, `LICENSE`(AGPL-3.0)가 들어간다. 서명·공증은 하지 않는다.
 4. **Desktop <target>**: 데스크톱 앱(`crates/tablepeek-desktop`)을 세 러너에서 `TABLEPEEK_DIST=desktop`으로 `npx --yes @tauri-apps/cli@2.12.4 build --ci --target <target> --bundles …`로 묶고, `scripts/package.sh desktop`이 릴리스 이름으로 옮긴다. 버전은 `Cargo.toml`의 workspace 버전을 그대로 쓴다(`tauri.conf.json`에는 버전을 적지 않는다).
 
    | target | 러너 | 파일 |

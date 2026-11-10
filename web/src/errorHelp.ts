@@ -178,27 +178,25 @@ function aiNetworkHelp(): ErrorHelp {
   };
 }
 
-// The Codex or Claude Code CLI picked in Settings › AI isn't on this computer.
+// The Codex CLI picked in Settings › AI isn't on this computer.
 function aiCliMissingHelp(): ErrorHelp {
   return {
-    title: t("CLI가 설치되어 있지 않습니다"),
-    cause: t("고른 모델의 CLI를 이 컴퓨터에서 찾지 못했습니다."),
+    title: t("Codex CLI가 설치되어 있지 않습니다"),
+    cause: t("이 컴퓨터에서 Codex CLI를 찾지 못했습니다."),
     fixes: [
-      t("Codex CLI: 터미널에서 npm i -g @openai/codex 또는 brew install codex로 설치하세요."),
-      t("Claude Code CLI: 터미널에서 curl -fsSL https://claude.ai/install.sh | bash로 설치하세요."),
+      t("터미널에서 npm i -g @openai/codex 또는 brew install codex로 설치하세요."),
       t("설치한 뒤 설정 › AI에서 다시 확인을 누르세요."),
     ],
   };
 }
 
-// The CLI is there, but not signed in.
+// The Codex CLI is there, but not signed in.
 function aiCliSignedOutHelp(): ErrorHelp {
   return {
-    title: t("CLI에 로그인하지 않았습니다"),
-    cause: t("고른 모델의 CLI가 이 컴퓨터에서 로그인되어 있지 않습니다."),
+    title: t("Codex CLI에 로그인하지 않았습니다"),
+    cause: t("이 컴퓨터의 Codex CLI가 로그인되어 있지 않습니다."),
     fixes: [
-      t("Codex CLI: 터미널에서 codex login을 실행하세요."),
-      t("Claude Code CLI: 터미널에서 claude를 실행한 뒤 /login을 입력하세요."),
+      t("터미널에서 codex login을 실행하세요."),
       t("로그인한 뒤 설정 › AI에서 다시 확인을 누르세요."),
     ],
   };
@@ -209,7 +207,7 @@ function providerUnavailableHelp(): ErrorHelp {
   return {
     title: t("아직 쓸 수 없는 제공자입니다"),
     cause: t("고른 모델의 제공자는 곧 지원합니다."),
-    fixes: [t("설정 › AI에서 지금 쓸 수 있는 연결(ChatGPT 로그인, Codex CLI, Claude Code CLI, Gemini API 키)의 모델을 고르세요.")],
+    fixes: [t("설정 › AI에서 지금 쓸 수 있는 연결(ChatGPT 로그인, Codex CLI, Gemini API 키)의 모델을 고르세요.")],
   };
 }
 

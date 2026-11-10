@@ -3,6 +3,7 @@ name = "tablepeek-server"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }

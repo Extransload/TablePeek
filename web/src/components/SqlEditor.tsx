@@ -541,10 +541,11 @@ function errorRange(
 const editorLook = [editorTheme, syntaxHighlighting(highlightStyle), quoteColors, EditorView.lineWrapping];
 
 // The editor as Settings shows it: the same setup and look over a fixed
-// sample, read-only, so the preview can't drift from the real thing.
+// sample, read-only, so the preview can't drift from the real thing; a
+// restore's file shows in it too, in its engine's SQL.
 // Its font and size follow the settings through --editor-font (as --mono
 // inside .cm-editor) and --editor-font-size.
-export function SqlPreview({ doc }: { doc: string }) {
+export function SqlPreview({ doc, dialect }: { doc: string; dialect?: SqlDialect }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -558,7 +559,7 @@ export function SqlPreview({ doc }: { doc: string }) {
         doc,
         extensions: [
           basicSetup,
-          new LanguageSupport(dialectFor(undefined).language),
+          new LanguageSupport(dialectFor(dialect).language),
           ...editorLook,
           EditorState.readOnly.of(true),
           EditorView.editable.of(false),
@@ -571,7 +572,7 @@ export function SqlPreview({ doc }: { doc: string }) {
       document.fonts.removeEventListener("loadingdone", remeasure);
       view.destroy();
     };
-  }, [doc]);
+  }, [doc, dialect]);
 
   return <div ref={hostRef} className="sql-preview" />;
 }

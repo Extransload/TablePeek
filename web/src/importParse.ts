@@ -19,21 +19,26 @@ export const ENCODING_LABELS: Record<string, string> = {
   "shift_jis": "Shift_JIS",
 };
 
-// A byte order mark says what the file is, whatever encoding was picked.
-export function decodeText(bytes: ArrayBuffer | Uint8Array, encoding: string): string {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+// A byte order mark says what the file is, whatever encoding was picked; an
+// encoding the browser doesn't know reads as UTF-8. `head` is the file's
+// start (its first piece, for a file read a piece at a time).
+export function decoderFor(head: Uint8Array, encoding: string): TextDecoder {
   let chosen = encoding;
-  if (view[0] === 0xef && view[1] === 0xbb && view[2] === 0xbf) {
+  if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) {
     chosen = "utf-8";
-  } else if (view[0] === 0xff && view[1] === 0xfe) {
+  } else if (head[0] === 0xff && head[1] === 0xfe) {
     chosen = "utf-16le";
   }
-  let text: string;
   try {
-    text = new TextDecoder(chosen).decode(view);
+    return new TextDecoder(chosen);
   } catch {
-    text = new TextDecoder("utf-8").decode(view);
+    return new TextDecoder("utf-8");
   }
+}
+
+export function decodeText(bytes: ArrayBuffer | Uint8Array, encoding: string): string {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const text = decoderFor(view, encoding).decode(view);
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 

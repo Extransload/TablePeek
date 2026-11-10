@@ -955,7 +955,7 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 <SettingRow
                   label="떠 있는 창 불투명도"
                   keywords="floating surface opacity quick look dialog palette menu popover sheet 퀵룩 대화 상자 메뉴"
-                  hint={t("Quick Look, 대화 상자, 명령 팔레트, 메뉴, 설정 창의 바탕입니다.")}
+                  hint={t("Quick Look, 대화 상자, 명령 팔레트, 메뉴, 알림, 설정 창의 바탕입니다. 글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.")}
                   {...fromDefault("floatingOpacity")}
                 >
                   <Slider

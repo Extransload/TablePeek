@@ -179,6 +179,8 @@ button.mg-crumb:disabled {
   position: sticky;
   bottom: -14px;
   border-radius: 8px;
+  /* The fields scroll under it: the opaque panel, even in a see-through window. */
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel-solid));
 }
 .mg-detail-other {
   position: absolute;
@@ -259,7 +261,8 @@ button.mg-crumb:disabled {
 }
 .mg-struct-table th {
   padding: 7px 12px;
-  background: color-mix(in srgb, var(--head) 40%, var(--panel));
+  /* Sticky (.panel-table): the rows scroll under it. */
+  background: color-mix(in srgb, var(--head-solid) 40%, var(--panel-solid));
   text-align: left;
 }
 .mg-struct-table td {

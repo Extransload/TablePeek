@@ -45,19 +45,11 @@ const CLI_HELP: Record<
     wait: "답까지 약 6초, 한 번에",
     keywords: "codex cli openai chatgpt terminal install login",
   },
-  claude: {
-    install: ["curl -fsSL https://claude.ai/install.sh | bash"],
-    installNote: "터미널에서 설치한 뒤 다시 확인을 누르세요.",
-    signIn: ["claude"],
-    signInNote: "터미널에서 claude를 실행해 /login으로 로그인한 뒤 다시 확인을 누르세요.",
-    wait: "답까지 약 5초",
-    keywords: "claude code cli anthropic terminal install login",
-  },
 };
 
 // The connections whose limits the Usage section shows once connected, in
 // its order.
-const USAGE_PROVIDERS = ["codex", "claude", "gemini", "chatgpt"] as const;
+const USAGE_PROVIDERS = ["codex", "gemini", "chatgpt"] as const;
 
 const GEMINI_KEY_URL = "https://aistudio.google.com/apikey";
 const GEMINI_TERMS_URL = "https://ai.google.dev/gemini-api/terms";
@@ -137,7 +129,7 @@ export function AiSettings() {
         <SettingRow
           label="모델"
           hint={soonPick ?? t("연결한 제공자의 모델 중 하나를 고릅니다.")}
-          keywords={`${PROVIDER_KEYWORDS} model chatgpt codex claude code cli gemini`}
+          keywords={`${PROVIDER_KEYWORDS} model chatgpt codex cli gemini`}
           wide
         >
           <AiModelPicker status={status} where="settings" />
@@ -147,7 +139,7 @@ export function AiSettings() {
           hint={
             completeBlocked
               ? t(
-                  "ChatGPT 로그인이나 Gemini API 키가 필요합니다. Codex·Claude Code CLI로는 쓸 수 없습니다 (답마다 몇 초 걸림).",
+                  "ChatGPT 로그인이나 Gemini API 키가 필요합니다. Codex CLI로는 쓸 수 없습니다 (답마다 몇 초 걸림).",
                 )
               : t(
                   "입력을 멈출 때마다 이어질 SQL을 회색 글자로 보여 주고 Tab으로 넣습니다. 멈출 때마다 스키마와 커서 앞뒤의 SQL을 제공자에게 보내 요청이 하나씩 들어가므로 사용량과 비용이 늘어납니다.",
@@ -183,7 +175,7 @@ export function AiSettings() {
       ) : null}
       {status !== null ? (
         <p className="settings-hint ai-connections-note">
-          {t("CLI 연결은 이 컴퓨터에 설치한 CLI와 그 요금제로 요청합니다. TablePeek은 로그인 정보를 저장하지 않습니다.")}
+          {t("Codex CLI 연결은 이 컴퓨터에 설치한 Codex CLI와 그 요금제로 요청합니다. TablePeek은 로그인 정보를 저장하지 않습니다.")}
         </p>
       ) : null}
       {status !== null
@@ -320,7 +312,6 @@ function MethodRow({ method, family, status }: { method: AiMethod; family: strin
     case "chatgpt":
       return <ChatGptRow method={method} status={status} />;
     case "codex":
-    case "claude":
       return <CliProviderRow method={method} provider={method.id} status={status} />;
     case "openai":
     case "anthropic":
@@ -553,7 +544,7 @@ function ChatGptRow({ method, status }: { method: AiMethod; status: AiStatus }) 
       hint={
         login === "pending" || workspaceDenied
           ? t(
-              "회사(Business·Enterprise) 워크스페이스 계정은 관리자 승인 없이는 로그인되지 않을 수 있습니다. 그럴 때는 Codex CLI나 Claude Code CLI를 쓰세요.",
+              "회사(Business·Enterprise) 워크스페이스 계정은 관리자 승인 없이는 로그인되지 않을 수 있습니다. 그럴 때는 Codex CLI나 Gemini API 키를 쓰세요.",
             )
           : notRevoked && !signedIn
             ? t(

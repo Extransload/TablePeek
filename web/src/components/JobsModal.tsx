@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatBytes } from "../format";
 import { t } from "../i18n";
 import { cancelJob, clearFinishedJobs, subscribeJobs, type Job } from "../jobs";
 import { ErrorNotice } from "./ErrorNotice";
@@ -92,7 +93,9 @@ export function JobsModal({ onClose }: JobsModalProps) {
                 </div>
                 <div className="job-meta dim">
                   {job.total > 0
-                    ? `${job.done.toLocaleString()} / ${job.total.toLocaleString()}`
+                    ? job.unit === "bytes"
+                      ? `${formatBytes(job.done)} / ${formatBytes(job.total)}`
+                      : `${job.done.toLocaleString()} / ${job.total.toLocaleString()}`
                     : job.status === "running"
                       ? t("진행 중…")
                       : ""}

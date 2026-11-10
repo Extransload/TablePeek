@@ -22,6 +22,17 @@ export type Material = "solid" | "glass" | "clear";
 export const MATERIALS: readonly Material[] = ["solid", "glass", "clear"];
 // Points of blur behind a clear surface or window.
 export const MATERIAL_BLUR_MAX = 64;
+// Points of blur the glass material puts behind a floating surface.
+const GLASS_BLUR = 24;
+// The least fill a floating surface's text reads over: with at least
+// READABLE_BLUR points of blur behind it, what is under it is a wash, so the
+// picked opacity may go as low as MIN_BLURRED_FILL; with less, or none (a
+// surface inside another glass one, whose backdrop-filter is its backdrop
+// root), what is under it stays sharp: any see-through ghosts it behind the
+// text, so the fill is opaque.
+const READABLE_BLUR = 8;
+const MIN_BLURRED_FILL = 0.6;
+const MIN_UNBLURRED_FILL = 1;
 
 export interface MaterialPicks {
   material: Material;
@@ -115,17 +126,17 @@ export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, foll
     // The floating surfaces take their own opacity, not the window's: over
     // a see-through window the page under them is as clear as the window,
     // so the window's opacity would leave their text over the desktop.
-    const fill = picks.floatingOpacity / 100;
+    const picked = picks.floatingOpacity / 100;
+    const blur = material === "glass" ? GLASS_BLUR : picks.materialBlur;
+    const fill = Math.max(picked, blur >= READABLE_BLUR ? MIN_BLURRED_FILL : MIN_UNBLURRED_FILL);
     root.style.setProperty("--glass-fill", rgba(colors.panel, fill));
     root.style.setProperty("--glass-well", rgba(colors.bg, fill * 0.55));
     root.style.setProperty("--glass-raise", rgba(colors.head, fill * 0.45));
-    // A surface inside a glass one (the completion list's info panel) can't
-    // blur what is under it: the outer glass is its backdrop root. It reads
-    // only over a near-opaque fill.
-    root.style.setProperty("--glass-solid", rgba(colors.panel, Math.max(fill, 0.95)));
+    // For a floating surface inside a glass one: it can't blur what is under it.
+    root.style.setProperty("--glass-solid", rgba(colors.panel, Math.max(picked, MIN_UNBLURRED_FILL)));
     root.style.setProperty(
       "--glass-filter",
-      material === "glass" ? "blur(24px) saturate(170%)" : `blur(${picks.materialBlur}px)`,
+      material === "glass" ? `blur(${GLASS_BLUR}px) saturate(170%)` : `blur(${blur}px)`,
     );
   }
   if (translucentWindow === null && !asked) {

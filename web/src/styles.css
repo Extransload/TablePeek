@@ -3,6 +3,10 @@
   --bg: #1e1e1e;
   --panel: #252526;
   --head: #2d2d30;
+  /* The same, opaque even in a see-through window (settings.ts). */
+  --bg-solid: var(--bg);
+  --panel-solid: var(--panel);
+  --head-solid: var(--head);
   --line: #3c3c3c;
   --line-soft: #333335;
   --ink: #d4d4d4;
@@ -1546,7 +1550,8 @@ select {
 .panel-table th {
   position: sticky;
   top: 0;
-  background: var(--panel);
+  /* The rows scroll under it: opaque even in a see-through window. */
+  background: var(--panel-solid);
   color: var(--muted);
   font-weight: 600;
   text-align: center;
@@ -2162,7 +2167,8 @@ input.num-box::-webkit-outer-spin-button {
   top: 0;
   z-index: 1;
   padding: 5px 10px;
-  background: var(--head);
+  /* The rows scroll under it: opaque even in a see-through window. */
+  background: var(--head-solid);
   border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-weight: 500;
@@ -5368,43 +5374,78 @@ button.settings-picker-remove {
   outline: none;
 }
 
+/* ── Floating surfaces: everything that lies over other content (dialogs,
+   menus, lists, popovers, toasts, banners over a result, tooltips, cards,
+   pills). What is under one would show through its text, so it never paints
+   the window's colours, which a see-through window makes translucent
+   (settings.ts): inside one, --bg, --panel and --head are the opaque ones.
+   A tinted surface lays its tint over its fill as a background-image, so the
+   fill can follow the material below and the tint stays. ── */
+:is(
+  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
+  .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
+  .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
+  .mg-edit-error, .mg-qerror.on, .mg-geo-tip, .mg-perf-tip,
+  .result-loading, .file-pick-pending, .launcher-drag-card, .er-card, .er-note, .lock-screen, .cell-editor,
+  .mg-jdoc-acts
+) {
+  --bg: var(--bg-solid);
+  --panel: var(--panel-solid);
+  --head: var(--head-solid);
+}
+
 /* ── Window material (material.ts): glass or clear turn the floating
-   surfaces to tinted glass over the app, at the opacity Settings picks for
-   them (--glass-fill), not the window's. Inside one, what paints the page's
-   background or a panel paints a lighter wash of it, so the glass reads
-   through; the dim under a dialog is lighter, for the app to show blurred. ── */
-html:is([data-material="glass"], [data-material="clear"])
-  :is(
-    .modal,
-    .palette,
-    .menu-panel,
-    .context-menu,
-    .conn-menu,
-    .column-picker,
-    .cell-menu,
-    .cell-pop,
-    .json-view,
-    .date-picker,
-    .page-size-panel,
-    .analysis-picker-panel,
-    .settings-sheet
-  ),
-html:is([data-material="glass"], [data-material="clear"]) .cm-editor .cm-tooltip.cm-tooltip-autocomplete {
+   surfaces above (all but the loading pills, drag ghost, diagram cards, lock screen,
+   cell editor and action strip, which keep their own look) to tinted
+   glass over the app, at the opacity Settings picks for them (--glass-fill,
+   never so low the text stops reading), not the window's. Inside one, what
+   paints the page's background or a panel paints a lighter wash of it, so
+   the glass reads through; the dim under a dialog is lighter, for the app to
+   show blurred. ── */
+html:is([data-material="glass"], [data-material="clear"]) :is(
+  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
+  .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
+  .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
+  .mg-edit-error, .mg-qerror.on, .mg-geo-tip, .mg-perf-tip
+) {
   --bg: var(--glass-well);
   --panel: var(--glass-raise);
   --head: var(--glass-raise);
-  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
-  background: var(--glass-fill);
+  background-color: var(--glass-fill);
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
 }
 
-/* The info panel beside the completion list hangs outside the list, inside
-   its glass: a nested backdrop-filter has nothing behind it to blur there,
-   so the panel takes a near-opaque fill, or the grid shows through its text. */
-html:is([data-material="glass"], [data-material="clear"]) .cm-editor .cm-tooltip.cm-completionInfo {
+/* Their edge, a hairline of the ink over glass. Not on the surfaces whose
+   border says something (an error, staged edits, the AI box's focus). */
+html:is([data-material="glass"], [data-material="clear"])
+  :is(.modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+    .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
+    .cm-completionInfo) {
   border-color: color-mix(in srgb, var(--ink) 14%, transparent);
-  background: var(--glass-solid);
+}
+
+/* One inside another (the completion list's info panel, a list in a dialog,
+   a menu in the settings sheet) has nothing behind it to blur: the outer
+   one's backdrop-filter is its backdrop root. It takes an opaque fill. */
+html:is([data-material="glass"], [data-material="clear"]) :is(
+  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
+  .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
+  .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
+  .mg-edit-error, .mg-qerror.on, .mg-geo-tip, .mg-perf-tip
+) :is(
+  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
+  .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
+  .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
+  .mg-edit-error, .mg-qerror.on, .mg-geo-tip, .mg-perf-tip
+) {
+  background-color: var(--glass-solid);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* The popover's arrow sits outside its box: it takes the popover's fill,
@@ -5506,7 +5547,8 @@ html:is([data-material="glass"], [data-material="clear"]) .palette-backdrop {
   padding: 0 4px 0 10px;
   border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
   border-radius: 9px;
-  background: color-mix(in srgb, var(--warn) 12%, var(--panel));
+  --tint: color-mix(in srgb, var(--warn) 12%, transparent);
+  background: linear-gradient(var(--tint), var(--tint)) var(--panel);
 }
 
 .pending-count {
@@ -6831,7 +6873,8 @@ button.error-notice-icon-button:last-child {
   gap: 4px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--error) 12%, var(--panel));
+  --tint: color-mix(in srgb, var(--error) 12%, transparent);
+  background: linear-gradient(var(--tint), var(--tint)) var(--panel);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
 }
 
@@ -6891,7 +6934,8 @@ button.error-notice-icon-button:last-child {
   max-height: min(50vh, 400px);
   overflow: auto;
   border-color: color-mix(in srgb, var(--error) 60%, var(--line-soft));
-  background: color-mix(in srgb, var(--error) 12%, var(--panel));
+  --tint: color-mix(in srgb, var(--error) 12%, transparent);
+  background: linear-gradient(var(--tint), var(--tint)) var(--panel);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
   animation:
     tablepeek-toast-in var(--motion-spring) var(--ease-spring) backwards,
@@ -7068,7 +7112,8 @@ textarea[aria-invalid="true"] {
   width: min(620px, calc(100vw - var(--settings-dock, 0px) - 32px));
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  --tint: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: linear-gradient(var(--tint), var(--tint)) var(--panel);
   box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
   transform: translateX(-50%);
 }
@@ -9859,12 +9904,6 @@ button.field-box-more {
   animation: ai-inline-in var(--motion-base) var(--ease-out) both;
 }
 
-/* Over a see-through window the box takes a near-opaque fill, or the code
-   behind it shows through its text. */
-html:is([data-material="glass"], [data-material="clear"]) .ai-inline {
-  background: var(--glass-solid, var(--panel));
-}
-
 .ai-inline:focus-within {
   border-color: var(--accent);
   box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.55), var(--focus-ring);
@@ -11516,19 +11555,12 @@ button.result-set.failed .result-set-status {
   overflow-y: auto;
 }
 
+/* The file's start, in the editor's look (SqlPreview): a box that scrolls. */
 .dump-sql-preview {
-  max-height: 260px;
-  margin: 0;
-  padding: 8px 10px;
+  max-height: 320px;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: calc(11px * var(--ui-scale, 1));
-  line-height: 1.5;
-  white-space: pre;
+  border-radius: 6px;
 }
 
 /* ── Export window: format tabs, the items or result scope, the format's

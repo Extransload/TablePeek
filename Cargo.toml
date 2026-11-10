@@ -17,6 +17,7 @@ exclude = ["crates/vendor/oracledb"]
 version = "0.3.4"
 edition = "2021"
 repository = "https://github.com/Extransload/TablePeek"
+license = "AGPL-3.0-only"
 
 [patch.crates-io]
 oracledb = { path = "crates/vendor/oracledb" }

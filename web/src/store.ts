@@ -1623,14 +1623,13 @@ async function installUpdate(): Promise<string> {
 // ---- AI SQL (off until turned on in Settings) ----
 
 // One model is used, picked across the connections that work, each its own
-// provider id: the ChatGPT sign-in (`chatgpt`), the coding CLIs installed
-// and signed in on this computer (`codex`, `claude`) and a Gemini API key
+// provider id: the ChatGPT sign-in (`chatgpt`), the Codex CLI installed and
+// signed in on this computer (`codex`) and a Gemini API key
 // (`gemini`). The other API keys and local model servers are listed as
 // coming soon: they can't be picked.
 export type AiProvider =
   | "chatgpt"
   | "codex"
-  | "claude"
   | "openai"
   | "anthropic"
   | "gemini"
@@ -1639,7 +1638,7 @@ export type AiProvider =
   | "lmstudio";
 
 // The providers requests go through a CLI of the user's own.
-export type AiCliProvider = "codex" | "claude";
+export type AiCliProvider = "codex";
 
 // The providers connected with an API key (kept in the OS keychain).
 export type AiKeyProvider = "openai" | "anthropic" | "gemini" | "openrouter";
@@ -1661,8 +1660,7 @@ export interface AiCliStatus {
   version: string | null;
   signed_in: boolean;
   account: string | null;
-  // The signed-in account's email and workspace (Codex's workspace, Claude's
-  // organization), when the CLI says them.
+  // The signed-in account's email and workspace, when the CLI says them.
   email?: string | null;
   workspace?: string | null;
 }

@@ -1,19 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { rowWindowSql } from "../dataQuery";
 import { capabilitiesOf } from "../engines";
 import { createTableSql, dependencyOrder, draftsFromDetail, dumpIndexSql, foreignKeySql, quoteIdent } from "../ddl";
 import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
 import { declaredAs } from "../grid/columns";
 import { t } from "../i18n";
-import { decodeText, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
+import { formatBytes } from "../format";
+import { decoderFor, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
 import { cancelJob, startJob } from "../jobs";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { getSettings } from "../settings";
-import { splitSqlRanges } from "../sqlSplit";
+import { fileStatements, type FileStatement } from "../sqlFile";
 import { store, type EngineMeta, type TableDetail } from "../store";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { FolderIcon, StopIcon } from "./icons";
 import { Select } from "./Select";
+import { SqlPreview } from "./SqlEditor";
 
 interface DumpModalProps {
   conn: string;
@@ -27,7 +29,7 @@ interface DumpModalProps {
 const PAGE_SIZE = 5000;
 const TABLE_ROW_CAP = 200000;
 // The start of an SQL file shown before it runs, as TablePlus previews it.
-const RESTORE_PREVIEW_CHARS = 100000;
+const RESTORE_PREVIEW_BYTES = 100000;
 
 function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -52,18 +54,41 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
   // explanation would otherwise hide it); only while that error is the one shown.
   const [failedAt, setFailedAt] = useState<{ error: string; text: string } | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [restoreFile, setRestoreFile] = useState("");
-  const [restoreBytes, setRestoreBytes] = useState<ArrayBuffer | null>(null);
+  // The file is read a piece at a time as it runs (a dump runs to
+  // gigabytes); only its start is read before, for the preview.
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restorePreview, setRestorePreview] = useState("");
   const [restoreEncoding, setRestoreEncoding] = useState<string>(() => getSettings().csvEncoding);
-  const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
+  const [restoreProgress, setRestoreProgress] = useState<{ statements: number; bytes: number } | null>(null);
   // The running restore's job: Stop here and in the jobs queue both cancel it.
   const restoreJobRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
-  const restoreText = useMemo(
-    () => (restoreBytes === null ? "" : decodeText(restoreBytes, restoreEncoding)),
-    [restoreBytes, restoreEncoding],
-  );
-  const restoreRanges = useMemo(() => splitSqlRanges(restoreText, dialect), [restoreText, dialect]);
+
+  useEffect(() => {
+    if (restoreFile === null) {
+      setRestorePreview("");
+      return;
+    }
+    let live = true;
+    void (async () => {
+      try {
+        const head = new Uint8Array(await restoreFile.slice(0, RESTORE_PREVIEW_BYTES).arrayBuffer());
+        // Streamed, so a character cut at the end is left out, not garbled.
+        const text = decoderFor(head, restoreEncoding).decode(head, { stream: restoreFile.size > head.length });
+        if (live) {
+          setRestorePreview(restoreFile.size > head.length ? `${text}\n…` : text);
+        }
+      } catch (err) {
+        if (live) {
+          setRestorePreview("");
+          setError(`${t("파일을 읽지 못했습니다")}: ${errorOf(err, "")}`);
+        }
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [restoreFile, restoreEncoding]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -259,15 +284,11 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
     }
   }
 
-  async function pickRestoreFile(file: File): Promise<void> {
-    setRestoreFile(file.name);
+  function pickRestoreFile(file: File): void {
+    setRestoreFile(file);
     setError(null);
+    setFailedAt(null);
     setInfo(null);
-    try {
-      setRestoreBytes(await file.arrayBuffer());
-    } catch (err) {
-      setError(errorOf(err, t("파일을 읽지 못했습니다")));
-    }
   }
 
   // The file's statements run one by one, as written: a dump brings its own
@@ -275,8 +296,8 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
   // what ran before a failure or a stop stays. A transaction the user has
   // open is refused: the dump's COMMIT would end it.
   async function runRestore(): Promise<void> {
-    const statements = restoreRanges;
-    if (statements.length === 0 || busy) {
+    const file = restoreFile;
+    if (file === null || busy) {
       return;
     }
     // The connection is the restore's until its last statement: the page's
@@ -292,15 +313,17 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       setError(errorOf(err, t("복원에 실패했습니다")));
       return;
     }
-    const job = startJob(t("복원"), restoreFile, statements.length, {
+    const job = startJob(t("복원"), file.name, file.size, {
       cancellable: true,
       // A statement still running (a big INSERT, one waiting on a lock) stops too.
       onCancel: () => store.cancelJobStatement(conn),
+      unit: "bytes",
     });
     restoreJobRef.current = job.id;
     setError(null);
+    setFailedAt(null);
     setInfo(null);
-    setRestoreProgress({ done: 0, total: statements.length });
+    setRestoreProgress({ statements: 0, bytes: 0 });
     // Shown in the window while it is open, in the status line once it isn't.
     const report = (message: string, failed: boolean): void => {
       if (mountedRef.current) {
@@ -310,6 +333,9 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       }
     };
     let executed = 0;
+    // The statement running, until it has: a failure while none is came
+    // from reading the file.
+    let current: FileStatement | null = null;
     // What the dump may change for its run (foreign key checks, search_path),
     // put back below however far it gets.
     const snapshot = dialect.sessionSnapshot;
@@ -322,19 +348,21 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       }
     }
     try {
-      for (const statement of statements) {
+      for await (const statement of fileStatements(file, restoreEncoding, dialect)) {
         if (job.signal.aborted) {
           break;
         }
+        current = statement;
         await store.exec(conn, statement.text, { job: true });
+        current = null;
         executed += 1;
-        job.update(executed);
+        job.update(statement.bytesRead);
         if (mountedRef.current) {
-          setRestoreProgress({ done: executed, total: statements.length });
+          setRestoreProgress({ statements: executed, bytes: statement.bytesRead });
         }
       }
       // Stopped while the last statement ran: all of them did, but not as asked.
-      if (executed < statements.length || job.signal.aborted) {
+      if (job.signal.aborted) {
         const message = t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
           count: executed.toLocaleString(),
         });
@@ -342,10 +370,9 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
         report(message, true);
       } else {
         job.finish();
-        report(t("{count}개 문장을 실행했습니다", { count: statements.length.toLocaleString() }), false);
+        report(t("{count}개 문장을 실행했습니다", { count: executed.toLocaleString() }), false);
       }
     } catch (err) {
-      const failure = errorOf(err, t("복원에 실패했습니다"));
       // Stop interrupted the statement in flight: it failed because it was stopped.
       if (job.signal.aborted) {
         const message = t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
@@ -355,9 +382,15 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
         report(message, true);
         return;
       }
-      const line = restoreText.slice(0, statements[executed].codeFrom).split("\n").length;
+      if (current === null) {
+        const failure = `${t("파일을 읽지 못했습니다")}: ${errorOf(err, "")}`;
+        job.fail(failure);
+        report(failure, true);
+        return;
+      }
+      const failure = errorOf(err, t("복원에 실패했습니다"));
       job.fail(failure);
-      const where = { index: (executed + 1).toLocaleString(), line: line.toLocaleString() };
+      const where = { index: (executed + 1).toLocaleString(), line: current.line.toLocaleString() };
       if (mountedRef.current) {
         setError(failure);
         setFailedAt({ error: failure, text: t("문장 {index}, {line}번째 줄에서 중단했습니다", where) });
@@ -489,12 +522,12 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
                       const file = event.target.files?.[0];
                       event.target.value = "";
                       if (file) {
-                        void pickRestoreFile(file);
+                        pickRestoreFile(file);
                       }
                     }}
                   />
                 </label>
-                {restoreFile ? <span className="dim">{restoreFile}</span> : null}
+                {restoreFile !== null ? <span className="dim">{restoreFile.name}</span> : null}
                 <label className="field">
                   <span>{t("인코딩")}</span>
                   <Select
@@ -509,24 +542,19 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
                     ))}
                   </Select>
                 </label>
-                {restoreBytes !== null ? (
-                  <span className="panel-count">
-                    {t("{count}개 문장", { count: restoreRanges.length.toLocaleString() })}
-                  </span>
-                ) : null}
+                {restoreFile !== null ? <span className="panel-count">{formatBytes(restoreFile.size)}</span> : null}
               </div>
-              {restoreBytes !== null ? (
-                <pre className="dump-sql-preview">
-                  {restoreText.length > RESTORE_PREVIEW_CHARS
-                    ? `${restoreText.slice(0, RESTORE_PREVIEW_CHARS)}\n…`
-                    : restoreText}
-                </pre>
+              {restorePreview !== "" ? (
+                <div className="dump-sql-preview">
+                  <SqlPreview doc={restorePreview} dialect={dialect} />
+                </div>
               ) : null}
               <p className="helper">
-                {restoreProgress !== null
-                  ? t("{done} / {total}개 문장 실행 중", {
-                      done: restoreProgress.done.toLocaleString(),
-                      total: restoreProgress.total.toLocaleString(),
+                {restoreProgress !== null && restoreFile !== null
+                  ? t("{count}개 문장 실행 · {done} / {total} 읽음", {
+                      count: restoreProgress.statements.toLocaleString(),
+                      done: formatBytes(restoreProgress.bytes) ?? "",
+                      total: formatBytes(restoreFile.size) ?? "",
                     })
                   : t("문장 단위로 나누어 현재 데이터베이스에서 순서대로 실행합니다. 실패하면 그 문장에서 멈추고, 앞서 실행한 문장은 남습니다.")}
               </p>
@@ -561,7 +589,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
             <button
               type="button"
               className="primary"
-              disabled={busy || restoreRanges.length === 0}
+              disabled={busy || restoreFile === null}
               onClick={() => void runRestore()}
             >
               {t("복원 실행")}

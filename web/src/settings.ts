@@ -445,6 +445,12 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--bg", palette.bg);
   root.style.setProperty("--panel", palette.panel);
   root.style.setProperty("--head", palette.head);
+  // The theme's own colours, opaque even in a see-through window: floating
+  // surfaces and sticky headers paint these, as what is under them would
+  // show through their text (styles.css, "Floating surfaces").
+  root.style.setProperty("--bg-solid", opaque.bg);
+  root.style.setProperty("--panel-solid", opaque.panel);
+  root.style.setProperty("--head-solid", opaque.head);
   root.style.setProperty("--line", palette.line);
   root.style.setProperty("--line-soft", mixHex(opaque.line, opaque.bg, 0.4));
   root.style.setProperty("--ink", palette.ink);

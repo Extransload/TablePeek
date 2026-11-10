@@ -15,6 +15,8 @@ export interface Job {
   finishedAt: number | null;
   // The job watches its handle's signal, so the queue can offer to stop it.
   cancellable: boolean;
+  // What `done` and `total` count: steps, or bytes (a restore reading its file).
+  unit: "steps" | "bytes";
 }
 
 export interface JobHandle {
@@ -34,6 +36,7 @@ export interface JobOptions {
   // Called on a stop: the work's statement in flight can be interrupted
   // rather than waited for (a chunk stuck on a row lock).
   onCancel?: () => void;
+  unit?: Job["unit"];
 }
 
 type Listener = (jobs: Job[]) => void;
@@ -92,6 +95,7 @@ export function startJob(label: string, detail: string, total: number, options: 
     startedAt: Date.now(),
     finishedAt: null,
     cancellable: options.cancellable ?? false,
+    unit: options.unit ?? "steps",
   };
   jobs = [job, ...jobs];
   emit();

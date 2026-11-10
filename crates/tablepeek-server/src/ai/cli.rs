@@ -1,7 +1,7 @@
-//! The AI providers that are programs on this machine: Codex CLI and Claude
-//! Code, signed in by the user in a terminal. TablePeek runs them as
-//! published, one answer per run, with their tools off, in an empty folder;
-//! their sign-in and plan stay theirs (nothing of it is read or kept here).
+//! The AI provider that is a program on this machine: the Codex CLI, signed
+//! in by the user in a terminal. TablePeek runs it as published, one answer
+//! per run, read-only, in an empty folder; its sign-in and plan stay its own
+//! (nothing of it is read or kept here).
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -23,21 +23,18 @@ const STDERR_LIMIT: usize = 4_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Cli {
     Codex,
-    Claude,
 }
 
 impl Cli {
     fn program(self) -> &'static str {
         match self {
             Self::Codex => "codex",
-            Self::Claude => "claude",
         }
     }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Codex => "Codex CLI",
-            Self::Claude => "Claude Code",
         }
     }
 
@@ -45,14 +42,12 @@ impl Cli {
     pub(crate) fn sign_in_hint(self) -> &'static str {
         match self {
             Self::Codex => "터미널에서 `codex login`을 실행하세요",
-            Self::Claude => "터미널에서 `claude`를 실행해 /login 하세요",
         }
     }
 
     pub(crate) fn install_hint(self) -> &'static str {
         match self {
             Self::Codex => "`npm i -g @openai/codex` 또는 `brew install codex`로 설치하세요",
-            Self::Claude => "`curl -fsSL https://claude.ai/install.sh | bash`로 설치하세요",
         }
     }
 }
@@ -66,7 +61,7 @@ pub(crate) struct CliStatus {
     pub signed_in: bool,
     /// The account signed in, as the page shows it.
     pub email: Option<String>,
-    /// How it is signed in ("ChatGPT", "Claude Max").
+    /// How it is signed in ("ChatGPT").
     pub account: Option<String>,
     /// The workspace or organization it is signed in to.
     pub workspace: Option<String>,
@@ -82,7 +77,6 @@ fn extra_dirs() -> Vec<PathBuf> {
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         for sub in [
             ".local/bin",
-            ".claude/local",
             ".npm-global/bin",
             ".bun/bin",
             ".volta/bin",
@@ -189,23 +183,6 @@ pub(crate) async fn status(cli: Cli, path: Option<PathBuf>) -> CliStatus {
                 }
             }
         }
-        // JSON: loggedIn, email, authMethod, subscriptionType ("max"),
-        // orgName.
-        Cli::Claude => {
-            let body: Value = quick(&path, &["auth", "status"])
-                .await
-                .and_then(|text| serde_json::from_str(&text).ok())
-                .unwrap_or(Value::Null);
-            if body["loggedIn"].as_bool() == Some(true) {
-                let text = |key: &str| body[key].as_str().map(str::to_string);
-                status.signed_in = true;
-                status.email = text("email");
-                status.account = text("subscriptionType")
-                    .map(|plan| format!("Claude {}", capitalized(&plan)))
-                    .or_else(|| text("authMethod"));
-                status.workspace = text("orgName");
-            }
-        }
     }
     status
 }
@@ -294,16 +271,8 @@ pub(crate) async fn codex_usage(path: &Path) -> Result<CodexUsage, String> {
     })
 }
 
-fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
 /// The models the program offers: Codex's catalog as `codex debug models`
-/// prints it (those it lists); Claude Code's aliases for its latest models.
+/// prints it (those it lists).
 pub(crate) async fn models(cli: Cli, path: &Path) -> Result<Vec<(String, String)>, String> {
     match cli {
         Cli::Codex => {
@@ -325,9 +294,6 @@ pub(crate) async fn models(cli: Cli, path: &Path) -> Result<Vec<(String, String)
                 })
                 .collect())
         }
-        Cli::Claude => Ok([("haiku", "Haiku"), ("sonnet", "Sonnet"), ("opus", "Opus")]
-            .map(|(id, name)| (id.to_string(), name.to_string()))
-            .to_vec()),
     }
 }
 
@@ -337,8 +303,6 @@ pub(crate) struct Run {
     child: Child,
     stdout: Lines<BufReader<ChildStdout>>,
     stderr: tokio::task::JoinHandle<String>,
-    /// Claude Code streams text, then says it all again in its result.
-    streamed: bool,
     ended: bool,
 }
 
@@ -374,29 +338,6 @@ pub(crate) fn start(
             // Codex keeps its own instructions; ours lead the prompt.
             format!("{system}\n\n{user}")
         }
-        Cli::Claude => {
-            command.args([
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--include-partial-messages",
-                "--model",
-                model,
-                "--effort",
-                "low",
-                "--system-prompt",
-                system,
-                "--tools",
-                "",
-                "--strict-mcp-config",
-                "--setting-sources",
-                "",
-                "--no-session-persistence",
-                "--disable-slash-commands",
-            ]);
-            user.to_string()
-        }
     };
     let mut child = command
         .spawn()
@@ -424,7 +365,6 @@ pub(crate) fn start(
         child,
         stdout: BufReader::new(stdout).lines(),
         stderr,
-        streamed: false,
         ended: false,
     })
 }
@@ -465,49 +405,12 @@ impl Run {
         }]))
     }
 
-    fn events(&mut self, line: &str) -> Vec<Event> {
+    fn events(&self, line: &str) -> Vec<Event> {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return Vec::new();
         };
         match self.cli {
             Cli::Codex => codex_event(&value).into_iter().collect(),
-            Cli::Claude => self.claude_event(&value).into_iter().collect(),
-        }
-    }
-
-    fn claude_event(&mut self, value: &Value) -> Option<Event> {
-        match value["type"].as_str()? {
-            // What is left of the plan, with each answer.
-            "rate_limit_event" => Some(Event::Limits(usage::claude_windows(
-                &value["rate_limit_info"],
-            ))),
-            "stream_event" => {
-                let delta = &value["event"]["delta"];
-                (value["event"]["type"] == "content_block_delta" && delta["type"] == "text_delta")
-                    .then(|| delta["text"].as_str())
-                    .flatten()
-                    .map(|text| {
-                        self.streamed = true;
-                        Event::Text(text.to_string())
-                    })
-            }
-            "result" => {
-                if value["is_error"].as_bool() == Some(true) {
-                    let message = value["result"]
-                        .as_str()
-                        .or_else(|| value["subtype"].as_str())
-                        .unwrap_or("Claude Code가 답하지 못했습니다");
-                    return Some(Event::Error {
-                        code: None,
-                        message: message.to_string(),
-                    });
-                }
-                if self.streamed {
-                    return Some(Event::Done);
-                }
-                Some(Event::Text(value["result"].as_str()?.to_string()))
-            }
-            _ => None,
         }
     }
 }

@@ -10,7 +10,7 @@ Query, browse, and edit SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, SQL Serv
 - **Safe edits.** Cell edits go through the primary key, with explicit transactions and a safe mode for `UPDATE`/`DELETE` without `WHERE`.
 - **Smart SQL editor.** Completion for columns, joins from foreign keys, functions, and templates.
 - **Inspect anything.** Quick Look for JSON trees, hex, and the row a foreign key points to; an ER diagram; charts and pivots.
-- **Write SQL with AI, your own model.** Opt-in: describe a query (`⌘E`) and the SQL for the connection's schema is written into the editor for you to accept or reject, or let it suggest as you type, from the model you pick across your ChatGPT subscription, the Codex CLI or Claude Code CLI signed in on your machine, or a Gemini API key (more ways coming soon). Rows are never sent, and nothing runs until you do.
+- **Write SQL with AI, your own model.** Opt-in: describe a query (`⌘E`) and the SQL for the connection's schema is written into the editor for you to accept or reject, or let it suggest as you type, from the model you pick across your ChatGPT subscription, the Codex CLI signed in on your machine, or a Gemini API key (more ways coming soon). Rows are never sent, and nothing runs until you do.
 - **Import and export.** CSV, JSON, XML, and SQL, plus dump and restore, as background jobs.
 - **Secure by default.** Loopback only, passwords in the OS keychain, TLS and SSH tunnels.
 
@@ -50,3 +50,9 @@ It opens TablePeek in your browser. Add `--demo` to try it with sample data.
 - [User guide](docs/GUIDE.md): databases and connection options, features, writing SQL with AI, MCP for AI clients, security
 - [Development](docs/DEVELOPMENT.md): architecture, building from source, tests, project layout
 - [Changelog](CHANGELOG.md): what each release changed
+
+## License
+
+TablePeek is free software under the [GNU Affero General Public License v3.0](LICENSE), version 3 only (`AGPL-3.0-only`). Copyright © 2026 Extransload.
+
+You may use, study, change and share it. If you distribute a changed version, or let other people use a changed version over a network, you must offer them its complete source under the same license. The bundled Oracle driver (`crates/vendor/oracledb`) keeps its own license (UPL-1.0 OR Apache-2.0), and every other library keeps its own.
