@@ -1620,6 +1620,437 @@ async function installUpdate(): Promise<string> {
   return answer.installed;
 }
 
+// ---- AI SQL (off until turned on in Settings) ----
+
+// One model is used, picked across the connections that work, each its own
+// provider id: the ChatGPT sign-in (`chatgpt`), the coding CLIs installed
+// and signed in on this computer (`codex`, `claude`) and a Gemini API key
+// (`gemini`). The other API keys and local model servers are listed as
+// coming soon: they can't be picked.
+export type AiProvider =
+  | "chatgpt"
+  | "codex"
+  | "claude"
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "openrouter"
+  | "ollama"
+  | "lmstudio";
+
+// The providers requests go through a CLI of the user's own.
+export type AiCliProvider = "codex" | "claude";
+
+// The providers connected with an API key (kept in the OS keychain).
+export type AiKeyProvider = "openai" | "anthropic" | "gemini" | "openrouter";
+
+// The ChatGPT sign-in (provider "chatgpt"): the account, and the browser
+// login in progress or the reason the last one failed.
+export interface ChatGptStatus {
+  signed_in: boolean;
+  email: string | null;
+  login: "idle" | "pending" | "failed";
+  login_error: string | null;
+}
+
+// A CLI as found on this computer: where and which version, and whether it
+// is signed in (`account` the kind of sign-in, never an email).
+export interface AiCliStatus {
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+  signed_in: boolean;
+  account: string | null;
+  // The signed-in account's email and workspace (Codex's workspace, Claude's
+  // organization), when the CLI says them.
+  email?: string | null;
+  workspace?: string | null;
+}
+
+// A provider other than ChatGPT: `available` false while it is coming soon;
+// `cli` for the CLI providers, `has_key` for the key providers (whether a
+// key is saved, never the key).
+export interface AiProviderStatus {
+  available: boolean;
+  cli?: AiCliStatus;
+  has_key?: boolean;
+}
+
+// `provider` and `model` are the model picked (`model` "" when none is).
+// `autocomplete`: whether the editor suggests as the user types, with
+// `complete_model` (null: the model picked above).
+export interface AiStatus {
+  enabled: boolean;
+  provider: AiProvider;
+  model: string;
+  autocomplete: boolean;
+  complete_model: AiModelRef | null;
+  providers: Record<Exclude<AiProvider, "chatgpt">, AiProviderStatus>;
+  chatgpt: ChatGptStatus;
+}
+
+export interface AiModelRef {
+  provider: AiProvider;
+  model: string;
+}
+
+// A model is picked with its provider, together. `complete_model: null`
+// makes suggestions use the main model again.
+export interface AiPatch {
+  enabled?: boolean;
+  provider?: AiProvider;
+  model?: string;
+  autocomplete?: boolean;
+  complete_model?: AiModelRef | null;
+}
+
+export interface AiModel {
+  id: string;
+  name: string;
+}
+
+// The last status heard, shared so App and Settings agree without refetching.
+let aiStatus: AiStatus | null = null;
+let aiLoading: Promise<AiStatus> | null = null;
+const aiListeners = new Set<(status: AiStatus | null) => void>();
+
+function setAiStatus(status: AiStatus): AiStatus {
+  aiStatus = status;
+  for (const listener of aiListeners) {
+    listener(status);
+  }
+  // A login started from this page, once seen pending, has ended: signed in,
+  // or failed (the status says why).
+  const login = status.chatgpt?.login;
+  if (login === "pending") {
+    chatGptLoginSawPending = chatGptLoginFromHere;
+  } else if (chatGptLoginFromHere && chatGptLoginSawPending) {
+    chatGptLoginFromHere = false;
+    chatGptLoginSawPending = false;
+    if (login === "idle" && status.chatgpt.signed_in) {
+      for (const listener of chatGptSignInListeners) {
+        listener();
+      }
+    }
+  }
+  return status;
+}
+
+function getAiStatus(): AiStatus | null {
+  return aiStatus;
+}
+
+function subscribeAi(listener: (status: AiStatus | null) => void): () => void {
+  aiListeners.add(listener);
+  return () => {
+    aiListeners.delete(listener);
+  };
+}
+
+async function fetchAi(): Promise<AiStatus> {
+  if (aiLoading === null) {
+    aiLoading = api<AiStatus>("/api/ai")
+      .then(setAiStatus)
+      .finally(() => {
+        aiLoading = null;
+      });
+  }
+  return aiLoading;
+}
+
+// The status with the CLIs looked at again (installed, signed in) instead
+// of as the server last saw them.
+async function refreshAi(): Promise<AiStatus> {
+  return setAiStatus(await api<AiStatus>("/api/ai?refresh=true"));
+}
+
+async function configureAi(patch: AiPatch): Promise<AiStatus> {
+  return setAiStatus(await api<AiStatus>("/api/ai", { method: "PUT", body: JSON.stringify(patch) }));
+}
+
+// A connection's account and how much of its limits is used, as the server
+// last learned them (`source`: read live from the CLI, from the last answer,
+// counted here, or nothing yet). `windows` come most urgent first.
+export interface AiUsageWindow {
+  kind: string;
+  minutes: number | null;
+  used_percent: number;
+  resets_at: number | null;
+}
+
+export interface AiUsage {
+  provider: AiProvider;
+  account: { email: string | null; plan: string | null; workspace: string | null } | null;
+  windows: AiUsageWindow[];
+  credits: { has_credits: boolean; unlimited: boolean; balance: string | null } | null;
+  // The requests TablePeek sent today, per model (Gemini's quota day).
+  today: { model: string; requests: number }[];
+  // The last rate limit the provider reported.
+  limit: {
+    model: string | null;
+    limit: number | null;
+    per_day: boolean;
+    free_tier: boolean;
+    retry_after_s: number | null;
+    at: number;
+  } | null;
+  as_of: number | null;
+  source: "live" | "last_answer" | "local" | "none";
+}
+
+// `refresh`: read the CLI again instead of the server's last minute's answer.
+async function fetchAiUsage(provider: AiProvider, refresh = false): Promise<AiUsage> {
+  return api<AiUsage>(`/api/ai/usage?provider=${encodeURIComponent(provider)}${refresh ? "&refresh=true" : ""}`);
+}
+
+// Told the connection an answer (or a rate limit) came from, so what is shown
+// of its usage can be read again.
+const aiAnswerListeners = new Set<(provider: AiProvider) => void>();
+
+function subscribeAiAnswers(listener: (provider: AiProvider) => void): () => void {
+  aiAnswerListeners.add(listener);
+  return () => {
+    aiAnswerListeners.delete(listener);
+  };
+}
+
+function aiAnswered(provider: AiProvider | undefined): void {
+  if (provider !== undefined) {
+    for (const listener of aiAnswerListeners) {
+      listener(provider);
+    }
+  }
+}
+
+// Saves a provider's API key in the OS keychain; the model picked stays.
+async function saveAiKey(provider: AiKeyProvider, key: string): Promise<AiStatus> {
+  return setAiStatus(await api<AiStatus>(`/api/ai/providers/${provider}`, { method: "PUT", body: JSON.stringify({ key }) }));
+}
+
+async function clearAiKey(provider: AiKeyProvider): Promise<AiStatus> {
+  return setAiStatus(
+    await api<AiStatus>(`/api/ai/providers/${provider}`, { method: "PUT", body: JSON.stringify({ clear_key: true }) }),
+  );
+}
+
+// The models a provider offers now (the ChatGPT account's, the CLI's,
+// Gemini's API), in the server's order.
+async function listAiModels(provider: AiProvider): Promise<AiModel[]> {
+  const body = await api<{ models: AiModel[] }>(`/api/ai/models?provider=${encodeURIComponent(provider)}`);
+  return body.models;
+}
+
+// ---- ChatGPT sign-in (provider "chatgpt") ----
+
+// While a browser login is pending the shared status is read again this
+// often, for at most this long after the watch began.
+const CHATGPT_POLL_MS = 1_500;
+const CHATGPT_POLL_LIMIT_MS = 10 * 60_000;
+
+// The login page last handed out, to open again; set by a login started here.
+let chatGptLoginUrl: string | null = null;
+// A login started from this page that hasn't ended yet, and whether the
+// status has shown it pending (a second account's login keeps signed_in).
+let chatGptLoginFromHere = false;
+let chatGptLoginSawPending = false;
+const chatGptSignInListeners = new Set<() => void>();
+// The screens waiting for a pending login to end; the poll runs while any is.
+const chatGptWatchers = new Set<AbortSignal>();
+let chatGptPollTimer: number | undefined;
+let chatGptPollUntil = 0;
+
+// Starts a browser login and returns the page to open. `newAccount` signs in
+// with another account instead of the last one. The status is read again at
+// once, and every watcher's poll gets a fresh time limit.
+async function startChatGptLogin(newAccount = false): Promise<string> {
+  const { url } = await api<{ url: string }>("/api/ai/chatgpt/login", {
+    method: "POST",
+    body: JSON.stringify(newAccount ? { new_account: true } : {}),
+  });
+  chatGptLoginUrl = url;
+  chatGptLoginFromHere = true;
+  chatGptLoginSawPending = false;
+  chatGptPollUntil = Date.now() + CHATGPT_POLL_LIMIT_MS;
+  await fetchAi().catch(() => undefined);
+  scheduleChatGptPoll();
+  return url;
+}
+
+function getChatGptLoginUrl(): string | null {
+  return chatGptLoginUrl;
+}
+
+// Calls `listener` once a login started from this page ends signed in.
+function onChatGptSignIn(listener: () => void): () => void {
+  chatGptSignInListeners.add(listener);
+  return () => {
+    chatGptSignInListeners.delete(listener);
+  };
+}
+
+// Keeps the shared status current while a browser login is pending, until
+// it ends, `signal` aborts (the screen closed), or ten minutes pass.
+function watchChatGptLogin(signal: AbortSignal): void {
+  if (signal.aborted) {
+    return;
+  }
+  if (chatGptWatchers.size === 0 && chatGptPollTimer === undefined) {
+    chatGptPollUntil = Date.now() + CHATGPT_POLL_LIMIT_MS;
+  }
+  chatGptWatchers.add(signal);
+  signal.addEventListener(
+    "abort",
+    () => {
+      chatGptWatchers.delete(signal);
+      if (chatGptWatchers.size === 0) {
+        window.clearTimeout(chatGptPollTimer);
+        chatGptPollTimer = undefined;
+      }
+    },
+    { once: true },
+  );
+  scheduleChatGptPoll();
+}
+
+function scheduleChatGptPoll(): void {
+  if (chatGptPollTimer !== undefined || chatGptWatchers.size === 0) {
+    return;
+  }
+  if (aiStatus?.chatgpt?.login !== "pending" || Date.now() >= chatGptPollUntil) {
+    return;
+  }
+  chatGptPollTimer = window.setTimeout(() => {
+    void api<AiStatus>("/api/ai")
+      .then(setAiStatus)
+      .catch(() => undefined)
+      .finally(() => {
+        chatGptPollTimer = undefined;
+        scheduleChatGptPoll();
+      });
+  }, CHATGPT_POLL_MS);
+}
+
+// Signs out. `revoked` false: the tokens here are gone but OpenAI didn't
+// confirm it let go of them.
+async function chatGptLogout(): Promise<{ revoked: boolean }> {
+  const answer = await api<{ revoked: boolean; status: AiStatus }>("/api/ai/chatgpt/logout", { method: "POST" });
+  chatGptLoginFromHere = false;
+  setAiStatus(answer.status);
+  return { revoked: answer.revoked };
+}
+
+// Stops waiting for the browser login (abandoned there).
+async function cancelChatGptLogin(): Promise<void> {
+  const status = await api<AiStatus>("/api/ai/chatgpt/login", { method: "DELETE" });
+  chatGptLoginFromHere = false;
+  chatGptLoginUrl = null;
+  setAiStatus(status);
+}
+
+export interface GeneratedSql {
+  sql: string;
+  read_only: boolean;
+  // Where the time went, in milliseconds from the request.
+  timing?: { schema_ms: number; first_ms: number | null; total_ms: number };
+}
+
+// What the server is doing before the SQL starts to come.
+export type AiProgress = { status: "schema" } | { status: "model"; tables: number };
+
+type AiLine =
+  | AiProgress
+  | { partial: string }
+  | { done: GeneratedSql }
+  | { error: AppError };
+
+// Asks the provider for SQL against `conn`'s schema. `onProgress` hears the
+// step (reading the schema, waiting on the model); `onPartial` gets the SQL so
+// far (whole, not a delta) as it streams; aborting `signal` cancels the
+// provider's request too. Nothing is run.
+async function generateSql(
+  conn: string | null,
+  prompt: string,
+  context: string | undefined,
+  onProgress: (progress: AiProgress) => void,
+  onPartial: (sql: string) => void,
+  signal: AbortSignal,
+): Promise<GeneratedSql> {
+  const body: { conn: string | null; prompt: string; context?: string } = { conn, prompt };
+  if (context !== undefined && context !== "") {
+    body.context = context;
+  }
+  const provider = aiStatus?.provider;
+  const response = await serverFetch("/api/ai/sql", { method: "POST", body: JSON.stringify(body), signal });
+  if (!response.ok || response.body === null) {
+    throw new ApiRequestError(appErrorFromBody(await response.json().catch(() => null), response.status));
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let pending = "";
+  try {
+    for (;;) {
+      let chunk: ReadableStreamReadResult<string>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        if (signal.aborted) {
+          throw error instanceof DOMException && error.name === "AbortError"
+            ? error
+            : new DOMException("Aborted", "AbortError");
+        }
+        throw networkError();
+      }
+      if (chunk.done) {
+        throw networkError();
+      }
+      pending += chunk.value;
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        const text = pending.slice(0, newline).trim();
+        pending = pending.slice(newline + 1);
+        if (text !== "") {
+          const line = JSON.parse(text) as AiLine;
+          if ("status" in line) {
+            onProgress(line);
+          } else if ("partial" in line) {
+            onPartial(line.partial);
+          } else if ("done" in line) {
+            aiAnswered(provider);
+            return line.done;
+          } else if ("error" in line) {
+            aiAnswered(provider);
+            // The whole error: a rate limit's details (model, limit, wait) and raw text.
+            throw new ApiRequestError(line.error);
+          }
+        }
+        newline = pending.indexOf("\n");
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => undefined);
+  }
+}
+
+// The text to insert at the cursor, from the text before and after it
+// (the server is sent at most the last 6000 and the first 2000 characters);
+// "" when the model has nothing to add. Aborting `signal` cancels the
+// provider's request. Nothing is run and no row data is sent.
+async function completeSql(conn: string | null, before: string, after: string, signal: AbortSignal): Promise<string> {
+  const provider = aiStatus?.complete_model?.provider ?? aiStatus?.provider;
+  const body = await api<{ completion: string }>("/api/ai/complete", {
+    method: "POST",
+    body: JSON.stringify({ conn, before: before.slice(-6000), after: after.slice(0, 2000) }),
+    signal,
+  }).catch((error: unknown) => {
+    // A rate limit changes what is known of the limits.
+    if (error instanceof ApiRequestError && error.code === "ai_rate_limited") {
+      aiAnswered(provider);
+    }
+    throw error;
+  });
+  aiAnswered(provider);
+  return typeof body.completion === "string" ? body.completion : "";
+}
+
 // Every engine the server can connect to, as it describes them.
 async function listEngines(): Promise<EngineDescriptor[]> {
   const body = await api<{ engines: EngineDescriptor[] }>("/api/engines");
@@ -2396,4 +2827,22 @@ export const store = {
   checkUpdateNow,
   configureUpdate,
   installUpdate,
+  getAiStatus,
+  subscribeAi,
+  fetchAi,
+  refreshAi,
+  configureAi,
+  saveAiKey,
+  clearAiKey,
+  fetchAiUsage,
+  subscribeAiAnswers,
+  listAiModels,
+  generateSql,
+  completeSql,
+  startChatGptLogin,
+  getChatGptLoginUrl,
+  onChatGptSignIn,
+  watchChatGptLogin,
+  chatGptLogout,
+  cancelChatGptLogin,
 };

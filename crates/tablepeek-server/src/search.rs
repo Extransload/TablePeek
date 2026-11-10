@@ -821,6 +821,7 @@ mod tests {
             )),
             ui_writers: Arc::default(),
             window_material: None,
+            ai: Arc::new(crate::ai::AiSettings::load(&dir)),
         };
         (state, dir)
     }

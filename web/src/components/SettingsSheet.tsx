@@ -63,6 +63,7 @@ import {
   PlusIcon,
   SearchIcon,
   SlidersIcon,
+  SparkleIcon,
   SunIcon,
   TableIcon,
   TransferIcon,
@@ -85,6 +86,7 @@ import {
   Switch,
 } from "./settings/rows";
 import { VersionSettings } from "./settings/VersionSettings";
+import { AiSettings } from "./settings/AiSettings";
 
 // Settings as a sheet docked to the right edge, beside the app so a change
 // shows in it at once, and run from the keyboard as Tern's is: ↑↓ move from
@@ -99,12 +101,15 @@ import { VersionSettings } from "./settings/VersionSettings";
 
 interface SettingsSheetProps {
   settings: AppSettings;
+  // A page to show: the one it opens on, and where it goes on each new
+  // request (a fresh object each time, so asking again after moving away works).
+  page?: { id: SettingsPage };
   onChange(patch: Partial<AppSettings>): void;
   onLock(): void;
   onClose(): void;
 }
 
-type SettingsPage = "general" | "appearance" | "editor" | "data" | "transfer" | "keyboard" | "privacy";
+export type SettingsPage = "general" | "appearance" | "editor" | "data" | "transfer" | "keyboard" | "ai" | "privacy";
 
 interface PageItem {
   id: SettingsPage;
@@ -122,6 +127,7 @@ const PAGES: PageItem[] = [
   { id: "data", label: "데이터 테이블", icon: TableIcon },
   { id: "transfer", label: "가져오기·내보내기", icon: TransferIcon },
   { id: "keyboard", label: "단축키", icon: KeyboardIcon },
+  { id: "ai", label: "AI", icon: SparkleIcon },
   { id: "privacy", label: "보안", icon: LockIcon },
 ];
 
@@ -155,7 +161,7 @@ interface FocusHint {
   changed: boolean;
 }
 
-export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsSheetProps) {
+export function SettingsSheet({ settings, page: requestedPage, onChange, onLock, onClose }: SettingsSheetProps) {
   // Where the keys were before the sheet took them: they go back on close.
   const [opener] = useState(() => document.activeElement);
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -169,13 +175,15 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
   // Where the keys go once a page is drawn: its first row when the sheet
   // opens or ←→ switch pages from a row, the page's tab from the tabs.
   const focusAfter = useRef<"row" | "tab" | null>("row");
-  const [page, setPage] = useState<SettingsPage>("general");
+  const [page, setPage] = useState<SettingsPage>(requestedPage?.id ?? "general");
   // Counts switches to a page (the same one again too, leaving a search).
   const [visit, setVisit] = useState(0);
   const [query, setQuery] = useState("");
   const [noMatch, setNoMatch] = useState(false);
   const [hint, setHint] = useState<FocusHint>({ esc: "", changed: false });
   const [width, setWidth] = useState<number | null>(() => storedWidth(SHEET_WIDTH_KEY, clampSheet));
+  // The AI shortcut is listed only while AI is on.
+  const aiEnabled = useSyncExternalStore(store.subscribeAi, store.getAiStatus)?.enabled === true;
   // Whether this window can be see-through, to word the material's note.
   const translucent = useSyncExternalStore(subscribeMaterial, windowTranslucent);
   // The pickers redraw as themes come in (Tern's, an imported file), and the
@@ -304,6 +312,15 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
     setPage(next);
     setVisit((count) => count + 1);
   }
+
+  // Asked for a page while open (the AI prompt's "set up" button): go there.
+  useEffect(() => {
+    if (requestedPage !== undefined && requestedPage.id !== page) {
+      switchPage(requestedPage.id, "row");
+    }
+    // Only a new request moves the sheet; switching pages by hand stays.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedPage]);
 
   function stepPage(by: 1 | -1, focus: "row" | "tab"): void {
     const index = PAGES.findIndex((item) => item.id === page);
@@ -1088,7 +1105,7 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
               keys: ["Mod+w", "Mod+t", "Mod+n"].map(formatBinding).join(" · "),
             })}
           >
-            {KEY_ACTIONS.map((action) => {
+            {KEY_ACTIONS.filter((action) => action !== "aiSql" || aiEnabled).map((action) => {
               const changed = settings.keymap[action].join("\n") !== DEFAULT_KEYMAP[action].join("\n");
               const startCapture = () => {
                 setCaptureHint(null);
@@ -1170,6 +1187,9 @@ export function SettingsSheet({ settings, onChange, onLock, onClose }: SettingsS
           </SettingsGroup>
         );
       }
+
+      case "ai":
+        return <AiSettings />;
 
       case "privacy":
         return (

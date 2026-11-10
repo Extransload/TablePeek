@@ -20,7 +20,8 @@ export type KeyAction =
   | "dbSwitch"
   | "openSettings"
   | "openFilter"
-  | "duplicateRows";
+  | "duplicateRows"
+  | "aiSql";
 
 export type Keymap = Record<KeyAction, string[]>;
 
@@ -41,6 +42,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "openSettings",
   "openFilter",
   "duplicateRows",
+  "aiSql",
 ];
 
 // The desktop app marks the page's root before any of its scripts run (see
@@ -73,6 +75,11 @@ export const DEFAULT_KEYMAP: Keymap = {
   // and the SQL editor's ⌘D (select the next match) keep the key.
   openFilter: ["Mod+f"],
   duplicateRows: ["Mod+d"],
+  // Only while AI is on in Settings, in a SQL query tab. ⌘E is free in
+  // CodeMirror and the app; Chrome's ⌘E (use the selection for find) is
+  // taken over by the capture-phase handler's preventDefault, and the
+  // desktop app's menu has no ⌘E item.
+  aiSql: ["Mod+e"],
 };
 
 export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
@@ -92,6 +99,7 @@ export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
   openSettings: "설정 열기",
   openFilter: "데이터 필터 열기",
   duplicateRows: "선택한 행 복제",
+  aiSql: "AI로 SQL 작성",
 };
 
 const CODE_KEYS: Record<string, string> = {
@@ -273,6 +281,15 @@ export function shortcutHint(keymap: Keymap, action: KeyAction): string {
   return binding === undefined ? "" : formatBinding(binding);
 }
 
+// The binding as aria-keyshortcuts writes it ("Meta+Enter", "Control+E").
+export function ariaKeyshortcuts(binding: string): string {
+  const parsed = parseBinding(binding);
+  const key = parsed.key.length === 1 ? parsed.key.toUpperCase() : parsed.key;
+  return [parsed.mod ? (IS_MAC ? "Meta" : "Control") : null, parsed.shift ? "Shift" : null, parsed.alt ? "Alt" : null, key]
+    .filter((part): part is string => part !== null)
+    .join("+");
+}
+
 // A tooltip: the label, then its shortcut in parentheses when it has one.
 export function withHint(label: string, hint: string | undefined): string {
   return hint ? `${label} (${hint})` : label;
@@ -292,7 +309,8 @@ const LEGACY_DEFAULTS: Partial<Record<KeyAction, string>> = {
 // 2: ⌘R joined Refresh. 3: ⌘R went back to reloading the page. 4: ⌘R
 // refreshes in the desktop app, and keymaps are stored as the actions changed
 // from the defaults, which now differ between the app and a browser tab.
-export const KEYMAP_VERSION = 4;
+// 5: Write SQL with AI moved from ⇧⌘Space to ⌘E.
+export const KEYMAP_VERSION = 5;
 
 // Whole default lists earlier versions stored, each up to the version that
 // replaced it: on the first load after an upgrade, a stored list still equal
@@ -301,6 +319,7 @@ export const KEYMAP_VERSION = 4;
 const OLD_DEFAULT_LISTS: { action: KeyAction; list: string[]; before: number }[] = [
   { action: "refresh", list: ["F5", "Mod+r"], before: 3 },
   { action: "refresh", list: ["F5"], before: 4 },
+  { action: "aiSql", list: ["Mod+Shift+Space"], before: 5 },
 ];
 
 function sameList(a: string[], b: string[]): boolean {

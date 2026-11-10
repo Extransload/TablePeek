@@ -9,6 +9,7 @@
 - [MongoDB workbench](#mongodb-workbench)
 - [Connections](#connections)
 - [Settings and themes](#settings-and-themes)
+- [Write SQL with AI](#write-sql-with-ai)
 - [MCP for AI clients](#mcp-for-ai-clients)
 - [Security](#security)
 
@@ -84,7 +85,7 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 
 ## Schema and server tools
 
-Browse tables, views, functions, triggers, and sequences from the sidebar, indented under their section heads; the tree refreshes after the editor creates, drops, or alters anything. Open Structure and DDL tabs, create tables, create or drop databases, and inspect generated SQL before applying it. MySQL tables expose collation, `ROW_FORMAT`, and comment options. Laravel `Schema::create` output can be copied directly from the table menu.
+Browse tables, views, functions, triggers, and sequences from the sidebar, indented under their section heads; the tree refreshes after the editor creates, drops, or alters anything. Pick several tables to export, copy, truncate or drop them together: `Shift`-click picks a run, `Mod`-click adds or removes one, and `Mod+A` on a table picks every table the list shows (only the search's matches while you search). Open Structure and DDL tabs, create tables, create or drop databases, and inspect generated SQL before applying it. MySQL tables expose collation, `ROW_FORMAT`, and comment options. Laravel `Schema::create` output can be copied directly from the table menu.
 
 The server info tab shows engine version, database size, uptime, and sessions, with session termination where the engine supports it.
 
@@ -142,6 +143,44 @@ Settings also cover alternating row backgrounds, type colors, the maximum rows a
 
 Settings, workspaces, and other UI state are kept in `~/.tablepeek/ui-state.json`, so they survive restarts and are shared by the desktop app and `tablepeek serve`.
 
+## Write SQL with AI
+
+Describe a query in words and TablePeek writes the SQL for the connection in front, using your own model. It is off until you turn it on in Settings › AI; while off, nothing of it shows and nothing is sent anywhere.
+
+**Model and connections.** Settings › AI has one **Model** picker and, below it, the ways to reach each model family, grouped by family; each way is a connection of its own, set up and shown on its own row. The picker lists the models of every connection ready to use, read from it and grouped by it ("GPT · ChatGPT", "GPT · Codex CLI", "Claude · Claude Code", "Gemini · API key"); type to filter, or **Enter a model…** for one that isn't listed. The pick is shown as `model · connection` (`Haiku · Claude Code`, `gemini-3-flash-preview · Gemini`), also in the editor's AI box, where the same picker opens.
+
+| Family | Connection | What it needs |
+|---|---|---|
+| GPT · OpenAI | ChatGPT sign-in | **Continue with ChatGPT**; requests use your ChatGPT Go, Plus or Pro plan |
+| | Codex CLI | The `codex` command installed (`npm i -g @openai/codex` or `brew install codex`) and signed in from a terminal (`codex login`). The answer arrives all at once, after about 6 s |
+| | API key | Coming soon |
+| Claude · Anthropic | Claude Code CLI | The `claude` command installed (`curl -fsSL https://claude.ai/install.sh \| bash`) and signed in from a terminal (run `claude`, then `/login`). The answer streams in, starting after about 5 s |
+| | API key | Coming soon |
+| Gemini · Google | API key | A key from Google AI Studio (**Get an API key**), kept in the OS keychain and never shown again; **Replace key** and **Delete** change it |
+| Other | OpenRouter · Ollama · LM Studio | Coming soon |
+
+Every connection row reads the same way: its name and state (● Connected, ○ Sign-in needed, ○ Not installed; for Gemini ● Key saved or ○ No key) with its one action at the right, then what it can do: ✓ Write SQL (with a CLI's wait) and ✓ or ✕ Suggest as you type (a CLI takes seconds per answer, so only ChatGPT and Gemini suggest). A CLI that isn't installed or signed in shows the exact terminal command with a **Copy** button instead; **Check again** looks once more after you have run it. Requests run your own CLI on its own plan; TablePeek stores no key or sign-in for it. Gemini's free tier has daily request limits, and Google may use free-tier requests to improve its models (**Free tier terms**). A model saved from a connection that is coming soon shows as unavailable, in Settings and in the AI box, until you pick one from a connection you can use.
+
+**Account and limits.** Each connected row shows the account it is signed in with on one line, `email · plan · workspace` ("Team · Research Factory", "Claude Max"; a workspace that is just the email's own organization is left out); a Gemini key just says it is saved. How much is used has a section of its own, **Usage**, right under the model pickers: a row per connected connection ("GPT · Codex CLI", "Claude · Claude Code", "Gemini · API key", "GPT · ChatGPT") with, for each usage window, a thin bar (amber from 80 %, red at the limit) and when it resets: "5-hour limit 66% used · resets in 1 h 52 min". The Codex CLI's comes live from the CLI (no model call); Claude Code's is as of its last answer ("As of the last answer · 3 min ago"), and shows nothing until it has answered once; ChatGPT's comes from its answers. Google doesn't report what is left of a Gemini key, so its row counts the requests TablePeek sent today per model (Google's day starts at midnight US Pacific) and shows the last limit Google reported, with a daily bar when that limit is per day. It is read when Settings › AI opens, after each answer, and with the section's **Refresh**, never on a timer. The AI box shows what is left of the active connection's most urgent window beside the model ("5-hour 34% left", full lines in its tooltip), and the model picker's headers say what is left ("GPT · Codex CLI — 5-hour 34% left").
+
+**ChatGPT subscription.** **Continue with ChatGPT** opens OpenAI's sign-in in the browser (the desktop app uses the system browser). The first time, OpenAI asks you to name and allow TablePeek and to let it use your plan; then the browser comes back to TablePeek and the page shows the account. The model list is your account's. Requests count toward your plan's usage (on Plus, the five-hour limit is shared with every app using it); **Manage usage** opens ChatGPT's usage settings, where you can cap TablePeek's share or disconnect it. When the limit is reached, the AI box says so and links there. **Sign out** asks OpenAI to end the session and clears it here; **Sign in with another account** switches to a different ChatGPT account. If you abandon the sign-in page, **Cancel** stops waiting. A ChatGPT Business or Enterprise workspace may refuse the sign-in (`3p_delegated_access_policy_denied`) unless its admin allows it; then use the Codex CLI, Claude Code CLI or a Gemini API key. A Claude subscription works through the Claude Code CLI, not a sign-in here.
+
+**Writing.** In a SQL query tab, press `Mod+E`, click **AI** under the editor, or pick "Write SQL with AI" in the command palette. A small box opens in the editor, at the cursor's line, with the focus in its field. Type the request in any language and press `Enter`; a Korean (or other IME) syllable still being composed counts, so one `Enter` sends it. The SQL is written straight into the editor as it streams, highlighted as a pending change with a bar in the gutter: over the selection when SQL is selected ("add a date filter", "join the customer names"; the box says it will change the selected SQL), over the cursor's line when that line is blank, else on new lines below it. Each statement comes under a `--` line summing up what it does, in the request's language; changing SQL rewrites that line rather than adding another. Nothing is ever run for you.
+
+- **Accept**: `Tab` or `Mod+Enter` (in the box or in the editor). The text stays, the highlight goes and the cursor lands after it; one `Mod+Z` takes the whole change back.
+- **Reject**: `Esc`. The text and selection are put back exactly as they were.
+- **Follow up**: type another request in the box and press `Enter`; it rewrites the pending SQL ("only the names", "sort by date"). **Regenerate** asks the last request again.
+
+An answer that may change data (anything but a single read) is marked as such. The box keeps the keyboard: `Shift+Tab` from its field reaches its buttons (each names its shortcut) and `Tab` cycles back; progress, the finished answer and errors are announced to screen readers. Switching tabs keeps a finished change and drops one still streaming.
+
+**Waiting.** Until the SQL starts to come, the box says what is happening: reading the connection's schema (kept for two minutes, so the next request skips it), then waiting on the model, with the seconds so far. When the answer is in, it shows where the time went: schema, first reply and total. With the Codex CLI nothing comes until the answer is complete: the box keeps counting the seconds, then writes it at once. A long wait before the first reply is the model thinking; pick a faster model, or a smaller one of the same family. **Stop** puts back what was there before.
+
+**Suggestions as you type.** Turn on **Suggest as you type** in Settings › AI. Each time you pause typing (about 0.4 s) with the cursor at the end of a line, the SQL that could come next shows in gray after the cursor: `Tab` inserts it, `Mod+→` takes its next word, `Esc` dismisses it, and typing what it says uses it up (anything else dismisses it). Write a request as a comment (`-- customers who ordered twice`) and press `Enter` to get a whole statement on the next line. Each pause sends the schema and up to 6,000 characters before the cursor and 2,000 after it to the provider: one request per pause, which adds to usage and cost. Suggestions need the ChatGPT sign-in or a Gemini API key: a CLI takes seconds per answer, so the switch stays off until one of them is connected. **Autocomplete model** picks the ChatGPT or Gemini model for this (default: the main model, when that is one of them); a fast one is best: GPT mini, or a Flash-Lite-class Gemini model (about a second per answer). Failures stay out of the editor: the AI button's dot turns amber and a short note beside it says why; when only Settings can fix it (suggestions or AI off, no model, signed out, a usage limit, a CLI model picked for suggestions), suggestions stop until the AI settings change.
+
+**What is sent.** The engine's name, the connection's schema (table and column names, types, primary keys, NOT NULL, foreign keys), your request and the selected SQL, or for suggestions the text around the cursor. Row data is never sent. A large schema is cut to about 48,000 characters (24,000 for suggestions): the tables the request names come first with their foreign-key neighbours, and the rest are listed by name only. The request goes from the TablePeek server on your machine straight to the provider, or to the CLI you picked, which sends it; ChatGPT's tokens and the API key never reach the page.
+
+Works with every SQL engine (SQLite, PostgreSQL, MySQL/MariaDB, CockroachDB, SQL Server, Oracle, ClickHouse, Cassandra and ScyllaDB in CQL). MongoDB and Elasticsearch/OpenSearch workbenches don't offer it.
+
 ## MCP for AI clients
 
 `tablepeek mcp` starts a stdio MCP server that connects to a running TablePeek instance. It exposes read-only schema and query tools without opening another port. Point it at a `tablepeek serve` started with a fixed port; the desktop app's port and token are not shown ([why](INSTALL.md#mcp-and-the-desktop-app)).
@@ -197,3 +236,5 @@ See [MCP.md](MCP.md) for setup details and security notes.
 - **SSH without a relay.** Remote databases are reached through a local SSH tunnel, not a hosted proxy.
 - **The desktop app exposes no native API to the page.** Links to other sites open in the system browser; downloads go to the Downloads folder.
 - **MCP is read-only by policy.** The query filter blocks writes, but a token holder can still read any database the active connection can see. Enforce stricter limits with database roles.
+- **Write SQL with AI is opt-in.** Off by default. When on, the schema (never rows) goes to the provider you chose, from your machine, with your request and selected SQL; **Suggest as you type** is a second opt-in that also sends the SQL around the cursor on each pause. With Codex CLI or Claude Code CLI, TablePeek runs the `codex` or `claude` installed on your machine and the CLI sends the request with its own sign-in, which TablePeek doesn't store. The Gemini API key lives in the OS keychain (`ai:gemini`), the other AI settings in `~/.tablepeek/ai.json`.
+- **ChatGPT sign-in.** OpenAI sends the browser back to `http://127.0.0.1:<port>/auth/callback`, which accepts only a login TablePeek started (its one-time `state`); the code is exchanged with PKCE and the ID token's signature, issuer, audience and nonce are checked. The tokens are kept in `~/.tablepeek/chatgpt.json`, readable by you only (`0600`), as OpenAI's guide for local apps asks: the refresh token changes on every renewal, about hourly while in use. They never reach the page.

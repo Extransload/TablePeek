@@ -119,6 +119,10 @@ export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, foll
     root.style.setProperty("--glass-fill", rgba(colors.panel, fill));
     root.style.setProperty("--glass-well", rgba(colors.bg, fill * 0.55));
     root.style.setProperty("--glass-raise", rgba(colors.head, fill * 0.45));
+    // A surface inside a glass one (the completion list's info panel) can't
+    // blur what is under it: the outer glass is its backdrop root. It reads
+    // only over a near-opaque fill.
+    root.style.setProperty("--glass-solid", rgba(colors.panel, Math.max(fill, 0.95)));
     root.style.setProperty(
       "--glass-filter",
       material === "glass" ? "blur(24px) saturate(170%)" : `blur(${picks.materialBlur}px)`,

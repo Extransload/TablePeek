@@ -3195,15 +3195,17 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
-.ac-info-row {
-  display: flex;
-  gap: 10px;
+.ac-info-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 4px;
+  align-items: baseline;
 }
 
 .ac-info-label {
-  flex: none;
-  width: 56px;
   color: var(--faint);
+  white-space: nowrap;
 }
 
 .ac-info-value {
@@ -4809,6 +4811,21 @@ html.settings-docked :is(.modal-backdrop, .palette-backdrop) > * {
   margin-top: 12px;
 }
 
+/* A control for the whole group, at its title's right. */
+.settings-group {
+  position: relative;
+}
+
+.settings-group > .settings-group-action {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+}
+
+.settings-results .settings-group > .settings-group-action {
+  display: none;
+}
+
 .settings-group h4 {
   margin: 0;
   padding: 10px 14px 0;
@@ -4817,7 +4834,7 @@ html.settings-docked :is(.modal-backdrop, .palette-backdrop) > * {
   font-weight: 600;
 }
 
-.settings-group-hint {
+.settings-group > .settings-group-hint {
   margin: 2px 14px 0;
 }
 
@@ -4940,6 +4957,11 @@ html.settings-docked :is(.modal-backdrop, .palette-backdrop) > * {
 .settings-row.wide {
   flex-direction: column;
   align-items: stretch;
+}
+
+/* Not usable yet (a connection coming soon): faint, but still read. */
+.settings-row.muted .settings-row-label {
+  color: var(--faint);
 }
 
 .settings-row-text {
@@ -5084,6 +5106,8 @@ input.settings-switch {
   transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
 
+/* The knob. It is the checkbox's ::before too, so it takes back what the
+   check mark sets there: hidden at scale(0) and drawn with borders. */
 input.settings-switch::before {
   content: "";
   position: absolute;
@@ -5091,9 +5115,11 @@ input.settings-switch::before {
   left: 1px;
   width: 14px;
   height: 14px;
+  border: 0;
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transform: translateX(0);
   transition: transform var(--motion-fast) var(--ease-out);
 }
 
@@ -5371,6 +5397,14 @@ html:is([data-material="glass"], [data-material="clear"]) .cm-editor .cm-tooltip
   background: var(--glass-fill);
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
+}
+
+/* The info panel beside the completion list hangs outside the list, inside
+   its glass: a nested backdrop-filter has nothing behind it to blur there,
+   so the panel takes a near-opaque fill, or the grid shows through its text. */
+html:is([data-material="glass"], [data-material="clear"]) .cm-editor .cm-tooltip.cm-completionInfo {
+  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: var(--glass-solid);
 }
 
 /* The popover's arrow sits outside its box: it takes the popover's fill,
@@ -9783,6 +9817,651 @@ button.field-box-more {
   height: 26px;
   padding: 0 10px;
   font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.editor-bar button.icon-text-button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+/* The AI edit box: drawn over a spacer in the SQL editor's text (aiEditor.ts),
+   at the line where the AI's SQL goes; above the gutters (z-index 200) and
+   the editor's scrollbars. */
+.cm-ai-zone-host {
+  position: absolute;
+  z-index: 210;
+  box-sizing: border-box;
+  padding: 4px 0;
+  font-family: var(--ui);
+  cursor: auto;
+}
+
+/* Room below the text while the box is open, so it can scroll clear of the
+   bottom scrollbar. */
+.cm-editor.cm-ai-zone-open .cm-content {
+  padding-bottom: calc(28px * var(--ui-scale, 1));
+}
+
+.ai-inline {
+  display: flex;
+  flex-direction: column;
+  gap: calc(5px * var(--ui-scale, 1));
+  min-width: 0;
+  max-width: calc(760px * var(--ui-scale, 1));
+  padding: calc(6px * var(--ui-scale, 1)) calc(8px * var(--ui-scale, 1));
+  overflow: hidden;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  border-radius: 6px;
+  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.12);
+  font-size: calc(12px * var(--ui-scale, 1));
+  animation: ai-inline-in var(--motion-base) var(--ease-out) both;
+}
+
+/* Over a see-through window the box takes a near-opaque fill, or the code
+   behind it shows through its text. */
+html:is([data-material="glass"], [data-material="clear"]) .ai-inline {
+  background: var(--glass-solid, var(--panel));
+}
+
+.ai-inline:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.55), var(--focus-ring);
+}
+
+@keyframes ai-inline-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+.ai-inline-row,
+.ai-inline-meta,
+.ai-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--ui-scale, 1));
+  min-width: 0;
+}
+
+.ai-inline button {
+  flex: none;
+  gap: calc(5px * var(--ui-scale, 1));
+  height: calc(24px * var(--ui-scale, 1));
+  padding: 0 calc(9px * var(--ui-scale, 1));
+  font-size: calc(12px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+
+.ai-inline button.icon-button {
+  width: calc(24px * var(--ui-scale, 1));
+  padding: 0;
+  justify-content: center;
+}
+
+.ai-inline button:focus-visible,
+.ai-inline-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ai-inline kbd {
+  color: inherit;
+  font-family: var(--ui);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  opacity: 0.8;
+}
+
+.ai-inline-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--accent);
+}
+
+.ai-inline-input {
+  flex: 1 1 auto;
+  /* The request is the point: in a narrow editor the model chip gives way first. */
+  min-width: calc(160px * var(--ui-scale, 1));
+  height: calc(26px * var(--ui-scale, 1));
+  padding: 0 calc(8px * var(--ui-scale, 1));
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 3px);
+  font: inherit;
+  font-size: calc(12.5px * var(--ui-scale, 1));
+}
+
+.ai-inline-input:focus {
+  border-color: var(--accent);
+}
+
+/* The model in the first row: its name only, cut short; the provider is in
+   its tooltip. */
+.ai-inline button.settings-picker-button.ai-model-chip {
+  flex: 0 4 auto;
+  min-width: calc(56px * var(--ui-scale, 1));
+  max-width: calc(150px * var(--ui-scale, 1));
+  height: calc(24px * var(--ui-scale, 1));
+}
+
+.ai-inline .ai-model-chip .settings-picker-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The second row: what the request changes and how it went on the left
+   (cut short with an ellipsis when narrow, the whole text in its tooltip),
+   the pending change's buttons on the right, never wrapped. */
+.ai-inline-meta {
+  padding-left: calc(19px * var(--ui-scale, 1));
+}
+
+.ai-inline-info {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: calc(8px * var(--ui-scale, 1));
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ai-inline-info > * {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-inline-info > .ai-inline-warning {
+  flex: none;
+}
+
+.ai-inline-actions {
+  flex: none;
+  margin-left: auto;
+}
+
+.ai-inline-chip {
+  padding: calc(1px * var(--ui-scale, 1)) calc(8px * var(--ui-scale, 1));
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.ai-inline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--ui-scale, 1));
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-inline-timing {
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-inline-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--ui-scale, 1));
+  padding: calc(1px * var(--ui-scale, 1)) calc(8px * var(--ui-scale, 1));
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--ink);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.ai-inline-warning svg {
+  flex: none;
+  color: var(--warn);
+}
+
+.ai-inline-plan {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6px * var(--ui-scale, 1));
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+/* States that must read as such whatever the theme does with --ok and
+   --warn: a theme's colour table sets those to anything (a near-white
+   "green" slot made "Connected" and the pending AI change white or grey).
+   Fixed, per mode, with 4.5:1 or more on the surfaces they sit on. */
+:root {
+  --state-good: #3fb950;
+  --state-warn: #d29922;
+  --state-bad: #f85149;
+}
+
+html[data-mode="light"] {
+  --state-good: #1a7f37;
+  --state-warn: #9a6700;
+  --state-bad: #cf222e;
+}
+
+/* The pending AI change in the text: added-text background, its lines
+   tinted (over the active line's own tint too), a bar in the gutter; the
+   text a request will replace, outlined. Its green is a diff's, fixed. */
+.cm-editor {
+  --ai-added: var(--state-good);
+}
+
+.cm-editor .cm-line .cm-ai-added {
+  background: color-mix(in srgb, var(--ai-added) 24%, transparent);
+}
+
+.cm-editor .cm-content .cm-line.cm-ai-added-line {
+  background: color-mix(in srgb, var(--ai-added) 11%, transparent);
+}
+
+.cm-editor .cm-gutterElement.cm-ai-added-gutter {
+  box-shadow: inset 3px 0 0 var(--ai-added);
+  color: var(--ai-added);
+}
+
+.cm-editor .cm-line .cm-ai-target {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: 1px dashed var(--accent-line);
+}
+
+/* A suggestion as the user types: gray text after the cursor. --muted keeps
+   readable contrast on the editor's background in both themes. */
+.cm-ai-ghost {
+  color: var(--muted);
+  font-style: italic;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+/* The editor's AI button: a dot while suggestions are on, amber after one
+   failed; the failure beside it. */
+.ai-editor-button {
+  position: relative;
+}
+
+.ai-complete-dot {
+  width: 5px;
+  height: 5px;
+  margin-left: 1px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.ai-complete-dot.failed {
+  background: var(--warn);
+}
+
+.ai-complete-problem {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4px * var(--ui-scale, 1));
+  color: var(--warn);
+  font-size: calc(11px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+
+/* Sign in with ChatGPT (Settings → AI, the AI box's errors): OpenAI's
+   button is black with white text in both themes. */
+button.chatgpt-signin-button,
+button.chatgpt-signin-button:hover,
+button.chatgpt-signin-button:active,
+button.chatgpt-signin-button:disabled {
+  background: #000;
+  color: #fff;
+  border: 1px solid #000;
+}
+
+button.chatgpt-signin-button {
+  height: calc(28px * var(--ui-scale, 1));
+  padding: 0 calc(14px * var(--ui-scale, 1));
+  border-radius: 999px;
+  font-weight: 600;
+  /* Visible against a black panel in the dark theme. */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+button.chatgpt-signin-button:hover:not(:disabled) {
+  background: #1f1f1f;
+  border-color: #1f1f1f;
+}
+
+button.chatgpt-signin-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.chatgpt-usage-link {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(3px * var(--ui-scale, 1));
+}
+
+/* The model picked (Settings › AI and the editor's AI box). */
+button.settings-picker-button.ai-model-button {
+  width: auto;
+  min-width: 210px;
+  max-width: 100%;
+}
+
+button.settings-picker-button.ai-model-chip {
+  min-width: 0;
+  max-width: calc(280px * var(--ui-scale, 1));
+  height: calc(22px * var(--ui-scale, 1));
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.ai-model-button.unset .settings-picker-value {
+  color: var(--muted);
+}
+
+/* A pick saved from a provider that is coming soon. */
+.ai-model-button.unavailable .settings-picker-value {
+  color: var(--state-warn);
+}
+
+/* Settings › AI, a connection's row, left-aligned: its name, a dot and a
+   word for its state and its action on the first line; then the account,
+   what it can do, and a CLI's version and path; or the terminal command
+   that sets it up. */
+.settings-row-title .settings-row-action {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: calc(4px * var(--ui-scale, 1)) calc(12px * var(--ui-scale, 1));
+  margin-left: auto;
+}
+
+.settings-row-title .settings-row-action .link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4px * var(--ui-scale, 1));
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.settings-row-title .settings-row-action button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ai-conn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--ui-scale, 1));
+  margin-left: calc(4px * var(--ui-scale, 1));
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.ai-conn-dot {
+  flex: none;
+  width: calc(7px * var(--ui-scale, 1));
+  height: calc(7px * var(--ui-scale, 1));
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.ai-conn-status.ok {
+  color: var(--state-good);
+}
+
+.ai-conn-status.ok .ai-conn-dot {
+  background: currentColor;
+}
+
+.ai-conn-status.warn {
+  color: var(--state-warn);
+}
+
+.settings-row.wide .settings-row-control:has(.ai-conn-caps) {
+  gap: calc(8px * var(--ui-scale, 1));
+  margin-top: calc(4px * var(--ui-scale, 1));
+}
+
+.ai-account-line {
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.ai-account-email {
+  color: var(--ink);
+}
+
+.ai-account-plan {
+  color: color-mix(in srgb, var(--ink) 75%, transparent);
+}
+
+.ai-conn-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--ui-scale, 1)) calc(16px * var(--ui-scale, 1));
+}
+
+.ai-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4px * var(--ui-scale, 1));
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.ai-cap.ok {
+  color: var(--state-good);
+}
+
+/* What it can't do is worth reading too: the text at full ink, the ✕ red. */
+.ai-cap.no {
+  color: var(--ink);
+}
+
+.ai-cap.no svg {
+  color: var(--state-bad);
+}
+
+.ai-conn-meta {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-conn-note {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6px * var(--ui-scale, 1));
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1.5;
+}
+
+.ai-conn-note.warn {
+  color: var(--state-warn);
+}
+
+/* A terminal command, exactly, and a button copying it. */
+.ai-cmds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(8px * var(--ui-scale, 1));
+}
+
+.ai-cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(8px * var(--ui-scale, 1));
+  max-width: 100%;
+  padding: calc(4px * var(--ui-scale, 1)) calc(4px * var(--ui-scale, 1)) calc(4px * var(--ui-scale, 1)) calc(10px * var(--ui-scale, 1));
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm, 6px);
+  background: var(--btn);
+}
+
+.ai-cmd code {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+}
+
+button.ai-cmd-copy {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: calc(4px * var(--ui-scale, 1));
+  height: calc(22px * var(--ui-scale, 1));
+  padding: 0 calc(8px * var(--ui-scale, 1));
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+/* One note above the families: how CLI connections are made and kept. */
+.ai-connections-note {
+  margin: calc(16px * var(--ui-scale, 1)) calc(14px * var(--ui-scale, 1)) calc(8px * var(--ui-scale, 1));
+}
+
+.settings-results .ai-connections-note {
+  display: none;
+}
+
+button.settings-group-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.settings-box > .ai-usage-empty {
+  padding: 10px 14px 12px;
+}
+
+/* Settings › AI's Usage section: a line per window over a thin bar, amber
+   near the limit, red at it. */
+.ai-usage {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  margin-top: 2px;
+  text-align: left;
+}
+
+.ai-usage-account {
+  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+
+.ai-usage-window {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* A window's line is the point of the section: full ink, a size up; the
+   notes under it stay quieter. */
+.ai-usage-line {
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.4;
+}
+
+.ai-usage-note {
+  color: color-mix(in srgb, var(--ink) 75%, transparent);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  line-height: 1.4;
+}
+
+.ai-usage-note.warn {
+  color: var(--state-warn);
+}
+
+.ai-usage-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line-soft);
+}
+
+.ai-usage-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.ai-usage-bar.warn > span {
+  background: var(--state-warn);
+}
+
+.ai-usage-bar.full > span {
+  background: var(--state-bad);
+}
+
+/* The AI box: the connection's most urgent limit beside the model. */
+.ai-usage-chip {
+  flex: none;
+  color: color-mix(in srgb, var(--ink) 75%, transparent);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ai-usage-chip.warn {
+  color: var(--state-warn);
+}
+
+.ai-usage-chip.full {
+  color: var(--state-bad);
+}
+
+/* An API key's row: the key field and its button, and where to get a key. */
+.ai-key-entry {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--ui-scale, 1));
+}
+
+.ai-key-entry input.ai-key-field {
+  width: calc(260px * var(--ui-scale, 1));
+  max-width: 100%;
+}
+
+.ai-key-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(4px * var(--ui-scale, 1)) calc(8px * var(--ui-scale, 1));
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.ai-key-links .link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(3px * var(--ui-scale, 1));
+}
+
+/* The first sign-in's note: a short dialog. */
+.modal.chatgpt-welcome {
+  width: min(420px, 92vw);
+}
+
+.chatgpt-welcome .modal-body > div {
+  margin-top: calc(8px * var(--ui-scale, 1));
 }
 
 button.tabbar-new {

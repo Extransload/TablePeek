@@ -28,6 +28,8 @@ use tablepeek_types::{
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 
+pub mod ai;
+mod chatgpt;
 pub mod cursors;
 pub mod launch;
 pub mod picker;
@@ -512,6 +514,8 @@ pub struct AppState {
     /// How the embedding app (the desktop app) gives its windows the
     /// material the page picks; none when pages live in browser tabs.
     pub window_material: Option<Arc<dyn window_material::WindowMaterial>>,
+    /// Settings › AI (ai.json); the keys are in the keychain.
+    pub ai: Arc<ai::AiSettings>,
 }
 
 async fn slot_for(
@@ -799,6 +803,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/oidc/logins", get(oidc_logins).delete(oidc_cancel))
         .route("/api/oidc/callback", get(oidc_callback))
         .merge(search::routes())
+        .merge(ai::routes())
         .layer(middleware::from_fn_with_state(state.clone(), token_guard))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .with_state(state)
@@ -2762,6 +2767,11 @@ async fn oidc_callback(Query(params): Query<OidcCallback>) -> Response {
             "이 탭을 닫고 TablePeek으로 돌아가세요. Signed in; close this tab and return to TablePeek.".to_string(),
         ),
     };
+    login_page(status, title, &detail)
+}
+
+/// The page a browser login comes back to: what happened, nothing more.
+fn login_page(status: StatusCode, title: &str, detail: &str) -> Response {
     let escape = |text: &str| {
         text.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -2772,7 +2782,7 @@ async fn oidc_callback(Query(params): Query<OidcCallback>) -> Response {
         "<!doctype html><meta charset=\"utf-8\"><title>TablePeek</title>\
          <body style=\"font: 14px system-ui; margin: 3em\"><h3>{}</h3><p>{}</p></body>",
         escape(title),
-        escape(&detail)
+        escape(detail)
     );
     (status, axum::response::Html(page)).into_response()
 }
@@ -5892,6 +5902,7 @@ mod tests {
             )),
             ui_writers: Arc::default(),
             window_material: None,
+            ai: Arc::new(ai::AiSettings::load(dir)),
         }
     }
 

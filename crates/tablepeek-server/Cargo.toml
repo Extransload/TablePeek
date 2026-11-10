@@ -21,10 +21,13 @@ tablepeek-types = { path = "../tablepeek-types" }
 # The update check: GitHub's latest release over HTTPS with the system's
 # roots (the client the engine already uses), and its tag compared as SemVer.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
+# Sign in with ChatGPT: PKCE's SHA-256 and the RS256 check of OpenAI's ID
+# token (the version rustls already brings).
+ring = "0.17"
 semver = "1"
 russh = "0.64"
 rust-embed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "process"] }
 uuid.workspace = true

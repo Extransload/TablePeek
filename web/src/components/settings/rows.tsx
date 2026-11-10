@@ -28,7 +28,9 @@ export function isField(element: Element): boolean {
 // A row's controls, in order, that can be used now.
 export function rowControls(row: HTMLElement): HTMLElement[] {
   return Array.from(
-    row.querySelectorAll<HTMLElement>(".settings-row-control :is(input, select, textarea, button, a[href])"),
+    row.querySelectorAll<HTMLElement>(
+      ":is(.settings-row-action, .settings-row-control) :is(input, select, textarea, button, a[href])",
+    ),
   ).filter((control) => !(control as HTMLInputElement).disabled);
 }
 
@@ -106,12 +108,24 @@ export function Highlight({ text, terms }: { text: string; terms: string[] }) {
   return <>{parts}</>;
 }
 
-// A titled run of rows (`title` a message key), with a note under its title.
-export function SettingsGroup({ title, hint, children }: { title?: string; hint?: string; children: ReactNode }) {
+// A titled run of rows (`title` a message key), with a note under its title
+// and `action`, a control for the whole group, beside it.
+export function SettingsGroup({
+  title,
+  hint,
+  action,
+  children,
+}: {
+  title?: string;
+  hint?: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   const scope = useContext(ScopeContext);
   return (
     <ScopeContext.Provider value={{ ...scope, group: title ? bothLanguages(title) : "" }}>
       <section className="settings-group">
+        {action !== undefined ? <div className="settings-group-action">{action}</div> : null}
         {title ? <h4>{t(title)}</h4> : null}
         {hint ? <p className="settings-hint settings-group-hint">{hint}</p> : null}
         <div className="settings-box">{children}</div>
@@ -123,13 +137,18 @@ export function SettingsGroup({ title, hint, children }: { title?: string; hint?
 // One setting: its name (`label`, a message key, found in either language)
 // and a note under it on the left, its control on the right, or under it
 // when `wide`. Changed from its default, it shows a dot and Reset (⌫ on the
-// row). Rows not matching the search aren't drawn.
+// row). `status` follows the name on its line and `action` ends that line
+// (a connection's state and its one action). Rows not matching the search
+// aren't drawn.
 export function SettingRow({
   label,
   hint,
   keywords,
   changed = false,
   wide = false,
+  muted = false,
+  status,
+  action,
   onReset,
   onActivate,
   children,
@@ -139,6 +158,10 @@ export function SettingRow({
   keywords?: string;
   changed?: boolean;
   wide?: boolean;
+  // Not usable yet (coming soon): shown faint, still found and read.
+  muted?: boolean;
+  status?: ReactNode;
+  action?: ReactNode;
   onReset?(): void;
   // ⏎ or Space on the row, instead of its control's own (a choice steps).
   onActivate?(): void;
@@ -167,7 +190,7 @@ export function SettingRow({
   }
   return (
     <div
-      className={`settings-row${wide ? " wide" : ""}`}
+      className={`settings-row${wide ? " wide" : ""}${muted ? " muted" : ""}`}
       data-row=""
       data-changed={changed ? "" : undefined}
       tabIndex={-1}
@@ -191,6 +214,8 @@ export function SettingRow({
               ) : null}
             </>
           ) : null}
+          {status}
+          {action !== undefined ? <span className="settings-row-action">{action}</span> : null}
         </div>
         {hint ? (
           <p className="settings-hint" id={`${id}-hint`}>

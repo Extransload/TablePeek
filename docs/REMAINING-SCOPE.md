@@ -47,11 +47,13 @@ MCP 서버는 구현했다. Plugin은 샌드박스·권한·프로세스 격리 
 |---|---|
 | Snowflake, BigQuery, DynamoDB, Cloudflare D1 | 아직 없음. 인증·쿼리 API·타입 체계가 각각 별도 |
 | Vertica | PG wire protocol과 호환되지 않아 현행 PG 드라이버로 접속 불가 |
-| Redis, DuckDB, 설치 프로그램, AI 기능, 스키마 비교 | 사용자 결정으로 제외. TablePeek은 웹 전용으로 유지 |
+| Redis, DuckDB, 설치 프로그램, 스키마 비교 | 사용자 결정으로 제외. TablePeek은 웹 전용으로 유지 |
 | Plugin 샌드박스 | 권한·프로세스 격리·매니페스트·배포 설계가 선행되어야 함. MCP는 별도로 구현됨 |
 | 배포(M5) | 완료: SemVer(v0.1.0부터, `CHANGELOG.md`), 태그 `vX.Y.Z`로 GitHub Releases에 macOS(arm64·x64)·Linux(x64·arm64)·Windows(x64) 일반 아카이브와 `SHA256SUMS` 게시(`.github/workflows/release.yml`, 절차는 `docs/RELEASING.md`), 소스 빌드 병행, 앱 안 새 버전 알림(하루 한 번 확인, 설정에서 끔). 제외: 코드 서명·공증, 설치 프로그램, 패키지 매니저(brew/winget/scoop), 바이너리 자동 교체 |
 
 Oracle, MongoDB, Cassandra·ScyllaDB, Elasticsearch·OpenSearch, ClickHouse는 이후 엔진으로 들어왔다(`docs/ENGINES.md`, `docs/MONGODB.md`, `docs/engines/*.md`).
+
+AI 기능은 제외 결정을 뒤집어 "AI로 SQL 작성" 하나만 넣었다(2026-11-05). 설정은 omp처럼 모델 선택기 하나와 제공자 연결 목록으로 한다: ChatGPT 구독(2026-11-09, OpenAI의 오픈소스·로컬 앱용 Sign in with ChatGPT), API 키(OpenAI·Anthropic·Gemini·OpenRouter), Ollama·LM Studio, 직접 입력 주소. 기본은 꺼져 있다. 자체 계정과 중계 서버는 두지 않는다. ChatGPT Business·Enterprise 워크스페이스는 관리자 승인 없이는 구독 로그인이 막혀 API 키를 써야 한다(설치된 Codex CLI를 실행해 우회하는 제공자를 한때 넣었다가 선택지가 겹쳐 뺐다). Claude 구독 로그인은 Anthropic이 서드파티 사용을 금지해 넣지 않는다(`docs/GUIDE.md#write-sql-with-ai`, `docs/ARCHITECTURE.md` §1·§9). 문서형·검색 엔진(MongoDB 쿼리, ES DSL) 작성은 범위 밖이다.
 
 Redshift/Percona/Yugabyte/MariaDB는 현행 호환 드라이버로 접속을 시도할 수 있지만, 카탈로그·DDL·함수 차이를 전부 보증하지 않는다. 서버 정보의 호환 모드 표시는 진단 보조이며 완전 지원 선언이 아니다.
 

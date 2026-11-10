@@ -155,6 +155,16 @@ export function LockIcon({ size = 12, className }: IconProps) {
   );
 }
 
+// AI: a four-pointed sparkle and a small one beside it.
+export function SparkleIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M7 2.4 8.2 6 11.8 7.2 8.2 8.4 7 12 5.8 8.4 2.2 7.2 5.8 6Z" />
+      <path d="M12.2 10.4v3.2M10.6 12h3.2" />
+    </svg>
+  );
+}
+
 export function SearchIcon({ size = 12, className }: IconProps) {
   return (
     <svg {...BASE} width={px(size)} height={px(size)} className={className}>

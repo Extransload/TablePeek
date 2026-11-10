@@ -15,6 +15,7 @@ import {
 import {
   acceptCompletion,
   autocompletion,
+  completionStatus,
   pickedCompletion,
   snippet,
   type Completion,
@@ -25,6 +26,8 @@ import { isolateHistory } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { acceptAiGhost, AI_ZONE_HOST, aiEditorExtensions, dismissAiGhost, type AiCompleteSource } from "../aiEditor";
 import type { SqlDialect } from "../engines/sqlDialect";
 import type { AppError } from "../errorHelp";
 import { scrollbarsFor } from "../scrollbars";
@@ -39,6 +42,7 @@ import {
   type SqlWord,
 } from "../sqlComplete";
 import { statementAt } from "../sqlSplit";
+import { AiInlineEdit, type AiInlineControl } from "./AiInlineEdit";
 
 export interface FavoriteSnippet {
   keyword: string;
@@ -52,6 +56,8 @@ export interface SqlEditorHandle {
   // when the cursor is among comments that belong to no statement).
   currentStatement(): string | null;
   getDoc(): string;
+  // The main selection's text only; "" when nothing is selected.
+  selectedText(): string;
   setSql(text: string): void;
   // Rewrites the selection, or the whole text when nothing is selected, as
   // one undo step; the cursor stays by the same code.
@@ -69,6 +75,15 @@ export interface SqlEditorHandle {
   markError(failure: { statement: string; position: AppError["position"] } | null): { line: number; column: number } | null;
   // Puts the cursor on the marked spot.
   revealError(): void;
+  // The open AI edit box, when there is one.
+  aiControl(): AiInlineControl | null;
+}
+
+// The AI edit box open in this editor (see AiInlineEdit).
+export interface SqlEditorAiEdit {
+  conn: string | null;
+  onClose(): void;
+  onOpenSettings(): void;
 }
 
 interface SqlEditorProps {
@@ -90,6 +105,10 @@ interface SqlEditorProps {
   // The engine's SQL, which decides where a statement ends (see sqlSplit);
   // none without a connection.
   dialect?: SqlDialect;
+  // The AI edit box, open in the tab in front; null when closed.
+  aiEdit?: SqlEditorAiEdit | null;
+  // Suggestions as the user types; null turns them off.
+  aiComplete?: AiCompleteSource | null;
 }
 
 // Where `offset` in `before` lands in `after`, a rewrite of it that changed
@@ -226,10 +245,15 @@ function completionInfo(
   head.append(el("span", `ac-badge ac-${kind}`, BADGES[kind].mark), el("span", "ac-info-title"));
   box.append(head);
   const title = head.lastElementChild as HTMLElement;
+  // Label · value rows share one grid, its label column as wide as the
+  // longest label ("Referenced by" in English, "참조" in Korean).
+  let rows: HTMLElement | null = null;
   const line = (label: string, value: string, mono = true): void => {
-    const row = el("div", "ac-info-row");
-    row.append(el("span", "ac-info-label", label), el("span", mono ? "ac-info-value mono" : "ac-info-value", value));
-    box.append(row);
+    if (rows === null) {
+      rows = el("div", "ac-info-rows");
+      box.append(rows);
+    }
+    rows.append(el("span", "ac-info-label", label), el("span", mono ? "ac-info-value mono" : "ac-info-value", value));
   };
   if (kind === "saved" && saved !== undefined) {
     title.textContent = saved.name;
@@ -567,6 +591,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       favorites,
       runKey,
       dialect,
+      aiEdit,
+      aiComplete,
     },
     ref,
   ) {
@@ -588,6 +614,18 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const runKeyRef = useRef(runKey === undefined ? "Mod-Enter" : runKey);
     const pendingRef = useRef<{ tabId: string; sql: string; timer: number } | null>(null);
     const [languageCompartment] = useState(() => new Compartment());
+    // The view, for the AI edit box drawn inside its scroller.
+    const [view, setView] = useState<EditorView | null>(null);
+    const [zoneHost] = useState(() => {
+      const host = document.createElement("div");
+      host.className = AI_ZONE_HOST;
+      host.style.display = "none";
+      return host;
+    });
+    const aiControlRef = useRef<AiInlineControl | null>(null);
+    const aiCompleteRef = useRef(aiComplete ?? null);
+    // What screen readers hear of a suggestion shown as ghost text.
+    const [ghostNote, setGhostNote] = useState("");
 
     onRunRef.current = onRun;
     onSqlChangeRef.current = onSqlChange;
@@ -598,6 +636,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     relationsRef.current = relations ?? [];
     loadValuesRef.current = loadValues;
     runKeyRef.current = runKey === undefined ? "Mod-Enter" : runKey;
+    aiCompleteRef.current = aiComplete ?? null;
 
     function flushPending(): void {
       const pending = pendingRef.current;
@@ -741,6 +780,35 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         extensions: [
           Prec.highest(
             keymap.of([
+              // A pending AI change: Tab or ⌘↵ accepts it (the app leaves ⌘↵
+              // to the editor then: nothing runs), Esc puts the text back. A
+              // suggestion: Tab takes it, ⌘→ its next word, Esc drops it.
+              {
+                key: "Tab",
+                run: (view) => aiControlRef.current?.accept() === true || acceptAiGhost(view),
+              },
+              {
+                key: "Mod-Enter",
+                run: () => aiControlRef.current?.accept() === true,
+              },
+              {
+                key: "Mod-ArrowRight",
+                run: (view) => acceptAiGhost(view, true),
+              },
+              {
+                key: "Escape",
+                run: (view) => {
+                  if (completionStatus(view.state) !== null) {
+                    return false;
+                  }
+                  if (dismissAiGhost(view)) {
+                    return true;
+                  }
+                  const control = aiControlRef.current;
+                  control?.close();
+                  return control !== null;
+                },
+              },
               ...(runKeyRef.current === null
                 ? []
                 : [
@@ -782,6 +850,15 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
           }),
           languageCompartment.of(sqlLanguage(dialectRef.current)),
           errorMarkField,
+          aiEditorExtensions(
+            () => (readOnlyRef.current ? null : aiCompleteRef.current),
+            (text) =>
+              setGhostNote(
+                t("AI 제안: {text}. Tab으로 넣고 Esc로 닫습니다.", {
+                  text: text.length > 200 ? `${text.slice(0, 200)}…` : text,
+                }),
+              ),
+          ),
           ...editorLook,
           EditorView.contentAttributes.of({
             spellcheck: "false",
@@ -821,6 +898,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       }
       const view = new EditorView({ parent: host, state: makeState("") });
       viewRef.current = view;
+      view.scrollDOM.appendChild(zoneHost);
+      setView(view);
       // The app's bars, kept in view as Settings asks.
       const bars = scrollbarsFor(view.scrollDOM, true);
       bars.watch(view.contentDOM);
@@ -833,6 +912,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         bars.destroy();
         flushPending();
         viewRef.current = null;
+        setView(null);
+        zoneHost.remove();
         view.destroy();
       };
     }, []);
@@ -910,6 +991,14 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       getDoc(): string {
         const view = viewRef.current;
         return view ? view.state.doc.toString() : "";
+      },
+      selectedText(): string {
+        const view = viewRef.current;
+        if (!view) {
+          return "";
+        }
+        const range = view.state.selection.main;
+        return view.state.sliceDoc(range.from, range.to);
       },
         setSql(text: string): void {
           const view = viewRef.current;
@@ -1006,10 +1095,32 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
           view.dispatch({ selection: { anchor: range.from, head: range.to }, scrollIntoView: true });
           view.focus();
         },
+        aiControl(): AiInlineControl | null {
+          return aiControlRef.current;
+        },
       }),
       [],
     );
 
-    return <div ref={hostRef} className="sql-editor" />;
+    return (
+      <div ref={hostRef} className="sql-editor">
+        {view !== null && aiEdit != null
+          ? createPortal(
+              <AiInlineEdit
+                key={tabId}
+                view={view}
+                conn={aiEdit.conn}
+                control={aiControlRef}
+                onClose={aiEdit.onClose}
+                onOpenSettings={aiEdit.onOpenSettings}
+              />,
+              zoneHost,
+            )
+          : null}
+        <div className="sr-only" aria-live="polite" aria-atomic="true">
+          {aiComplete != null ? ghostNote : ""}
+        </div>
+      </div>
+    );
   },
 );

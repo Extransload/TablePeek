@@ -10,6 +10,7 @@ import {
   type ReactElement,
 } from "react";
 import { t } from "../i18n";
+import { matchesBinding } from "../shortcuts";
 import * as uiState from "../persist";
 import { loadObjects, loadSchema, peekObjects, peekSchema } from "../schemaCache";
 import { store, type ObjectList, type TableDetail, type TableSchema } from "../store";
@@ -586,6 +587,15 @@ export function SchemaSidebar({
     setPicked({ names, anchor: name });
   }
 
+  // ⌘A (Ctrl+A) on a table: every table the list shows (the search's
+  // matches), not the page's text.
+  function pickAll(from: string): void {
+    const names = (orderedTables ?? []).map((table) => table.name);
+    if (names.length > 0) {
+      setPicked({ names: new Set(names), anchor: picked.anchor ?? from });
+    }
+  }
+
   // A right-click inside a multiple pick acts on all of it; elsewhere it
   // picks that one table first.
   function openMenu(x: number, y: number, name: string): void {
@@ -768,6 +778,11 @@ export function SchemaSidebar({
             openMenu(event.clientX, event.clientY, table.name);
           }}
           onKeyDown={(event) => {
+            if (matchesBinding(event.nativeEvent, "Mod+a")) {
+              event.preventDefault();
+              pickAll(table.name);
+              return;
+            }
             if (event.key === "Enter") {
               event.preventDefault();
               // ⌘/Ctrl+Return keeps the tab, as a double-click does.

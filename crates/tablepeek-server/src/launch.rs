@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tablepeek_engine::Engine;
 
-use crate::{serve, store, update, window_material, AppState, ConnSlot, Registry};
+use crate::{ai, serve, store, update, window_material, AppState, ConnSlot, Registry};
 
 /// Rows the demo database gets unless `--demo-rows` says otherwise.
 pub const DEFAULT_DEMO_ROWS: usize = 10_000;
@@ -77,6 +77,7 @@ impl Server {
             update: Arc::new(update),
             ui_writers: Arc::default(),
             window_material: options.window_material,
+            ai: Arc::new(ai::AiSettings::load(&dir)),
         };
         Ok(Self {
             listener,

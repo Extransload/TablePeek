@@ -59,7 +59,8 @@ import { ParamModal } from "./components/ParamModal";
 import { ReviewModal } from "./components/ReviewModal";
 import { ConsistencyMenu } from "./components/ConsistencyMenu";
 import { SAFE_MODE_LABELS, SafeModeMenu } from "./components/SafeModeMenu";
-import { SettingsSheet } from "./components/SettingsSheet";
+import { SettingsSheet, type SettingsPage } from "./components/SettingsSheet";
+import type { AiCompleteSource } from "./aiEditor";
 import { ConsolePanel } from "./components/ConsolePanel";
 import { ActivityModal } from "./components/ActivityModal";
 import { BrandLogo } from "./components/BrandLogo";
@@ -83,6 +84,7 @@ import { HistoryPane } from "./components/HistoryPane";
 import { PromptModal } from "./components/PromptModal";
 import { DiscardModal } from "./components/DiscardModal";
 import { ConfirmDialogHost, confirmDialog, promptDialog } from "./components/ConfirmDialog";
+import { ChatGptWelcomeHost } from "./components/ChatGpt";
 import { BinaryCellDialogHost, binaryCellDialog } from "./components/BinaryCellModal";
 import { ServerInfoPanel } from "./components/ServerInfoPanel";
 import { SqlEditor, type SqlEditorHandle } from "./components/SqlEditor";
@@ -106,6 +108,7 @@ import { SecurityTab } from "./engines/elasticsearch/ui/SecurityTab";
 import { SearchWorkbench } from "./engines/elasticsearch/ui/SearchWorkbench";
 import type { SearchAdminEffect, SearchAdminRequest, TargetKind } from "./engines/elasticsearch/ui/types";
 import {
+  AlertIcon,
   CheckIcon,
   DiagramIcon,
   HomeIcon,
@@ -118,6 +121,7 @@ import {
   PlugIcon,
   SettingsIcon,
   SnippetIcon,
+  SparkleIcon,
   StarIcon,
   StopIcon,
 } from "./components/icons";
@@ -176,7 +180,16 @@ import { defaultCluster, onCluster } from "./components/ClusterPicker";
 import { loadAutoSave } from "./savedQueries";
 import { isDateKind, specsForTable, withResultKinds } from "./grid/columns";
 import { cellMenuItems, deleteRowsLabel, type CellValueChoice } from "./grid/cellMenu";
-import { IS_MAC, actionForEvent, formatBinding, matchesBinding, shortcutHint, withHint, type KeyAction } from "./shortcuts";
+import {
+  IS_MAC,
+  actionForEvent,
+  ariaKeyshortcuts,
+  formatBinding,
+  matchesBinding,
+  shortcutHint,
+  withHint,
+  type KeyAction,
+} from "./shortcuts";
 import type { GridSelection, SortIndicator } from "./grid/CanvasGrid";
 import { subscribePendingChanges, type StagedExpr, type WindowedRowSource } from "./grid/windowSource";
 import { movedIndex } from "./grid/columnMove";
@@ -184,6 +197,7 @@ import {
   ApiRequestError,
   missingSecretOf,
   store,
+  type AiStatus,
   type ConnSummary,
   type CountStepResult,
   type EngineMeta,
@@ -237,6 +251,23 @@ import {
 const EMPTY_TABLES: string[] = [];
 // TablePlus's Beautify; only in the SQL editor, so ⌘I keeps its keymap action elsewhere.
 const BEAUTIFY_KEY = "Mod+i";
+// How long a shortcut pressed mid-composition waits for the IME to commit
+// before it runs anyway.
+const IME_COMMIT_WAIT_MS = 600;
+// Suggestion failures only Settings fixes: suggestions stop until the AI
+// settings change.
+const AI_COMPLETE_STOPS: Record<string, true> = {
+  ai_disabled: true,
+  ai_autocomplete_off: true,
+  ai_not_configured: true,
+  ai_signed_out: true,
+  ai_usage_limit: true,
+  // Pausing to type would only spend more of the limit.
+  ai_rate_limited: true,
+  // Suggestions take a ChatGPT model; Settings picks one.
+  ai_complete_unsupported: true,
+  unsupported_capability: true,
+};
 // Past this many rows (by the driver's estimate) a table's total isn't counted
 // on its own: COUNT(*) would hold the connection too long.
 const AUTO_COUNT_MAX = 1_000_000;
@@ -644,6 +675,10 @@ export default function App() {
   // Rows a query run fetches at most (Settings → Data).
   const maxRows = settings.maxRows;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // A page asked for when opening (the AI box's "open AI settings").
+  const [settingsPage, setSettingsPage] = useState<{ id: SettingsPage } | undefined>(undefined);
+  // The query tab whose AI edit box is open; switching tabs closes it.
+  const [aiEditTab, setAiEditTab] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [, setPendingVersion] = useState(0);
   const [locked, setLocked] = useState<boolean>(() => getPasscodeHash() !== null);
@@ -956,6 +991,43 @@ export default function App() {
   const sqlDialect = activeEngine?.sql;
   const home = activeConnId === null || workspace === null;
   const activeTab = tabs !== null ? activeTabOf(tabs) : null;
+  // AI writes SQL only while turned on in Settings, in a SQL connection's query tab.
+  const aiStatus = useSyncExternalStore(store.subscribeAi, store.getAiStatus);
+  const aiReady = aiStatus?.enabled === true && activeEngine?.workbench === "sql" && activeTab?.kind === "query";
+  const aiEditOpen = aiReady && activeTab !== null && aiEditTab === activeTab.id;
+  // Suggestions as the user types fail quietly in the editor; the latest
+  // failure shows on its AI button. One only Settings fixes (AI or
+  // suggestions off, no model, signed out, a usage limit) stops them until
+  // the AI settings change (a new status).
+  const [aiCompleteFailure, setAiCompleteFailure] = useState<{ error: unknown; stopped: AiStatus | null } | null>(null);
+  const aiCompleteOn =
+    aiReady && aiStatus?.autocomplete === true && (aiCompleteFailure?.stopped == null || aiCompleteFailure.stopped !== aiStatus);
+  const aiComplete = useMemo<AiCompleteSource | null>(
+    () =>
+      aiCompleteOn
+        ? (before, after, signal) =>
+            store.completeSql(activeConnIdRef.current, before, after, signal).then(
+              (completion) => {
+                setAiCompleteFailure(null);
+                return completion;
+              },
+              (error: unknown) => {
+                if (!(error instanceof DOMException && error.name === "AbortError")) {
+                  const code = error instanceof ApiRequestError ? error.code : "";
+                  setAiCompleteFailure({ error, stopped: AI_COMPLETE_STOPS[code] ? store.getAiStatus() : null });
+                }
+                throw error;
+              },
+            )
+        : null,
+    [aiCompleteOn],
+  );
+  // The failure the AI button shows, while suggestions are on in Settings.
+  const aiCompleteProblem = aiStatus?.autocomplete === true ? aiCompleteFailure : null;
+  useEffect(() => {
+    // Unknown or unreachable: AI stays hidden; the Settings page says why.
+    store.fetchAi().catch(() => undefined);
+  }, []);
   const activeDataTab = activeTab !== null && activeTab.kind === "data" ? activeTab : null;
   // What the result's table says about each column (key, type, foreign key):
   // the grid colours keys and puts ⌃⌄ and → on the cells that take them.
@@ -3440,6 +3512,18 @@ export default function App() {
     if (action === "duplicateRows") {
       return target instanceof HTMLCanvasElement && target.closest(".grid-host") !== null;
     }
+    if (action === "aiSql") {
+      return aiReady && !modal;
+    }
+    // In the AI edit box ⌘↵ accepts the SQL it wrote, and in the editor while
+    // that SQL waits to be accepted: nothing runs from there.
+    if (
+      (action === "run" || action === "runAll") &&
+      (target?.closest(".ai-inline") != null ||
+        (target?.closest(".sql-editor") != null && editorRef.current?.aiControl()?.canAccept() === true))
+    ) {
+      return false;
+    }
     return true;
   };
 
@@ -3530,8 +3614,32 @@ export default function App() {
           editorRef.current?.focus();
         }
         return;
+      case "aiSql":
+        toggleAiEdit();
+        return;
     }
   };
+
+  // The AI shortcut and palette entry: opens the edit box, or takes the keys
+  // to it when focus is elsewhere, or closes it (putting the text back) from inside.
+  function toggleAiEdit(): void {
+    if (!aiReady || activeTab === null) {
+      return;
+    }
+    const control = editorRef.current?.aiControl() ?? null;
+    if (aiEditTab !== activeTab.id || control === null) {
+      setAiEditTab(activeTab.id);
+    } else if (!control.hasFocus()) {
+      control.focus();
+    } else {
+      control.close();
+    }
+  }
+
+  function openAiSettings(): void {
+    setSettingsPage({ id: "ai" });
+    setSettingsOpen(true);
+  }
 
   // Discarding the changes ends what applying them failed with.
   function discardChanges(): void {
@@ -4649,6 +4757,16 @@ export default function App() {
         disabled: active === null || active.kind !== "query",
         run: () => formatCurrent("minify"),
       },
+      ...(aiReady
+        ? [
+            {
+              id: "ai-sql",
+              label: t("AI로 SQL 작성"),
+              hint: shortcutHint(settings.keymap, "aiSql"),
+              run: toggleAiEdit,
+            },
+          ]
+        : []),
       {
         id: "split-side",
         label: splitSide === "right" ? t("결과 패널을 아래로") : t("결과 패널을 오른쪽으로"),
@@ -5671,9 +5789,19 @@ export default function App() {
         return;
       }
       // While an IME is composing, or a dialog owns the keyboard, the action
-      // doesn't run, but the browser's own action (reload, print, save page)
-      // must not run behind it either. The dialog still sees the key.
-      if (event.isComposing || modalOpen()) {
+      // doesn't run, but the browser's own action (reload, print, save page,
+      // Chrome's ⌘E) must not run behind it either. The dialog still sees the
+      // key. Running and the AI box, pressed while a Hangul syllable is still
+      // being composed, run once the composition ends, on the committed text.
+      const composingKey = event.isComposing || event.keyCode === 229;
+      if (composingKey && !modalOpen() && (action === "aiSql" || action === "run" || action === "runAll")) {
+        event.preventDefault();
+        event.stopPropagation();
+        window.clearTimeout(deferred?.timer);
+        deferred = { action, timer: window.setTimeout(runDeferred, composing ? IME_COMMIT_WAIT_MS : 0) };
+        return;
+      }
+      if (composingKey || modalOpen()) {
         if (event.metaKey || event.ctrlKey || /^F\d{1,2}$/.test(event.key)) {
           event.preventDefault();
         }
@@ -5695,9 +5823,35 @@ export default function App() {
       event.stopPropagation();
       shortcutRef.current(action);
     }
+    // Whether an IME composition is under way, and the shortcut pressed
+    // during one (see above), run when it ends or after a short wait.
+    let composing = false;
+    let deferred: { action: KeyAction; timer: number } | null = null;
+    function runDeferred(): void {
+      if (deferred === null) {
+        return;
+      }
+      const { action, timer } = deferred;
+      deferred = null;
+      window.clearTimeout(timer);
+      // After the editor has read the committed text from the page.
+      window.setTimeout(() => shortcutRef.current(action), 0);
+    }
+    function onCompositionStart(): void {
+      composing = true;
+    }
+    function onCompositionEnd(): void {
+      composing = false;
+      runDeferred();
+    }
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("compositionstart", onCompositionStart, true);
+    window.addEventListener("compositionend", onCompositionEnd, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("compositionstart", onCompositionStart, true);
+      window.removeEventListener("compositionend", onCompositionEnd, true);
+      window.clearTimeout(deferred?.timer);
     };
   }, []);
 
@@ -6369,6 +6523,12 @@ export default function App() {
                         favorites={favoriteSnippets}
                         runKey={settings.keymap.run[0]?.replaceAll("+", "-") ?? null}
                         dialect={sqlDialect}
+                        aiEdit={
+                          aiEditOpen
+                            ? { conn: activeConnId, onClose: () => setAiEditTab(null), onOpenSettings: openAiSettings }
+                            : null
+                        }
+                        aiComplete={aiComplete}
                       />
                       {/* What acts on the editor lives with it, as in TablePlus. */}
                       <div className="editor-bar">
@@ -6393,6 +6553,50 @@ export default function App() {
                           <SnippetIcon size={11} />
                           {t("스니펫")}
                         </button>
+                        {aiReady ? (
+                          <>
+                            <button
+                              type="button"
+                              className={`icon-text-button ai-editor-button${aiEditOpen ? " active" : ""}`}
+                              aria-pressed={aiEditOpen}
+                              aria-keyshortcuts={
+                                settings.keymap.aiSql[0] === undefined ? undefined : ariaKeyshortcuts(settings.keymap.aiSql[0])
+                              }
+                              aria-describedby={aiCompleteProblem !== null ? "ai-complete-problem" : undefined}
+                              title={withHint(t("AI로 SQL 작성"), shortcutHint(settings.keymap, "aiSql"))}
+                              onClick={() => {
+                                if (!aiEditOpen) {
+                                  setAiEditTab(activeTab.id);
+                                } else if (editorRef.current?.aiControl() != null) {
+                                  editorRef.current.aiControl()?.close();
+                                } else {
+                                  setAiEditTab(null);
+                                }
+                              }}
+                            >
+                              <SparkleIcon size={11} />
+                              AI
+                              {aiStatus?.autocomplete === true ? (
+                                <span
+                                  className={`ai-complete-dot${aiCompleteProblem !== null ? " failed" : ""}`}
+                                  aria-hidden="true"
+                                />
+                              ) : null}
+                            </button>
+                            {aiCompleteProblem !== null ? (
+                              <span
+                                id="ai-complete-problem"
+                                className="ai-complete-problem"
+                                role="status"
+                                title={tServer(toAppError(aiCompleteProblem.error).message)}
+                              >
+                                <AlertIcon size={10} />
+                                {aiCompleteOn ? t("자동 완성 실패") : t("자동 완성 멈춤")}
+                                <span className="sr-only">: {tServer(toAppError(aiCompleteProblem.error).message)}</span>
+                              </span>
+                            ) : null}
+                          </>
+                        ) : null}
                         <span className="spacer" />
                         <EditorActions
                           limit={maxRows}
@@ -7451,16 +7655,22 @@ export default function App() {
       {settingsOpen && (
         <SettingsSheet
           settings={settings}
+          page={settingsPage}
           onChange={(patch) => setSettings(saveSettings(patch))}
           onLock={() => {
             setSettingsOpen(false);
+            setSettingsPage(undefined);
             setLocked(true);
           }}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setSettingsPage(undefined);
+          }}
         />
       )}
       <ConfirmDialogHost />
       <BinaryCellDialogHost />
+      <ChatGptWelcomeHost />
     </div>
     {locked ? <LockScreen onUnlock={() => setLocked(false)} /> : null}
     <HoverTooltip />

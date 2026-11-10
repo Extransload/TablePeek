@@ -168,6 +168,142 @@ function appServerDownHelp(): ErrorHelp {
   };
 }
 
+// The AI provider (Settings › AI) couldn't be reached: the network, not a
+// database.
+function aiNetworkHelp(): ErrorHelp {
+  return {
+    title: t("AI 제공자에 연결할 수 없습니다"),
+    cause: t("네트워크로 AI 제공자에 닿지 못했습니다."),
+    fixes: [t("인터넷에 연결되어 있는지 확인하세요."), t("네트워크나 프록시 설정을 확인하세요.")],
+  };
+}
+
+// The Codex or Claude Code CLI picked in Settings › AI isn't on this computer.
+function aiCliMissingHelp(): ErrorHelp {
+  return {
+    title: t("CLI가 설치되어 있지 않습니다"),
+    cause: t("고른 모델의 CLI를 이 컴퓨터에서 찾지 못했습니다."),
+    fixes: [
+      t("Codex CLI: 터미널에서 npm i -g @openai/codex 또는 brew install codex로 설치하세요."),
+      t("Claude Code CLI: 터미널에서 curl -fsSL https://claude.ai/install.sh | bash로 설치하세요."),
+      t("설치한 뒤 설정 › AI에서 다시 확인을 누르세요."),
+    ],
+  };
+}
+
+// The CLI is there, but not signed in.
+function aiCliSignedOutHelp(): ErrorHelp {
+  return {
+    title: t("CLI에 로그인하지 않았습니다"),
+    cause: t("고른 모델의 CLI가 이 컴퓨터에서 로그인되어 있지 않습니다."),
+    fixes: [
+      t("Codex CLI: 터미널에서 codex login을 실행하세요."),
+      t("Claude Code CLI: 터미널에서 claude를 실행한 뒤 /login을 입력하세요."),
+      t("로그인한 뒤 설정 › AI에서 다시 확인을 누르세요."),
+    ],
+  };
+}
+
+// The model picked belongs to a provider that is coming soon.
+function providerUnavailableHelp(): ErrorHelp {
+  return {
+    title: t("아직 쓸 수 없는 제공자입니다"),
+    cause: t("고른 모델의 제공자는 곧 지원합니다."),
+    fixes: [t("설정 › AI에서 지금 쓸 수 있는 연결(ChatGPT 로그인, Codex CLI, Claude Code CLI, Gemini API 키)의 모델을 고르세요.")],
+  };
+}
+
+// Suggestions as the user types asked of a CLI.
+function aiCompleteUnsupportedHelp(): ErrorHelp {
+  return {
+    title: t("입력하는 동안 제안은 ChatGPT나 Gemini로만 됩니다"),
+    cause: t("CLI는 답마다 몇 초 걸려 입력 중 제안에 쓸 수 없습니다."),
+    fixes: [
+      t("설정 › AI에서 자동 완성 모델로 ChatGPT나 Gemini 모델을 고르세요."),
+      t("또는 설정 › AI에서 입력하는 동안 제안을 끄세요."),
+    ],
+  };
+}
+
+// ChatGPT sign-in (Settings › AI): the plan's limit, or the app limit the
+// user set in ChatGPT.
+function aiUsageLimitHelp(): ErrorHelp {
+  return {
+    title: t("ChatGPT 사용 한도에 도달했습니다"),
+    cause: t("ChatGPT 요금제의 사용 한도나 ChatGPT 설정에서 이 앱에 정한 한도를 다 썼습니다."),
+    fixes: [t("ChatGPT 설정 › 사용량에서 남은 사용량과 한도를 확인하세요.")],
+  };
+}
+
+// An AI provider's "too many requests": what it said of the limit (the
+// server reads Gemini's model, limit, per-day, free tier and wait into
+// `details`), and what gets past it.
+function aiRateLimitHelp(error: AppError): ErrorHelp {
+  const details = (error.details !== null && typeof error.details === "object" ? error.details : {}) as {
+    model?: string;
+    limit?: number;
+    per_day?: boolean;
+    free_tier?: boolean;
+    retry_after_s?: number;
+    out_of_credit?: boolean;
+  };
+  let cause: string;
+  if (details.out_of_credit === true) {
+    cause = t("이 키의 크레딧이나 결제 한도를 다 썼습니다.");
+  } else if (details.model !== undefined && details.limit !== undefined) {
+    cause = t(details.per_day === true ? "{model}의 하루 요청 {limit}회를 다 썼습니다." : "{model}의 요청 {limit}회 한도를 다 썼습니다.", {
+      model: details.model,
+      limit: details.limit,
+    });
+    if (details.free_tier === true) {
+      cause = `${cause} ${t("무료 등급의 한도입니다.")}`;
+    }
+  } else {
+    cause = t("제공자가 정한 요청 한도를 넘었습니다.");
+  }
+  const fixes: string[] = [];
+  if (details.retry_after_s !== undefined) {
+    fixes.push(t("{wait} 뒤에 다시 쓸 수 있습니다.", { wait: waitText(details.retry_after_s) }));
+  }
+  if (details.out_of_credit !== true) {
+    // Gemini counts each model's limit on its own (it names the model).
+    fixes.push(
+      details.model !== undefined
+        ? t("다른 모델을 고르세요. Gemini는 모델마다 한도가 따로입니다.")
+        : t("잠시 뒤에 다시 하거나 다른 모델을 고르세요."),
+    );
+  }
+  fixes.push(
+    details.free_tier === true || details.out_of_credit === true
+      ? t("제공자에서 결제를 연결하면 한도가 늘어납니다.")
+      : t("요금제의 남은 사용량을 확인하세요."),
+  );
+  return { title: t("AI 요청 한도를 넘었습니다"), cause, fixes };
+}
+
+// "5시간 30분", "3분", "20초": a wait to the minute once it is over one.
+function waitText(seconds: number): string {
+  if (seconds < 60) {
+    return t("{seconds}초", { seconds: Math.ceil(seconds) });
+  }
+  const total = Math.ceil(seconds / 60);
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  if (hours === 0) {
+    return t("{minutes}분", { minutes });
+  }
+  return minutes === 0 ? t("{hours}시간", { hours }) : t("{hours}시간 {minutes}분", { hours, minutes });
+}
+
+// ChatGPT sign-in: the login is gone.
+function aiSignedOutHelp(): ErrorHelp {
+  return {
+    title: t("로그인이 끝났습니다"),
+    cause: t("로그인이 만료되었거나 ChatGPT에서 연결을 해제했습니다."),
+    fixes: [t("설정 › AI에서 다시 로그인하세요.")],
+  };
+}
+
 const ASK_ADMIN_FOR_GRANT = "DB 관리자에게 이 작업에 필요한 권한을 요청하세요.";
 const USE_OTHER_ACCOUNT = "권한이 있는 다른 계정으로 연결해서 실행하세요.";
 
@@ -1022,6 +1158,30 @@ export function explainError(error: unknown, where: ErrorContext = "general", en
   }
   if (isAppServerDown(appError)) {
     return appServerDownHelp();
+  }
+  // An AI provider's error says what the provider said; the database rules
+  // (connection refused, timeouts) would blame the database.
+  if (appError.code.startsWith("ai_") || appError.code === "provider_unavailable") {
+    switch (appError.code) {
+      case "ai_network":
+        return aiNetworkHelp();
+      case "ai_usage_limit":
+        return aiUsageLimitHelp();
+      case "ai_rate_limited":
+        return aiRateLimitHelp(appError);
+      case "ai_signed_out":
+        return aiSignedOutHelp();
+      case "ai_cli_missing":
+        return aiCliMissingHelp();
+      case "ai_cli_signed_out":
+        return aiCliSignedOutHelp();
+      case "provider_unavailable":
+        return providerUnavailableHelp();
+      case "ai_complete_unsupported":
+        return aiCompleteUnsupportedHelp();
+      default:
+        return null;
+    }
   }
   const known = engineId ?? engineOfCode(appError);
   const original =
