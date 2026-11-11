@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- **Built-in background picture.** Settings › Appearance › Background picture now offers a photograph, snowy peaks under a starry pink sky (from Unsplash), beside None and a picture of your own, in place of 0.7.0's drawn table floor; a window that had the drawn one shows the photograph.
+
 ## [0.7.0] - 2026-11-11
 
 A built-in background picture in the theme's colours, and an opacity of their own for every part of the window over it.

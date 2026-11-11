@@ -563,7 +563,7 @@ export function applySettings(settings: AppSettings): void {
     root.style.setProperty(`--surface-${part}`, `${value}%`);
   }
   applyMaterial(settings, { ...opaque, mode: theme.mode }, settings.themeMode === "system", pictured);
-  applyBackground(settings, opaque);
+  applyBackground(settings);
   window.dispatchEvent(new CustomEvent("tablepeek:theme"));
 }
 

@@ -75,13 +75,41 @@ html.has-backdrop body::before {
   filter: blur(var(--backdrop-blur, 0px));
 }
 
-/* The picture in its Settings row. */
-.settings-backdrop-thumb {
-  width: calc(40px * var(--ui-scale, 1));
-  height: calc(24px * var(--ui-scale, 1));
+/* The pictures in their Settings row: none, the built-in ones, and a picked
+   one (shown from the backdrop itself) or the way to pick one. */
+.settings-backdrop-gallery {
+  flex: none;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(52px * var(--ui-scale, 1)), 1fr));
+  grid-auto-rows: calc(36px * var(--ui-scale, 1));
+  gap: 6px;
+}
+
+.settings-backdrop-gallery .settings-backdrop-tile {
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px;
   border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--backdrop-image, none) center / cover no-repeat, var(--bg-solid);
+  border-radius: 6px;
+  background: var(--bg-solid) center / cover no-repeat;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1.2;
+}
+
+.settings-backdrop-gallery .settings-backdrop-tile.picked {
+  background-image: var(--backdrop-image, none);
+}
+
+.settings-backdrop-gallery .settings-backdrop-tile:hover {
+  border-color: var(--muted);
+}
+
+.settings-backdrop-gallery .settings-backdrop-tile[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  color: var(--ink);
 }
 
 /* The app draws its own scrollbars (scrollbars.ts): Chrome on macOS no

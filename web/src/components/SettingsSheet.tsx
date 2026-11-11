@@ -17,7 +17,7 @@ import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
 import { fontGroups, fontListLabel, SYSTEM_CODE_FONT, SYSTEM_UI_FONT, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import { setSettingsDock } from "../dock";
-import { BACKGROUND_ACCEPT, BACKGROUND_BLUR_MAX, BUILTIN_BACKGROUND, type BackgroundFit } from "../background";
+import { BACKGROUND_ACCEPT, BACKGROUND_BLUR_MAX, BUILTIN_BACKGROUNDS, builtinBackground, type BackgroundFit } from "../background";
 import { MATERIAL_BLUR_MAX, subscribeMaterial, windowTranslucent, type Material } from "../material";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "../panelEdge";
 import {
@@ -655,7 +655,13 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
     }
   }
 
+  // No picture: a picked one is let go of on the server too; a built-in one
+  // only leaves the settings.
   async function clearBackground(): Promise<void> {
+    if (builtinBackground(settings.backgroundImage) !== null) {
+      onChange({ backgroundImage: "" });
+      return;
+    }
     try {
       await store.clearBackgroundImage();
       onChange({ backgroundImage: "" });
@@ -1024,28 +1030,56 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
             <SettingsGroup title="배경 이미지">
               <SettingRow
                 label="이미지"
-                keywords="background wallpaper picture image photo 배경 화면 바탕 사진"
-                hint={t("기본 이미지는 테마의 색으로 그려지고 테마를 따라 바뀝니다. 고른 이미지(PNG, JPEG, GIF, WebP)는 모든 창에 같이 깔립니다.")}
+                keywords="background wallpaper picture image photo 배경 화면 바탕 사진 기본 이미지 built-in"
+                hint={t("TablePeek에 들어 있는 사진을 고르거나 내 이미지(PNG, JPEG, GIF, WebP)를 고릅니다. 내 이미지는 모든 창에 같이 깔립니다.")}
+                wide
                 changed={settings.backgroundImage !== ""}
                 onReset={() => void clearBackground()}
                 onActivate={() => backgroundFileRef.current?.click()}
               >
-                {settings.backgroundImage !== "" ? <span className="settings-backdrop-thumb" aria-hidden="true" /> : null}
-                {settings.backgroundImage !== BUILTIN_BACKGROUND ? (
-                  <button type="button" onClick={() => onChange({ backgroundImage: BUILTIN_BACKGROUND })}>
-                    {t("기본 이미지")}
+                <div className="settings-backdrop-gallery" role="group" aria-label={t("이미지")}>
+                  <button
+                    type="button"
+                    className="settings-backdrop-tile none"
+                    aria-pressed={settings.backgroundImage === ""}
+                    title={t("없음")}
+                    onClick={() => void clearBackground()}
+                  >
+                    {t("없음")}
                   </button>
-                ) : null}
-                <button type="button" onClick={() => backgroundFileRef.current?.click()}>
-                  {settings.backgroundImage !== "" && settings.backgroundImage !== BUILTIN_BACKGROUND
-                    ? t("바꾸기…")
-                    : t("이미지 선택…")}
-                </button>
-                {settings.backgroundImage !== "" ? (
-                  <button type="button" onClick={() => void clearBackground()}>
-                    {t("지우기")}
-                  </button>
-                ) : null}
+                  {BUILTIN_BACKGROUNDS.map((picture) => (
+                    <button
+                      key={picture.stamp}
+                      type="button"
+                      className="settings-backdrop-tile"
+                      aria-pressed={builtinBackground(settings.backgroundImage)?.stamp === picture.stamp}
+                      aria-label={t(picture.label)}
+                      title={t(picture.label)}
+                      style={{ backgroundImage: `url("${picture.thumb}")` }}
+                      onClick={() => onChange({ backgroundImage: picture.stamp })}
+                    />
+                  ))}
+                  {settings.backgroundImage !== "" && builtinBackground(settings.backgroundImage) === null ? (
+                    <button
+                      type="button"
+                      className="settings-backdrop-tile picked"
+                      aria-pressed
+                      aria-label={t("바꾸기…")}
+                      title={t("바꾸기…")}
+                      onClick={() => backgroundFileRef.current?.click()}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="settings-backdrop-tile none"
+                      aria-pressed={false}
+                      title={t("이미지 선택…")}
+                      onClick={() => backgroundFileRef.current?.click()}
+                    >
+                      {t("내 이미지…")}
+                    </button>
+                  )}
+                </div>
                 <input
                   ref={backgroundFileRef}
                   type="file"
@@ -1062,7 +1096,7 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
               </SettingRow>
               {settings.backgroundImage !== "" ? (
                 <>
-                  {settings.backgroundImage !== BUILTIN_BACKGROUND ? (
+                  {builtinBackground(settings.backgroundImage) === null ? (
                     <SettingRow
                       label="맞춤"
                       keywords="background fit cover contain tile repeat 채우기 맞추기 바둑판"

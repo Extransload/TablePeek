@@ -1015,6 +1015,8 @@ fn mime_of(path: &str) -> &'static str {
         "json" | "map" => "application/json",
         "svg" => "image/svg+xml",
         "png" => "image/png",
+        "webp" => "image/webp",
+        "jpg" | "jpeg" => "image/jpeg",
         "ico" => "image/x-icon",
         "woff2" => "font/woff2",
         "woff" => "font/woff",

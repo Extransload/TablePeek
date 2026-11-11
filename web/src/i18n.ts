@@ -461,9 +461,10 @@ const EN: Record<string, string> = {
     "The background of Quick Look, dialogs, the command palette, menus and tooltips. So their text reads, it stays at least 60% opaque over a blur of 8px or more, and is opaque over less.",
   "배경 이미지": "Background picture",
   "이미지": "Picture",
-  "기본 이미지는 테마의 색으로 그려지고 테마를 따라 바뀝니다. 고른 이미지(PNG, JPEG, GIF, WebP)는 모든 창에 같이 깔립니다.":
-    "The built-in picture is drawn in the theme's colours and follows the theme. A picture you pick (PNG, JPEG, GIF or WebP) shows in every window.",
-  "기본 이미지": "Built-in",
+  "TablePeek에 들어 있는 사진을 고르거나 내 이미지(PNG, JPEG, GIF, WebP)를 고릅니다. 내 이미지는 모든 창에 같이 깔립니다.":
+    "Pick the photo TablePeek comes with, or a picture of your own (PNG, JPEG, GIF or WebP), which shows in every window.",
+  "분홍 하늘 설산": "Snowy peaks under a pink sky",
+  "내 이미지…": "Your own…",
   "이미지 선택…": "Choose picture…",
   "바꾸기…": "Change…",
   "맞춤": "Fit",
