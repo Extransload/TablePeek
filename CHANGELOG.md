@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-11
+
+A built-in background picture in the theme's colours, and an opacity of their own for every part of the window over it.
+
 ### Added
 
 - **Built-in background picture.** Settings › Appearance › Background picture › **Built-in** draws the home screen's table floor under a night sky (a daytime one on a light theme) in the theme's own colours, and follows the theme.
@@ -176,7 +180,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Extransload/TablePeek/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Extransload/TablePeek/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Extransload/TablePeek/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Extransload/TablePeek/compare/v0.3.4...v0.4.0
