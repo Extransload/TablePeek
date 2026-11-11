@@ -87,6 +87,9 @@ html.has-backdrop body::before {
 }
 
 .settings-backdrop-gallery .settings-backdrop-tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-width: 0;
   height: 100%;
   padding: 0 4px;
@@ -96,6 +99,7 @@ html.has-backdrop body::before {
   color: var(--muted);
   font-size: calc(11px * var(--ui-scale, 1));
   line-height: 1.2;
+  text-align: center;
 }
 
 .settings-backdrop-gallery .settings-backdrop-tile.picked {
@@ -5062,13 +5066,21 @@ html.settings-docked :is(.modal-backdrop, .palette-backdrop) > * {
   font-size: calc(12.5px * var(--ui-scale, 1));
 }
 
-/* Changed from its default: a dot, and Reset beside it. */
+/* The name and, changed from its default, a dot and Reset after it, inline,
+   so a name that wraps keeps them after its last word. */
+.settings-row-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .settings-row-dot {
-  flex: none;
+  display: inline-block;
   width: 6px;
   height: 6px;
+  margin: 0 2px 0 6px;
   border-radius: 50%;
   background: var(--accent);
+  vertical-align: middle;
 }
 
 button.settings-row-reset {
@@ -5079,6 +5091,7 @@ button.settings-row-reset {
   background: transparent;
   color: var(--accent);
   font-size: calc(11px * var(--ui-scale, 1));
+  vertical-align: middle;
 }
 
 button.settings-row-reset:hover {

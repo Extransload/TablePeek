@@ -201,19 +201,22 @@ export function SettingRow({
     >
       <div className="settings-row-text">
         <div className="settings-row-title">
-          <span className="settings-row-label" id={`${id}-label`}>
-            <Highlight text={t(label)} terms={scope.terms} />
+          {/* The name, with its dot and Reset after its last word however it wraps. */}
+          <span className="settings-row-name">
+            <span className="settings-row-label" id={`${id}-label`}>
+              <Highlight text={t(label)} terms={scope.terms} />
+            </span>
+            {changed ? (
+              <>
+                <span className="settings-row-dot" title={t("기본값에서 바뀜")} aria-label={t("기본값에서 바뀜")} />
+                {onReset ? (
+                  <button type="button" className="settings-row-reset" tabIndex={-1} onClick={onReset}>
+                    {t("재설정")}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
           </span>
-          {changed ? (
-            <>
-              <span className="settings-row-dot" title={t("기본값에서 바뀜")} aria-label={t("기본값에서 바뀜")} />
-              {onReset ? (
-                <button type="button" className="settings-row-reset" tabIndex={-1} onClick={onReset}>
-                  {t("재설정")}
-                </button>
-              ) : null}
-            </>
-          ) : null}
           {status}
           {action !== undefined ? <span className="settings-row-action">{action}</span> : null}
         </div>

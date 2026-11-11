@@ -464,7 +464,6 @@ const EN: Record<string, string> = {
   "TablePeek에 들어 있는 사진을 고르거나 내 이미지(PNG, JPEG, GIF, WebP)를 고릅니다. 내 이미지는 모든 창에 같이 깔립니다.":
     "Pick the photo TablePeek comes with, or a picture of your own (PNG, JPEG, GIF or WebP), which shows in every window.",
   "분홍 하늘 설산": "Snowy peaks under a pink sky",
-  "내 이미지…": "Your own…",
   "이미지 선택…": "Choose picture…",
   "바꾸기…": "Change…",
   "맞춤": "Fit",

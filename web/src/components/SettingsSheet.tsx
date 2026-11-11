@@ -1073,10 +1073,11 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                       type="button"
                       className="settings-backdrop-tile none"
                       aria-pressed={false}
+                      aria-label={t("이미지 선택…")}
                       title={t("이미지 선택…")}
                       onClick={() => backgroundFileRef.current?.click()}
                     >
-                      {t("내 이미지…")}
+                      <PlusIcon size={14} />
                     </button>
                   )}
                 </div>

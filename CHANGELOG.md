@@ -4,11 +4,16 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-11
+
+Parts of the window set apart over a picture, the settings sheet part of the page, and panels that move with what is beside them.
+
 ### Fixed
 
 - Over a background picture or in a see-through window, the sidebars, the editor, the table, the console and the settings sheet are set apart again: the lines between them are hairlines of the text colour, as Tern's are, where the theme's line colour sank into the picture.
 - The sidebar, the row detail column and the console no longer slide in and out on their own while the editor and the table beside them jump to their new size: what is beside them now gives way and takes the room back as they move.
 - Over a background picture or in a see-through window, the settings sheet no longer stands apart as a blurred pane of its own: docked beside the app, it runs on from it over the same picture, as Tern's settings do, with nearly solid cards so its words read. **Opacity by area › Settings sheet** (0% by default) lays its own colour over it, in place of its floating opacity.
+- In Settings, a changed setting's dot and Reset follow its name when the name wraps, instead of standing apart at the line's end; the background picture's tiles centre what they hold, and the way to pick your own is a plus.
 
 ## [0.7.1] - 2026-11-11
 
@@ -194,7 +199,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/Extransload/TablePeek/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/Extransload/TablePeek/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/Extransload/TablePeek/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Extransload/TablePeek/compare/v0.5.0...v0.6.0
