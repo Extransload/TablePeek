@@ -6538,7 +6538,7 @@ mod tests {
         assert_eq!(whole.row_count, rows);
         let got = stream_all(engine, sql, batch_rows).await;
         let mut sizes = vec![batch_rows; rows / batch_rows];
-        if rows % batch_rows > 0 || rows == 0 {
+        if !rows.is_multiple_of(batch_rows) || rows == 0 {
             sizes.push(rows % batch_rows);
         }
         assert_eq!(

@@ -292,7 +292,7 @@ fn js_number(out: &mut String, value: f64) {
     }
     if digits_len <= n && n <= 21 {
         push_digits(out);
-        out.extend(std::iter::repeat('0').take((n - digits_len) as usize));
+        out.extend(std::iter::repeat_n('0', (n - digits_len) as usize));
     } else if 0 < n && n <= 21 {
         let all: String = [lead, fraction].concat();
         out.push_str(&all[..n as usize]);
@@ -300,7 +300,7 @@ fn js_number(out: &mut String, value: f64) {
         out.push_str(&all[n as usize..]);
     } else if -6 < n && n <= 0 {
         out.push_str("0.");
-        out.extend(std::iter::repeat('0').take((-n) as usize));
+        out.extend(std::iter::repeat_n('0', (-n) as usize));
         push_digits(out);
     } else {
         out.push_str(lead);
