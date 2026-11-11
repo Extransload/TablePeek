@@ -4,6 +4,15 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- **Settings › Appearance, sorted out.** One **Background** opacity, under the new **Opacity** group with every other opacity, sets how opaque the app is over what is behind it, the picture or the desktop, in place of the material's Opacity and Opacity over the picture, which each went unheeded while the other applied; the one in use carries over. The material's **Blur** shows only where it does something: in the desktop app, under Clear, with no picture. A background picture keeps the desktop app's window solid, as it covers it anyway.
+- **Floating surfaces as picked.** Quick Look, dialogs, menus, the command palette, tooltips and notices always blur what is under them, the same however the material is set, and take their opacity as set, down to 0%, instead of never going under 60% (or turning opaque under Clear with a light blur). They start at 50%.
+
+### Fixed
+
+- Opening and closing Settings, the app gives up its room and takes it back as the sheet slides, instead of jumping to its new width.
+
 ## [0.7.2] - 2026-11-11
 
 Parts of the window set apart over a picture, the settings sheet part of the page, and panels that move with what is beside them.

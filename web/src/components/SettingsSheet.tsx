@@ -169,16 +169,14 @@ const SURFACE_ROWS: { key: SurfaceKey; label: string; keywords: string }[] = [
 
 // The floating surfaces' own opacities when they turn to glass (material.ts).
 type FloatingKey = "floatingOpacity" | "noticeOpacity";
-const READABLE_HINT =
-  "글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.";
 const FLOATING_ROWS: { key: FloatingKey; label: string; keywords: string; hint: string }[] = [
   {
     key: "floatingOpacity",
     label: "떠 있는 창",
     keywords: "floating surface opacity quick look dialog palette menu popover 퀵룩 대화 상자 메뉴",
-    hint: `Quick Look, 대화 상자, 명령 팔레트, 메뉴, 툴팁의 바탕입니다. ${READABLE_HINT}`,
+    hint: "Quick Look, 대화 상자, 명령 팔레트, 메뉴, 툴팁의 바탕입니다. 뒤가 늘 흐려지므로 낮춰도 글자가 읽힙니다.",
   },
-  { key: "noticeOpacity", label: "알림", keywords: "notice toast banner opacity 토스트 배너", hint: READABLE_HINT },
+  { key: "noticeOpacity", label: "알림", keywords: "notice toast banner opacity 토스트 배너", hint: "토스트와 배너의 바탕입니다." },
 ];
 
 const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -788,10 +786,19 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
         const modes = MODE_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const accent = currentAccent(settings);
         const onlyTheme = theme ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) }) : undefined;
-        // Over a picture or in a see-through window: the docked parts' rows;
-        // with glass floating surfaces: theirs.
-        const pageTranslucent = settings.backgroundImage !== "" || (translucent === true && settings.material !== "solid");
-        const floatingGlass = settings.backgroundImage !== "" || settings.material !== "solid";
+        // Over a picture or in a see-through window the page is translucent:
+        // its opacity and the docked parts' rows. With glass floating
+        // surfaces: theirs. Under a picture the window stays solid, so the
+        // desktop's blur has nothing to do.
+        const pictured = settings.backgroundImage !== "";
+        const pageTranslucent = pictured || (translucent === true && settings.material !== "solid");
+        const floatingGlass = pictured || settings.material !== "solid";
+        const materialHint =
+          translucent !== true
+            ? t("브라우저 탭에서는 떠 있는 창만 유리가 됩니다.")
+            : pictured
+              ? t("배경 이미지가 창 뒤를 가리므로 떠 있는 창만 유리가 됩니다.")
+              : null;
         return (
           <>
             <SettingsGroup title="테마">
@@ -993,7 +1000,7 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
               <SettingRow
                 label="재질"
                 keywords="material solid glass clear transparency 투명도 유리"
-                hint={translucent === true ? null : t("브라우저 탭에서는 떠 있는 면만 유리가 됩니다.")}
+                hint={materialHint}
                 {...fromDefault("material")}
                 onActivate={() => onChange({ material: nextChoice(materials, settings.material) })}
               >
@@ -1004,19 +1011,13 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                   onChange={(next) => onChange({ material: next })}
                 />
               </SettingRow>
-              {settings.material !== "solid" ? (
-                <SettingRow label="불투명도" keywords="opacity window" {...fromDefault("materialOpacity")}>
-                  <Slider
-                    label={t("불투명도")}
-                    value={settings.materialOpacity}
-                    max={100}
-                    unit="%"
-                    onChange={(materialOpacity) => onChange({ materialOpacity })}
-                  />
-                </SettingRow>
-              ) : null}
-              {settings.material === "clear" ? (
-                <SettingRow label="흐림" keywords="blur radius" {...fromDefault("materialBlur")}>
+              {settings.material === "clear" && translucent === true && !pictured ? (
+                <SettingRow
+                  label="흐림"
+                  keywords="blur radius desktop 바탕화면"
+                  hint={t("창 뒤 바탕화면이 흐려지는 정도입니다.")}
+                  {...fromDefault("materialBlur")}
+                >
                   <Slider
                     label={t("흐림")}
                     value={settings.materialBlur}
@@ -1112,20 +1113,6 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                       />
                     </SettingRow>
                   ) : null}
-                  <SettingRow
-                    label="이미지 위 불투명도"
-                    keywords="background opacity 배경 불투명도"
-                    hint={t("앱 바탕이 이미지 위에 깔리는 정도입니다. 낮을수록 이미지가 잘 보입니다. 영역마다 더 진하게 하려면 아래 영역별 불투명도를 올리세요.")}
-                    {...fromDefault("backgroundOpacity")}
-                  >
-                    <Slider
-                      label={t("이미지 위 불투명도")}
-                      value={settings.backgroundOpacity}
-                      max={100}
-                      unit="%"
-                      onChange={(backgroundOpacity) => onChange({ backgroundOpacity })}
-                    />
-                  </SettingRow>
                   <SettingRow label="이미지 흐림" keywords="background blur 배경 흐림" {...fromDefault("backgroundBlur")}>
                     <Slider
                       label={t("이미지 흐림")}
@@ -1140,9 +1127,25 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
             </SettingsGroup>
             {pageTranslucent || floatingGlass ? (
               <SettingsGroup
-                title="영역별 불투명도"
-                hint={t("본문(편집기와 표) 위로 각 영역의 바탕이 깔리는 정도입니다. 0%면 본문과 같이 구분 없이 이어집니다.")}
+                title="불투명도"
+                hint={t("바탕은 앱 전체가 뒤(배경 이미지나 바탕화면) 위에 깔리는 정도입니다. 영역마다 그 위에 자기 색을 더 깔 수 있고, 0%면 본문과 구분 없이 이어집니다.")}
               >
+                {pageTranslucent ? (
+                  <SettingRow
+                    label="바탕"
+                    keywords="page background opacity picture desktop 배경 이미지 위 불투명도"
+                    hint={t("낮을수록 뒤가 잘 보입니다.")}
+                    {...fromDefault("pageOpacity")}
+                  >
+                    <Slider
+                      label={t("바탕")}
+                      value={settings.pageOpacity}
+                      max={100}
+                      unit="%"
+                      onChange={(pageOpacity) => onChange({ pageOpacity })}
+                    />
+                  </SettingRow>
+                ) : null}
                 {pageTranslucent
                   ? SURFACE_ROWS.map((row) => (
                       <SettingRow key={row.key} label={row.label} keywords={row.keywords} {...fromDefault(row.key)}>

@@ -4710,13 +4710,12 @@ html.settings-docked :is(.modal-backdrop, .palette-backdrop) > * {
   animation: tablepeek-sheet-in var(--motion-spring) var(--ease-spring) backwards;
 }
 
-/* In from past the right edge (its shadow too), on a spring. Only moved,
-   never faded: a glass sheet fading in would show the app unblurred through
-   it, so it is glass from its first frame and its content fades instead
-   (see "Motion: overlays"). */
+/* In from past the right edge, on a spring, as the app gives up its room on
+   the same spring (dock.ts), so the two move as one. Only moved, never
+   faded: its content fades instead (see "Motion: overlays"). */
 @keyframes tablepeek-sheet-in {
   from {
-    transform: translateX(calc(100% + 64px));
+    transform: translateX(100%);
   }
 }
 
@@ -5467,7 +5466,7 @@ button.settings-picker-remove {
    A tinted surface lays its tint over its fill as a background-image, so the
    fill can follow the material below and the tint stays. ── */
 :is(
-  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .modal, .palette, .menu-panel, .context-menu, .column-picker, .page-size-panel,
   .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
   .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
   .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
@@ -5484,13 +5483,12 @@ button.settings-picker-remove {
    picture, turn the floating surfaces above (all but the loading pills,
    drag ghost, diagram cards, lock screen, cell editor and action strip,
    which keep their own look) to tinted glass over the app, at the opacity
-   Settings picks for them (--glass-fill; the settings sheet's and the
-   notices' own, through --floating-fill; never so low the text stops
-   reading), not the window's. Inside one, what paints the page's background
+   Settings picks for them (--glass-fill; the notices' own, through
+   --floating-fill), not the window's. Inside one, what paints the page's background
    or a panel paints a lighter wash of it, so the glass reads through; the
    dim under a dialog is lighter, for the app to show blurred. ── */
 html.floating-glass :is(
-  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .modal, .palette, .menu-panel, .context-menu, .column-picker, .page-size-panel,
   .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
   .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
   .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
@@ -5511,23 +5509,23 @@ html.floating-glass :is(.error-toasts > .error-notice, .error-notice.banner, .fl
 /* Their edge, a hairline of the ink over glass. Not on the surfaces whose
    border says something (an error, staged edits, the AI box's focus). */
 html.floating-glass
-  :is(.modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  :is(.modal, .palette, .menu-panel, .context-menu, .column-picker, .page-size-panel,
     .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
     .cm-completionInfo) {
   border-color: color-mix(in srgb, var(--ink) 14%, transparent);
 }
 
-/* One inside another (the completion list's info panel, a list in a dialog,
-   a menu in the settings sheet) has nothing behind it to blur: the outer
-   one's backdrop-filter is its backdrop root. It takes an opaque fill. */
+/* One inside another (the completion list's info panel, a list in a dialog)
+   has nothing behind it to blur: the outer one's backdrop-filter is its
+   backdrop root. It takes an opaque fill. */
 html.floating-glass :is(
-  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .modal, .palette, .menu-panel, .context-menu, .column-picker, .page-size-panel,
   .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
   .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
   .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
   .mg-edit-error, .mg-qerror.on, .mg-geo-tip, .mg-perf-tip
 ) :is(
-  .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
+  .modal, .palette, .menu-panel, .context-menu, .column-picker, .page-size-panel,
   .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
   .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
   .grid-edit-error, .oidc-banner, .hover-tooltip, .table-card, .chart-tip, .pending-bar.floating,
@@ -5578,23 +5576,16 @@ html.translucent-page :is(.data-toolbar, .result-sets) {
   background: color-mix(in srgb, var(--panel-solid) var(--surface-bars), transparent);
 }
 
-/* The settings sheet is docked beside the app, over nothing but the page:
-   over a translucent page it is one more area, not glass, so the picture runs
-   on under it unblurred as it does under the app, and what it holds paints
-   the page's own colours. (:root outranks the floating surfaces' glass rule,
-   whose list holds a two-class selector.) */
-html.translucent-page:root .settings-sheet {
-  --bg: inherit;
-  --panel: inherit;
-  --head: inherit;
+/* The settings sheet is docked beside the app, over nothing but the page,
+   never a floating surface: over a translucent page it is one more area, so
+   the picture runs on under it as it does under the app. Its cards stay
+   nearly solid there, as Tern's do, so their words read over any part of the
+   picture. */
+html.translucent-page .settings-sheet {
   background: color-mix(in srgb, var(--panel-solid) var(--surface-sheet), transparent);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
 }
 
-/* Its cards stay nearly solid there, as Tern's do, so their words read over
-   any part of the picture. */
-html.translucent-page:root .settings-sheet .settings-group {
+html.translucent-page .settings-sheet .settings-group {
   background: color-mix(in srgb, var(--panel-solid) 88%, transparent);
 }
 

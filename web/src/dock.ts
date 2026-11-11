@@ -5,6 +5,7 @@
 // sheet, and follow as the sheet is resized.
 
 import { useSyncExternalStore } from "react";
+import { animate, DURATION, EASE } from "./motion";
 
 let dock = 0;
 const listeners = new Set<() => void>();
@@ -15,14 +16,27 @@ function notify(): void {
   }
 }
 
-// The sheet's width while it is docked, null once it closes.
+// The sheet's width while it is docked, null once it closes. As it comes in
+// or goes, the app gives up the room or takes it back on the sheet's own
+// timing (styles.css, tablepeek-sheet-in; overlayMotion.ts, its exit), so
+// the app moves with it; a resize just follows the edge.
 export function setSettingsDock(width: number | null): void {
   const root = document.documentElement;
+  const was = dock;
   root.classList.toggle("settings-docked", width !== null);
   if (width === null) {
     root.style.removeProperty("--settings-dock");
   } else {
     root.style.setProperty("--settings-dock", `${width}px`);
+  }
+  const app = document.querySelector(".app");
+  if (app !== null && was === 0 && width !== null) {
+    animate(app, [{ paddingRight: "0px" }, { paddingRight: `${width}px` }], {
+      duration: DURATION.spring,
+      easing: EASE.spring,
+    });
+  } else if (app !== null && was !== 0 && width === null) {
+    animate(app, [{ paddingRight: `${was}px` }, { paddingRight: "0px" }], { duration: DURATION.slow, easing: EASE.in });
   }
   const next = width ?? 0;
   if (next !== dock) {

@@ -58,11 +58,13 @@ export interface AppSettings {
   themeDark: ThemeId;
   // "" takes the theme's own accent.
   accent: string;
-  // The window material (see material.ts): how opaque the background is
-  // (0–100) over what shows through, and a clear surface's blur (points).
+  // The window material (see material.ts), and a clear window's blur
+  // (points) of the desktop behind it.
   material: Material;
-  materialOpacity: number;
   materialBlur: number;
+  // How opaque the page's background is over what is behind it, 0–100: a
+  // background picture, or the desktop through a see-through window.
+  pageOpacity: number;
   // How opaque the floating surfaces are over the app when they turn to
   // glass (a material other than solid, or a background picture), 0–100:
   // Quick Look, dialogs, the command palette, menus and the like; notices
@@ -81,11 +83,9 @@ export interface AppSettings {
   surfaceBars: number;
   surfaceSheet: number;
   // A picture behind the app (see background.ts): its stamp ("" for none),
-  // how it fills the window, how opaque the app's surfaces are over it
-  // (0–100) and how much it is blurred (points).
+  // how it fills the window and how much it is blurred (points).
   backgroundImage: string;
   backgroundFit: BackgroundFit;
-  backgroundOpacity: number;
   backgroundBlur: number;
   // Fonts, each following the one above it as Tern's do: the interface's
   // (the sidebars, menus, dialogs), the code font every monospaced text
@@ -163,10 +163,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   themeDark: "dark",
   accent: "",
   material: "solid",
-  materialOpacity: 80,
   materialBlur: 20,
-  floatingOpacity: 90,
-  noticeOpacity: 90,
+  pageOpacity: 80,
+  floatingOpacity: 50,
+  noticeOpacity: 50,
   surfaceTop: 0,
   surfaceLeft: 0,
   surfaceRight: 0,
@@ -175,7 +175,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   surfaceSheet: 0,
   backgroundImage: "",
   backgroundFit: "cover",
-  backgroundOpacity: 80,
   backgroundBlur: 0,
   uiFont: "",
   uiFontSize: BASE_UI_PX,
@@ -241,8 +240,20 @@ function readSettings(): AppSettings {
       themeDark: readThemeId(parsed.themeDark, DEFAULT_SETTINGS.themeDark),
       accent: typeof parsed.accent === "string" && /^#[0-9a-f]{6}$/i.test(parsed.accent) ? parsed.accent : "",
       material: MATERIALS.includes(parsed.material as Material) ? (parsed.material as Material) : DEFAULT_SETTINGS.material,
-      materialOpacity: Math.round(clampSize(parsed.materialOpacity, 0, 100, DEFAULT_SETTINGS.materialOpacity)),
       materialBlur: Math.round(clampSize(parsed.materialBlur, 0, MATERIAL_BLUR_MAX, DEFAULT_SETTINGS.materialBlur)),
+      // Before 0.7.3 the picture and the see-through window each had their
+      // own (backgroundOpacity, materialOpacity): the one in use carries over.
+      pageOpacity: Math.round(
+        clampSize(
+          parsed.pageOpacity ??
+            (typeof parsed.backgroundImage === "string" && parsed.backgroundImage !== ""
+              ? saved.backgroundOpacity
+              : saved.materialOpacity),
+          0,
+          100,
+          DEFAULT_SETTINGS.pageOpacity,
+        ),
+      ),
       floatingOpacity: Math.round(clampSize(parsed.floatingOpacity, 0, 100, DEFAULT_SETTINGS.floatingOpacity)),
       noticeOpacity: Math.round(clampSize(parsed.noticeOpacity, 0, 100, DEFAULT_SETTINGS.noticeOpacity)),
       surfaceTop: Math.round(clampSize(parsed.surfaceTop, 0, 100, DEFAULT_SETTINGS.surfaceTop)),
@@ -255,7 +266,6 @@ function readSettings(): AppSettings {
       backgroundFit: BACKGROUND_FITS.includes(parsed.backgroundFit as BackgroundFit)
         ? (parsed.backgroundFit as BackgroundFit)
         : DEFAULT_SETTINGS.backgroundFit,
-      backgroundOpacity: Math.round(clampSize(parsed.backgroundOpacity, 0, 100, DEFAULT_SETTINGS.backgroundOpacity)),
       backgroundBlur: Math.round(clampSize(parsed.backgroundBlur, 0, BACKGROUND_BLUR_MAX, DEFAULT_SETTINGS.backgroundBlur)),
       uiFont: typeof parsed.uiFont === "string" ? parsed.uiFont : "",
       uiFontSize: clampSize(parsed.uiFontSize, UI_FONT_MIN, UI_FONT_MAX, DEFAULT_SETTINGS.uiFontSize),
@@ -481,16 +491,12 @@ export function applySettings(settings: AppSettings): void {
   setLanguage(settings.language);
   const theme = drawnTheme(settings);
   const opaque = themePalette(theme, settings);
-  // In a see-through window the page's own surfaces take the picked opacity,
-  // and over a background picture the opacity picked for it (the picture
-  // covers the window); the colours mixed from them below stay those of the
-  // opaque ones.
+  // Over a background picture or in a see-through window the page's own
+  // surfaces take the picked page opacity; the colours mixed from them below
+  // stay those of the opaque ones.
   const pictured = settings.backgroundImage !== "";
-  const palette = pictured
-    ? seeThroughColors(opaque, { ...settings, materialOpacity: settings.backgroundOpacity })
-    : seeThrough(settings)
-      ? seeThroughColors(opaque, settings)
-      : opaque;
+  const translucentPage = pictured || seeThrough(settings);
+  const palette = translucentPage ? seeThroughColors(opaque, settings) : opaque;
   applyPalette(palette);
   root.dataset.theme = theme.id;
   root.dataset.mode = theme.mode;
@@ -507,7 +513,6 @@ export function applySettings(settings: AppSettings): void {
   // Over a translucent page the lines between parts are hairlines of the
   // ink, as Tern's are, so they read over whatever shows through; the
   // theme's own line colour would sink into a picture's dark parts.
-  const translucentPage = pictured || seeThrough(settings);
   root.style.setProperty("--line", translucentPage ? hexToRgba(opaque.ink, 0.16) : palette.line);
   root.style.setProperty(
     "--line-soft",

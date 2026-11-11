@@ -4,46 +4,44 @@
 // - glass: translucent, with the system's tint behind it;
 // - clear: the desktop blurred without the system's tint.
 //
+// Only the desktop app's windows can let the desktop itself show through:
+// there the page paints its own background at the page opacity, and the app
+// puts the system's material (or a plain blur) behind the window, asked for
+// through the server (PUT /api/window), since the page can't reach its
+// window. A server whose pages live in browser tabs says its windows can't be
+// see-through. A background picture covers the window, so under one the
+// window stays solid whatever the material. The picked material alone
+// decides: the system's "Reduce transparency" isn't followed.
+//
 // The floating surfaces (Quick Look, dialogs, the command palette, menus,
-// pickers, the settings sheet, notices) turn to tinted glass over the app in
-// every window, at opacities of their own (Settings → Appearance), under
-// glass or clear and over a background picture (background.ts). Only the
-// desktop app's windows can let the desktop itself show through: there the
-// page paints its own background at the picked opacity, and the app puts the
-// system's material (or a plain blur) behind the window, asked for through
-// the server (PUT /api/window), since the page can't reach its window. A
-// server whose pages live in browser tabs says its windows can't be
-// see-through. The picked material alone decides: the system's "Reduce
-// transparency" isn't followed.
+// pickers, notices) turn to glass under glass or clear and over a background
+// picture (background.ts), in every window: the same blur always (the
+// window's own blur is the desktop's), at opacities of their own.
 
 import { authToken } from "./token";
 
 export type Material = "solid" | "glass" | "clear";
 
 export const MATERIALS: readonly Material[] = ["solid", "glass", "clear"];
-// Points of blur behind a clear surface or window.
+// Points of blur behind a clear window.
 export const MATERIAL_BLUR_MAX = 64;
-// Points of blur the glass material puts behind a floating surface.
-const GLASS_BLUR = 24;
-// The least fill a floating surface's text reads over: with at least
-// READABLE_BLUR points of blur behind it, what is under it is a wash, so the
-// picked opacity may go as low as MIN_BLURRED_FILL; with less, or none (a
-// surface inside another glass one, whose backdrop-filter is its backdrop
-// root), what is under it stays sharp: any see-through ghosts it behind the
-// text, so the fill is opaque.
+// The floating surfaces' blur of what is under them.
+const GLASS_FILTER = "blur(24px) saturate(170%)";
+// A floating surface blurs all the page draws, so its picked opacity holds
+// as picked, down to none. What it can't blur is the desktop through a
+// see-through window: when that is left sharp (clear, with less than
+// READABLE_BLUR points), the page and the surface together cover at least
+// READABLE_COVER of it, so the text over it reads.
 const READABLE_BLUR = 8;
-const MIN_BLURRED_FILL = 0.6;
-const MIN_UNBLURRED_FILL = 1;
+const READABLE_COVER = 0.6;
 
 export interface MaterialPicks {
   material: Material;
-  // How opaque the background is over what shows through, 0–100.
-  materialOpacity: number;
   materialBlur: number;
+  // How opaque the page's background is over what is behind it, 0–100.
+  pageOpacity: number;
   // How opaque the floating surfaces are, 0–100: their own picks, apart
-  // from the window's, so they stay readable over a see-through window or a
-  // picture. The notices have theirs; the others share one. (The settings
-  // sheet is docked, not floating: settings.ts, surfaceSheet.)
+  // from the page's. The notices have theirs; the others share one.
   floatingOpacity: number;
   noticeOpacity: number;
 }
@@ -105,10 +103,11 @@ function rgba(color: string, alpha: number): string {
   return `rgba(${value >> 16}, ${(value >> 8) & 255}, ${value & 255}, ${a})`;
 }
 
-// The page's surfaces in a see-through window: the theme's colours at the
-// picked opacity, for the CSS variables and the canvas grid alike.
+// The page's surfaces over a background picture or in a see-through window:
+// the theme's colours at the page opacity, for the CSS variables and the
+// canvas grid alike.
 export function seeThroughColors<C extends Omit<MaterialColors, "mode">>(colors: C, picks: MaterialPicks): C {
-  const alpha = picks.materialOpacity / 100;
+  const alpha = picks.pageOpacity / 100;
   return {
     ...colors,
     bg: rgba(colors.bg, alpha),
@@ -121,40 +120,43 @@ export function seeThroughColors<C extends Omit<MaterialColors, "mode">>(colors:
 // Sets the floating surfaces' glass (see styles.css, "Window material") and
 // gives the window its material where it can have one. Under System the
 // window keeps the system's appearance, which the page follows. `pictured`:
-// a background picture lies behind the app, which the floating surfaces turn
-// to glass over whatever the material.
+// a background picture lies behind the app; it covers the window, which
+// stays solid, and the floating surfaces turn to glass over it whatever the
+// material.
 export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, followsSystem: boolean, pictured: boolean): void {
   const root = document.documentElement;
   const material = picks.material;
   root.dataset.material = material;
-  root.classList.toggle("see-through", seeThrough(picks));
   const glass = material !== "solid" || pictured;
   root.classList.toggle("floating-glass", glass);
   if (glass) {
-    // The floating surfaces take their own opacities, not the window's: over
-    // a see-through window the page under them is as clear as the window,
-    // so the window's opacity would leave their text over the desktop.
-    const blur = material === "clear" ? picks.materialBlur : GLASS_BLUR;
-    const least = blur >= READABLE_BLUR ? MIN_BLURRED_FILL : MIN_UNBLURRED_FILL;
-    const picked = picks.floatingOpacity / 100;
-    const fill = Math.max(picked, least);
+    // The least fill that keeps text readable over a desktop left sharp.
+    const sharpDesktop = !pictured && seeThrough(picks) && material === "clear" && picks.materialBlur < READABLE_BLUR;
+    const page = picks.pageOpacity / 100;
+    const least = sharpDesktop && page < READABLE_COVER ? 1 - (1 - READABLE_COVER) / (1 - page) : 0;
+    const fill = Math.max(picks.floatingOpacity / 100, least);
     root.style.setProperty("--glass-fill", rgba(colors.panel, fill));
     root.style.setProperty("--glass-fill-notice", rgba(colors.panel, Math.max(picks.noticeOpacity / 100, least)));
     root.style.setProperty("--glass-well", rgba(colors.bg, fill * 0.55));
     root.style.setProperty("--glass-raise", rgba(colors.head, fill * 0.45));
-    // For a floating surface inside a glass one: it can't blur what is under it.
-    root.style.setProperty("--glass-solid", rgba(colors.panel, Math.max(picked, MIN_UNBLURRED_FILL)));
-    root.style.setProperty(
-      "--glass-filter",
-      material === "clear" ? `blur(${blur}px)` : `blur(${GLASS_BLUR}px) saturate(170%)`,
-    );
+    // For a floating surface inside a glass one: it can't blur what is under
+    // it (the outer one's backdrop-filter is its backdrop root), so it is opaque.
+    root.style.setProperty("--glass-solid", colors.panel);
+    root.style.setProperty("--glass-filter", GLASS_FILTER);
   }
   if (translucentWindow === null && !asked) {
     asked = true;
     void askWindow();
   }
   if (translucentWindow === true) {
-    queueWindow(JSON.stringify({ material, blur: picks.materialBlur, dark: colors.mode === "dark", system: followsSystem }));
+    queueWindow(
+      JSON.stringify({
+        material: pictured ? "solid" : material,
+        blur: picks.materialBlur,
+        dark: colors.mode === "dark",
+        system: followsSystem,
+      }),
+    );
   }
 }
 

@@ -399,7 +399,10 @@ const EN: Record<string, string> = {
   "값 색": "Value colors",
   "색": "Colors",
   "MongoDB와 ClickHouse에 쓰입니다. 0이면 제한이 없습니다.": "For MongoDB and ClickHouse. 0 means no limit.",
-  "브라우저 탭에서는 떠 있는 면만 유리가 됩니다.": "In a browser tab only floating surfaces turn to glass.",
+  "브라우저 탭에서는 떠 있는 창만 유리가 됩니다.": "In a browser tab only floating surfaces turn to glass.",
+  "배경 이미지가 창 뒤를 가리므로 떠 있는 창만 유리가 됩니다.":
+    "The background picture covers what is behind the window, so only floating surfaces turn to glass.",
+  "창 뒤 바탕화면이 흐려지는 정도입니다.": "How much the desktop behind the window is blurred.",
   "설정 검색 {key}": "Search settings {key}",
   "더 짧은 단어나 페이지 이름으로 찾아 보세요": "Try a shorter word, or the name of a page.",
   "맞는 항목이 없습니다": "Nothing matches",
@@ -444,9 +447,9 @@ const EN: Record<string, string> = {
   "투명": "Clear",
   "불투명도": "Opacity",
   "흐림": "Blur",
-  "영역별 불투명도": "Opacity by area",
-  "본문(편집기와 표) 위로 각 영역의 바탕이 깔리는 정도입니다. 0%면 본문과 같이 구분 없이 이어집니다.":
-    "How much of its own background each area lays over the main view (the editor and the table). At 0% it runs on from the main view, with no edge between them.",
+  "바탕은 앱 전체가 뒤(배경 이미지나 바탕화면) 위에 깔리는 정도입니다. 영역마다 그 위에 자기 색을 더 깔 수 있고, 0%면 본문과 구분 없이 이어집니다.":
+    "Background is how opaque the whole app is over what is behind it (the background picture, or the desktop). Each area can lay more of its own colour over that; at 0% it runs on from the main view, with no edge between them.",
+  "낮을수록 뒤가 잘 보입니다.": "The lower, the more of what is behind shows.",
   "상단 바": "Top bars",
   "왼쪽 사이드바": "Left sidebar",
   "오른쪽 사이드바": "Right sidebar",
@@ -455,10 +458,9 @@ const EN: Record<string, string> = {
   "떠 있는 창": "Floating surfaces",
   "설정 창": "Settings sheet",
   "알림": "Notices",
-  "글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.":
-    "So its text reads, it stays at least 60% opaque over a blur of 8px or more, and is opaque over less.",
-  "Quick Look, 대화 상자, 명령 팔레트, 메뉴, 툴팁의 바탕입니다. 글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.":
-    "The background of Quick Look, dialogs, the command palette, menus and tooltips. So their text reads, it stays at least 60% opaque over a blur of 8px or more, and is opaque over less.",
+  "Quick Look, 대화 상자, 명령 팔레트, 메뉴, 툴팁의 바탕입니다. 뒤가 늘 흐려지므로 낮춰도 글자가 읽힙니다.":
+    "The background of Quick Look, dialogs, the command palette, menus and tooltips. What is behind is always blurred, so their text reads however low it goes.",
+  "토스트와 배너의 바탕입니다.": "The background of toasts and banners.",
   "배경 이미지": "Background picture",
   "이미지": "Picture",
   "TablePeek에 들어 있는 사진을 고르거나 내 이미지(PNG, JPEG, GIF, WebP)를 고릅니다. 내 이미지는 모든 창에 같이 깔립니다.":
@@ -470,9 +472,6 @@ const EN: Record<string, string> = {
   "채우기": "Fill",
   "맞추기": "Fit whole",
   "바둑판": "Tile",
-  "이미지 위 불투명도": "Opacity over the picture",
-  "앱 바탕이 이미지 위에 깔리는 정도입니다. 낮을수록 이미지가 잘 보입니다. 영역마다 더 진하게 하려면 아래 영역별 불투명도를 올리세요.":
-    "How opaque the app's background is over the picture. The lower, the more of the picture shows. To make an area denser, raise its opacity under Opacity by area below.",
   "이미지 흐림": "Picture blur",
   "TablePeek 단축키가 브라우저 단축키보다 먼저 실행됩니다. {keys}는 브라우저가 먼저 처리합니다.": "TablePeek shortcuts run before the browser's. {keys} are handled by the browser first.",
   "누른 뒤 키 조합을 누르세요. Esc로 취소합니다. 다른 동작에 쓰이던 조합은 이쪽으로 옮겨집니다.": "Click, then press a key combination. Esc cancels. A combination another action used moves here.",

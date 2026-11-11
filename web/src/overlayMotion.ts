@@ -61,7 +61,7 @@ const EXITS: Exit[] = [
     // Back off the edge it came in from; moved, never faded, so it is glass
     // to the end.
     selector: ".settings-sheet",
-    play: (copy) => [copy.animate([{ transform: "translateX(calc(100% + 64px))" }], timing(DURATION.slow, EASE.in))],
+    play: (copy) => [copy.animate([{ transform: "translateX(100%)" }], timing(DURATION.slow, EASE.in))],
   },
   {
     // The quick view's switch to its large view swaps .cell-pop inside a
