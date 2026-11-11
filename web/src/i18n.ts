@@ -463,11 +463,12 @@ const EN: Record<string, string> = {
   "토스트와 배너의 바탕입니다.": "The background of toasts and banners.",
   "배경 이미지": "Background picture",
   "이미지": "Picture",
-  "TablePeek에 들어 있는 사진을 고르거나 내 이미지(PNG, JPEG, GIF, WebP)를 고릅니다. 내 이미지는 모든 창에 같이 깔립니다.":
-    "Pick the photo TablePeek comes with, or a picture of your own (PNG, JPEG, GIF or WebP), which shows in every window.",
+  "TablePeek에 들어 있는 사진을 고르거나 + 로 내 이미지(PNG, JPEG, GIF, WebP)를 계속 추가합니다. 추가한 이미지는 모든 창에 같이 나오고, 지우려면 이미지 위의 × 를 누르세요.":
+    "Pick the photo TablePeek comes with, or add pictures of your own with + (PNG, JPEG, GIF or WebP), as many as you like. Pictures you add show in every window; × on one removes it.",
   "분홍 하늘 설산": "Snowy peaks under a pink sky",
-  "이미지 선택…": "Choose picture…",
-  "바꾸기…": "Change…",
+  "이미지 추가…": "Add pictures…",
+  "내 이미지": "Your picture",
+  "이미지 지우기": "Remove picture",
   "맞춤": "Fit",
   "채우기": "Fill",
   "맞추기": "Fit whole",

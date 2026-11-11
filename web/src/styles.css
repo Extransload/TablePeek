@@ -75,8 +75,8 @@ html.has-backdrop body::before {
   filter: blur(var(--backdrop-blur, 0px));
 }
 
-/* The pictures in their Settings row: none, the built-in ones, and a picked
-   one (shown from the backdrop itself) or the way to pick one. */
+/* The pictures in their Settings row: none, the built-in ones, every one
+   added (with its × at the corner), and the way to add another. */
 .settings-backdrop-gallery {
   flex: none;
   width: 100%;
@@ -102,8 +102,41 @@ html.has-backdrop body::before {
   text-align: center;
 }
 
-.settings-backdrop-gallery .settings-backdrop-tile.picked {
-  background-image: var(--backdrop-image, none);
+.settings-backdrop-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.settings-backdrop-item > .settings-backdrop-tile {
+  flex: 1;
+}
+
+.settings-backdrop-gallery .settings-backdrop-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel-solid);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+}
+
+.settings-backdrop-item:is(:hover, :focus-within) > .settings-backdrop-remove {
+  opacity: 1;
+}
+
+.settings-backdrop-gallery .settings-backdrop-remove:hover {
+  border-color: var(--error);
+  color: var(--error);
 }
 
 .settings-backdrop-gallery .settings-backdrop-tile:hover {

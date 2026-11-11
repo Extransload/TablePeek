@@ -1,13 +1,12 @@
 // The picture Settings → Appearance → Background lays behind the app: a
-// built-in photograph (BUILTIN_BACKGROUNDS), shipped with the page,
-// or one picked from a file. The server keeps a picked one (GET, PUT and
-// DELETE /api/background), so every window, the browser's and the desktop
-// app's alike, shows the same one; settings hold its stamp, new with each
-// picture, so a window whose settings change loads the new one, or a
-// built-in one's "builtin:<id>". Either is drawn under the page (styles.css,
-// "Background picture"), the theme's own background under it where it
-// doesn't reach, and the app's surfaces turn translucent over it at the
-// picked opacity (settings.ts).
+// built-in photograph (BUILTIN_BACKGROUNDS), shipped with the page, or one
+// of the pictures added from files. The server keeps those
+// (/api/backgrounds), so every window, the browser's and the desktop app's
+// alike, offers the same ones; settings hold the stamp of the one shown,
+// "builtin:<id>" or "picture:<id>". Either is drawn under the page
+// (styles.css, "Background picture"), the theme's own background under it
+// where it doesn't reach, and the app's surfaces turn translucent over it at
+// the page opacity (settings.ts).
 
 import dawn from "./assets/backgrounds/dawn.webp";
 import dawnThumb from "./assets/backgrounds/dawn-thumb.webp";
@@ -51,12 +50,60 @@ export interface BackgroundPicks {
   backgroundBlur: number;
 }
 
-const ENDPOINT = "/api/background";
+// An added picture's stamp in the settings.
+const PICTURE = "picture:";
 
-// The stamp shown or on its way, and the object URL a picked picture is
-// shown from.
+export function pictureStamp(id: string): string {
+  return PICTURE + id;
+}
+
+// The added picture a stamp names, by id. A stamp saved before 0.7.4, when
+// there was one picture under a random stamp, names that one, which the
+// server has kept under "legacy".
+export function pictureId(stamp: string): string | null {
+  if (stamp === "" || stamp.startsWith("builtin:")) {
+    return null;
+  }
+  return stamp.startsWith(PICTURE) ? stamp.slice(PICTURE.length) : "legacy";
+}
+
+// The added pictures' object URLs, by id: an id's bytes never change, so
+// each is fetched once, for the backdrop and its tile in Settings alike.
+const pictureUrls = new Map<string, Promise<string | null>>();
+
+export function pictureUrl(id: string): Promise<string | null> {
+  let url = pictureUrls.get(id);
+  if (url === undefined) {
+    url = fetchPicture(id);
+    pictureUrls.set(id, url);
+  }
+  return url;
+}
+
+async function fetchPicture(id: string): Promise<string | null> {
+  try {
+    const response = await fetch(`/api/backgrounds/${encodeURIComponent(id)}`, {
+      headers: { "x-tablepeek-token": authToken },
+    });
+    if (response.ok) {
+      return URL.createObjectURL(await response.blob());
+    }
+  } catch {
+    // Asked again next time.
+  }
+  pictureUrls.delete(id);
+  return null;
+}
+
+// A picture removed: its object URL goes too.
+export function forgetPicture(id: string): void {
+  const url = pictureUrls.get(id);
+  pictureUrls.delete(id);
+  void url?.then((value) => value !== null && URL.revokeObjectURL(value));
+}
+
+// The stamp shown or on its way.
 let shownStamp = "";
-let objectUrl: string | null = null;
 
 export function applyBackground(picks: BackgroundPicks): void {
   const root = document.documentElement;
@@ -72,41 +119,21 @@ export function applyBackground(picks: BackgroundPicks): void {
     return;
   }
   shownStamp = stamp;
-  if (stamp === "") {
-    show(null);
-  } else if (builtin !== null) {
+  const id = pictureId(stamp);
+  if (builtin !== null) {
     show(builtin.url);
+  } else if (id !== null) {
+    void pictureUrl(id).then((url) => {
+      // Unless another picture (or none) was picked meanwhile.
+      if (stamp === shownStamp) {
+        show(url);
+      }
+    });
   } else {
-    void load(stamp);
+    show(null);
   }
 }
 
-async function load(stamp: string): Promise<void> {
-  let url: string | null = null;
-  try {
-    const response = await fetch(ENDPOINT, { headers: { "x-tablepeek-token": authToken }, cache: "no-store" });
-    if (response.ok) {
-      url = URL.createObjectURL(await response.blob());
-    }
-  } catch {
-    // The theme's background stays; the next picture picked asks again.
-  }
-  // Another picture (or none) was picked meanwhile.
-  if (stamp !== shownStamp) {
-    if (url !== null) {
-      URL.revokeObjectURL(url);
-    }
-    return;
-  }
-  show(url);
-}
-
-// Shows `url` (an object URL of a picked picture, a built-in one's, or
-// none), letting go of the picked picture shown before.
 function show(url: string | null): void {
-  if (objectUrl !== null) {
-    URL.revokeObjectURL(objectUrl);
-  }
-  objectUrl = url !== null && url.startsWith("blob:") ? url : null;
   document.documentElement.style.setProperty("--backdrop-image", url === null ? "none" : `url("${url}")`);
 }

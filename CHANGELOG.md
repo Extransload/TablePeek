@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **As many background pictures as you like.** Settings › Appearance › Background picture keeps every picture you add (with **+**, several at once if you like) in a row of its own beside the built-in photograph, to pick from at any time; **×** on one removes it. The picture you had before becomes the first of them.
+
 ## [0.7.3] - 2026-11-11
 
 Appearance settings that each do what they say: one background opacity, floating surfaces at the opacity picked, and Settings sliding in with the app.

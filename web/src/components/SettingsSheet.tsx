@@ -17,7 +17,17 @@ import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
 import { fontGroups, fontListLabel, SYSTEM_CODE_FONT, SYSTEM_UI_FONT, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import { setSettingsDock } from "../dock";
-import { BACKGROUND_ACCEPT, BACKGROUND_BLUR_MAX, BUILTIN_BACKGROUNDS, builtinBackground, type BackgroundFit } from "../background";
+import {
+  BACKGROUND_ACCEPT,
+  BACKGROUND_BLUR_MAX,
+  BUILTIN_BACKGROUNDS,
+  builtinBackground,
+  forgetPicture,
+  pictureId,
+  pictureStamp,
+  pictureUrl,
+  type BackgroundFit,
+} from "../background";
 import { MATERIAL_BLUR_MAX, subscribeMaterial, windowTranslucent, type Material } from "../material";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "../panelEdge";
 import {
@@ -144,6 +154,59 @@ function clampSheet(width: number): number {
   return Math.round(Math.min(Math.max(width, SHEET_MIN), max));
 }
 
+// An added background picture's tile: picks it, and its × (or ⌫ on the tile)
+// removes it.
+function PictureTile({
+  id,
+  pressed,
+  onPick,
+  onRemove,
+}: {
+  id: string;
+  pressed: boolean;
+  onPick(): void;
+  onRemove(): void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void pictureUrl(id).then((value) => live && setUrl(value));
+    return () => {
+      live = false;
+    };
+  }, [id]);
+  return (
+    <div className="settings-backdrop-item">
+      <button
+        type="button"
+        className="settings-backdrop-tile"
+        aria-pressed={pressed}
+        aria-label={t("내 이미지")}
+        title={t("내 이미지")}
+        style={url === null ? undefined : { backgroundImage: `url("${url}")` }}
+        onClick={onPick}
+        onKeyDown={(event) => {
+          if (event.key === "Backspace" || event.key === "Delete") {
+            event.preventDefault();
+            event.stopPropagation();
+            onRemove();
+          }
+        }}
+      />
+      <button
+        type="button"
+        className="settings-backdrop-remove"
+        tabIndex={-1}
+        aria-label={t("이미지 지우기")}
+        title={t("이미지 지우기")}
+        onClick={onRemove}
+      >
+        <CloseIcon size={8} />
+      </button>
+    </div>
+  );
+}
+
 const MATERIAL_OPTIONS: { value: Material; label: string }[] = [
   { value: "solid", label: "불투명" },
   { value: "glass", label: "유리" },
@@ -218,6 +281,18 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
   const translucent = useSyncExternalStore(subscribeMaterial, windowTranslucent);
   // The background picture's file chooser, opened by its row and button.
   const backgroundFileRef = useRef<HTMLInputElement>(null);
+  // The pictures added for the background, the first added first: their ids.
+  const [pictures, setPictures] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    store.listBackgrounds().then(
+      (ids) => live && setPictures(ids),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
   // The pickers redraw as themes come in (Tern's, an imported file), and the
   // theme shown changes with the system's mode under System.
   useSyncExternalStore(subscribeThemes, getThemesVersion);
@@ -643,29 +718,41 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
     }
   }
 
-  // A picture file becomes the background: the server keeps it, the
-  // settings its stamp, so every window shows it.
-  async function pickBackground(file: File): Promise<void> {
-    try {
-      onChange({ backgroundImage: await store.setBackgroundImage(file) });
-    } catch (error) {
-      notifyError(error);
+  // Picture files join the background pictures (the server keeps them, so
+  // every window offers them), and the last one added is shown.
+  async function addBackgrounds(files: File[]): Promise<void> {
+    let last: string | null = null;
+    for (const file of files) {
+      try {
+        const id = await store.addBackground(file);
+        setPictures((now) => [...now, id]);
+        last = id;
+      } catch (error) {
+        notifyError(error);
+      }
+    }
+    if (last !== null) {
+      onChange({ backgroundImage: pictureStamp(last) });
     }
   }
 
-  // No picture: a picked one is let go of on the server too; a built-in one
-  // only leaves the settings.
-  async function clearBackground(): Promise<void> {
-    if (builtinBackground(settings.backgroundImage) !== null) {
-      onChange({ backgroundImage: "" });
-      return;
-    }
+  // An added picture removed; if it was shown, none is.
+  async function removeBackground(id: string): Promise<void> {
     try {
-      await store.clearBackgroundImage();
-      onChange({ backgroundImage: "" });
+      await store.removeBackground(id);
     } catch (error) {
       notifyError(error);
+      return;
     }
+    forgetPicture(id);
+    setPictures((now) => now.filter((other) => other !== id));
+    if (pictureId(settings.backgroundImage) === id) {
+      onChange({ backgroundImage: "" });
+    }
+  }
+
+  function clearBackground(): void {
+    onChange({ backgroundImage: "" });
   }
 
   // An imported theme removed, with the colours picked for it; the default
@@ -1032,10 +1119,10 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
               <SettingRow
                 label="이미지"
                 keywords="background wallpaper picture image photo 배경 화면 바탕 사진 기본 이미지 built-in"
-                hint={t("TablePeek에 들어 있는 사진을 고르거나 내 이미지(PNG, JPEG, GIF, WebP)를 고릅니다. 내 이미지는 모든 창에 같이 깔립니다.")}
+                hint={t("TablePeek에 들어 있는 사진을 고르거나 + 로 내 이미지(PNG, JPEG, GIF, WebP)를 계속 추가합니다. 추가한 이미지는 모든 창에 같이 나오고, 지우려면 이미지 위의 × 를 누르세요.")}
                 wide
                 changed={settings.backgroundImage !== ""}
-                onReset={() => void clearBackground()}
+                onReset={clearBackground}
                 onActivate={() => backgroundFileRef.current?.click()}
               >
                 <div className="settings-backdrop-gallery" role="group" aria-label={t("이미지")}>
@@ -1044,7 +1131,7 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                     className="settings-backdrop-tile none"
                     aria-pressed={settings.backgroundImage === ""}
                     title={t("없음")}
-                    onClick={() => void clearBackground()}
+                    onClick={clearBackground}
                   >
                     {t("없음")}
                   </button>
@@ -1060,38 +1147,36 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                       onClick={() => onChange({ backgroundImage: picture.stamp })}
                     />
                   ))}
-                  {settings.backgroundImage !== "" && builtinBackground(settings.backgroundImage) === null ? (
-                    <button
-                      type="button"
-                      className="settings-backdrop-tile picked"
-                      aria-pressed
-                      aria-label={t("바꾸기…")}
-                      title={t("바꾸기…")}
-                      onClick={() => backgroundFileRef.current?.click()}
+                  {pictures.map((id) => (
+                    <PictureTile
+                      key={id}
+                      id={id}
+                      pressed={pictureId(settings.backgroundImage) === id}
+                      onPick={() => onChange({ backgroundImage: pictureStamp(id) })}
+                      onRemove={() => void removeBackground(id)}
                     />
-                  ) : (
-                    <button
-                      type="button"
-                      className="settings-backdrop-tile none"
-                      aria-pressed={false}
-                      aria-label={t("이미지 선택…")}
-                      title={t("이미지 선택…")}
-                      onClick={() => backgroundFileRef.current?.click()}
-                    >
-                      <PlusIcon size={14} />
-                    </button>
-                  )}
+                  ))}
+                  <button
+                    type="button"
+                    className="settings-backdrop-tile none"
+                    aria-label={t("이미지 추가…")}
+                    title={t("이미지 추가…")}
+                    onClick={() => backgroundFileRef.current?.click()}
+                  >
+                    <PlusIcon size={14} />
+                  </button>
                 </div>
                 <input
                   ref={backgroundFileRef}
                   type="file"
                   accept={BACKGROUND_ACCEPT}
+                  multiple
                   hidden
                   onChange={(event) => {
-                    const file = event.target.files?.[0];
+                    const files = Array.from(event.target.files ?? []);
                     event.target.value = "";
-                    if (file !== undefined) {
-                      void pickBackground(file);
+                    if (files.length > 0) {
+                      void addBackgrounds(files);
                     }
                   }}
                 />

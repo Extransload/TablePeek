@@ -2439,19 +2439,24 @@ function binaryCellRef(row: number, col: number): CellRef | null {
   return pk === null ? null : { table: result.meta.sourceTable, pk, column };
 }
 
-// Makes `file` the picture behind the app (background.ts); resolves to its
-// stamp, which the settings keep.
-async function setBackgroundImage(file: Blob): Promise<string> {
-  const body = await api<{ stamp: string }>("/api/background", {
-    method: "PUT",
+// The pictures added for the background (background.ts), the first added
+// first: their ids.
+async function listBackgrounds(): Promise<string[]> {
+  return (await api<{ pictures: string[] }>("/api/backgrounds")).pictures;
+}
+
+// Adds `file` to the background pictures; resolves to its id.
+async function addBackground(file: Blob): Promise<string> {
+  const body = await api<{ id: string }>("/api/backgrounds", {
+    method: "POST",
     headers: { "content-type": file.type || "application/octet-stream" },
     body: file,
   });
-  return body.stamp;
+  return body.id;
 }
 
-async function clearBackgroundImage(): Promise<void> {
-  await api<{ ok: boolean }>("/api/background", { method: "DELETE" });
+async function removeBackground(id: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/backgrounds/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 // A binary cell's whole value (capabilities.binary_cells), read as the
@@ -2992,8 +2997,9 @@ export const store = {
   binaryCellRef,
   readBinaryCell,
   writeBinaryCell,
-  setBackgroundImage,
-  clearBackgroundImage,
+  listBackgrounds,
+  addBackground,
+  removeBackground,
   startDump,
   dumpDownloadUrl,
   dumpProgress,
