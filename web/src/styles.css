@@ -5439,15 +5439,16 @@ button.settings-picker-remove {
   --head: var(--head-solid);
 }
 
-/* ── Window material (material.ts): glass or clear turn the floating
-   surfaces above (all but the loading pills, drag ghost, diagram cards, lock screen,
-   cell editor and action strip, which keep their own look) to tinted
-   glass over the app, at the opacity Settings picks for them (--glass-fill,
-   never so low the text stops reading), not the window's. Inside one, what
-   paints the page's background or a panel paints a lighter wash of it, so
-   the glass reads through; the dim under a dialog is lighter, for the app to
-   show blurred. ── */
-html:is([data-material="glass"], [data-material="clear"]) :is(
+/* ── Window material (material.ts): glass or clear, or a background
+   picture, turn the floating surfaces above (all but the loading pills,
+   drag ghost, diagram cards, lock screen, cell editor and action strip,
+   which keep their own look) to tinted glass over the app, at the opacity
+   Settings picks for them (--glass-fill; the settings sheet's and the
+   notices' own, through --floating-fill; never so low the text stops
+   reading), not the window's. Inside one, what paints the page's background
+   or a panel paints a lighter wash of it, so the glass reads through; the
+   dim under a dialog is lighter, for the app to show blurred. ── */
+html.floating-glass :is(
   .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
   .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
   .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
@@ -5457,14 +5458,22 @@ html:is([data-material="glass"], [data-material="clear"]) :is(
   --bg: var(--glass-well);
   --panel: var(--glass-raise);
   --head: var(--glass-raise);
-  background-color: var(--glass-fill);
+  background-color: var(--floating-fill, var(--glass-fill));
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
 }
 
+html.floating-glass .settings-sheet {
+  --floating-fill: var(--glass-fill-sheet);
+}
+
+html.floating-glass :is(.error-toasts > .error-notice, .error-notice.banner, .flash-toast, .oidc-banner) {
+  --floating-fill: var(--glass-fill-notice);
+}
+
 /* Their edge, a hairline of the ink over glass. Not on the surfaces whose
    border says something (an error, staged edits, the AI box's focus). */
-html:is([data-material="glass"], [data-material="clear"])
+html.floating-glass
   :is(.modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
     .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
     .cm-completionInfo) {
@@ -5474,7 +5483,7 @@ html:is([data-material="glass"], [data-material="clear"])
 /* One inside another (the completion list's info panel, a list in a dialog,
    a menu in the settings sheet) has nothing behind it to blur: the outer
    one's backdrop-filter is its backdrop root. It takes an opaque fill. */
-html:is([data-material="glass"], [data-material="clear"]) :is(
+html.floating-glass :is(
   .modal, .palette, .settings-sheet, .menu-panel, .context-menu, .column-picker, .page-size-panel,
   .analysis-picker-panel, .cell-menu, .cell-pop, .json-view, .date-picker, .cm-tooltip-autocomplete,
   .cm-completionInfo, .ai-inline, .error-toasts > .error-notice, .error-notice.banner, .flash-toast,
@@ -5494,16 +5503,42 @@ html:is([data-material="glass"], [data-material="clear"]) :is(
 
 /* The popover's arrow sits outside its box: it takes the popover's fill,
    not the lighter wash its --panel is inside. */
-html:is([data-material="glass"], [data-material="clear"]) .cell-pop-arrow {
+html.floating-glass .cell-pop-arrow {
   background: var(--glass-fill);
 }
 
-html:is([data-material="glass"], [data-material="clear"]) :is(.modal-backdrop, .cell-pop-backdrop.big) {
+html.floating-glass :is(.modal-backdrop, .cell-pop-backdrop.big) {
   background: rgba(0, 0, 0, 0.3);
 }
 
-html:is([data-material="glass"], [data-material="clear"]) .palette-backdrop {
+html.floating-glass .palette-backdrop {
   background: rgba(0, 0, 0, 0.18);
+}
+
+/* ── Translucent page (settings.ts): over a background picture or in a
+   see-through window the page's background is laid once, under everything;
+   the docked parts lay as much of their own colour over it as Settings picks
+   for each (--surface-*, 0% by default: none, so they run on as the page
+   does, as Tern's panes do) instead of a translucent layer of it each,
+   which would darken them apart from the rest. ── */
+html.translucent-page :is(.appbar, .tabbar) {
+  background: color-mix(in srgb, var(--head-solid) var(--surface-top), transparent);
+}
+
+html.translucent-page .schema-sidebar {
+  background: color-mix(in srgb, color-mix(in srgb, var(--panel-solid) 84%, var(--bg-solid)) var(--surface-left), transparent);
+}
+
+html.translucent-page .row-detail {
+  background: color-mix(in srgb, var(--panel-solid) var(--surface-right), transparent);
+}
+
+html.translucent-page .console-panel {
+  background: color-mix(in srgb, var(--panel-solid) var(--surface-bottom), transparent);
+}
+
+html.translucent-page :is(.data-toolbar, .result-sets) {
+  background: color-mix(in srgb, var(--panel-solid) var(--surface-bars), transparent);
 }
 
 .sr-only {

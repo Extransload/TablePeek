@@ -4,6 +4,15 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in background picture.** Settings › Appearance › Background picture › **Built-in** draws the home screen's table floor under a night sky (a daytime one on a light theme) in the theme's own colours, and follows the theme.
+- **Opacity by area.** Over a background picture or in a see-through window, the top bars, the left sidebar, the right sidebar, the console below and the results' toolbars each lay as much of their own colour over the page as you set, and the floating surfaces, the settings sheet and notices each have their own opacity. The floating surfaces turn to glass over a background picture whatever the material.
+
+### Changed
+
+- Over a background picture or in a see-through window, the sidebars, the console, the top bars and the toolbars no longer lay a layer of their own over the page by default, so they run on from the editor and the table with no edge between them, as Tern's panes do; **Opacity by area** brings an edge back.
+
 ## [0.6.0] - 2026-11-11
 
 A picture behind the app, an editor and grid that no longer darken over it or in a see-through window, and Apple silicon only on macOS.

@@ -5,8 +5,9 @@
 // - clear: the desktop blurred without the system's tint.
 //
 // The floating surfaces (Quick Look, dialogs, the command palette, menus,
-// pickers, the settings sheet) turn to tinted glass over the app in every
-// window, at an opacity of their own (Settings → Appearance). Only the
+// pickers, the settings sheet, notices) turn to tinted glass over the app in
+// every window, at opacities of their own (Settings → Appearance), under
+// glass or clear and over a background picture (background.ts). Only the
 // desktop app's windows can let the desktop itself show through: there the
 // page paints its own background at the picked opacity, and the app puts the
 // system's material (or a plain blur) behind the window, asked for through
@@ -39,9 +40,13 @@ export interface MaterialPicks {
   // How opaque the background is over what shows through, 0–100.
   materialOpacity: number;
   materialBlur: number;
-  // How opaque the floating surfaces are, 0–100: their own pick, apart
-  // from the window's, so they stay readable over a see-through window.
+  // How opaque the floating surfaces are, 0–100: their own picks, apart
+  // from the window's, so they stay readable over a see-through window or a
+  // picture. The settings sheet and the notices have theirs; the others
+  // share one.
   floatingOpacity: number;
+  sheetOpacity: number;
+  noticeOpacity: number;
 }
 
 // The colours a translucent surface is tinted with: the theme's own.
@@ -116,27 +121,34 @@ export function seeThroughColors<C extends Omit<MaterialColors, "mode">>(colors:
 
 // Sets the floating surfaces' glass (see styles.css, "Window material") and
 // gives the window its material where it can have one. Under System the
-// window keeps the system's appearance, which the page follows.
-export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, followsSystem: boolean): void {
+// window keeps the system's appearance, which the page follows. `pictured`:
+// a background picture lies behind the app, which the floating surfaces turn
+// to glass over whatever the material.
+export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, followsSystem: boolean, pictured: boolean): void {
   const root = document.documentElement;
   const material = picks.material;
   root.dataset.material = material;
   root.classList.toggle("see-through", seeThrough(picks));
-  if (material !== "solid") {
-    // The floating surfaces take their own opacity, not the window's: over
+  const glass = material !== "solid" || pictured;
+  root.classList.toggle("floating-glass", glass);
+  if (glass) {
+    // The floating surfaces take their own opacities, not the window's: over
     // a see-through window the page under them is as clear as the window,
     // so the window's opacity would leave their text over the desktop.
+    const blur = material === "clear" ? picks.materialBlur : GLASS_BLUR;
+    const least = blur >= READABLE_BLUR ? MIN_BLURRED_FILL : MIN_UNBLURRED_FILL;
     const picked = picks.floatingOpacity / 100;
-    const blur = material === "glass" ? GLASS_BLUR : picks.materialBlur;
-    const fill = Math.max(picked, blur >= READABLE_BLUR ? MIN_BLURRED_FILL : MIN_UNBLURRED_FILL);
+    const fill = Math.max(picked, least);
     root.style.setProperty("--glass-fill", rgba(colors.panel, fill));
+    root.style.setProperty("--glass-fill-sheet", rgba(colors.panel, Math.max(picks.sheetOpacity / 100, least)));
+    root.style.setProperty("--glass-fill-notice", rgba(colors.panel, Math.max(picks.noticeOpacity / 100, least)));
     root.style.setProperty("--glass-well", rgba(colors.bg, fill * 0.55));
     root.style.setProperty("--glass-raise", rgba(colors.head, fill * 0.45));
     // For a floating surface inside a glass one: it can't blur what is under it.
     root.style.setProperty("--glass-solid", rgba(colors.panel, Math.max(picked, MIN_UNBLURRED_FILL)));
     root.style.setProperty(
       "--glass-filter",
-      material === "glass" ? `blur(${GLASS_BLUR}px) saturate(170%)` : `blur(${blur}px)`,
+      material === "clear" ? `blur(${blur}px)` : `blur(${GLASS_BLUR}px) saturate(170%)`,
     );
   }
   if (translucentWindow === null && !asked) {

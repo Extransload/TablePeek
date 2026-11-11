@@ -17,7 +17,7 @@ import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
 import { fontGroups, fontListLabel, SYSTEM_CODE_FONT, SYSTEM_UI_FONT, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import { setSettingsDock } from "../dock";
-import { BACKGROUND_ACCEPT, BACKGROUND_BLUR_MAX, type BackgroundFit } from "../background";
+import { BACKGROUND_ACCEPT, BACKGROUND_BLUR_MAX, BUILTIN_BACKGROUND, type BackgroundFit } from "../background";
 import { MATERIAL_BLUR_MAX, subscribeMaterial, windowTranslucent, type Material } from "../material";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "../panelEdge";
 import {
@@ -154,6 +154,31 @@ const FIT_OPTIONS: { value: BackgroundFit; label: string }[] = [
   { value: "cover", label: "채우기" },
   { value: "contain", label: "맞추기" },
   { value: "tile", label: "바둑판" },
+];
+
+// The docked parts' own colour over a translucent page (settings.ts).
+type SurfaceKey = "surfaceTop" | "surfaceLeft" | "surfaceRight" | "surfaceBottom" | "surfaceBars";
+const SURFACE_ROWS: { key: SurfaceKey; label: string; keywords: string }[] = [
+  { key: "surfaceTop", label: "상단 바", keywords: "surface top bar tab strip app bar 탭" },
+  { key: "surfaceLeft", label: "왼쪽 사이드바", keywords: "surface left sidebar schema tables 테이블 목록" },
+  { key: "surfaceRight", label: "오른쪽 사이드바", keywords: "surface right sidebar row detail 행 상세" },
+  { key: "surfaceBottom", label: "하단 콘솔", keywords: "surface bottom console log 콘솔" },
+  { key: "surfaceBars", label: "도구 막대", keywords: "surface toolbar result bar 결과 막대" },
+];
+
+// The floating surfaces' own opacities when they turn to glass (material.ts).
+type FloatingKey = "floatingOpacity" | "sheetOpacity" | "noticeOpacity";
+const READABLE_HINT =
+  "글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.";
+const FLOATING_ROWS: { key: FloatingKey; label: string; keywords: string; hint: string }[] = [
+  {
+    key: "floatingOpacity",
+    label: "떠 있는 창",
+    keywords: "floating surface opacity quick look dialog palette menu popover 퀵룩 대화 상자 메뉴",
+    hint: `Quick Look, 대화 상자, 명령 팔레트, 메뉴, 툴팁의 바탕입니다. ${READABLE_HINT}`,
+  },
+  { key: "sheetOpacity", label: "설정 창", keywords: "settings sheet opacity 설정", hint: READABLE_HINT },
+  { key: "noticeOpacity", label: "알림", keywords: "notice toast banner opacity 토스트 배너", hint: READABLE_HINT },
 ];
 
 const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -757,6 +782,10 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
         const modes = MODE_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const accent = currentAccent(settings);
         const onlyTheme = theme ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) }) : undefined;
+        // Over a picture or in a see-through window: the docked parts' rows;
+        // with glass floating surfaces: theirs.
+        const pageTranslucent = settings.backgroundImage !== "" || (translucent === true && settings.material !== "solid");
+        const floatingGlass = settings.backgroundImage !== "" || settings.material !== "solid";
         return (
           <>
             <SettingsGroup title="테마">
@@ -980,22 +1009,6 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                   />
                 </SettingRow>
               ) : null}
-              {settings.material !== "solid" ? (
-                <SettingRow
-                  label="떠 있는 창 불투명도"
-                  keywords="floating surface opacity quick look dialog palette menu popover sheet 퀵룩 대화 상자 메뉴"
-                  hint={t("Quick Look, 대화 상자, 명령 팔레트, 메뉴, 알림, 설정 창의 바탕입니다. 글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.")}
-                  {...fromDefault("floatingOpacity")}
-                >
-                  <Slider
-                    label={t("떠 있는 창 불투명도")}
-                    value={settings.floatingOpacity}
-                    max={100}
-                    unit="%"
-                    onChange={(floatingOpacity) => onChange({ floatingOpacity })}
-                  />
-                </SettingRow>
-              ) : null}
               {settings.material === "clear" ? (
                 <SettingRow label="흐림" keywords="blur radius" {...fromDefault("materialBlur")}>
                   <Slider
@@ -1012,14 +1025,21 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
               <SettingRow
                 label="이미지"
                 keywords="background wallpaper picture image photo 배경 화면 바탕 사진"
-                hint={t("PNG, JPEG, GIF, WebP. 모든 창에 같은 이미지가 깔립니다.")}
+                hint={t("기본 이미지는 테마의 색으로 그려지고 테마를 따라 바뀝니다. 고른 이미지(PNG, JPEG, GIF, WebP)는 모든 창에 같이 깔립니다.")}
                 changed={settings.backgroundImage !== ""}
                 onReset={() => void clearBackground()}
                 onActivate={() => backgroundFileRef.current?.click()}
               >
                 {settings.backgroundImage !== "" ? <span className="settings-backdrop-thumb" aria-hidden="true" /> : null}
+                {settings.backgroundImage !== BUILTIN_BACKGROUND ? (
+                  <button type="button" onClick={() => onChange({ backgroundImage: BUILTIN_BACKGROUND })}>
+                    {t("기본 이미지")}
+                  </button>
+                ) : null}
                 <button type="button" onClick={() => backgroundFileRef.current?.click()}>
-                  {settings.backgroundImage !== "" ? t("바꾸기…") : t("이미지 선택…")}
+                  {settings.backgroundImage !== "" && settings.backgroundImage !== BUILTIN_BACKGROUND
+                    ? t("바꾸기…")
+                    : t("이미지 선택…")}
                 </button>
                 {settings.backgroundImage !== "" ? (
                   <button type="button" onClick={() => void clearBackground()}>
@@ -1042,23 +1062,25 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
               </SettingRow>
               {settings.backgroundImage !== "" ? (
                 <>
-                  <SettingRow
-                    label="맞춤"
-                    keywords="background fit cover contain tile repeat 채우기 맞추기 바둑판"
-                    {...fromDefault("backgroundFit")}
-                    onActivate={() => onChange({ backgroundFit: nextChoice(fits, settings.backgroundFit) })}
-                  >
-                    <Choice
-                      label={t("맞춤")}
-                      value={settings.backgroundFit}
-                      options={fits}
-                      onChange={(backgroundFit) => onChange({ backgroundFit })}
-                    />
-                  </SettingRow>
+                  {settings.backgroundImage !== BUILTIN_BACKGROUND ? (
+                    <SettingRow
+                      label="맞춤"
+                      keywords="background fit cover contain tile repeat 채우기 맞추기 바둑판"
+                      {...fromDefault("backgroundFit")}
+                      onActivate={() => onChange({ backgroundFit: nextChoice(fits, settings.backgroundFit) })}
+                    >
+                      <Choice
+                        label={t("맞춤")}
+                        value={settings.backgroundFit}
+                        options={fits}
+                        onChange={(backgroundFit) => onChange({ backgroundFit })}
+                      />
+                    </SettingRow>
+                  ) : null}
                   <SettingRow
                     label="이미지 위 불투명도"
                     keywords="background opacity 배경 불투명도"
-                    hint={t("사이드바, 편집기, 표의 바탕이 이미지 위에 깔리는 정도입니다. 낮을수록 이미지가 잘 보입니다.")}
+                    hint={t("앱 바탕이 이미지 위에 깔리는 정도입니다. 낮을수록 이미지가 잘 보입니다. 영역마다 더 진하게 하려면 아래 영역별 불투명도를 올리세요.")}
                     {...fromDefault("backgroundOpacity")}
                   >
                     <Slider
@@ -1081,6 +1103,45 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 </>
               ) : null}
             </SettingsGroup>
+            {pageTranslucent || floatingGlass ? (
+              <SettingsGroup
+                title="영역별 불투명도"
+                hint={t("본문(편집기와 표) 위로 각 영역의 바탕이 깔리는 정도입니다. 0%면 본문과 같이 구분 없이 이어집니다.")}
+              >
+                {pageTranslucent
+                  ? SURFACE_ROWS.map((row) => (
+                      <SettingRow key={row.key} label={row.label} keywords={row.keywords} {...fromDefault(row.key)}>
+                        <Slider
+                          label={t(row.label)}
+                          value={settings[row.key]}
+                          max={100}
+                          unit="%"
+                          onChange={(value) => onChange({ [row.key]: value } as Pick<AppSettings, SurfaceKey>)}
+                        />
+                      </SettingRow>
+                    ))
+                  : null}
+                {floatingGlass
+                  ? FLOATING_ROWS.map((row) => (
+                      <SettingRow
+                        key={row.key}
+                        label={row.label}
+                        keywords={row.keywords}
+                        hint={t(row.hint)}
+                        {...fromDefault(row.key)}
+                      >
+                        <Slider
+                          label={t(row.label)}
+                          value={settings[row.key]}
+                          max={100}
+                          unit="%"
+                          onChange={(value) => onChange({ [row.key]: value } as Pick<AppSettings, FloatingKey>)}
+                        />
+                      </SettingRow>
+                    ))
+                  : null}
+              </SettingsGroup>
+            ) : null}
             <SettingsGroup title="표시">
               <SettingRow label="줄무늬 행 배경" keywords="alternate row stripe zebra" {...fromDefault("rowAlt")}>
                 <Switch label={t("줄무늬 행 배경")} checked={settings.rowAlt} onChange={(rowAlt) => onChange({ rowAlt })} />
