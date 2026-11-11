@@ -238,6 +238,13 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
+// The scroller's background, painted under the canvas: the theme's, unless
+// the grid's place sets --grid-scroller-bg (styles.css: the query results
+// lie on the page's own background, which a translucent one would double).
+function scrollerBackground(): string {
+  return `var(--grid-scroller-bg, ${palette.bg})`;
+}
+
 export class CanvasGrid {
   private readonly host: HTMLElement;
   private readonly scroller: HTMLDivElement;
@@ -344,7 +351,7 @@ export class CanvasGrid {
     scroller.style.position = "absolute";
     scroller.style.inset = "0";
     scroller.style.overflow = "auto";
-    scroller.style.background = palette.bg;
+    scroller.style.background = scrollerBackground();
     scroller.style.outline = "none";
 
     const sizer = document.createElement("div");
@@ -449,7 +456,7 @@ export class CanvasGrid {
         this.scroller.scrollLeft = Math.round(left);
       }
     }
-    this.scroller.style.background = palette.bg;
+    this.scroller.style.background = scrollerBackground();
     this.schedulePaint();
   }
 

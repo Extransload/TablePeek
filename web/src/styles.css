@@ -53,6 +53,37 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ── Background picture (background.ts): laid under the page, over the
+   theme's own background, which shows where the picture doesn't reach
+   (letterboxed) and covers a see-through window. The app's surfaces are
+   translucent over it at the picked opacity (settings.ts). A blurred
+   picture reaches past the window, so its soft edges stay out of sight. ── */
+html.has-backdrop {
+  background: var(--bg-solid);
+}
+
+html.has-backdrop body::before {
+  content: "";
+  position: fixed;
+  inset: calc(var(--backdrop-blur, 0px) * -2);
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--backdrop-image, none);
+  background-position: center;
+  background-size: var(--backdrop-size, cover);
+  background-repeat: var(--backdrop-repeat, no-repeat);
+  filter: blur(var(--backdrop-blur, 0px));
+}
+
+/* The picture in its Settings row. */
+.settings-backdrop-thumb {
+  width: calc(40px * var(--ui-scale, 1));
+  height: calc(24px * var(--ui-scale, 1));
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--backdrop-image, none) center / cover no-repeat, var(--bg-solid);
+}
+
 /* The app draws its own scrollbars (scrollbars.ts): Chrome on macOS no
    longer styles ::-webkit-scrollbar, and its own bars are 16px classic ones
    or overlay ones that widen under the pointer. Every element's are hidden.
@@ -362,11 +393,16 @@ select {
   overflow: hidden;
 }
 
+/* The editor, the splitter under it and the query results' grid lie on the
+   page's own background: none of them paints another. Stacked, each layer of
+   a translucent background (over a background picture, in a see-through
+   window) would darken them apart from the rest. The selectors outweigh the
+   editor theme's (SqlEditor.tsx), which previews elsewhere keep; the
+   messages and the plan keep theirs, as they cover the grid. */
 .editor-pane {
   flex: 0 1 35%;
   min-height: 90px;
   overflow: hidden;
-  background: var(--bg);
 }
 
 .sql-editor {
@@ -377,10 +413,18 @@ select {
   height: 100%;
 }
 
+.editor-pane .sql-editor .cm-editor,
+.editor-pane .sql-editor .cm-gutters {
+  background-color: transparent;
+}
+
+.grid-layer {
+  --grid-scroller-bg: transparent;
+}
+
 .h-splitter {
   flex: none;
   height: 4px;
-  background: var(--bg);
   border-top: 1px solid var(--line);
   cursor: row-resize;
 }

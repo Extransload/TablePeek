@@ -20,7 +20,6 @@ const REPO_URL = "https://github.com/Extransload/TablePeek";
 // The updater's platform keys and the asset each one installs.
 const PLATFORMS = {
   "darwin-aarch64": (tag) => `TablePeek-${tag}-aarch64-apple-darwin.app.tar.gz`,
-  "darwin-x86_64": (tag) => `TablePeek-${tag}-x86_64-apple-darwin.app.tar.gz`,
   "windows-x86_64": (tag) => `TablePeek-${tag}-x86_64-pc-windows-msvc-setup.exe`,
 };
 

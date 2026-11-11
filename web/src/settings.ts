@@ -13,6 +13,7 @@ import {
 } from "./palette";
 import { SYSTEM_CODE_FONT, SYSTEM_UI_FONT, declareFaces } from "./fonts";
 import { setLanguage, type Language } from "./i18n";
+import { applyBackground, BACKGROUND_BLUR_MAX, BACKGROUND_FITS, type BackgroundFit } from "./background";
 import {
   applyMaterial,
   MATERIAL_BLUR_MAX,
@@ -65,6 +66,13 @@ export interface AppSettings {
   materialOpacity: number;
   materialBlur: number;
   floatingOpacity: number;
+  // A picture behind the app (see background.ts): its stamp ("" for none),
+  // how it fills the window, how opaque the app's surfaces are over it
+  // (0–100) and how much it is blurred (points).
+  backgroundImage: string;
+  backgroundFit: BackgroundFit;
+  backgroundOpacity: number;
+  backgroundBlur: number;
   // Fonts, each following the one above it as Tern's do: the interface's
   // (the sidebars, menus, dialogs), the code font every monospaced text
   // takes (the SQL editor and console, the data table, code labels), then
@@ -144,6 +152,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   materialOpacity: 80,
   materialBlur: 20,
   floatingOpacity: 90,
+  backgroundImage: "",
+  backgroundFit: "cover",
+  backgroundOpacity: 80,
+  backgroundBlur: 0,
   uiFont: "",
   uiFontSize: BASE_UI_PX,
   codeFont: "",
@@ -211,6 +223,12 @@ function readSettings(): AppSettings {
       materialOpacity: Math.round(clampSize(parsed.materialOpacity, 0, 100, DEFAULT_SETTINGS.materialOpacity)),
       materialBlur: Math.round(clampSize(parsed.materialBlur, 0, MATERIAL_BLUR_MAX, DEFAULT_SETTINGS.materialBlur)),
       floatingOpacity: Math.round(clampSize(parsed.floatingOpacity, 0, 100, DEFAULT_SETTINGS.floatingOpacity)),
+      backgroundImage: typeof parsed.backgroundImage === "string" ? parsed.backgroundImage : "",
+      backgroundFit: BACKGROUND_FITS.includes(parsed.backgroundFit as BackgroundFit)
+        ? (parsed.backgroundFit as BackgroundFit)
+        : DEFAULT_SETTINGS.backgroundFit,
+      backgroundOpacity: Math.round(clampSize(parsed.backgroundOpacity, 0, 100, DEFAULT_SETTINGS.backgroundOpacity)),
+      backgroundBlur: Math.round(clampSize(parsed.backgroundBlur, 0, BACKGROUND_BLUR_MAX, DEFAULT_SETTINGS.backgroundBlur)),
       uiFont: typeof parsed.uiFont === "string" ? parsed.uiFont : "",
       uiFontSize: clampSize(parsed.uiFontSize, UI_FONT_MIN, UI_FONT_MAX, DEFAULT_SETTINGS.uiFontSize),
       codeFont: typeof parsed.codeFont === "string" ? parsed.codeFont : "",
@@ -435,9 +453,16 @@ export function applySettings(settings: AppSettings): void {
   setLanguage(settings.language);
   const theme = drawnTheme(settings);
   const opaque = themePalette(theme, settings);
-  // In a see-through window the page's own surfaces take the picked opacity;
-  // the colours mixed from them below stay those of the opaque ones.
-  const palette = seeThrough(settings) ? seeThroughColors(opaque, settings) : opaque;
+  // In a see-through window the page's own surfaces take the picked opacity,
+  // and over a background picture the opacity picked for it (the picture
+  // covers the window); the colours mixed from them below stay those of the
+  // opaque ones.
+  const pictured = settings.backgroundImage !== "";
+  const palette = pictured
+    ? seeThroughColors(opaque, { ...settings, materialOpacity: settings.backgroundOpacity })
+    : seeThrough(settings)
+      ? seeThroughColors(opaque, settings)
+      : opaque;
   applyPalette(palette);
   root.dataset.theme = theme.id;
   root.dataset.mode = theme.mode;
@@ -498,6 +523,7 @@ export function applySettings(settings: AppSettings): void {
     window.dispatchEvent(new CustomEvent("tablepeek:motion"));
   }
   applyMaterial(settings, { ...opaque, mode: theme.mode }, settings.themeMode === "system");
+  applyBackground(settings);
   window.dispatchEvent(new CustomEvent("tablepeek:theme"));
 }
 

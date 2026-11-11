@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 // The Homebrew cask for the desktop app, Casks/tablepeek.rb in the
-// Extransload/homebrew-tap repository, written from a release's macOS disk
-// images (scripts/package.sh desktop names them). The release workflow
-// pushes it to the tap after each stable release:
+// Extransload/homebrew-tap repository, written from a release's Apple
+// silicon disk image (scripts/package.sh desktop names it); TablePeek has no
+// Intel Mac build. The release workflow pushes it to the tap after each
+// stable release:
 //
 //   brew install --cask extransload/tap/tablepeek
 //
 //   node scripts/homebrew-cask.mjs <tag> <dir> [--base-url <url>]
 //
-// The cask downloads the disk images from the release unless --base-url
+// The cask downloads the disk image from the release unless --base-url
 // names another place (a local folder as file:///…, to try the cask out).
-// Both Macs' images are required.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const REPO_URL = "https://github.com/Extransload/TablePeek";
-// The cask's `arch` values and the Rust target each one's image is built for.
-const ARCHES = { arm: "aarch64", intel: "x86_64" };
+// The disk image the cask installs.
+const IMAGE = (tag) => `TablePeek-${tag}-aarch64-apple-darwin.dmg`;
 
 function fail(message) {
   console.error(`homebrew-cask: ${message}`);
@@ -47,12 +47,9 @@ for (const name of Object.keys(options)) {
 }
 
 const version = tag.slice(1);
-const sha256 = {};
-for (const [arch, cpu] of Object.entries(ARCHES)) {
-  const image = join(dir, `TablePeek-${tag}-${cpu}-apple-darwin.dmg`);
-  if (!existsSync(image)) fail(`${image} is missing`);
-  sha256[arch] = createHash("sha256").update(readFileSync(image)).digest("hex");
-}
+const image = join(dir, IMAGE(tag));
+if (!existsSync(image)) fail(`${image} is missing`);
+const sha256 = createHash("sha256").update(readFileSync(image)).digest("hex");
 // The cask's own interpolation, so `brew bump-cask-pr`-style edits of the
 // version alone would still point at the right files.
 const baseUrl = (options["base-url"] ?? `${REPO_URL}/releases/download/v#{version}`).replace(/\/+$/, "");
@@ -60,13 +57,10 @@ const baseUrl = (options["base-url"] ?? `${REPO_URL}/releases/download/v#{versio
 process.stdout.write(`# Written by scripts/homebrew-cask.mjs in ${REPO_URL} on each
 # stable release; edits here are replaced by the next one.
 cask "tablepeek" do
-  arch arm: "${ARCHES.arm}", intel: "${ARCHES.intel}"
-
   version "${version}"
-  sha256 arm:   "${sha256.arm}",
-         intel: "${sha256.intel}"
+  sha256 "${sha256}"
 
-  url "${baseUrl}/TablePeek-v#{version}-#{arch}-apple-darwin.dmg"
+  url "${baseUrl}/${IMAGE("v#{version}")}"
   name "TablePeek"
   desc "Local-first database client"
   homepage "${REPO_URL}"
@@ -78,6 +72,7 @@ cask "tablepeek" do
 
   # The app installs its own updates (Settings > General).
   auto_updates true
+  depends_on arch: :arm64
   depends_on :macos
 
   app "TablePeek.app"

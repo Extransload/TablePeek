@@ -17,6 +17,7 @@ import { importTernFile, loadTernThemes, removeTernFile } from "../ternThemes";
 import { fontGroups, fontListLabel, SYSTEM_CODE_FONT, SYSTEM_UI_FONT, type InstalledFont } from "../fonts";
 import { store } from "../store";
 import { setSettingsDock } from "../dock";
+import { BACKGROUND_ACCEPT, BACKGROUND_BLUR_MAX, type BackgroundFit } from "../background";
 import { MATERIAL_BLUR_MAX, subscribeMaterial, windowTranslucent, type Material } from "../material";
 import { dragPanelEdge, keyPanelEdge, storedWidth, storeWidth } from "../panelEdge";
 import {
@@ -149,6 +150,12 @@ const MATERIAL_OPTIONS: { value: Material; label: string }[] = [
   { value: "clear", label: "투명" },
 ];
 
+const FIT_OPTIONS: { value: BackgroundFit; label: string }[] = [
+  { value: "cover", label: "채우기" },
+  { value: "contain", label: "맞추기" },
+  { value: "tile", label: "바둑판" },
+];
+
 const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: "light", label: "라이트" },
   { value: "dark", label: "다크" },
@@ -186,6 +193,8 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
   const aiEnabled = useSyncExternalStore(store.subscribeAi, store.getAiStatus)?.enabled === true;
   // Whether this window can be see-through, to word the material's note.
   const translucent = useSyncExternalStore(subscribeMaterial, windowTranslucent);
+  // The background picture's file chooser, opened by its row and button.
+  const backgroundFileRef = useRef<HTMLInputElement>(null);
   // The pickers redraw as themes come in (Tern's, an imported file), and the
   // theme shown changes with the system's mode under System.
   useSyncExternalStore(subscribeThemes, getThemesVersion);
@@ -611,6 +620,25 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
     }
   }
 
+  // A picture file becomes the background: the server keeps it, the
+  // settings its stamp, so every window shows it.
+  async function pickBackground(file: File): Promise<void> {
+    try {
+      onChange({ backgroundImage: await store.setBackgroundImage(file) });
+    } catch (error) {
+      notifyError(error);
+    }
+  }
+
+  async function clearBackground(): Promise<void> {
+    try {
+      await store.clearBackgroundImage();
+      onChange({ backgroundImage: "" });
+    } catch (error) {
+      notifyError(error);
+    }
+  }
+
   // An imported theme removed, with the colours picked for it; the default
   // theme of its mode takes its place.
   function removeImported(theme: Theme): void {
@@ -725,6 +753,7 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
 
       case "appearance": {
         const materials = MATERIAL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
+        const fits = FIT_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const modes = MODE_OPTIONS.map((option) => ({ ...option, label: t(option.label) }));
         const accent = currentAccent(settings);
         const onlyTheme = theme ? t("{theme}에만 저장됩니다.", { theme: t(theme.label) }) : undefined;
@@ -977,6 +1006,79 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                     onChange={(materialBlur) => onChange({ materialBlur })}
                   />
                 </SettingRow>
+              ) : null}
+            </SettingsGroup>
+            <SettingsGroup title="배경 이미지">
+              <SettingRow
+                label="이미지"
+                keywords="background wallpaper picture image photo 배경 화면 바탕 사진"
+                hint={t("PNG, JPEG, GIF, WebP. 모든 창에 같은 이미지가 깔립니다.")}
+                changed={settings.backgroundImage !== ""}
+                onReset={() => void clearBackground()}
+                onActivate={() => backgroundFileRef.current?.click()}
+              >
+                {settings.backgroundImage !== "" ? <span className="settings-backdrop-thumb" aria-hidden="true" /> : null}
+                <button type="button" onClick={() => backgroundFileRef.current?.click()}>
+                  {settings.backgroundImage !== "" ? t("바꾸기…") : t("이미지 선택…")}
+                </button>
+                {settings.backgroundImage !== "" ? (
+                  <button type="button" onClick={() => void clearBackground()}>
+                    {t("지우기")}
+                  </button>
+                ) : null}
+                <input
+                  ref={backgroundFileRef}
+                  type="file"
+                  accept={BACKGROUND_ACCEPT}
+                  hidden
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file !== undefined) {
+                      void pickBackground(file);
+                    }
+                  }}
+                />
+              </SettingRow>
+              {settings.backgroundImage !== "" ? (
+                <>
+                  <SettingRow
+                    label="맞춤"
+                    keywords="background fit cover contain tile repeat 채우기 맞추기 바둑판"
+                    {...fromDefault("backgroundFit")}
+                    onActivate={() => onChange({ backgroundFit: nextChoice(fits, settings.backgroundFit) })}
+                  >
+                    <Choice
+                      label={t("맞춤")}
+                      value={settings.backgroundFit}
+                      options={fits}
+                      onChange={(backgroundFit) => onChange({ backgroundFit })}
+                    />
+                  </SettingRow>
+                  <SettingRow
+                    label="이미지 위 불투명도"
+                    keywords="background opacity 배경 불투명도"
+                    hint={t("사이드바, 편집기, 표의 바탕이 이미지 위에 깔리는 정도입니다. 낮을수록 이미지가 잘 보입니다.")}
+                    {...fromDefault("backgroundOpacity")}
+                  >
+                    <Slider
+                      label={t("이미지 위 불투명도")}
+                      value={settings.backgroundOpacity}
+                      max={100}
+                      unit="%"
+                      onChange={(backgroundOpacity) => onChange({ backgroundOpacity })}
+                    />
+                  </SettingRow>
+                  <SettingRow label="이미지 흐림" keywords="background blur 배경 흐림" {...fromDefault("backgroundBlur")}>
+                    <Slider
+                      label={t("이미지 흐림")}
+                      value={settings.backgroundBlur}
+                      max={BACKGROUND_BLUR_MAX}
+                      unit="px"
+                      onChange={(backgroundBlur) => onChange({ backgroundBlur })}
+                    />
+                  </SettingRow>
+                </>
               ) : null}
             </SettingsGroup>
             <SettingsGroup title="표시">

@@ -70,7 +70,6 @@ export function UpdateBanner() {
 // The platform a release archive is for, by its Rust target.
 const PLATFORMS: Record<string, string> = {
   "aarch64-apple-darwin": "macOS (Apple Silicon)",
-  "x86_64-apple-darwin": "macOS (Intel)",
   "x86_64-unknown-linux-gnu": "Linux (x86_64)",
   "aarch64-unknown-linux-gnu": "Linux (ARM64)",
   "x86_64-pc-windows-msvc": "Windows (x64)",

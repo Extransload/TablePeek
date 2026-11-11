@@ -19,15 +19,16 @@ The desktop app is TablePeek in its own window instead of a browser tab. It star
 brew install --cask extransload/tap/tablepeek
 ```
 
-The cask picks the disk image for your Mac and clears the download quarantine, so the app opens without a Gatekeeper prompt. Each stable release updates the cask. The app also updates itself, so `brew upgrade` leaves it alone unless you pass `--greedy`. `brew uninstall --zap --cask tablepeek` also removes the app's web view caches. `~/.tablepeek` stays, because the command line shares it.
+The cask clears the download quarantine, so the app opens without a Gatekeeper prompt. Each stable release updates the cask. The app also updates itself, so `brew upgrade` leaves it alone unless you pass `--greedy`. `brew uninstall --zap --cask tablepeek` also removes the app's web view caches. `~/.tablepeek` stays, because the command line shares it.
 
 ### Download
 
 | Platform | File |
 | --- | --- |
 | macOS, Apple Silicon | `TablePeek-vX.Y.Z-aarch64-apple-darwin.dmg` |
-| macOS, Intel | `TablePeek-vX.Y.Z-x86_64-apple-darwin.dmg` |
 | Windows, x86_64 | `TablePeek-vX.Y.Z-x86_64-pc-windows-msvc-setup.exe` (installs for the current user, no admin rights) |
+
+Intel Macs are not supported.
 
 The builds are not signed with a paid Apple or Microsoft certificate, so the first launch of a downloaded file needs one extra step:
 
@@ -47,7 +48,6 @@ Each release has one archive per platform, plus a `SHA256SUMS` file:
 | Platform | Archive |
 |---|---|
 | macOS, Apple silicon | `tablepeek-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
-| macOS, Intel | `tablepeek-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
 | Linux, x86_64 | `tablepeek-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux, arm64 | `tablepeek-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
 | Windows, x86_64 | `tablepeek-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
@@ -58,7 +58,7 @@ Each archive holds a `tablepeek-vX.Y.Z-<platform>` folder with the `tablepeek` b
 
 ```sh
 VERSION=v0.2.0                    # the latest release
-TARGET=aarch64-apple-darwin       # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+TARGET=aarch64-apple-darwin       # or x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 curl -LO "https://github.com/Extransload/TablePeek/releases/download/$VERSION/tablepeek-$VERSION-$TARGET.tar.gz"
 tar -xzf "tablepeek-$VERSION-$TARGET.tar.gz"
 cd "tablepeek-$VERSION-$TARGET"

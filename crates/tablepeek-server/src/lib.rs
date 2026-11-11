@@ -29,6 +29,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 
 pub mod ai;
+mod background;
 mod chatgpt;
 pub mod cursors;
 pub mod launch;
@@ -823,6 +824,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/oidc/callback", get(oidc_callback))
         .merge(search::routes())
         .merge(ai::routes())
+        .merge(background::routes())
         .merge(sql_dump::routes())
         .merge(sql_restore::routes())
         .layer(middleware::from_fn_with_state(state.clone(), token_guard))

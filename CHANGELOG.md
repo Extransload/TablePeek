@@ -4,6 +4,18 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Background picture.** Settings › Appearance › Background picture lays a picture (PNG, JPEG, GIF, WebP) behind the app, with how it fits (fill, fit whole, tile), how opaque the app's surfaces are over it and how much it is blurred. Every window, the browser's and the desktop app's, shows the same one.
+
+### Removed
+
+- **Intel Macs are no longer supported.** 0.5.0 is the last release with an Intel Mac app and command-line binary; the Homebrew cask installs on Apple silicon only.
+
+### Fixed
+
+- In a see-through desktop window (Glass or Clear material) the SQL editor, its gutter and the results grid painted the window's translucent background two or three times over, so they came out darker than the rest of the page; they now lie on the page's background once, as the results' empty area does.
+
 ## [0.5.0] - 2026-11-11
 
 Backups and restores run on the server: every row of every table, binary values whole, and restores in one transaction several times faster.

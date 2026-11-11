@@ -7033,7 +7033,7 @@ export default function App() {
                         <div className="data-notice info">{tServer(state.info)}</div>
                       ) : null}
                       <div className="result-body" ref={resultBodyRef}>
-                        <div className={`result-layer${paneView === "grid" ? "" : " hidden"}${staleRows ? " stale" : ""}`}>
+                        <div className={`result-layer grid-layer${paneView === "grid" ? "" : " hidden"}${staleRows ? " stale" : ""}`}>
                           <GridHost
                             ref={gridHostRef}
                             result={state.result}

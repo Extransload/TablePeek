@@ -2439,6 +2439,21 @@ function binaryCellRef(row: number, col: number): CellRef | null {
   return pk === null ? null : { table: result.meta.sourceTable, pk, column };
 }
 
+// Makes `file` the picture behind the app (background.ts); resolves to its
+// stamp, which the settings keep.
+async function setBackgroundImage(file: Blob): Promise<string> {
+  const body = await api<{ stamp: string }>("/api/background", {
+    method: "PUT",
+    headers: { "content-type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  return body.stamp;
+}
+
+async function clearBackgroundImage(): Promise<void> {
+  await api<{ ok: boolean }>("/api/background", { method: "DELETE" });
+}
+
 // A binary cell's whole value (capabilities.binary_cells), read as the
 // server streams it; `onProgress` gets the bytes received so far. A stream
 // that breaks off throws rather than giving part of the value.
@@ -2977,6 +2992,8 @@ export const store = {
   binaryCellRef,
   readBinaryCell,
   writeBinaryCell,
+  setBackgroundImage,
+  clearBackgroundImage,
   startDump,
   dumpDownloadUrl,
   dumpProgress,
