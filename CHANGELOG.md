@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-11
+
+Backups and restores run on the server: every row of every table, binary values whole, and restores in one transaction several times faster.
+
 ### Added
 
 - **Restore in one transaction.** The restore window's **Run in one transaction** commits once at the end instead of after every statement, so a dump of single-row `INSERT`s restores several times faster (200,000 into SQLite: 7.5 s instead of 48 s), and a failure or a stop rolls the whole restore back. MySQL, MariaDB and Oracle still commit at each DDL statement, so only what follows the last one rolls back there. A file with its own `BEGIN`, `COMMIT` or `ROLLBACK` stops at that statement in this mode. Not offered on engines without transactions.
@@ -147,7 +151,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Extransload/TablePeek/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Extransload/TablePeek/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/Extransload/TablePeek/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Extransload/TablePeek/compare/v0.3.2...v0.3.3
