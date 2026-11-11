@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-11
+
+Appearance settings that each do what they say: one background opacity, floating surfaces at the opacity picked, and Settings sliding in with the app.
+
 ### Changed
 
 - **Settings › Appearance, sorted out.** One **Background** opacity, under the new **Opacity** group with every other opacity, sets how opaque the app is over what is behind it, the picture or the desktop, in place of the material's Opacity and Opacity over the picture, which each went unheeded while the other applied; the one in use carries over. The material's **Blur** shows only where it does something: in the desktop app, under Clear, with no picture. A background picture keeps the desktop app's window solid, as it covers it anyway.
@@ -208,7 +212,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/Extransload/TablePeek/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/Extransload/TablePeek/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/Extransload/TablePeek/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/Extransload/TablePeek/compare/v0.6.0...v0.7.0
