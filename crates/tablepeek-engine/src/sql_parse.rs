@@ -280,6 +280,35 @@ fn mssql_tx_control(sql: &str) -> Option<TxControl> {
     found
 }
 
+/// Whether `sql` begins, commits or rolls back a transaction of its own: what
+/// a restore run as one transaction can't take, since it would end that
+/// transaction. A rollback to a savepoint carries on, and a MySQL or Oracle
+/// statement that only commits before it runs (DDL) is the restore's to deal
+/// with, so neither counts. SQLite counts too, which `tx_controls` leaves to
+/// its autocommit flag.
+pub fn controls_transaction(sql: &str, dialect: Dialect) -> bool {
+    if dialect == Dialect::Sqlite {
+        let head: Vec<String> = lexemes(sql, dialect)
+            .filter_map(|lexeme| match lexeme {
+                Lexeme::Word(word) => Some(word.to_ascii_uppercase()),
+                _ => None,
+            })
+            .take(HEAD_WORDS)
+            .collect();
+        return match head.first().map(String::as_str) {
+            Some("BEGIN" | "COMMIT" | "END") => true,
+            Some("ROLLBACK") => !head.iter().any(|word| word == "TO"),
+            _ => false,
+        };
+    }
+    tx_controls(sql, dialect).iter().any(|control| {
+        matches!(
+            control,
+            TxControl::Begin | TxControl::Commit | TxControl::Rollback
+        )
+    })
+}
+
 /// A single statement that only reads: what the MCP server lets an AI run,
 /// and what the page may still run while a job's transaction is open.
 /// Conservative: anything it can't tell (a `;`, a write keyword anywhere)
@@ -451,6 +480,35 @@ mod tests {
         assert!(ms("SELECT 'COMMIT', [rollback] FROM t").is_empty());
     }
 
+    #[test]
+    fn statements_that_end_a_restores_one_transaction() {
+        for (sql, dialect) in [
+            ("BEGIN TRANSACTION", Dialect::Sqlite),
+            ("end", Dialect::Sqlite),
+            ("ROLLBACK", Dialect::Sqlite),
+            ("COMMIT", Dialect::Postgres),
+            ("START TRANSACTION", Dialect::MySql),
+            ("COMMIT TRAN", Dialect::Mssql),
+            ("ROLLBACK", Dialect::Oracle),
+        ] {
+            assert!(controls_transaction(sql, dialect), "{sql}");
+        }
+        for (sql, dialect) in [
+            ("ROLLBACK TO SAVEPOINT a", Dialect::Sqlite),
+            ("ROLLBACK TRANSACTION TO a", Dialect::Sqlite),
+            ("SAVEPOINT a", Dialect::Sqlite),
+            (
+                "CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT 1; END",
+                Dialect::Sqlite,
+            ),
+            ("SELECT 'COMMIT'", Dialect::Sqlite),
+            ("ROLLBACK TO a", Dialect::Postgres),
+            ("CREATE TABLE t (a INT)", Dialect::MySql),
+            ("CREATE TABLE t (a NUMBER)", Dialect::Oracle),
+        ] {
+            assert!(!controls_transaction(sql, dialect), "{sql}");
+        }
+    }
     #[test]
     fn sqlite_is_tracked_by_its_autocommit_flag_instead() {
         assert!(tx_controls("BEGIN", Dialect::Sqlite).is_empty());

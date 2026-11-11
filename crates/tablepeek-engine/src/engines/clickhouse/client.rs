@@ -189,6 +189,27 @@ impl Client {
     /// Runs one statement and reads up to `max_rows` of its rows.
     pub(crate) async fn run(&self, sql: &str, request: Request<'_>) -> Result<Reply, EngineError> {
         let max_rows = request.max_rows;
+        let mut stream = self.rows(sql, request).await?;
+        let rows = stream.next_rows(max_rows).await?;
+        // One row past them tells whether there were more; the rest is
+        // dropped unread, which ends the query.
+        let truncated = !stream.ended && !stream.next_rows(1).await?.is_empty();
+        Ok(Reply {
+            columns: stream.lines.columns,
+            types: stream.lines.types,
+            rows,
+            truncated,
+            written_rows: stream.written_rows,
+        })
+    }
+
+    /// Runs one statement and hands its rows over as they arrive
+    /// (`RowStream::next_rows`). Dropping the stream ends the query.
+    pub(crate) async fn rows(
+        &self,
+        sql: &str,
+        request: Request<'_>,
+    ) -> Result<RowStream, EngineError> {
         let response = self.send(sql, request).await?;
         let headers = response.headers();
         let format = headers
@@ -197,7 +218,13 @@ impl Client {
             .unwrap_or(RESULT_FORMAT)
             .to_string();
         let written_rows = summary_count(headers, "written_rows");
-        read_body(response, &format, max_rows, sql, written_rows).await
+        Ok(RowStream {
+            response,
+            lines: BodyLines::new(&format),
+            sql: sql.to_string(),
+            ended: false,
+            written_rows,
+        })
     }
 
     /// Runs a statement whose result is a file in the format it names: its
@@ -320,120 +347,174 @@ pub(crate) fn text_of(value: &Value) -> Option<String> {
     }
 }
 
-/// The body read line by line: names, types and up to `max_rows` rows in
-/// the driver's own format; any other format's lines as rows of one column
-/// named after it.
-async fn read_body(
-    mut response: reqwest::Response,
-    format: &str,
-    max_rows: usize,
-    sql: &str,
+/// A statement's rows as they arrive (`Client::rows`): the response, read a
+/// chunk at a time as rows are asked for.
+pub(crate) struct RowStream {
+    response: reqwest::Response,
+    lines: BodyLines,
+    sql: String,
+    /// The whole body has been read.
+    ended: bool,
+    /// Rows the statement wrote (an INSERT's), as the server's summary says.
     written_rows: Option<u64>,
-) -> Result<Reply, EngineError> {
-    let ours = format == RESULT_FORMAT;
-    let mut reply = Reply {
-        columns: Vec::new(),
-        types: Vec::new(),
-        rows: Vec::new(),
-        truncated: false,
-        written_rows,
-    };
-    let mut pending: Vec<u8> = Vec::new();
-    let mut lines_seen = 0usize;
-    // Once a line isn't JSON, the rest is the server's error text.
-    let mut trailer: Option<Vec<u8>> = None;
-    'read: loop {
-        let chunk = match response.chunk().await {
-            Ok(chunk) => chunk,
-            // The server breaks the stream off after the error it wrote
-            // (__exception__ …): that error is the one to report.
-            Err(err) => {
-                let pending_text = trailer.as_deref().unwrap_or(&pending);
-                let text = String::from_utf8_lossy(pending_text);
-                if let Some(at) = text.find("__exception__") {
-                    return Err(server_error(&text[at..], None, sql));
-                }
-                return Err(transport_error(err));
-            }
-        };
-        let finished = chunk.is_none();
-        if let Some(chunk) = chunk {
-            if let Some(trailer) = trailer.as_mut() {
-                trailer.extend_from_slice(&chunk);
+}
+
+impl RowStream {
+    /// Up to `limit` more rows, reading as many more bytes as they take;
+    /// fewer only once the body has ended. The names and types are known
+    /// once a row has come or the body has ended.
+    pub(crate) async fn next_rows(&mut self, limit: usize) -> Result<Vec<Vec<Value>>, EngineError> {
+        let mut rows = Vec::new();
+        while rows.len() < limit {
+            if let Some(row) = self.lines.next_row() {
+                rows.push(row);
                 continue;
             }
-            pending.extend_from_slice(&chunk);
-        }
-        let mut start = 0;
-        while let Some(end) = pending[start..].iter().position(|byte| *byte == b'\n') {
-            let line = &pending[start..start + end];
-            start += end + 1;
-            if !ours {
-                if reply.rows.len() >= max_rows {
-                    reply.truncated = true;
-                    break 'read;
+            if self.ended {
+                break;
+            }
+            match self.response.chunk().await {
+                Ok(Some(chunk)) => self.lines.push(&chunk),
+                Ok(None) => {
+                    self.ended = true;
+                    rows.extend(self.lines.finish(&self.sql)?);
                 }
+                Err(err) => return Err(self.lines.broken(err, &self.sql)),
+            }
+        }
+        Ok(rows)
+    }
+
+    pub(crate) fn columns(&self) -> &[String] {
+        &self.lines.columns
+    }
+
+    /// ClickHouse's type of each column; empty for a result in a format the
+    /// statement named itself.
+    pub(crate) fn types(&self) -> &[String] {
+        &self.lines.types
+    }
+}
+
+/// A body's lines, parsed as its bytes arrive: in the driver's own format
+/// the names, the types and then one row per line; any other format's lines
+/// as rows of one column named after it. Once a line isn't JSON, the rest
+/// of the body is the server's error text.
+struct BodyLines {
+    ours: bool,
+    /// Bytes not yet parsed start at `start`.
+    pending: Vec<u8>,
+    start: usize,
+    lines_seen: usize,
+    trailer: Option<Vec<u8>>,
+    columns: Vec<String>,
+    types: Vec<String>,
+}
+
+impl BodyLines {
+    fn new(format: &str) -> Self {
+        let ours = format == RESULT_FORMAT;
+        Self {
+            ours,
+            pending: Vec::new(),
+            start: 0,
+            lines_seen: 0,
+            trailer: None,
+            columns: if ours {
+                Vec::new()
+            } else {
+                vec![format.to_string()]
+            },
+            types: Vec::new(),
+        }
+    }
+
+    /// The next bytes of the body.
+    fn push(&mut self, chunk: &[u8]) {
+        if let Some(trailer) = self.trailer.as_mut() {
+            trailer.extend_from_slice(chunk);
+            return;
+        }
+        self.pending.drain(..self.start);
+        self.start = 0;
+        self.pending.extend_from_slice(chunk);
+    }
+
+    /// The next row whose line has fully arrived; None until more bytes
+    /// come, or for good once the server's error text has started.
+    fn next_row(&mut self) -> Option<Vec<Value>> {
+        while self.trailer.is_none() {
+            let end = self.pending[self.start..]
+                .iter()
+                .position(|byte| *byte == b'\n')?;
+            let line_start = self.start;
+            self.start += end + 1;
+            let line = &self.pending[line_start..line_start + end];
+            if !self.ours {
                 let text = String::from_utf8_lossy(line)
                     .trim_end_matches('\r')
                     .to_string();
-                reply.rows.push(vec![Value::String(text)]);
-                continue;
+                return Some(vec![Value::String(text)]);
             }
-            let parsed: Result<Vec<Value>, _> = serde_json::from_slice(line);
-            let Ok(values) = parsed else {
-                trailer = Some(pending[start - end - 1..].to_vec());
-                pending.clear();
-                start = 0;
-                break;
+            let Ok(values) = serde_json::from_slice::<Vec<Value>>(line) else {
+                self.trailer = Some(self.pending.split_off(line_start));
+                self.pending.clear();
+                self.start = 0;
+                return None;
             };
-            lines_seen += 1;
-            match lines_seen {
-                1 => {
-                    reply.columns = values
-                        .into_iter()
-                        .map(|value| text_of(&value).unwrap_or_default())
-                        .collect()
-                }
-                2 => {
-                    reply.types = values
-                        .into_iter()
-                        .map(|value| text_of(&value).unwrap_or_default())
-                        .collect()
-                }
-                _ => {
-                    if reply.rows.len() >= max_rows {
-                        reply.truncated = true;
-                        break 'read;
-                    }
-                    reply.rows.push(values);
-                }
+            self.lines_seen += 1;
+            let texts = || {
+                values
+                    .iter()
+                    .map(|value| text_of(value).unwrap_or_default())
+                    .collect()
+            };
+            match self.lines_seen {
+                1 => self.columns = texts(),
+                2 => self.types = texts(),
+                _ => return Some(values),
             }
         }
-        pending.drain(..start);
-        if finished {
-            if !pending.is_empty() && trailer.is_none() {
-                if ours {
-                    trailer = Some(std::mem::take(&mut pending));
-                } else if reply.rows.len() < max_rows {
-                    let text = String::from_utf8_lossy(&pending).to_string();
-                    reply.rows.push(vec![Value::String(text)]);
-                } else {
-                    reply.truncated = true;
-                }
-            }
-            break;
-        }
+        None
     }
-    if let Some(trailer) = trailer {
+
+    /// The body has ended, every whole line taken: what is left is another
+    /// format's last line without its newline (a row), or the error the
+    /// server wrote after the rows.
+    fn finish(&mut self, sql: &str) -> Result<Option<Vec<Value>>, EngineError> {
+        let rest = self.pending.split_off(self.start);
+        self.pending.clear();
+        self.start = 0;
+        let trailer = match self.trailer.take() {
+            Some(trailer) => trailer,
+            None if self.ours => rest,
+            None if rest.is_empty() => return Ok(None),
+            None => {
+                let text = String::from_utf8_lossy(&rest).to_string();
+                return Ok(Some(vec![Value::String(text)]));
+            }
+        };
         let text = String::from_utf8_lossy(&trailer);
         if !text.trim().is_empty() {
             return Err(server_error(&text, None, sql));
         }
+        Ok(None)
     }
-    if !ours {
-        reply.columns = vec![format.to_string()];
+
+    /// The body broken off midway. The server breaks the stream off after
+    /// the error it wrote (__exception__ …): that error is the one to
+    /// report.
+    fn broken(&self, err: reqwest::Error, sql: &str) -> EngineError {
+        let unread = self
+            .trailer
+            .as_deref()
+            .unwrap_or(&self.pending[self.start..]);
+        let text = String::from_utf8_lossy(unread);
+        if let Some(at) = text.find("__exception__") {
+            return server_error(&text[at..], None, sql);
+        }
+        transport_error(err)
     }
-    Ok(reply)
 }
 
 fn header_code(headers: &HeaderMap) -> Option<i64> {
@@ -550,6 +631,8 @@ fn transport_error(err: reqwest::Error) -> EngineError {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn parts(error: EngineError) -> (Option<String>, String, ErrorFields) {
@@ -603,5 +686,69 @@ mod tests {
         // FROM starts at byte 14 (from 1), the 12th character.
         let position = error_position("failed at position 14 (FROM)", sql);
         assert_eq!(position.and_then(|position| position.offset), Some(12));
+    }
+
+    /// `body` fed in pieces of `size` bytes: the rows, then the end's.
+    fn parse(
+        format: &str,
+        body: &[u8],
+        size: usize,
+    ) -> (BodyLines, Vec<Vec<Value>>, Result<(), EngineError>) {
+        let mut lines = BodyLines::new(format);
+        let mut rows = Vec::new();
+        for chunk in body.chunks(size) {
+            lines.push(chunk);
+            while let Some(row) = lines.next_row() {
+                rows.push(row);
+            }
+        }
+        let end = lines.finish("SELECT 1").map(|last| rows.extend(last));
+        (lines, rows, end)
+    }
+
+    #[test]
+    fn rows_come_whole_across_any_chunk_boundary() {
+        let body =
+            "[\"id\",\"name\"]\n[\"UInt64\",\"String\"]\n[\"1\",\"a\\nb\"]\n[\"2\",\"가나\"]\n";
+        for size in 1..=body.len() {
+            let (lines, rows, end) = parse(RESULT_FORMAT, body.as_bytes(), size);
+            assert!(end.is_ok(), "size {size}");
+            assert_eq!(lines.columns, ["id", "name"]);
+            assert_eq!(lines.types, ["UInt64", "String"]);
+            assert_eq!(
+                rows,
+                vec![
+                    vec![json!("1"), json!("a\nb")],
+                    vec![json!("2"), json!("가나")]
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn names_arrive_without_rows() {
+        let (lines, rows, end) = parse(RESULT_FORMAT, b"[\"n\"]\n[\"Int32\"]\n", 3);
+        assert!(end.is_ok());
+        assert_eq!(lines.columns, ["n"]);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn error_after_rows_is_reported_whatever_the_chunks() {
+        let body = "[\"n\"]\n[\"Int32\"]\n[1]\nCode: 395. DB::Exception: Value passed to 'throwIf' function is non-zero. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO)\n";
+        for size in [1, 7, body.len()] {
+            let (_, rows, end) = parse(RESULT_FORMAT, body.as_bytes(), size);
+            assert_eq!(rows, vec![vec![json!(1)]]);
+            let error = end.unwrap_err();
+            assert!(matches!(error, EngineError::Driver { .. }), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn other_formats_are_lines_and_the_last_needs_no_newline() {
+        let (lines, rows, end) = parse("CSV", b"1,\"a\"\r\n2,\"b\"", 2);
+        assert!(end.is_ok());
+        assert_eq!(lines.columns, ["CSV"]);
+        assert_eq!(rows, vec![vec![json!("1,\"a\"")], vec![json!("2,\"b\"")]]);
     }
 }

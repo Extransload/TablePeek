@@ -21,8 +21,8 @@ use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
 use crate::{
-    build_arrow, caused_by_tls, hex_bytes, hex_cell, humanize_uptime_ko, not_hex, real_json,
-    shown_hex_bytes, EngineError, QueryData,
+    build_arrow, caused_by_tls, hex_bytes, hex_value, humanize_uptime_ko, not_hex, real_json,
+    shown_hex_bytes, BinaryValues, EngineError, QueryData,
 };
 
 pub(crate) mod cells;
@@ -639,15 +639,7 @@ pub(crate) async fn query(
     track(inner, &controls);
 
     let (source_table, pk) = detect_source(inner, &mut conn, sql, &read.columns, &columns).await;
-    // TINYINT(1), BOOLEAN's own type: 1 and 0 that mean true and false.
-    let column_kinds = read
-        .columns
-        .iter()
-        .map(|column| {
-            (column.column_type() == ColumnType::MYSQL_TYPE_TINY && column.column_length() == 1)
-                .then_some("boolean")
-        })
-        .collect();
+    let column_kinds = column_kinds(&read.columns);
     let (schema, batches) = build_arrow(&columns, read.values, read.count)?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(QueryData {
@@ -699,11 +691,7 @@ async fn first_result(
                     truncated = true;
                     break;
                 }
-                for (index, value) in row.unwrap().iter().enumerate() {
-                    if let Some(column) = columns.get(index) {
-                        values[index].push(json_value(value, column));
-                    }
-                }
+                push_row(row, &columns, &mut values, BinaryValues::Shown);
                 count += 1;
             }
         }
@@ -720,6 +708,139 @@ async fn first_result(
         truncated,
         rows_affected,
     })
+}
+
+/// TINYINT(1), BOOLEAN's own type: 1 and 0 that mean true and false.
+fn column_kinds(columns: &[Column]) -> Vec<Option<&'static str>> {
+    columns
+        .iter()
+        .map(|column| {
+            (column.column_type() == ColumnType::MYSQL_TYPE_TINY && column.column_length() == 1)
+                .then_some("boolean")
+        })
+        .collect()
+}
+
+/// One row's values onto the columns being gathered, as `query` gives them
+/// but for binary values, which come as `how` says.
+fn push_row(row: Row, columns: &[Column], values: &mut [Vec<Value>], how: BinaryValues) {
+    for (index, value) in row.unwrap().iter().enumerate() {
+        if let Some(column) = columns.get(index) {
+            values[index].push(json_value(value, column, how));
+        }
+    }
+}
+
+/// Every row of the read `sql` to `sink`, `batch_rows` at a time, as the
+/// server sends them (`SqlDriver::stream_rows`). A plain read moves no
+/// transaction; a failure is followed up as a data change's is.
+pub(crate) async fn stream_rows(
+    inner: &MySqlInner,
+    sql: &str,
+    batch_rows: usize,
+    sink: &crate::driver::RowSink,
+) -> Result<(), EngineError> {
+    let mut conn = inner.conn().await;
+    match stream_result(inner, &mut conn, sql, batch_rows, sink).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            after_failed_change(inner, &mut conn, &err).await;
+            Err(mysql_err(err))
+        }
+    }
+}
+
+/// `stream_rows` on the held connection. The server's errors come out
+/// apart (the outer error), for the follow-up that needs the connection
+/// back; the inner result is one of the engine's own, the result already
+/// read off.
+async fn stream_result(
+    inner: &MySqlInner,
+    conn: &mut MyConn<'_>,
+    sql: &str,
+    batch_rows: usize,
+    sink: &crate::driver::RowSink,
+) -> Result<Result<(), EngineError>, MyError> {
+    let started = Instant::now();
+    let batch_rows = batch_rows.max(1);
+    let mut result = conn.query_iter(sql).await?;
+    let columns: Vec<Column> = result
+        .columns()
+        .map(|columns| columns.to_vec())
+        .unwrap_or_default();
+    let names: Vec<String> = columns
+        .iter()
+        .map(|column| column.name_str().to_string())
+        .collect();
+    let kinds = column_kinds(&columns);
+    let batch = |values: Vec<Vec<Value>>, count: usize| {
+        let (schema, batches) = build_arrow(&names, values, count)?;
+        Ok::<_, EngineError>(QueryData {
+            kind: "mysql",
+            columns: names.clone(),
+            schema,
+            batches,
+            row_count: count,
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            truncated: false,
+            source_table: None,
+            pk: None,
+            column_kinds: kinds.clone(),
+            rows_affected: None,
+            next_page: None,
+        })
+    };
+    let mut values: Vec<Vec<Value>> = vec![Vec::new(); columns.len()];
+    let mut count = 0usize;
+    let mut sent_any = false;
+    // Set when the rows stop coming before the end: Ok once the reader is
+    // gone, the error when a batch could not be built.
+    let mut stopped: Option<Result<(), EngineError>> = None;
+    {
+        let mut stream = result.stream::<Row>().await?;
+        if let Some(stream) = stream.as_mut() {
+            while let Some(row) = stream.next().await {
+                push_row(row?, &columns, &mut values, BinaryValues::Whole);
+                count += 1;
+                if count == batch_rows {
+                    let full = std::mem::replace(&mut values, vec![Vec::new(); columns.len()]);
+                    match batch(full, count) {
+                        Ok(data) => {
+                            if sink.send(data).await.is_err() {
+                                stopped = Some(Ok(()));
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            stopped = Some(Err(err));
+                            break;
+                        }
+                    }
+                    sent_any = true;
+                    count = 0;
+                }
+            }
+        }
+    }
+    if let Some(outcome) = stopped {
+        // The rest of the result would otherwise come over the wire before
+        // the next statement could run: KILL QUERY ends it (the statement
+        // only; an open transaction stays), and what was already sent is
+        // read off so the connection is ready again.
+        let _ = inner.cancel().await;
+        let _ = result.drop_result().await;
+        return Ok(outcome);
+    }
+    result.drop_result().await?;
+    if count > 0 || !sent_any {
+        match batch(values, count) {
+            Ok(data) => {
+                let _ = sink.send(data).await;
+            }
+            Err(err) => return Ok(Err(err)),
+        }
+    }
+    Ok(Ok(()))
 }
 
 /// A query failed, maybe partway through a batch, so the controls it
@@ -1805,7 +1926,7 @@ fn result_schema(result: &[Column], table: &str) -> Option<String> {
 // BINARY_FLAG alone also marks text in a _bin collation, read as text.
 const BINARY_CHARSET: u16 = 63;
 
-fn json_value(value: &MyValue, column: &Column) -> Value {
+fn json_value(value: &MyValue, column: &Column, how: BinaryValues) -> Value {
     if matches!(value, MyValue::NULL) {
         return Value::Null;
     }
@@ -1830,15 +1951,15 @@ fn json_value(value: &MyValue, column: &Column) -> Value {
         ColumnType::MYSQL_TYPE_BIT => bit_json(value),
         ColumnType::MYSQL_TYPE_JSON => text_json(value),
         ColumnType::MYSQL_TYPE_ENUM | ColumnType::MYSQL_TYPE_SET => text_json(value),
-        ColumnType::MYSQL_TYPE_GEOMETRY => blob_json(value),
+        ColumnType::MYSQL_TYPE_GEOMETRY => blob_json(value, how),
         ColumnType::MYSQL_TYPE_TINY_BLOB
         | ColumnType::MYSQL_TYPE_MEDIUM_BLOB
         | ColumnType::MYSQL_TYPE_LONG_BLOB
         | ColumnType::MYSQL_TYPE_BLOB => {
             if column.character_set() == BINARY_CHARSET {
-                blob_json(value)
+                blob_json(value, how)
             } else if flags.contains(ColumnFlags::BINARY_FLAG) {
-                soft_text_json(value)
+                soft_text_json(value, how)
             } else {
                 text_json(value)
             }
@@ -1849,9 +1970,9 @@ fn json_value(value: &MyValue, column: &Column) -> Value {
             if flags.contains(ColumnFlags::ENUM_FLAG) || flags.contains(ColumnFlags::SET_FLAG) {
                 text_json(value)
             } else if column.character_set() == BINARY_CHARSET {
-                blob_json(value)
+                blob_json(value, how)
             } else if flags.contains(ColumnFlags::BINARY_FLAG) {
-                soft_text_json(value)
+                soft_text_json(value, how)
             } else {
                 text_json(value)
             }
@@ -1974,19 +2095,19 @@ fn bit_json(value: &MyValue) -> Value {
     }
 }
 
-fn soft_text_json(value: &MyValue) -> Value {
+fn soft_text_json(value: &MyValue, how: BinaryValues) -> Value {
     match value {
         MyValue::Bytes(bytes) => match std::str::from_utf8(bytes) {
             Ok(text) => Value::from(text.to_string()),
-            Err(_) => hex_cell(bytes, false),
+            Err(_) => hex_value(bytes, false, how),
         },
         other => text_json(other),
     }
 }
 
-fn blob_json(value: &MyValue) -> Value {
+fn blob_json(value: &MyValue, how: BinaryValues) -> Value {
     match value {
-        MyValue::Bytes(bytes) => hex_cell(bytes, false),
+        MyValue::Bytes(bytes) => hex_value(bytes, false, how),
         other => text_json(other),
     }
 }

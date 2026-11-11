@@ -19,7 +19,7 @@ use tablepeek_types::{
     PkValue, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
-use crate::driver::{CancelRequest, Driver, FileStream, NativeExport, SqlDriver, TxOp};
+use crate::driver::{CancelRequest, Driver, FileStream, NativeExport, RowSink, SqlDriver, TxOp};
 use crate::registry::{
     check_host, parse_descriptor, typed_config, ConfigProblem, DriverFactory, EngineDescriptor,
     NetRoute,
@@ -297,6 +297,15 @@ impl SqlDriver for ClickHouseDriver {
 
     async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
         rows::query(&self.inner, sql, max_rows).await
+    }
+
+    async fn stream_rows(
+        &self,
+        sql: &str,
+        batch_rows: usize,
+        sink: &RowSink,
+    ) -> Result<(), EngineError> {
+        rows::stream_rows(&self.inner, sql, batch_rows, sink).await
     }
 
     async fn edit(&self, target: &EditTarget) -> Result<u64, EngineError> {

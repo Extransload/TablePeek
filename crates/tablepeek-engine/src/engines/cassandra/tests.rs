@@ -177,6 +177,101 @@ async fn reads_pages_edits_and_traces() {
     }
 }
 
+/// Every batch `stream_rows` sends for `sql`, and how it ended.
+async fn stream_all(
+    sql: &dyn SqlDriver,
+    cql: &str,
+    batch_rows: usize,
+) -> (Vec<QueryData>, Result<(), EngineError>) {
+    let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+    let send = async move { sql.stream_rows(cql, batch_rows, &sink).await };
+    let collect = async {
+        let mut all = Vec::new();
+        while let Some(batch) = batches.recv().await {
+            all.push(batch);
+        }
+        all
+    };
+    let (result, all) = tokio::join!(send, collect);
+    (all, result)
+}
+
+#[tokio::test]
+async fn streams_rows_page_by_page() {
+    for (factory, port) in servers() {
+        let driver = factory
+            .connect(&config(port), &NetRoute::Direct, SqlLog::new())
+            .await
+            .expect("connects");
+        let sql = driver.sql().expect("a SQL engine");
+        sql.query(
+            "DROP TABLE IF EXISTS streamed; CREATE TABLE streamed (pk int, ck int, tags set<text>, note text, PRIMARY KEY ((pk), ck))",
+            10,
+        )
+        .await
+        .expect("makes the table");
+        for pk in 0..30 {
+            let rows: Vec<String> = (0..4)
+                .map(|ck| {
+                    format!("INSERT INTO streamed (pk, ck, tags, note) VALUES ({pk}, {ck}, {{'a', 'b{ck}'}}, 'n{pk}-{ck}');")
+                })
+                .collect();
+            sql.query(
+                &format!("BEGIN UNLOGGED BATCH {} APPLY BATCH", rows.join(" ")),
+                1,
+            )
+            .await
+            .expect("inserts");
+        }
+
+        // The same values as a query, in batches of at most `batch_rows`.
+        let cql = "SELECT * FROM streamed";
+        let whole = sql.query(cql, usize::MAX).await.unwrap();
+        assert_eq!(whole.row_count, 120);
+        let sevens: Vec<usize> = std::iter::repeat_n(7, 17).chain([1]).collect();
+        for (batch_rows, expected) in [(50, vec![50, 50, 20]), (120, vec![120]), (7, sevens)] {
+            let (batches, result) = stream_all(sql, cql, batch_rows).await;
+            result.unwrap();
+            let counts: Vec<usize> = batches.iter().map(|batch| batch.row_count).collect();
+            assert_eq!(counts, expected);
+            assert!(batches.iter().all(|batch| batch.columns == whole.columns));
+            let rows: Vec<Vec<Value>> =
+                batches.iter().flat_map(|batch| batch.rows_json()).collect();
+            assert_eq!(rows, whole.rows_json());
+        }
+
+        // No rows: one batch with the columns.
+        let (batches, result) = stream_all(sql, "SELECT * FROM streamed WHERE pk = 99", 10).await;
+        result.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].row_count, 0);
+        assert_eq!(batches[0].columns, whole.columns);
+
+        // A reader that stops ends the stream; the session goes on.
+        let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+        let send = sql.stream_rows(cql, 10, &sink);
+        let read_one = async {
+            batches.recv().await.unwrap();
+            drop(batches);
+        };
+        let (result, ()) = tokio::join!(send, read_one);
+        result.unwrap();
+        let one = sql
+            .query("SELECT note FROM streamed WHERE pk = 1 AND ck = 2", 1)
+            .await
+            .unwrap();
+        assert_eq!(cell(&one, 0, "note").as_deref(), Some("n1-2"));
+
+        // A failure is the query's.
+        let (_, result) = stream_all(sql, "SELECT * FROM no_such_table", 10).await;
+        assert!(
+            matches!(result, Err(EngineError::Driver { .. })),
+            "{result:?}"
+        );
+        sql.query("DROP TABLE streamed", 1).await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn walks_counts_estimates_and_adds() {
     for (factory, port) in servers() {

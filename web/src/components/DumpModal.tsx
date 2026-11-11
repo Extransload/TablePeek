@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { rowWindowSql } from "../dataQuery";
+import { escapeSqlIdentifier, quoteIdentifier } from "../dataQuery";
 import { capabilitiesOf } from "../engines";
 import { createTableSql, dependencyOrder, draftsFromDetail, dumpIndexSql, foreignKeySql, quoteIdent } from "../ddl";
-import { collectRows, downloadBlob, EXPORT_MIME, suggestFilename, toSqlInserts } from "../export";
+import { suggestFilename } from "../export";
 import { declaredAs } from "../grid/columns";
 import { t } from "../i18n";
 import { formatBytes } from "../format";
@@ -10,8 +10,7 @@ import { decoderFor, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
 import { cancelJob, startJob } from "../jobs";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { getSettings } from "../settings";
-import { fileStatements, type FileStatement } from "../sqlFile";
-import { store, type EngineMeta, type TableDetail } from "../store";
+import { store, type DumpProgress, type DumpTablePlan, type EngineMeta, type TableDetail } from "../store";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { FolderIcon, StopIcon } from "./icons";
 import { Select } from "./Select";
@@ -26,13 +25,19 @@ interface DumpModalProps {
   onRestored(): void;
 }
 
-const PAGE_SIZE = 5000;
-const TABLE_ROW_CAP = 200000;
+// How often a running backup or restore is asked how far it has got.
+const BACKUP_POLL_MS = 300;
+const RESTORE_POLL_MS = 250;
 // The start of an SQL file shown before it runs, as TablePlus previews it.
 const RESTORE_PREVIEW_BYTES = 100000;
 
 function errorOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+// Text written as lines: each one ends with "\n".
+function lines(items: string[]): string {
+  return items.map((item) => `${item}\n`).join("");
 }
 
 function baseName(meta: EngineMeta): string {
@@ -54,14 +59,21 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
   // explanation would otherwise hide it); only while that error is the one shown.
   const [failedAt, setFailedAt] = useState<{ error: string; text: string } | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  // The file is read a piece at a time as it runs (a dump runs to
-  // gigabytes); only its start is read before, for the preview.
+  // The file goes to the server as it is, straight from disk (a dump runs to
+  // gigabytes); only its start is read here, for the preview.
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restorePreview, setRestorePreview] = useState("");
   const [restoreEncoding, setRestoreEncoding] = useState<string>(() => getSettings().csvEncoding);
   const [restoreProgress, setRestoreProgress] = useState<{ statements: number; bytes: number } | null>(null);
-  // The running restore's job: Stop here and in the jobs queue both cancel it.
+  // Run the file in one transaction: one commit at the end instead of one
+  // per statement, and a failure or a stop rolls it all back.
+  const [restoreInOne, setRestoreInOne] = useState(false);
+  const transactional = capabilitiesOf(meta)?.transactions !== "none";
+  // How far the running backup has got, as a line of text; null when none runs.
+  const [backupStatus, setBackupStatus] = useState<string | null>(null);
+  // The running restore's and backup's jobs: Stop here and in the jobs queue both cancel them.
   const restoreJobRef = useRef<string | null>(null);
+  const backupJobRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -119,6 +131,19 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
     });
   }
 
+  // Shown in the window while it is open, in the status line once it isn't.
+  function report(message: string, failed: boolean): void {
+    if (mountedRef.current) {
+      (failed ? setError : setInfo)(message);
+    } else {
+      (failed ? notifyError : store.setInfo)(message);
+    }
+  }
+
+  // The page lays the file out (comments, structures, indexes, keys) and
+  // the server writes it, each table's rows read straight from the database
+  // as INSERT statements, into a download the browser saves as it comes:
+  // no row limit, and the page never holds the file.
   async function runBackup(): Promise<void> {
     const tables = meta.tables.filter((name) => selected.has(name));
     if (tables.length === 0 || busy) {
@@ -129,18 +154,23 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       setError(t("가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요."));
       return;
     }
-    const job = startJob(t("백업"), t("{count}개 테이블", { count: tables.length }), tables.length);
+    // Set once the server has the plan; a stop before then ends it here.
+    let dumpId: string | null = null;
+    const job = startJob(t("백업"), t("{count}개 테이블", { count: tables.length }), tables.length, {
+      cancellable: true,
+      onCancel: () => {
+        if (dumpId !== null) {
+          void store.stopDump(conn, dumpId).catch(() => undefined);
+        }
+      },
+    });
+    backupJobRef.current = job.id;
     setBusy(true);
     setError(null);
     setInfo(null);
+    setBackupStatus(t("테이블 구조를 읽는 중…"));
+    const stopped = t("백업을 중지했습니다");
     try {
-      // The file reads the same whatever the UI language, so backups compare.
-      const parts: string[] = [
-        "-- TablePeek SQL dump",
-        `-- Engine: ${meta.kind}`,
-        `-- Created: ${new Date().toISOString()}`,
-        "",
-      ];
       // Structures first: tables go parents first, so creates and inserts find
       // what they reference; each table's indexes follow its rows, and foreign
       // keys are added after all the rows (the servers' CREATE TABLE text has
@@ -148,37 +178,50 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       const details = new Map<string, TableDetail>();
       const failures = new Map<string, unknown>();
       for (const table of tables) {
+        if (job.signal.aborted) {
+          break;
+        }
         try {
           details.set(table, await store.fetchTableDetail(conn, table));
         } catch (err) {
           failures.set(table, err);
         }
       }
-      const keysAfter = includeDdl && !dialect.keysInCreate;
-      // The engine pages by the server's token: a table's rows come a page at
-      // a time, each from where the last stopped, in no key order or OFFSET.
-      const cursor = capabilitiesOf(meta)?.cursor_paging === true;
-      if (dialect.dumpBefore !== undefined) {
-        parts.push(dialect.dumpBefore, "");
+      if (job.signal.aborted) {
+        report(stopped, false);
+        return;
       }
-      let tableIndex = 0;
+      const keysAfter = includeDdl && !dialect.keysInCreate;
+      // The engine pages by the server's token: its rows come in its own
+      // order, not the key's.
+      const cursor = capabilitiesOf(meta)?.cursor_paging === true;
+      const skipped = new Set<string>();
+      const plan: DumpTablePlan[] = [];
       for (const table of dependencyOrder(tables, (name) => details.get(name)?.foreign_keys.map((fk) => fk.ref_table) ?? [])) {
-        tableIndex += 1;
-        job.update(tableIndex - 1, table);
         const detail = details.get(table);
+        // Named as toSqlInserts names a table, for the INSERTs the server writes.
+        const target = quoteIdentifier(table, dialect);
         if (detail === undefined) {
-          parts.push(
-            // A multi-line reason would leave the comment and run as SQL on restore.
-            `-- ${table}: skipped (${errorOf(failures.get(table), "could not read the structure").replace(/\s+/g, " ")})`,
-          );
-          parts.push("");
-          job.update(tableIndex, t("{table} 건너뜀", { table }));
+          skipped.add(table);
+          plan.push({
+            name: table,
+            before: lines([
+              // A multi-line reason would leave the comment and run as SQL on restore.
+              `-- ${table}: skipped (${errorOf(failures.get(table), "could not read the structure").replace(/\s+/g, " ")})`,
+              "",
+            ]),
+            select: null,
+            target,
+            columns: [],
+            single_row: dialect.singleRowValues === true,
+            after: "",
+          });
           continue;
         }
-        parts.push(`-- ${table}`);
+        const before = [`-- ${table}`];
         if (includeDdl) {
           if (detail.ddl !== null) {
-            parts.push(`${detail.ddl.trim().replace(/;?$/, ";")}`);
+            before.push(`${detail.ddl.trim().replace(/;?$/, ";")}`);
           } else {
             const drafts = draftsFromDetail(detail);
             const created = createTableSql(
@@ -187,100 +230,146 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
               dialect.keysInCreate ? drafts : { ...drafts, indexes: [], foreignKeys: [] },
             );
             for (const statement of created.statements) {
-              parts.push(`${statement};`);
+              before.push(`${statement};`);
             }
           }
         }
+        let select: string | null = null;
         if (includeData) {
           const pkIndex = detail.indexes.find((index) => index.primary);
           const pk = pkIndex?.columns ?? detail.columns.filter((c) => c.pk).map((c) => c.name);
           const order =
-            pk.length > 0 && dialect.keyOrder !== false ? pk.map((name) => quoteIdent(dialect, name)).join(", ") : null;
-          const binary = (columns: string[]) => declaredAs("binary", columns, detail, dialect);
-          const declared = (columns: string[]) =>
-            columns.map((name) => detail.columns.find((column) => column.name === name)?.decl_type ?? null);
-          if (order === null && !cursor) {
-            // No key to page by, and a table's order can change between two
-            // reads: one read, so no row is skipped or copied twice.
-            const detached = await store.runDetached(conn, `SELECT * FROM ${quoteIdent(dialect, table)}`, TABLE_ROW_CAP);
-            try {
-              const rows = await collectRows(detached.source);
-              if (rows.length > 0) {
-                parts.push(
-                  toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns), declared(detached.meta.columns)),
-                );
-              }
-              job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: rows.length.toLocaleString() })}`);
-              if (detached.meta.truncated) {
-                parts.push(`-- ${table}: cut off at ${TABLE_ROW_CAP} rows (limit)`);
-              }
-            } finally {
-              detached.source.dispose();
-            }
-          } else {
-            let offset = 0;
-            let copied = 0;
-            let page: string | undefined;
-            for (;;) {
-              if (copied >= TABLE_ROW_CAP) {
-                parts.push(
-                  `-- ${table}: cut off at ${TABLE_ROW_CAP} rows (limit)`,
-                );
-                break;
-              }
-              const sql =
-                order === null || cursor
-                  ? `SELECT * FROM ${quoteIdent(dialect, table)}`
-                  : `SELECT * FROM ${quoteIdent(dialect, table)} ${rowWindowSql(dialect, order, PAGE_SIZE, offset)}`;
-              const detached = await store.runDetached(conn, sql, PAGE_SIZE, page);
-              try {
-                const rows = await collectRows(detached.source);
-                if (rows.length === 0) {
-                  break;
-                }
-                parts.push(
-                  toSqlInserts(table, detached.meta.columns, rows, dialect, binary(detached.meta.columns), declared(detached.meta.columns)),
-                );
-                copied += rows.length;
-                offset += rows.length;
-                job.update(tableIndex - 1, `${table} · ${t("{count}행", { count: copied.toLocaleString() })}`);
-                page = detached.meta.nextPage;
-                if (cursor ? page === undefined : rows.length < PAGE_SIZE) {
-                  break;
-                }
-              } finally {
-                detached.source.dispose();
-              }
-            }
-          }
+            pk.length > 0 && dialect.keyOrder !== false && !cursor
+              ? pk.map((name) => quoteIdent(dialect, name)).join(", ")
+              : null;
+          select = `SELECT * FROM ${quoteIdent(dialect, table)}${order !== null ? ` ORDER BY ${order}` : ""}`;
         }
-        if (includeDdl) {
-          for (const statement of dumpIndexSql(dialect, table, detail)) {
-            parts.push(`${statement};`);
-          }
-        }
-        parts.push("");
-        job.update(tableIndex, table);
+        const names = detail.columns.map((column) => column.name);
+        const binary = declaredAs("binary", names, detail, dialect);
+        const after = includeDdl ? dumpIndexSql(dialect, table, detail).map((statement) => `${statement};`) : [];
+        plan.push({
+          name: table,
+          before: lines(before),
+          select,
+          target,
+          columns: detail.columns.map((column, c) => ({
+            name: column.name,
+            quoted: escapeSqlIdentifier(column.name, dialect),
+            binary: binary[c] === true,
+            declared: column.decl_type ?? null,
+          })),
+          single_row: dialect.singleRowValues === true,
+          after: lines([...after, ""]),
+        });
       }
+      // The file reads the same whatever the UI language, so backups compare.
+      const head = lines([
+        "-- TablePeek SQL dump",
+        `-- Engine: ${meta.kind}`,
+        `-- Created: ${new Date().toISOString()}`,
+        "",
+        ...(dialect.dumpBefore !== undefined ? [dialect.dumpBefore, ""] : []),
+      ]);
       const keys = keysAfter
         ? tables.flatMap((table) => details.get(table)?.foreign_keys.map((fk) => `${foreignKeySql(dialect, table, fk)};`) ?? [])
         : [];
-      if (keys.length > 0) {
-        parts.push("-- Foreign keys", ...keys, "");
+      let tail = lines([
+        ...(keys.length > 0 ? ["-- Foreign keys", ...keys, ""] : []),
+        ...(dialect.dumpAfter !== undefined ? [dialect.dumpAfter, ""] : []),
+      ]);
+      // The file's last line is a blank one, and no "\n" follows it.
+      const last = plan[plan.length - 1];
+      if (tail !== "") {
+        tail = tail.slice(0, -1);
+      } else if (last.after !== "") {
+        last.after = last.after.slice(0, -1);
+      } else {
+        last.before = last.before.slice(0, -1);
       }
-      if (dialect.dumpAfter !== undefined) {
-        parts.push(dialect.dumpAfter, "");
+      const id = await store.startDump(conn, {
+        filename: suggestFilename(`${baseName(meta)}_backup`, "sql"),
+        head,
+        tables: plan,
+        tail,
+      });
+      dumpId = id;
+      // Stopped while the server took the plan: its onCancel had no id to stop.
+      if (job.signal.aborted) {
+        void store.stopDump(conn, id).catch(() => undefined);
+        report(stopped, false);
+        return;
       }
-      const text = parts.join("\n");
-      downloadBlob(suggestFilename(`${baseName(meta)}_backup`, "sql"), text, EXPORT_MIME.sql);
-      job.finish();
-      setInfo(t("백업 파일을 만들었습니다"));
+      // The browser downloads the file itself, as the server writes it.
+      const link = document.createElement("a");
+      link.href = store.dumpDownloadUrl(conn, id);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, BACKUP_POLL_MS));
+        if (job.signal.aborted) {
+          report(stopped, false);
+          return;
+        }
+        const progress: DumpProgress = await store.dumpProgress(conn, id);
+        if (progress.state === "done") {
+          job.finish();
+          report(t("백업 파일을 만들었습니다"), false);
+          return;
+        }
+        if (progress.state === "failed") {
+          const message = errorOf(progress.error, t("백업에 실패했습니다"));
+          job.fail(message);
+          report(message, true);
+          return;
+        }
+        if (progress.state === "stopped") {
+          job.fail(stopped);
+          report(stopped, false);
+          return;
+        }
+        const table = progress.table;
+        const where =
+          table === null
+            ? null
+            : skipped.has(table)
+              ? t("{table} 건너뜀", { table })
+              : progress.rows > 0
+                ? `${table} · ${t("{count}행", { count: progress.rows.toLocaleString() })}`
+                : table;
+        if (progress.state === "waiting") {
+          job.update(0, t("내려받기를 기다리는 중…"));
+        } else if (where !== null) {
+          job.update(progress.tables_done, where);
+        } else {
+          job.update(progress.tables_done);
+        }
+        if (mountedRef.current) {
+          setBackupStatus(
+            progress.state === "waiting"
+              ? t("내려받기를 기다리는 중…")
+              : `${t("테이블 {done} / {total} · {bytes}", {
+                  done: progress.tables_done.toLocaleString(),
+                  total: progress.tables.toLocaleString(),
+                  bytes: formatBytes(progress.bytes) ?? "",
+                })}${where !== null ? ` · ${where}` : ""}`,
+          );
+        }
+      }
     } catch (err) {
+      if (job.signal.aborted) {
+        report(stopped, false);
+        return;
+      }
       const message = errorOf(err, t("백업에 실패했습니다"));
       job.fail(message);
-      setError(message);
+      report(message, true);
     } finally {
-      setBusy(false);
+      backupJobRef.current = null;
+      if (mountedRef.current) {
+        setBusy(false);
+        setBackupStatus(null);
+      }
     }
   }
 
@@ -291,10 +380,10 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
     setInfo(null);
   }
 
-  // The file's statements run one by one, as written: a dump brings its own
-  // BEGIN and COMMIT (or none), so they aren't wrapped in a transaction, and
-  // what ran before a failure or a stop stays. A transaction the user has
-  // open is refused: the dump's COMMIT would end it.
+  // The server splits the file into statements and runs them one by one, as
+  // written: a dump brings its own BEGIN and COMMIT (or none), so they aren't
+  // wrapped in a transaction, and what ran before a failure or a stop stays.
+  // A transaction the user has open is refused: the dump's COMMIT would end it.
   async function runRestore(): Promise<void> {
     const file = restoreFile;
     if (file === null || busy) {
@@ -313,10 +402,13 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       setError(errorOf(err, t("복원에 실패했습니다")));
       return;
     }
+    // Names the run on the server, for its progress and Stop.
+    const id = crypto.randomUUID();
     const job = startJob(t("복원"), file.name, file.size, {
       cancellable: true,
-      // A statement still running (a big INSERT, one waiting on a lock) stops too.
-      onCancel: () => store.cancelJobStatement(conn),
+      // The server stops after the statement running, or cancels it (a big
+      // INSERT, one waiting on a lock); the upload's reply then says so.
+      onCancel: () => void store.stopRestore(conn, id).catch(() => undefined),
       unit: "bytes",
     });
     restoreJobRef.current = job.id;
@@ -324,18 +416,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
     setFailedAt(null);
     setInfo(null);
     setRestoreProgress({ statements: 0, bytes: 0 });
-    // Shown in the window while it is open, in the status line once it isn't.
-    const report = (message: string, failed: boolean): void => {
-      if (mountedRef.current) {
-        (failed ? setError : setInfo)(message);
-      } else {
-        (failed ? notifyError : store.setInfo)(message);
-      }
-    };
     let executed = 0;
-    // The statement running, until it has: a failure while none is came
-    // from reading the file.
-    let current: FileStatement | null = null;
     // What the dump may change for its run (foreign key checks, search_path),
     // put back below however far it gets.
     const snapshot = dialect.sessionSnapshot;
@@ -347,57 +428,89 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
         settings = undefined;
       }
     }
+    // Until the reply: a progress read that comes back after it is dropped.
+    let running = true;
+    const poll = window.setInterval(() => {
+      void store.restoreProgress(conn, id).then(
+        (progress) => {
+          if (!running) {
+            return;
+          }
+          executed = progress.statements;
+          job.update(progress.bytes);
+          if (mountedRef.current) {
+            setRestoreProgress(progress);
+          }
+        },
+        // Not started on the server yet, or just finished.
+        () => undefined,
+      );
+    }, RESTORE_POLL_MS);
     try {
-      for await (const statement of fileStatements(file, restoreEncoding, dialect)) {
-        if (job.signal.aborted) {
-          break;
-        }
-        current = statement;
-        await store.exec(conn, statement.text, { job: true });
-        current = null;
-        executed += 1;
-        job.update(statement.bytesRead);
-        if (mountedRef.current) {
-          setRestoreProgress({ statements: executed, bytes: statement.bytesRead });
-        }
-      }
-      // Stopped while the last statement ran: all of them did, but not as asked.
-      if (job.signal.aborted) {
-        const message = t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
-          count: executed.toLocaleString(),
-        });
+      const inOne = restoreInOne && transactional;
+      const outcome = await store.restoreSql(conn, id, file, restoreEncoding, dialect.lexing, inOne);
+      executed = outcome.statements;
+      const failure = outcome.failure;
+      // Added to a failure's message when the transaction was taken back.
+      const undone = outcome.rolledBack ? ` · ${t("트랜잭션을 되돌렸습니다")}` : "";
+      // A stop asked for while the last statement ran still counts: they all
+      // ran, but not as asked.
+      if (outcome.stopped || job.signal.aborted) {
+        const message = outcome.rolledBack
+          ? t("{count}개 문장을 실행하다 중지하고 트랜잭션을 되돌렸습니다", { count: executed.toLocaleString() })
+          : t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
+              count: executed.toLocaleString(),
+            });
         job.fail(message);
         report(message, true);
-      } else {
+      } else if (failure === null) {
         job.finish();
         report(t("{count}개 문장을 실행했습니다", { count: executed.toLocaleString() }), false);
-      }
-    } catch (err) {
-      // Stop interrupted the statement in flight: it failed because it was stopped.
-      if (job.signal.aborted) {
-        const message = t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
-          count: executed.toLocaleString(),
-        });
+      } else if (failure.stage === "read") {
+        const message = `${t("파일을 읽지 못했습니다")}: ${errorOf(failure.error, "")}${undone}`;
         job.fail(message);
         report(message, true);
-        return;
-      }
-      if (current === null) {
-        const failure = `${t("파일을 읽지 못했습니다")}: ${errorOf(err, "")}`;
-        job.fail(failure);
-        report(failure, true);
-        return;
-      }
-      const failure = errorOf(err, t("복원에 실패했습니다"));
-      job.fail(failure);
-      const where = { index: (executed + 1).toLocaleString(), line: current.line.toLocaleString() };
-      if (mountedRef.current) {
-        setError(failure);
-        setFailedAt({ error: failure, text: t("문장 {index}, {line}번째 줄에서 중단했습니다", where) });
+      } else if (failure.stage === "commit" || failure.statement === null) {
+        const message = `${t("커밋하지 못했습니다")}: ${errorOf(failure.error, "")}`;
+        job.fail(message);
+        report(message, true);
       } else {
-        notifyError(t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: failure, ...where }));
+        const message = errorOf(failure.error, t("복원에 실패했습니다"));
+        job.fail(message);
+        const index = failure.statement.toLocaleString();
+        const line = failure.line;
+        if (mountedRef.current) {
+          setError(message);
+          setFailedAt({
+            error: message,
+            text: `${
+              line !== null
+                ? t("문장 {index}, {line}번째 줄에서 중단했습니다", { index, line: line.toLocaleString() })
+                : t("문장 {index}에서 중단했습니다", { index })
+            }${undone}`,
+          });
+        } else {
+          notifyError(
+            `${
+              line !== null
+                ? t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: message, index, line: line.toLocaleString() })
+                : t("{error} (문장 {index}에서 중단)", { error: message, index })
+            }${undone}`,
+          );
+        }
       }
+    } catch (err) {
+      // The upload failed: Stop was asked for, or the server is out of reach.
+      const message = job.signal.aborted
+        ? t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
+            count: executed.toLocaleString(),
+          })
+        : errorOf(err, t("복원에 실패했습니다"));
+      job.fail(message);
+      report(message, true);
     } finally {
+      running = false;
+      window.clearInterval(poll);
       const putBack = settings === undefined ? null : (dialect.restoreSession?.(settings) ?? null);
       if (putBack !== null) {
         try {
@@ -502,9 +615,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
                     <span>{t("데이터 (INSERT)")}</span>
                   </label>
                 </div>
-                <p className="helper">
-                  {t("테이블당 최대 {count}행까지 포함합니다", { count: TABLE_ROW_CAP.toLocaleString() })}
-                </p>
+                {backupStatus !== null ? <p className="helper">{backupStatus}</p> : null}
               </section>
             </>
           ) : (
@@ -549,6 +660,17 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
                   <SqlPreview doc={restorePreview} dialect={dialect} />
                 </div>
               ) : null}
+              {transactional ? (
+                <label className="check-row inline">
+                  <input
+                    type="checkbox"
+                    checked={restoreInOne}
+                    disabled={busy}
+                    onChange={(event) => setRestoreInOne(event.target.checked)}
+                  />
+                  <span>{t("한 트랜잭션으로 실행")}</span>
+                </label>
+              ) : null}
               <p className="helper">
                 {restoreProgress !== null && restoreFile !== null
                   ? t("{count}개 문장 실행 · {done} / {total} 읽음", {
@@ -556,7 +678,9 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
                       done: formatBytes(restoreProgress.bytes) ?? "",
                       total: formatBytes(restoreFile.size) ?? "",
                     })
-                  : t("문장 단위로 나누어 현재 데이터베이스에서 순서대로 실행합니다. 실패하면 그 문장에서 멈추고, 앞서 실행한 문장은 남습니다.")}
+                  : restoreInOne && transactional
+                    ? t("문장마다 커밋하지 않고 끝에 한 번 커밋해 빠릅니다. 실패하거나 중지하면 모두 되돌립니다(MySQL·MariaDB·Oracle은 CREATE 같은 DDL이 그 앞까지를 커밋합니다). 파일에 BEGIN·COMMIT이 있으면 실행하지 않습니다.")
+                    : t("문장 단위로 나누어 현재 데이터베이스에서 순서대로 실행합니다. 실패하면 그 문장에서 멈추고, 앞서 실행한 문장은 남습니다.")}
               </p>
             </section>
           )}
@@ -567,14 +691,26 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
             {t("닫기")}
           </button>
           {tab === "backup" ? (
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || selected.size === 0 || (!includeDdl && !includeData)}
-              onClick={() => void runBackup()}
-            >
-              {t("백업 다운로드")}
-            </button>
+            backupStatus !== null ? (
+              <>
+                <button type="button" onClick={onClose}>
+                  {t("백그라운드에서 계속")}
+                </button>
+                <button type="button" onClick={() => backupJobRef.current !== null && cancelJob(backupJobRef.current)}>
+                  <StopIcon size={10} />
+                  {t("중지")}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || selected.size === 0 || (!includeDdl && !includeData)}
+                onClick={() => void runBackup()}
+              >
+                {t("백업 다운로드")}
+              </button>
+            )
           ) : restoreProgress !== null ? (
             <>
               <button type="button" onClick={onClose}>

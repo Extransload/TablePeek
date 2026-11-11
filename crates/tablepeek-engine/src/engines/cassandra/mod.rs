@@ -46,7 +46,10 @@ use tablepeek_types::{
 };
 use tokio::sync::watch;
 
-use crate::driver::{CancelRequest, CountStep, Driver, SkipOutcome, SkipRequest, SqlDriver, TxOp};
+use crate::driver::{
+    send_in_batches, CancelRequest, CountStep, Driver, RowSink, SkipOutcome, SkipRequest,
+    SqlDriver, TxOp,
+};
 use crate::registry::{
     check_host, parse_descriptor, typed_config, ConfigProblem, DriverFactory, EngineDescriptor,
     NetRoute, TunnelTarget,
@@ -622,34 +625,7 @@ impl CassandraDriver {
             statement.set_tracing(traced);
             let (result, response) = self.page(statement, state).await?;
             trace_id = trace_id.or(result.tracing_id());
-            for warning in result.warnings() {
-                self.log.record_command(&format!("-- 경고: {warning}"));
-            }
-            if result.is_rows() {
-                let rows_result = result
-                    .into_rows_result()
-                    .map_err(|err| self.internal(err))?;
-                if columns.is_empty() {
-                    columns = rows_result
-                        .column_specs()
-                        .iter()
-                        .map(|spec| spec.name().to_string())
-                        .collect();
-                    column_values = vec![Vec::new(); columns.len()];
-                }
-                for row in rows_result
-                    .rows::<Row>()
-                    .map_err(|err| self.internal(err))?
-                {
-                    let row = row.map_err(|err| self.internal(err))?;
-                    for (index, value) in row.columns.iter().enumerate() {
-                        if let Some(column) = column_values.get_mut(index) {
-                            column.push(values::cell(value.as_ref()));
-                        }
-                    }
-                    count += 1;
-                }
-            }
+            count += self.take_page(result, &mut columns, &mut column_values)?;
             match response.into_paging_control_flow() {
                 ControlFlow::Break(()) => break,
                 ControlFlow::Continue(next) if count >= max_rows => {
@@ -663,25 +639,124 @@ impl CassandraDriver {
             self.log_trace(id).await;
         }
         let source = self.source_of(cql, &columns).await;
+        let (source_table, pk) = source.unzip();
+        Ok(QueryData {
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            truncated: next_page.is_some(),
+            source_table,
+            pk,
+            next_page,
+            ..self.rows_data(columns, column_values, count)?
+        })
+    }
+
+    /// Every row of the read `cql`, sent to `sink` `batch_rows` at a time:
+    /// pages as `read` reads them, each converted as it does, gathered into
+    /// batches. A closed `sink` ends it between pages; the server keeps
+    /// nothing of a paged read.
+    async fn stream(
+        &self,
+        cql: &str,
+        batch_rows: usize,
+        sink: &RowSink,
+    ) -> Result<(), EngineError> {
+        let started = Instant::now();
+        let batch_rows = batch_rows.max(1);
+        let mut state = PagingState::start();
+        let mut columns: Vec<String> = Vec::new();
+        let mut column_values: Vec<Vec<Value>> = Vec::new();
+        let mut count = 0usize;
+        let mut sent = false;
+        loop {
+            let size = (batch_rows - count).min(PAGE_CAP);
+            let statement = self.statement(cql, size, self.page_timeout());
+            let (result, response) = self.page(statement, state).await?;
+            count += self.take_page(result, &mut columns, &mut column_values)?;
+            let next = match response.into_paging_control_flow() {
+                ControlFlow::Break(()) => None,
+                ControlFlow::Continue(next) => Some(next),
+            };
+            // The first batch goes even without rows: it carries the columns.
+            if count >= batch_rows || (next.is_none() && (count > 0 || !sent)) {
+                let values = std::mem::replace(&mut column_values, vec![Vec::new(); columns.len()]);
+                let data = QueryData {
+                    elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                    ..self.rows_data(columns.clone(), values, count)?
+                };
+                if sink.send(data).await.is_err() {
+                    return Ok(());
+                }
+                sent = true;
+                count = 0;
+            }
+            match next {
+                Some(next) => state = next,
+                None => return Ok(()),
+            }
+        }
+    }
+
+    /// One page's rows added to `column_values`, one list per column (the
+    /// names taken from the first page that has them); the console gets the
+    /// page's warnings. Answers how many rows it added.
+    fn take_page(
+        &self,
+        result: QueryResult,
+        columns: &mut Vec<String>,
+        column_values: &mut Vec<Vec<Value>>,
+    ) -> Result<usize, EngineError> {
+        for warning in result.warnings() {
+            self.log.record_command(&format!("-- 경고: {warning}"));
+        }
+        if !result.is_rows() {
+            return Ok(0);
+        }
+        let rows_result = result
+            .into_rows_result()
+            .map_err(|err| self.internal(err))?;
+        if columns.is_empty() {
+            *columns = rows_result
+                .column_specs()
+                .iter()
+                .map(|spec| spec.name().to_string())
+                .collect();
+            *column_values = vec![Vec::new(); columns.len()];
+        }
+        let mut count = 0;
+        for row in rows_result
+            .rows::<Row>()
+            .map_err(|err| self.internal(err))?
+        {
+            let row = row.map_err(|err| self.internal(err))?;
+            for (index, value) in row.columns.iter().enumerate() {
+                if let Some(column) = column_values.get_mut(index) {
+                    column.push(values::cell(value.as_ref()));
+                }
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Rows gathered by `take_page` as a result.
+    fn rows_data(
+        &self,
+        columns: Vec<String>,
+        column_values: Vec<Vec<Value>>,
+        count: usize,
+    ) -> Result<QueryData, EngineError> {
         let (schema, batches) = if columns.is_empty() {
             (Arc::new(Schema::empty()), Vec::new())
         } else {
             build_arrow(&columns, column_values, count)?
         };
-        let (source_table, pk) = source.unzip();
         Ok(QueryData {
             kind: self.id,
             columns,
             schema,
             batches,
             row_count: count,
-            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
-            truncated: next_page.is_some(),
-            source_table,
-            pk,
-            column_kinds: Vec::new(),
-            rows_affected: None,
-            next_page,
+            ..QueryData::empty()
         })
     }
 
@@ -1162,6 +1237,25 @@ impl SqlDriver for CassandraDriver {
             self.run(statement, max_rows, None).await?;
         }
         self.run(last, max_rows, None).await
+    }
+
+    /// One plain CQL read pages through to `sink`; anything else (several
+    /// statements, TablePeek's own commands) runs as `query` does and is
+    /// sent in batches after.
+    async fn stream_rows(
+        &self,
+        sql: &str,
+        batch_rows: usize,
+        sink: &RowSink,
+    ) -> Result<(), EngineError> {
+        let statements = cql::split(sql);
+        if let [statement] = statements.as_slice() {
+            if matches!(cql::command(statement), cql::Command::Cql) {
+                return self.stream(statement, batch_rows, sink).await;
+            }
+        }
+        let data = self.query(sql, usize::MAX).await?;
+        send_in_batches(data, batch_rows, sink).await
     }
 
     async fn query_from(

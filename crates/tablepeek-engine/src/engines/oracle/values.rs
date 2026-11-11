@@ -9,7 +9,7 @@ use oracledb::{
 use serde_json::Value;
 use tablepeek_types::ValueExpr;
 
-use crate::{double_json, hex_bytes, hex_cell, not_hex, real_json, EngineError};
+use crate::{double_json, hex_bytes, hex_value, not_hex, real_json, BinaryValues, EngineError};
 
 /// How a result column's values are read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,8 +95,14 @@ impl Kind {
     }
 }
 
-/// One cell of a fetched row as the grid shows it.
-pub(super) fn cell(row: &mut Row, index: usize, kind: Kind) -> Result<Value, oracledb::Error> {
+/// One cell of a fetched row: binary values as the grid shows them, or
+/// whole (`how`).
+pub(super) fn cell(
+    row: &mut Row,
+    index: usize,
+    kind: Kind,
+    how: BinaryValues,
+) -> Result<Value, oracledb::Error> {
     Ok(match kind {
         Kind::Number { decimal } => match row.get::<Option<OracleNumber>>(index)? {
             None => Value::Null,
@@ -110,8 +116,8 @@ pub(super) fn cell(row: &mut Row, index: usize, kind: Kind) -> Result<Value, ora
             .get::<Option<f64>>(index)?
             .map_or(Value::Null, double_json),
         Kind::Bytes => match row.get::<Option<Vec<u8>>>(index) {
-            Ok(bytes) => bytes.map_or(Value::Null, |bytes| hex_cell(&bytes, false)),
-            Err(_) => lob_cell(row, index)?.unwrap_or(Value::Null),
+            Ok(bytes) => bytes.map_or(Value::Null, |bytes| hex_value(&bytes, false, how)),
+            Err(_) => lob_cell(row, index, how)?.unwrap_or(Value::Null),
         },
         Kind::Date => row
             .get::<Option<OracleTimestamp>>(index)?
@@ -172,19 +178,23 @@ fn lob_text(row: &mut Row, index: usize) -> Result<Option<String>, oracledb::Err
 
 /// A BLOB as the grid shows it: its bytes, or only its size when it is too
 /// big to show (crate::hex_cell), without reading it (the whole value is read
-/// through cells.rs).
-fn lob_cell(row: &mut Row, index: usize) -> Result<Option<Value>, oracledb::Error> {
+/// through cells.rs); with `BinaryValues::Whole`, every byte.
+fn lob_cell(
+    row: &mut Row,
+    index: usize,
+    how: BinaryValues,
+) -> Result<Option<Value>, oracledb::Error> {
     use std::io::Read;
     let Some(mut lob) = row.take::<Option<oracledb::Lob>>(index)? else {
         return Ok(None);
     };
     let size = lob.get_size()?;
-    if size > crate::BLOB_HEX_MAX {
+    if how == BinaryValues::Shown && size > crate::BLOB_HEX_MAX {
         return Ok(Some(Value::from(format!("<blob {size} bytes>"))));
     }
     let mut out = Vec::with_capacity(size);
     lob.read_to_end(&mut out).map_err(oracledb::Error::from)?;
-    Ok(Some(hex_cell(&out, false)))
+    Ok(Some(hex_value(&out, false, how)))
 }
 
 /// `YYYY-MM-DD HH24:MI:SS` with `scale` fractional digits, and ` +00:00`

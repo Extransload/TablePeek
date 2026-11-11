@@ -1199,3 +1199,143 @@ async fn oracle_ddl_follows_changes_made_by_other_sessions() {
     assert!(second.contains("SECOND_VERSION"), "{second}");
     engine.query("DROP VIEW tp_stamp", 1).await.unwrap();
 }
+
+/// Every batch `stream_rows` sends for `sql`, and how it ended.
+async fn stream_all(
+    engine: &Engine,
+    sql: &str,
+    batch_rows: usize,
+) -> (Vec<crate::QueryData>, Result<(), EngineError>) {
+    let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+    let send = async move { engine.stream_rows(sql, batch_rows, &sink).await };
+    let collect = async {
+        let mut all = Vec::new();
+        while let Some(batch) = batches.recv().await {
+            all.push(batch);
+        }
+        all
+    };
+    let (result, all) = tokio::join!(send, collect);
+    (all, result)
+}
+
+#[tokio::test]
+async fn oracle_streams_rows_as_query_reads_them() {
+    let Some((engine, _turn)) = connect(json!({})).await else {
+        return;
+    };
+    // The same values as a query, in batches of at most `batch_rows`.
+    let sql = "SELECT level AS n, level * 1.5 AS f, 'r' || level AS t, \
+               TO_CLOB(RPAD('c', 10, 'x') || level) AS c, HEXTORAW('0A0B') AS r, \
+               CASE WHEN MOD(level, 2) = 0 THEN level END AS odd, \
+               TIMESTAMP '2024-01-02 03:04:05.123' + NUMTODSINTERVAL(level, 'SECOND') AS ts \
+               FROM dual CONNECT BY level <= 2500";
+    let whole = engine.query(sql, usize::MAX).await.unwrap();
+    assert_eq!(whole.row_count, 2500);
+    let (batches, result) = stream_all(&engine, sql, 1000).await;
+    result.unwrap();
+    let counts: Vec<usize> = batches.iter().map(|batch| batch.row_count).collect();
+    assert_eq!(counts, [1000, 1000, 500]);
+    assert!(batches
+        .iter()
+        .all(|batch| batch.columns == whole.columns && batch.column_kinds == whole.column_kinds));
+    let rows: Vec<Vec<Value>> = batches.iter().flat_map(|batch| batch.rows_json()).collect();
+    assert_eq!(rows, whole.rows_json());
+
+    // No rows: one batch with the columns.
+    let (batches, result) = stream_all(&engine, "SELECT 1 AS n FROM dual WHERE 1 = 0", 10).await;
+    result.unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].row_count, 0);
+    assert_eq!(batches[0].columns, ["N"]);
+
+    // A failure is the query's.
+    let (_, result) = stream_all(&engine, "SELECT * FROM no_such_table", 10).await;
+    assert!(
+        matches!(result, Err(EngineError::Driver { .. })),
+        "{result:?}"
+    );
+
+    // A reader that stops ends the stream midway; the session goes on.
+    let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+    let send = engine.stream_rows(
+        "SELECT level FROM dual CONNECT BY level <= 10000000",
+        100,
+        &sink,
+    );
+    let read_one = async {
+        batches.recv().await.unwrap();
+        drop(batches);
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(send, read_one)
+    })
+    .await
+    .expect("the stream ends once its reader has gone");
+    result.unwrap();
+    let next = engine.query("SELECT 2 AS two FROM dual", 1).await.unwrap();
+    assert_eq!(next.rows_json(), vec![vec![json!(2)]]);
+    let (batches, result) = stream_all(
+        &engine,
+        "SELECT level AS n FROM dual CONNECT BY level <= 3",
+        2,
+    )
+    .await;
+    result.unwrap();
+    let rows: Vec<Vec<Value>> = batches.iter().flat_map(|batch| batch.rows_json()).collect();
+    assert_eq!(rows, vec![vec![json!(1)], vec![json!(2)], vec![json!(3)]]);
+
+    // Settings' time limit is the page's statements', not a backup's.
+    engine.set_query_timeout(1);
+    let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+    let streaming = &engine;
+    let send = async move {
+        streaming
+            .stream_rows(
+                "SELECT level AS n FROM dual CONNECT BY level <= 4",
+                1,
+                &sink,
+            )
+            .await
+    };
+    let slow = async {
+        let mut rows = 0;
+        while let Some(batch) = batches.recv().await {
+            rows += batch.row_count;
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+        rows
+    };
+    let (result, rows) = tokio::join!(send, slow);
+    engine.set_query_timeout(0);
+    result.unwrap();
+    assert_eq!(rows, 4);
+
+    // Binary past the grid's limit: the grid shows its size, a stream every
+    // byte (a backup writes them).
+    for sql in [
+        "BEGIN EXECUTE IMMEDIATE 'DROP TABLE tp_stream_blob PURGE'; EXCEPTION WHEN OTHERS THEN NULL; END;",
+        "CREATE TABLE tp_stream_blob (id NUMBER PRIMARY KEY, b BLOB, r RAW(4))",
+        "DECLARE l BLOB; BEGIN \
+         INSERT INTO tp_stream_blob VALUES (1, EMPTY_BLOB(), HEXTORAW('01020A0B')) RETURNING b INTO l; \
+         FOR i IN 1..10 LOOP DBMS_LOB.WRITEAPPEND(l, 2000, UTL_RAW.COPIES(HEXTORAW('AB'), 2000)); END LOOP; \
+         END;",
+    ] {
+        engine.query(sql, 1).await.unwrap();
+    }
+    let sql = "SELECT b, r FROM tp_stream_blob";
+    let shown = engine.query(sql, 10).await.unwrap();
+    assert_eq!(
+        shown.rows_json(),
+        vec![vec![json!("<blob 20000 bytes>"), json!("0x01020A0B")]]
+    );
+    let (batches, result) = stream_all(&engine, sql, 10).await;
+    result.unwrap();
+    let rows: Vec<Vec<Value>> = batches.iter().flat_map(|batch| batch.rows_json()).collect();
+    let whole = format!("0x{}", "AB".repeat(20_000));
+    assert_eq!(rows, vec![vec![json!(whole), json!("0x01020A0B")]]);
+    engine
+        .query("DROP TABLE tp_stream_blob PURGE", 1)
+        .await
+        .unwrap();
+}

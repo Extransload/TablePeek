@@ -12,13 +12,13 @@ use std::time::Instant;
 use serde_json::Value;
 use tablepeek_types::{EditTarget, InsertValue, PkValue, ValueExpr};
 
-use crate::driver::{FileStream, NativeExport};
+use crate::driver::{FileStream, NativeExport, RowSink};
 use crate::source_cache::{key_unchanged, KEY_CHANGED};
 use crate::sql_log::{lexemes, Dialect, Lexeme};
 use crate::sql_parse::parse_single_table;
 use crate::{build_arrow, EngineError, QueryData};
 
-use super::client::{text_of, Reply, Request, Scope};
+use super::client::{text_of, Request, Scope};
 use super::ClickHouseInner;
 
 /// Mutations run to the end, on every replica, before the request returns.
@@ -122,18 +122,110 @@ pub(crate) async fn query(
     let reply = result?;
     drop(_session);
     let (source_table, pk) = detect_source(inner, sql, &reply.columns).await;
-    let row_count = reply.rows.len();
-    let column_kinds = reply
-        .types
-        .iter()
-        .map(|declared| (base_type(declared) == "Bool").then_some("boolean"))
-        .collect();
-    let columns = reply.columns.clone();
-    let rows_affected = columns
+    let rows_affected = reply
+        .columns
         .is_empty()
         .then_some(reply.written_rows.unwrap_or(0));
     let truncated = reply.truncated;
-    let values = by_column(reply);
+    let data = result_data(reply.columns, &reply.types, reply.rows)?;
+    Ok(QueryData {
+        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        truncated,
+        source_table,
+        pk,
+        rows_affected,
+        ..data
+    })
+}
+
+/// Every row of the read `sql`, `batch_rows` at a time as the response
+/// brings them. It runs outside the editor's session, in the session's
+/// current database (as `export_native` does): a session holds one request
+/// at a time, and one whose response was dropped stays locked on the server
+/// until it notices, refusing the next statement (SESSION_IS_LOCKED). Once
+/// `sink` is closed the response is dropped, which ends the query on the
+/// server (cancel_http_readonly_queries_on_client_close). A cancel finds it
+/// by its query id unless the page's own statement runs meanwhile. Settings'
+/// query time limit doesn't apply: a backup streams whole tables as one job,
+/// not one of the page's statements, and the server's own limit still does.
+pub(crate) async fn stream_rows(
+    inner: &ClickHouseInner,
+    sql: &str,
+    batch_rows: usize,
+    sink: &RowSink,
+) -> Result<(), EngineError> {
+    let batch_rows = batch_rows.max(1);
+    let started = Instant::now();
+    let database = inner.database();
+    let query_id = uuid::Uuid::new_v4().to_string();
+    // A cancel stops the page's own statement first, if one runs.
+    let registered = {
+        let mut running = inner.running();
+        let free = running.is_none();
+        if free {
+            *running = Some(query_id.clone());
+        }
+        free
+    };
+    let request = Request {
+        scope: Scope::Database(&database),
+        query_id: Some(&query_id),
+        max_rows: usize::MAX,
+        timeout_secs: 0,
+        settings: &[],
+    };
+    let result = send_rows(inner, sql, request, batch_rows, sink, started).await;
+    if registered {
+        let mut running = inner.running();
+        if running.as_deref() == Some(query_id.as_str()) {
+            *running = None;
+        }
+    }
+    result
+}
+
+async fn send_rows(
+    inner: &ClickHouseInner,
+    sql: &str,
+    request: Request<'_>,
+    batch_rows: usize,
+    sink: &RowSink,
+    started: Instant,
+) -> Result<(), EngineError> {
+    let mut stream = inner.client.rows(sql, request).await?;
+    let mut sent = false;
+    loop {
+        let rows = stream.next_rows(batch_rows).await?;
+        let last = rows.len() < batch_rows;
+        // The first batch goes even without rows: it carries the columns.
+        if rows.is_empty() && sent {
+            return Ok(());
+        }
+        let data = result_data(stream.columns().to_vec(), stream.types(), rows)?;
+        let data = QueryData {
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            ..data
+        };
+        if sink.send(data).await.is_err() || last {
+            return Ok(());
+        }
+        sent = true;
+    }
+}
+
+/// Rows as a result: integers that came quoted (to keep 64 bits exact) back
+/// to numbers where they fit the grid's, and Bool columns marked as such.
+fn result_data(
+    columns: Vec<String>,
+    types: &[String],
+    rows: Vec<Vec<Value>>,
+) -> Result<QueryData, EngineError> {
+    let row_count = rows.len();
+    let column_kinds = types
+        .iter()
+        .map(|declared| (base_type(declared) == "Bool").then_some("boolean"))
+        .collect();
+    let values = by_column(columns.len(), types, rows);
     let (schema, batches) = build_arrow(&columns, values, row_count)?;
     Ok(QueryData {
         kind: "clickhouse",
@@ -141,12 +233,12 @@ pub(crate) async fn query(
         schema,
         batches,
         row_count,
-        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
-        truncated,
-        source_table,
-        pk,
+        elapsed_ms: 0.0,
+        truncated: false,
+        source_table: None,
+        pk: None,
         column_kinds,
-        rows_affected,
+        rows_affected: None,
         next_page: None,
     })
 }
@@ -161,18 +253,16 @@ fn first_word(sql: &str) -> Option<String> {
 
 /// The rows turned into one list per column; integers that came quoted (to
 /// keep 64 bits exact) back to numbers where they fit the grid's.
-fn by_column(reply: Reply) -> Vec<Vec<Value>> {
-    let integer: Vec<bool> = (0..reply.columns.len())
+fn by_column(width: usize, types: &[String], rows: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
+    let integer: Vec<bool> = (0..width)
         .map(|index| {
-            reply
-                .types
+            types
                 .get(index)
                 .is_some_and(|declared| is_integer(base_type(declared)))
         })
         .collect();
-    let mut columns: Vec<Vec<Value>> =
-        vec![Vec::with_capacity(reply.rows.len()); reply.columns.len()];
-    for row in reply.rows {
+    let mut columns: Vec<Vec<Value>> = vec![Vec::with_capacity(rows.len()); width];
+    for row in rows {
         for (index, value) in row.into_iter().enumerate() {
             let Some(column) = columns.get_mut(index) else {
                 break;

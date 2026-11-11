@@ -12,7 +12,7 @@ use tablepeek_types::{
     ObjectDefinition, PkValue, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
-use crate::driver::{CancelRequest, Driver, FileStream, SqlDriver, TxOp};
+use crate::driver::{CancelRequest, Driver, FileStream, RowSink, SqlDriver, TxOp};
 use crate::registry::{parse_descriptor, ConfigProblem, DriverFactory, EngineDescriptor, NetRoute};
 use crate::sql_log::{Dialect, SqlLog};
 use crate::{EngineError, QueryData, SqliteInner};
@@ -145,6 +145,18 @@ impl SqlDriver for SqliteDriver {
     async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
         let sql = sql.to_string();
         self.blocking(move |inner| crate::run_query_sync(inner, &sql, max_rows))
+            .await
+    }
+
+    async fn stream_rows(
+        &self,
+        sql: &str,
+        batch_rows: usize,
+        sink: &RowSink,
+    ) -> Result<(), EngineError> {
+        let sql = sql.to_string();
+        let sink = sink.clone();
+        self.blocking(move |inner| crate::stream_rows_sync(inner, &sql, batch_rows, &sink))
             .await
     }
 

@@ -21,7 +21,7 @@ use tablepeek_types::{
     ObjectDefinition, PkValue, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
-use crate::driver::{CancelRequest, Driver, FileStream, SqlDriver, TxOp};
+use crate::driver::{CancelRequest, Driver, FileStream, RowSink, SqlDriver, TxOp};
 use crate::registry::{
     check_host, parse_descriptor, typed_config, ConfigProblem, DriverFactory, EngineDescriptor,
     Forwarder, NetRoute, TunnelTarget,
@@ -478,6 +478,15 @@ impl SqlDriver for OracleDriver {
 
     async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
         query::query(&self.inner, sql, max_rows).await
+    }
+
+    async fn stream_rows(
+        &self,
+        sql: &str,
+        batch_rows: usize,
+        sink: &RowSink,
+    ) -> Result<(), EngineError> {
+        query::stream_rows(&self.inner, sql, batch_rows, sink).await
     }
 
     async fn edit(&self, target: &EditTarget) -> Result<u64, EngineError> {

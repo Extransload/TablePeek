@@ -1,6 +1,7 @@
 //! Statements run from the editor and the data tabs: one statement per call,
 //! as the page splits them (SQL*Plus style, PL/SQL ending at a `/` line).
 
+use std::future::Future;
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -8,9 +9,10 @@ use tablepeek_types::{ErrorFields, ErrorPosition};
 
 use super::session::{current_schema, ora_err, text, Ctx, OracleInner, Source};
 use super::values::{cell, Kind};
+use crate::driver::{send_in_batches, RowSink};
 use crate::sql_log::Dialect;
 use crate::sql_parse::{parse_single_table, tx_controls, TxControl};
-use crate::{build_arrow, EngineError, QueryData};
+use crate::{build_arrow, BinaryValues, EngineError, QueryData};
 
 /// A statement as Oracle takes it, and what kind it is.
 #[derive(Debug, PartialEq, Eq)]
@@ -208,36 +210,77 @@ fn fetch(ctx: &Ctx<'_>, sql: &str, max_rows: usize, log: bool) -> Result<Fetched
 }
 
 fn read_cursor(
-    cursor: oracledb::Cursor,
+    mut cursor: oracledb::Cursor,
     sql: &str,
     max_rows: usize,
 ) -> Result<Fetched, EngineError> {
-    let columns: Vec<String> = cursor
-        .columns()
-        .iter()
-        .map(|column| column.name().to_string())
-        .collect();
+    let columns = column_names(&cursor);
     let kinds: Vec<Kind> = cursor.columns().iter().map(Kind::of).collect();
-    let mut values: Vec<Vec<Value>> = vec![Vec::new(); columns.len()];
-    let mut count = 0usize;
-    let mut truncated = false;
-    for row in cursor {
-        let mut row = row.map_err(|err| ora_err(err, Some(sql)))?;
-        if count >= max_rows {
-            truncated = true;
-            break;
-        }
-        for (index, kind) in kinds.iter().enumerate() {
-            values[index]
-                .push(cell(&mut row, index, *kind).map_err(|err| ora_err(err, Some(sql)))?);
-        }
-        count += 1;
-    }
+    let (values, count) = next_rows(&mut cursor, &kinds, BinaryValues::Shown, sql, max_rows)?;
+    // One row past them tells whether there were more.
+    let truncated = count == max_rows
+        && cursor
+            .next()
+            .transpose()
+            .map_err(|err| ora_err(err, Some(sql)))?
+            .is_some();
     Ok(Fetched {
         columns,
         values,
         count,
         truncated,
+    })
+}
+
+fn column_names(cursor: &oracledb::Cursor) -> Vec<String> {
+    cursor
+        .columns()
+        .iter()
+        .map(|column| column.name().to_string())
+        .collect()
+}
+
+/// Up to `limit` more rows of `cursor`, each value converted by its
+/// column's `kinds` (binary values as `how` says), one list per column;
+/// fewer only once the rows end. Answers the lists and how many rows they
+/// hold.
+fn next_rows(
+    cursor: &mut oracledb::Cursor,
+    kinds: &[Kind],
+    how: BinaryValues,
+    sql: &str,
+    limit: usize,
+) -> Result<(Vec<Vec<Value>>, usize), EngineError> {
+    let mut values: Vec<Vec<Value>> = vec![Vec::new(); kinds.len()];
+    let mut count = 0usize;
+    while count < limit {
+        let Some(row) = cursor.next() else {
+            break;
+        };
+        let mut row = row.map_err(|err| ora_err(err, Some(sql)))?;
+        for (index, kind) in kinds.iter().enumerate() {
+            values[index]
+                .push(cell(&mut row, index, *kind, how).map_err(|err| ora_err(err, Some(sql)))?);
+        }
+        count += 1;
+    }
+    Ok((values, count))
+}
+
+/// Rows read by `next_rows` as a result.
+fn result_data(
+    columns: Vec<String>,
+    values: Vec<Vec<Value>>,
+    count: usize,
+) -> Result<QueryData, EngineError> {
+    let (schema, batches) = build_arrow(&columns, values, count)?;
+    Ok(QueryData {
+        kind: "oracle",
+        columns,
+        schema,
+        batches,
+        row_count: count,
+        ..QueryData::empty()
     })
 }
 
@@ -337,7 +380,6 @@ pub(super) async fn query(
     // right after (SET TRANSACTION starts one instead).
     let autocommit = !inner.in_tx() && !controls.contains(&TxControl::Begin);
     let schema = inner.schema();
-    let timeout = inner.query_timeout();
     let statement_sql = prepared.sql.clone();
     let plsql = prepared.plsql.clone();
     let explain = prepared.explain;
@@ -421,8 +463,132 @@ pub(super) async fn query(
         }
         Ok(ran)
     });
-    // The page's time limit: past it the statement is cancelled as the stop
-    // button would (the driver's own call timeout can't break a call).
+    let ran = run_limited(inner, run, inner.query_timeout()).await?;
+    if let Some(schema) = ran.schema {
+        inner.set_schema(schema);
+    }
+    // COMMIT, ROLLBACK and DDL run from the editor move the transaction.
+    for control in &controls {
+        match control {
+            TxControl::Begin => inner.set_open(true, false),
+            TxControl::Commit if inner.in_tx() => inner.set_open(false, true),
+            TxControl::Rollback if inner.in_tx() => inner.set_open(false, false),
+            TxControl::ImplicitCommit if inner.in_tx() => inner.set_open(false, true),
+            _ => {}
+        }
+    }
+    let fetched = ran.fetched.unwrap_or(Fetched {
+        columns: Vec::new(),
+        values: Vec::new(),
+        count: 0,
+        truncated: false,
+    });
+    let (source_table, pk) = if fetched.columns.is_empty() {
+        (None, None)
+    } else {
+        detect_source(inner, &prepared.sql, &fetched.columns).await
+    };
+    Ok(QueryData {
+        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        truncated: fetched.truncated,
+        source_table,
+        pk,
+        rows_affected: ran.rows_affected,
+        ..result_data(fetched.columns, fetched.values, fetched.count)?
+    })
+}
+
+/// Rows fetched per round trip while streaming: more than the grid's, as a
+/// backup reads whole tables.
+const STREAM_FETCH: u32 = 2_000;
+
+/// Every row of the query `sql`, sent to `sink` `batch_rows` at a time as
+/// the cursor fetches them, converted as `query` converts them (binary
+/// values whole). It runs on the session as `query` does and a cancel stops
+/// it the same way, but without Settings' query time limit: a backup
+/// streams whole tables as one job, not one of the page's statements. A
+/// closed `sink` drops the cursor, which the driver closes with its next
+/// call; the session stays as it was. PL/SQL and EXPLAIN PLAN run as
+/// `query` and are sent in batches after.
+pub(super) async fn stream_rows(
+    inner: &OracleInner,
+    sql: &str,
+    batch_rows: usize,
+    sink: &RowSink,
+) -> Result<(), EngineError> {
+    let started = Instant::now();
+    let prepared = prepare(sql);
+    if prepared.sql.trim().is_empty() {
+        return Err(EngineError::BadRequest("실행할 문장이 없습니다".into()));
+    }
+    if prepared.plsql.is_some() || prepared.explain {
+        let data = query(inner, sql, usize::MAX).await?;
+        return send_in_batches(data, batch_rows, sink).await;
+    }
+    let batch_rows = batch_rows.max(1);
+    let autocommit = !inner.in_tx();
+    let statement_sql = prepared.sql;
+    let sink = sink.clone();
+    let run = inner.run(move |ctx| {
+        let sql = statement_sql.as_str();
+        ctx.log.record(sql, Dialect::Oracle);
+        let statement = ctx
+            .conn
+            .statement(sql)
+            .map_err(|err| ora_err(err, Some(sql)))?
+            .fetch_array_size(STREAM_FETCH)
+            .build()
+            .map_err(|err| ora_err(err, Some(sql)))?;
+        if !statement.is_query() {
+            return Err(EngineError::BadRequest(
+                "행을 돌려주는 문장(SELECT)이 아닙니다".into(),
+            ));
+        }
+        let mut cursor = statement
+            .query(&[])
+            .map_err(|err| ora_err(err, Some(sql)))?;
+        let columns = column_names(&cursor);
+        let kinds: Vec<Kind> = cursor.columns().iter().map(Kind::of).collect();
+        let mut sent = false;
+        loop {
+            // A backup needs every byte of a binary value, not the grid's
+            // placeholder past BLOB_HEX_MAX.
+            let (values, count) =
+                next_rows(&mut cursor, &kinds, BinaryValues::Whole, sql, batch_rows)?;
+            // The first batch goes even without rows: it carries the columns.
+            if count == 0 && sent {
+                break;
+            }
+            let data = QueryData {
+                elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                ..result_data(columns.clone(), values, count)?
+            };
+            // A blocking thread: the send waits here while the reader is behind.
+            if sink.blocking_send(data).is_err() || count < batch_rows {
+                break;
+            }
+            sent = true;
+        }
+        drop(cursor);
+        // A plain query holds nothing to commit, unless it locked rows.
+        if autocommit && sql.to_ascii_uppercase().contains("FOR UPDATE") {
+            ctx.autocommit().map_err(|err| ora_err(err, None))?;
+        }
+        Ok(())
+    });
+    run_limited(inner, run, None).await
+}
+
+/// `run` (a call on the session) under `timeout` (the page's time limit for
+/// its statements): past it the statement is cancelled as the stop button
+/// would (the driver's own call timeout can't break a call). A statement
+/// stopped either way fails with an error that says so and what became of
+/// the session.
+async fn run_limited<T>(
+    inner: &OracleInner,
+    run: impl Future<Output = Result<T, EngineError>>,
+    timeout: Option<std::time::Duration>,
+) -> Result<T, EngineError> {
     let mut timed_out = false;
     let outcome = match timeout {
         None => run.await,
@@ -438,8 +604,8 @@ pub(super) async fn query(
             }
         }
     };
-    let ran = match outcome {
-        Ok(ran) => ran,
+    let value = match outcome {
+        Ok(value) => value,
         Err(err) => {
             inner.sources.clear();
             if inner.take_cancelled() {
@@ -479,45 +645,7 @@ pub(super) async fn query(
         }
     };
     inner.take_cancelled();
-    if let Some(schema) = ran.schema {
-        inner.set_schema(schema);
-    }
-    // COMMIT, ROLLBACK and DDL run from the editor move the transaction.
-    for control in &controls {
-        match control {
-            TxControl::Begin => inner.set_open(true, false),
-            TxControl::Commit if inner.in_tx() => inner.set_open(false, true),
-            TxControl::Rollback if inner.in_tx() => inner.set_open(false, false),
-            TxControl::ImplicitCommit if inner.in_tx() => inner.set_open(false, true),
-            _ => {}
-        }
-    }
-    let fetched = ran.fetched.unwrap_or(Fetched {
-        columns: Vec::new(),
-        values: Vec::new(),
-        count: 0,
-        truncated: false,
-    });
-    let (source_table, pk) = if fetched.columns.is_empty() {
-        (None, None)
-    } else {
-        detect_source(inner, &prepared.sql, &fetched.columns).await
-    };
-    let (schema, batches) = build_arrow(&fetched.columns, fetched.values, fetched.count)?;
-    Ok(QueryData {
-        kind: "oracle",
-        columns: fetched.columns,
-        schema,
-        batches,
-        row_count: fetched.count,
-        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
-        truncated: fetched.truncated,
-        source_table,
-        pk,
-        column_kinds: Vec::new(),
-        rows_affected: ran.rows_affected,
-        next_page: None,
-    })
+    Ok(value)
 }
 
 /// A table as its display name: bare in the session's schema, OWNER.NAME

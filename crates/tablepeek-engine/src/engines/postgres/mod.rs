@@ -10,7 +10,9 @@ use tablepeek_types::{
     ObjectDefinition, PkValue, PostgresConfig, Relation, ServerInfo, TableDetail, TableSchema,
 };
 
-use crate::driver::{numeric_session_id, CancelRequest, Driver, FileStream, SqlDriver, TxOp};
+use crate::driver::{
+    numeric_session_id, CancelRequest, Driver, FileStream, RowSink, SqlDriver, TxOp,
+};
 use crate::postgres::{self as pg, PostgresInner};
 use crate::registry::{
     check_host, parse_descriptor, typed_config, ConfigProblem, DriverFactory, EngineDescriptor,
@@ -141,6 +143,15 @@ impl SqlDriver for PgDriver {
 
     async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
         pg::query(&self.inner, sql, max_rows).await
+    }
+
+    async fn stream_rows(
+        &self,
+        sql: &str,
+        batch_rows: usize,
+        sink: &RowSink,
+    ) -> Result<(), EngineError> {
+        pg::stream_rows(&self.inner, sql, batch_rows, sink).await
     }
 
     async fn edit(&self, target: &EditTarget) -> Result<u64, EngineError> {

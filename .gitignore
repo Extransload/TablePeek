@@ -11,3 +11,5 @@ prototypes/
 # JSON schemas tauri-build writes on every build.
 /crates/tablepeek-desktop/gen/
 .DS_Store
+
+tmp/

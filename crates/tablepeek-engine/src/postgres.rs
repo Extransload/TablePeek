@@ -24,8 +24,8 @@ use crate::source_cache::{key_unchanged, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{tx_controls, TxControl};
 use crate::{
-    build_arrow, caused_by_tls, double_json, float_text, hex_bytes, hex_cell, hex_text,
-    humanize_uptime_ko, not_hex, postgres_message, real_json, EngineError, QueryData,
+    build_arrow, caused_by_tls, double_json, float_text, hex_bytes, hex_text, hex_value,
+    humanize_uptime_ko, not_hex, postgres_message, real_json, BinaryValues, EngineError, QueryData,
 };
 
 pub(crate) mod cells;
@@ -567,16 +567,7 @@ pub(crate) async fn query(
     // ran cannot have ended a transaction.
     let read = async {
         let statement = client.prepare(sql).await.map_err(|err| (err, false))?;
-        let columns: Vec<String> = statement
-            .columns()
-            .iter()
-            .map(|col| col.name().to_string())
-            .collect();
-        let col_types: Vec<Type> = statement
-            .columns()
-            .iter()
-            .map(|col| col.type_().clone())
-            .collect();
+        let (columns, col_types) = statement_columns(&statement);
         let col_count = columns.len();
         let mut column_values: Vec<Vec<Value>> = vec![Vec::new(); col_count];
         let mut count = 0usize;
@@ -597,9 +588,7 @@ pub(crate) async fn query(
                 truncated = true;
                 break;
             }
-            for i in 0..col_count {
-                column_values[i].push(pg_value(&row, i, &col_types[i]));
-            }
+            push_row(&row, &col_types, &mut column_values, BinaryValues::Shown);
             count += 1;
         }
         // Known once the stream ran out, which one with no columns always does.
@@ -646,6 +635,98 @@ pub(crate) async fn query(
         rows_affected,
         next_page: None,
     })
+}
+
+/// A statement's column names and types.
+fn statement_columns(statement: &Statement) -> (Vec<String>, Vec<Type>) {
+    statement
+        .columns()
+        .iter()
+        .map(|col| (col.name().to_string(), col.type_().clone()))
+        .unzip()
+}
+
+/// One row's values onto the columns being gathered, as `query` gives them
+/// but for binary values, which come as `how` says.
+fn push_row(row: &Row, col_types: &[Type], column_values: &mut [Vec<Value>], how: BinaryValues) {
+    for (i, values) in column_values.iter_mut().enumerate() {
+        values.push(pg_value(row, i, &col_types[i], how));
+    }
+}
+
+/// Every row of the read `sql` to `sink`, `batch_rows` at a time, as the
+/// server sends them (`SqlDriver::stream_rows`). A plain read moves no
+/// transaction; a failure inside an open one aborts it, as with `query`.
+pub(crate) async fn stream_rows(
+    inner: &PostgresInner,
+    sql: &str,
+    batch_rows: usize,
+    sink: &crate::driver::RowSink,
+) -> Result<(), EngineError> {
+    let started = Instant::now();
+    let batch_rows = batch_rows.max(1);
+    let client = inner.conn().await;
+    let statement = client.prepare(sql).await?;
+    let (columns, col_types) = statement_columns(&statement);
+    let batch = |column_values: Vec<Vec<Value>>, count: usize| {
+        let (schema, batches) = build_arrow(&columns, column_values, count)?;
+        Ok::<_, EngineError>(QueryData {
+            kind: inner.kind,
+            columns: columns.clone(),
+            schema,
+            batches,
+            row_count: count,
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            truncated: false,
+            source_table: None,
+            pk: None,
+            column_kinds: Vec::new(),
+            rows_affected: None,
+            next_page: None,
+        })
+    };
+    let stream = client.query_prepared(&statement).await?;
+    futures_util::pin_mut!(stream);
+    let mut column_values: Vec<Vec<Value>> = vec![Vec::new(); columns.len()];
+    let mut count = 0usize;
+    let mut sent_any = false;
+    while let Some(row) = stream.next().await {
+        let row = client.watch(row)?;
+        push_row(&row, &col_types, &mut column_values, BinaryValues::Whole);
+        count += 1;
+        if count == batch_rows {
+            let values = std::mem::replace(&mut column_values, vec![Vec::new(); columns.len()]);
+            if sink.send(batch(values, count)?).await.is_err() {
+                stop_reading(inner, stream).await;
+                return Ok(());
+            }
+            sent_any = true;
+            count = 0;
+        }
+    }
+    if count > 0 || !sent_any {
+        let _ = sink.send(batch(column_values, count)?).await;
+    }
+    Ok(())
+}
+
+/// Ends a read whose reader is gone, the connection still held. Left alone,
+/// the server would send the rest of the result (a whole table, perhaps)
+/// before the next statement could start, so outside a transaction it is
+/// cancelled and what is already on its way read off. Inside one a cancel
+/// would abort the user's transaction, so there the rest is read through.
+async fn stop_reading(
+    inner: &PostgresInner,
+    mut stream: std::pin::Pin<&mut tokio_postgres::RowStream>,
+) {
+    if !inner.tx.is_open() {
+        let _ = inner.cancel().await;
+    }
+    while let Some(row) = stream.next().await {
+        if row.is_err() {
+            break;
+        }
+    }
 }
 
 /// The error a failed editor statement reports. A COMMIT or ROLLBACK among
@@ -1961,17 +2042,17 @@ impl<'a> FromSql<'a> for RawValue<'a> {
     }
 }
 
-fn pg_value(row: &Row, index: usize, dtype: &Type) -> Value {
+fn pg_value(row: &Row, index: usize, dtype: &Type, how: BinaryValues) -> Value {
     match row.try_get::<usize, Option<RawValue>>(index) {
-        Ok(Some(RawValue(raw))) => pg_json(dtype, raw),
+        Ok(Some(RawValue(raw))) => pg_json(dtype, raw, how),
         Ok(None) => Value::Null,
         Err(_) => unreadable(dtype),
     }
 }
 
 /// One value for the grid: numbers and booleans as JSON ones, everything
-/// else as text (bytea as its hex, `\x00ff`).
-fn pg_json(dtype: &Type, raw: &[u8]) -> Value {
+/// else as text (bytea as its hex, `\x00ff`, shown or whole as `how` says).
+fn pg_json(dtype: &Type, raw: &[u8], how: BinaryValues) -> Value {
     let value = match *dtype {
         Type::INT2 => decode::<i16>(dtype, raw).map(|value| Value::from(i64::from(value))),
         Type::INT4 => decode::<i32>(dtype, raw).map(|value| Value::from(i64::from(value))),
@@ -1980,7 +2061,7 @@ fn pg_json(dtype: &Type, raw: &[u8]) -> Value {
         Type::FLOAT4 => decode::<f32>(dtype, raw).map(real_json),
         Type::FLOAT8 => decode::<f64>(dtype, raw).map(double_json),
         Type::BOOL => decode::<bool>(dtype, raw).map(Value::Bool),
-        Type::BYTEA => Some(hex_cell(raw, true)),
+        Type::BYTEA => Some(hex_value(raw, true, how)),
         _ => pg_text(dtype, raw).map(Value::from),
     };
     value.unwrap_or_else(|| unreadable(dtype))
@@ -2432,7 +2513,10 @@ mod tests {
         assert_eq!(pg_text(&tiers, &raw).unwrap(), "{free,pro}");
         // A type it has no reading for shows its name.
         let point = Type::new("point".into(), 600, Kind::Simple, "pg_catalog".into());
-        assert_eq!(pg_json(&point, &[0; 16]), Value::from("<point>"));
+        assert_eq!(
+            pg_json(&point, &[0; 16], BinaryValues::Shown),
+            Value::from("<point>")
+        );
     }
 
     #[test]
@@ -2491,33 +2575,34 @@ mod tests {
 
     #[test]
     fn grid_values_keep_their_json_kinds() {
-        assert_eq!(pg_json(&Type::INT4, &5i32.to_be_bytes()), Value::from(5));
-        assert_eq!(pg_json(&Type::BOOL, &[1]), Value::Bool(true));
+        let grid = |dtype: &Type, raw: &[u8]| pg_json(dtype, raw, BinaryValues::Shown);
+        assert_eq!(grid(&Type::INT4, &5i32.to_be_bytes()), Value::from(5));
+        assert_eq!(grid(&Type::BOOL, &[1]), Value::Bool(true));
         assert_eq!(
-            pg_json(&Type::FLOAT4, &1.1f32.to_be_bytes()),
+            grid(&Type::FLOAT4, &1.1f32.to_be_bytes()),
             serde_json::json!(1.1)
         );
         assert_eq!(
-            pg_json(&Type::FLOAT8, &f64::INFINITY.to_be_bytes()),
+            grid(&Type::FLOAT8, &f64::INFINITY.to_be_bytes()),
             Value::from("Infinity")
         );
         assert_eq!(
-            pg_json(&Type::BYTEA, &[0x00, 0xff, 0x10]),
+            grid(&Type::BYTEA, &[0x00, 0xff, 0x10]),
             Value::from("\\x00ff10")
         );
-        assert_eq!(pg_json(&Type::TEXT, "한글".as_bytes()), Value::from("한글"));
+        assert_eq!(grid(&Type::TEXT, "한글".as_bytes()), Value::from("한글"));
         // A payload that doesn't fit its type shows the type's name.
-        assert_eq!(pg_json(&Type::INT4, &[0, 0, 5]), Value::from("<int4>"));
+        assert_eq!(grid(&Type::INT4, &[0, 0, 5]), Value::from("<int4>"));
         // JSON as the server keeps it, a number past f64's digits included.
         let document = r#"{"n": 12345678901234567890123, "s": "a"}"#;
         assert_eq!(
-            pg_json(&Type::JSON, document.as_bytes()),
+            grid(&Type::JSON, document.as_bytes()),
             Value::from(document)
         );
         let mut binary = vec![1];
         binary.extend_from_slice(document.as_bytes());
-        assert_eq!(pg_json(&Type::JSONB, &binary), Value::from(document));
-        assert_eq!(pg_json(&Type::JSONB, &[2, b'1']), Value::from("<jsonb>"));
+        assert_eq!(grid(&Type::JSONB, &binary), Value::from(document));
+        assert_eq!(grid(&Type::JSONB, &[2, b'1']), Value::from("<jsonb>"));
     }
 
     #[test]

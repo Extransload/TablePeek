@@ -4,6 +4,18 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Restore in one transaction.** The restore window's **Run in one transaction** commits once at the end instead of after every statement, so a dump of single-row `INSERT`s restores several times faster (200,000 into SQLite: 7.5 s instead of 48 s), and a failure or a stop rolls the whole restore back. MySQL, MariaDB and Oracle still commit at each DDL statement, so only what follows the last one rolls back there. A file with its own `BEGIN`, `COMMIT` or `ROLLBACK` stops at that statement in this mode. Not offered on engines without transactions.
+
+### Changed
+
+- **Backups and restores run on the server.** A backup no longer stops at 200,000 rows per table: the TablePeek server reads each table in one pass straight from the database, instead of the page reading it 5,000 rows at a time by `OFFSET`, and writes the `INSERT`s into a download while it reads, so every row of every table is included, memory stays flat however large the tables are, and a backup can be stopped from its window or the jobs panel. A restore sends its file to the server once; the server splits it with the same rules as the editor and runs each statement while the rest of the file is still arriving, instead of the page sending one request per statement.
+
+### Fixed
+
+- Backups wrote a binary value over 16 KB as the text `<blob N bytes>` the grid shows in its place, so restoring the backup lost those bytes. A backup now writes every binary value whole, on every engine.
+
 ## [0.4.0] - 2026-11-10
 
 Write SQL with AI from your own ChatGPT subscription, Codex CLI or Gemini API key; restore SQL dumps of any size; floating surfaces that never show the grid through their text; and TablePeek is now free software under the AGPL-3.0.

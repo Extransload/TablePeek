@@ -31,7 +31,7 @@ mod source_cache;
 pub mod sql_log;
 mod sql_parse;
 mod sqlite_cells;
-pub use sql_parse::is_read_only;
+pub use sql_parse::{controls_transaction, is_read_only};
 
 use driver::{CancelRequest, DocumentDriver, Driver, SqlDriver, TxOp};
 use engines::sqlite::SqliteDriver;
@@ -627,20 +627,44 @@ fn to_string_column(
     Ok(Arc::new(builder.finish()))
 }
 
-fn array_value(arr: &ArrayRef, i: usize) -> Value {
+/// One value of a result, as its column holds it, borrowed: results hold
+/// whole numbers, floats and text (every other type as its text).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Cell<'a> {
+    Null,
+    Int(i64),
+    Float(f64),
+    Text(&'a str),
+}
+
+/// Row `row` of column `column` of `batch`, a batch of `QueryData::batches`.
+pub fn batch_cell(batch: &RecordBatch, column: usize, row: usize) -> Cell<'_> {
+    array_cell(batch.column(column), row)
+}
+
+fn array_cell(arr: &ArrayRef, i: usize) -> Cell<'_> {
     if arr.is_null(i) {
-        return Value::Null;
+        return Cell::Null;
     }
     if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
-        return Value::from(a.value(i));
+        return Cell::Int(a.value(i));
     }
     if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
-        return Value::from(a.value(i));
+        return Cell::Float(a.value(i));
     }
     if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
-        return Value::from(a.value(i));
+        return Cell::Text(a.value(i));
     }
-    Value::Null
+    Cell::Null
+}
+
+fn array_value(arr: &ArrayRef, i: usize) -> Value {
+    match array_cell(arr, i) {
+        Cell::Null => Value::Null,
+        Cell::Int(value) => Value::from(value),
+        Cell::Float(value) => Value::from(value),
+        Cell::Text(value) => Value::from(value),
+    }
 }
 
 pub struct SqliteInner {
@@ -908,6 +932,13 @@ impl Engine {
         Ok(self.driver()?.capabilities())
     }
 
+    /// The SQL the connection open now speaks; an error for an engine of
+    /// another paradigm.
+    pub fn sql_dialect(&self) -> Result<Dialect, EngineError> {
+        let driver = self.driver()?;
+        Ok(sql_of(&driver)?.dialect())
+    }
+
     /// The file behind a file engine; None for the in-memory demo and for
     /// server databases.
     pub fn file(&self) -> Option<PathBuf> {
@@ -997,6 +1028,29 @@ impl Engine {
             Some(page) => sql_driver.query_from(sql, max_rows, page).await,
             None => sql_driver.query(sql, max_rows).await,
         };
+        if let Ok(mut active) = self.active.lock() {
+            *active = None;
+        }
+        result
+    }
+
+    /// Every row of the read `sql`, sent to `sink` a batch at a time as the
+    /// database sends them (`SqlDriver::stream_rows`). Cancels reach it as
+    /// they reach a query.
+    pub async fn stream_rows(
+        &self,
+        sql: &str,
+        batch_rows: usize,
+        sink: &driver::RowSink,
+    ) -> Result<(), EngineError> {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        let _finished = EpochBump(&self.epoch);
+        let driver = self.driver()?;
+        let sql_driver = sql_of(&driver)?;
+        if let Ok(mut active) = self.active.lock() {
+            *active = Some(driver.clone());
+        }
+        let result = sql_driver.stream_rows(sql, batch_rows, sink).await;
         if let Ok(mut active) = self.active.lock() {
             *active = None;
         }
@@ -1549,9 +1603,7 @@ fn run_query_sync(
                 truncated = true;
                 break;
             }
-            for (i, values) in column_values.iter_mut().enumerate() {
-                values.push(value_ref_to_json(row.get_ref(i)?));
-            }
+            push_sqlite_row(row, &mut column_values, BinaryValues::Shown)?;
             count += 1;
         }
     }
@@ -1595,6 +1647,86 @@ fn run_query_sync(
         // structure is known; the result alone doesn't say.
         column_kinds: Vec::new(),
         rows_affected,
+        next_page: None,
+    })
+}
+
+/// One row's values onto the columns being gathered, as `query` gives them
+/// but for binary values, which come as `how` says.
+fn push_sqlite_row(
+    row: &rusqlite::Row<'_>,
+    column_values: &mut [Vec<Value>],
+    how: BinaryValues,
+) -> Result<(), EngineError> {
+    for (i, values) in column_values.iter_mut().enumerate() {
+        values.push(value_ref_to_json(row.get_ref(i)?, how));
+    }
+    Ok(())
+}
+
+/// Every row of the read `sql` to `sink`, `batch_rows` at a time, holding
+/// the connection as `run_query_sync` does (`SqlDriver::stream_rows`).
+/// Stops once `sink` is closed. A read leaves the transaction state alone,
+/// so none of the editor's bookkeeping runs here.
+fn stream_rows_sync(
+    inner: &SqliteInner,
+    sql: &str,
+    batch_rows: usize,
+    sink: &driver::RowSink,
+) -> Result<(), EngineError> {
+    let started = Instant::now();
+    let batch_rows = batch_rows.max(1);
+    let conn = lock_conn(inner)?;
+    let mut stmt = conn.prepare(sql)?;
+    let columns: Vec<String> = stmt
+        .column_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let mut column_values: Vec<Vec<Value>> = vec![Vec::new(); columns.len()];
+    let mut count = 0usize;
+    let mut sent_any = false;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        push_sqlite_row(row, &mut column_values, BinaryValues::Whole)?;
+        count += 1;
+        if count == batch_rows {
+            let values = std::mem::replace(&mut column_values, vec![Vec::new(); columns.len()]);
+            let data = sqlite_batch(&columns, values, count, started)?;
+            if sink.blocking_send(data).is_err() {
+                return Ok(());
+            }
+            sent_any = true;
+            count = 0;
+        }
+    }
+    if count > 0 || !sent_any {
+        let data = sqlite_batch(&columns, column_values, count, started)?;
+        let _ = sink.blocking_send(data);
+    }
+    Ok(())
+}
+
+/// One streamed batch: the gathered values as `run_query_sync` builds them.
+fn sqlite_batch(
+    columns: &[String],
+    column_values: Vec<Vec<Value>>,
+    count: usize,
+    started: Instant,
+) -> Result<QueryData, EngineError> {
+    let (schema, batches) = build_arrow(columns, column_values, count)?;
+    Ok(QueryData {
+        kind: "sqlite",
+        columns: columns.to_vec(),
+        schema,
+        batches,
+        row_count: count,
+        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        truncated: false,
+        source_table: None,
+        pk: None,
+        column_kinds: Vec::new(),
+        rows_affected: None,
         next_page: None,
     })
 }
@@ -2484,6 +2616,23 @@ pub(crate) fn hex_cell(bytes: &[u8], postgres: bool) -> Value {
     Value::from(hex_text(bytes, postgres))
 }
 
+/// How a read gives binary values: as the grid shows them (`hex_cell`,
+/// only the size past `BLOB_HEX_MAX`), or whole, as a backup needs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BinaryValues {
+    Shown,
+    Whole,
+}
+
+/// Binary as hex in the engine's own notation (see `hex_cell`), shown or
+/// whole as `how` says.
+pub(crate) fn hex_value(bytes: &[u8], postgres: bool, how: BinaryValues) -> Value {
+    match how {
+        BinaryValues::Shown => hex_cell(bytes, postgres),
+        BinaryValues::Whole => Value::from(hex_text(bytes, postgres)),
+    }
+}
+
 pub(crate) fn hex_text(bytes: &[u8], postgres: bool) -> String {
     let digits: &[u8; 16] = if postgres {
         b"0123456789abcdef"
@@ -2595,13 +2744,13 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn value_ref_to_json(v: ValueRef<'_>) -> Value {
+fn value_ref_to_json(v: ValueRef<'_>, how: BinaryValues) -> Value {
     match v {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => Value::from(i),
         ValueRef::Real(f) => Value::from(f),
         ValueRef::Text(bytes) => Value::from(String::from_utf8_lossy(bytes).into_owned()),
-        ValueRef::Blob(bytes) => hex_cell(bytes, false),
+        ValueRef::Blob(bytes) => hex_value(bytes, false, how),
     }
 }
 
@@ -6359,5 +6508,335 @@ mod tests {
             "{message}"
         );
         assert_eq!(fields.server_code, Some(18456));
+    }
+
+    /// Every batch `stream_rows` sends for `sql`.
+    async fn stream_all(engine: &Engine, sql: &str, batch_rows: usize) -> Vec<QueryData> {
+        let (sink, mut batches) = tokio::sync::mpsc::channel(2);
+        let sending = async move { engine.stream_rows(sql, batch_rows, &sink).await };
+        let receiving = async {
+            let mut got = Vec::new();
+            while let Some(data) = batches.recv().await {
+                got.push(data);
+            }
+            got
+        };
+        let (sent, got) = tokio::join!(sending, receiving);
+        sent.unwrap();
+        got
+    }
+
+    /// `sql` streamed `batch_rows` at a time comes in full batches and a
+    /// last short one, with the columns, kinds and values `query` gives.
+    async fn check_stream_matches_query(
+        engine: &Engine,
+        sql: &str,
+        batch_rows: usize,
+        rows: usize,
+    ) {
+        let whole = engine.query(sql, usize::MAX).await.unwrap();
+        assert_eq!(whole.row_count, rows);
+        let got = stream_all(engine, sql, batch_rows).await;
+        let mut sizes = vec![batch_rows; rows / batch_rows];
+        if rows % batch_rows > 0 || rows == 0 {
+            sizes.push(rows % batch_rows);
+        }
+        assert_eq!(
+            got.iter().map(|data| data.row_count).collect::<Vec<_>>(),
+            sizes
+        );
+        let mut streamed = Vec::new();
+        for data in &got {
+            assert_eq!(data.kind, whole.kind);
+            assert_eq!(data.columns, whole.columns);
+            assert_eq!(data.column_kinds, whole.column_kinds);
+            streamed.extend(data.rows_json());
+        }
+        assert_eq!(streamed, whole.rows_json());
+    }
+
+    /// A result without rows still sends one batch, with its columns.
+    async fn check_stream_empty(engine: &Engine, sql: &str, columns: &[&str]) {
+        let got = stream_all(engine, sql, 10).await;
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].row_count, 0);
+        assert_eq!(got[0].columns, columns);
+    }
+
+    /// The reader takes one batch of `sql` and goes: the stream ends Ok, and
+    /// the connection answers the statements after it.
+    async fn check_stream_stops(engine: &Engine, sql: &str, batch_rows: usize) {
+        let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+        let started = std::time::Instant::now();
+        let sending = async move { engine.stream_rows(sql, batch_rows, &sink).await };
+        let receiving = async move { batches.recv().await };
+        let (sent, first) = tokio::join!(sending, receiving);
+        sent.unwrap();
+        assert_eq!(first.unwrap().row_count, batch_rows);
+        eprintln!("stream stopped after {:?}", started.elapsed());
+        for _ in 0..3 {
+            let data = engine.query("SELECT 1", 1).await.unwrap();
+            assert_eq!(data.rows_json(), vec![vec![Value::from(1)]]);
+        }
+    }
+
+    /// A stop inside an open transaction leaves it open, with its work.
+    async fn check_stream_stops_in_tx(engine: &Engine, big: &str, insert: &str, probe: &str) {
+        engine.begin_tx().await.unwrap();
+        engine.execute(insert, 1).await.unwrap();
+        check_stream_stops(engine, big, 1000).await;
+        assert!(engine.in_tx().await.unwrap());
+        assert_eq!(engine.query(probe, 10).await.unwrap().row_count, 1);
+        engine.rollback_tx().await.unwrap();
+        assert_eq!(engine.query(probe, 10).await.unwrap().row_count, 0);
+    }
+
+    /// A binary value past the grid's limit: `query` shows only its size,
+    /// while the stream gives all of it. `literal` writes hex digits as the
+    /// engine's binary literal; `create` makes `tp_blob (id, data)`.
+    async fn check_stream_blob(
+        engine: &Engine,
+        create: &str,
+        literal: fn(&str) -> String,
+        postgres: bool,
+    ) {
+        let bytes: Vec<u8> = (0..BLOB_HEX_MAX + 1000).map(|i| (i % 251) as u8).collect();
+        let digits = &hex_text(&bytes, false)[2..];
+        for sql in [
+            "DROP TABLE IF EXISTS tp_blob",
+            create,
+            &format!("INSERT INTO tp_blob VALUES (1, {})", literal(digits)),
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let sql = "SELECT data FROM tp_blob";
+        let shown = engine.query(sql, 10).await.unwrap().rows_json();
+        assert_eq!(
+            shown[0][0],
+            Value::from(format!("<blob {} bytes>", bytes.len()))
+        );
+        let streamed = stream_all(engine, sql, 10).await;
+        assert_eq!(
+            streamed[0].rows_json()[0][0],
+            Value::from(hex_text(&bytes, postgres))
+        );
+        engine.execute("DROP TABLE tp_blob", 1).await.unwrap();
+    }
+
+    const STREAM_COLUMNS: [&str; 5] = ["id", "label", "ratio", "flag", "note"];
+
+    #[tokio::test]
+    async fn sqlite_streams_rows_in_batches() {
+        let engine = Engine::open_demo(2500).unwrap();
+        check_stream_matches_query(&engine, "SELECT * FROM demo ORDER BY id", 1000, 2500).await;
+        check_stream_matches_query(&engine, "SELECT * FROM demo ORDER BY id", 500, 2500).await;
+        let columns = engine.query("SELECT * FROM demo", 1).await.unwrap().columns;
+        let columns: Vec<&str> = columns.iter().map(String::as_str).collect();
+        check_stream_empty(&engine, "SELECT * FROM demo WHERE 0", &columns).await;
+        check_stream_stops(&engine, "SELECT * FROM demo", 100).await;
+        check_stream_blob(
+            &engine,
+            "CREATE TABLE tp_blob (id INTEGER PRIMARY KEY, data BLOB)",
+            |digits| format!("X'{digits}'"),
+            false,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn pg_streams_rows_in_batches() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(&config).await.unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS tp_stream",
+            "CREATE TABLE tp_stream (id int PRIMARY KEY, label text, ratio float8, \
+             flag boolean, note text)",
+            "INSERT INTO tp_stream SELECT g, 'row ' || g, g * 0.25, g % 2 = 0, \
+             CASE WHEN g % 3 = 0 THEN NULL ELSE 'n' || g END FROM generate_series(1, 2500) g",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let all = "SELECT * FROM tp_stream ORDER BY id";
+        check_stream_matches_query(&engine, all, 1000, 2500).await;
+        check_stream_empty(
+            &engine,
+            "SELECT * FROM tp_stream WHERE id < 0",
+            &STREAM_COLUMNS,
+        )
+        .await;
+        let big = "SELECT g, md5(g::text) FROM generate_series(1, 5000000) g";
+        check_stream_stops(&engine, big, 1000).await;
+        check_stream_stops_in_tx(
+            &engine,
+            big,
+            "INSERT INTO tp_stream VALUES (-1, 'tx', 0, true, NULL)",
+            "SELECT id FROM tp_stream WHERE id = -1",
+        )
+        .await;
+        engine.execute("DROP TABLE tp_stream", 1).await.unwrap();
+        check_stream_blob(
+            &engine,
+            "CREATE TABLE tp_blob (id int PRIMARY KEY, data bytea)",
+            |digits| format!("decode('{digits}', 'hex')"),
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cockroach_streams_rows_in_batches() {
+        let Some(config) = cockroach_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_cockroach(&config).await.unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS tp_stream",
+            "CREATE TABLE tp_stream (id INT8 PRIMARY KEY, label STRING, ratio FLOAT8, \
+             flag BOOL, note STRING)",
+            "INSERT INTO tp_stream SELECT g, 'row ' || g::STRING, g::FLOAT8 * 0.25, g % 2 = 0, \
+             CASE WHEN g % 3 = 0 THEN NULL ELSE 'n' || g::STRING END \
+             FROM generate_series(1, 2500) g",
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let all = "SELECT * FROM tp_stream ORDER BY id";
+        check_stream_matches_query(&engine, all, 1000, 2500).await;
+        check_stream_empty(
+            &engine,
+            "SELECT * FROM tp_stream WHERE id < 0",
+            &STREAM_COLUMNS,
+        )
+        .await;
+        let big = "SELECT g, md5(g::STRING) FROM generate_series(1, 2000000) g";
+        check_stream_stops(&engine, big, 1000).await;
+        check_stream_stops_in_tx(
+            &engine,
+            big,
+            "INSERT INTO tp_stream VALUES (-1, 'tx', 0, true, NULL)",
+            "SELECT id FROM tp_stream WHERE id = -1",
+        )
+        .await;
+        engine.execute("DROP TABLE tp_stream", 1).await.unwrap();
+        check_stream_blob(
+            &engine,
+            "CREATE TABLE tp_blob (id INT8 PRIMARY KEY, data BYTES)",
+            |digits| format!("x'{digits}'"),
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mysql_streams_rows_in_batches() {
+        let Some(config) = mysql_config() else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mysql(&config).await.unwrap();
+        let d = "(SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 \
+                 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 \
+                 UNION ALL SELECT 8 UNION ALL SELECT 9)";
+        let insert = format!(
+            "INSERT INTO tp_stream SELECT g, CONCAT('row ', g), g * 0.25, g % 2 = 0, \
+             IF(g % 3 = 0, NULL, CONCAT('n', g)) FROM (SELECT a.n + b.n * 10 + c.n * 100 \
+             + e.n * 1000 + 1 AS g FROM {d} a, {d} b, {d} c, {d} e) t WHERE g <= 2500"
+        );
+        for sql in [
+            "DROP TABLE IF EXISTS tp_stream",
+            "CREATE TABLE tp_stream (id INT PRIMARY KEY, label VARCHAR(20), ratio DOUBLE, \
+             flag BOOLEAN, note TEXT NULL)",
+            &insert,
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let all = "SELECT * FROM tp_stream ORDER BY id";
+        check_stream_matches_query(&engine, all, 1000, 2500).await;
+        // TINYINT(1) streams as the boolean `query` says it is.
+        let kinds = stream_all(&engine, all, 1000).await[0].column_kinds.clone();
+        assert_eq!(kinds[3], Some("boolean"));
+        check_stream_empty(
+            &engine,
+            "SELECT * FROM tp_stream WHERE id < 0",
+            &STREAM_COLUMNS,
+        )
+        .await;
+        let big = format!(
+            "SELECT a.n, b.n, c.n, e.n, f.n, h.n, MD5(RAND()) \
+             FROM {d} a, {d} b, {d} c, {d} e, {d} f, {d} h"
+        );
+        check_stream_stops(&engine, &big, 1000).await;
+        check_stream_stops_in_tx(
+            &engine,
+            &big,
+            "INSERT INTO tp_stream VALUES (-1, 'tx', 0, true, NULL)",
+            "SELECT id FROM tp_stream WHERE id = -1",
+        )
+        .await;
+        engine.execute("DROP TABLE tp_stream", 1).await.unwrap();
+        check_stream_blob(
+            &engine,
+            "CREATE TABLE tp_blob (id INT PRIMARY KEY, data LONGBLOB)",
+            |digits| format!("X'{digits}'"),
+            false,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mssql_streams_rows_in_batches() {
+        let Some((config, _turn)) = mssql_config().await else {
+            return;
+        };
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_mssql(&config).await.unwrap();
+        let d = "d AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) v(n))";
+        let insert = format!(
+            "WITH {d} INSERT INTO tp_stream SELECT g, CONCAT('row ', g), g * 0.25, \
+             CASE WHEN g % 2 = 0 THEN 1 ELSE 0 END, \
+             CASE WHEN g % 3 = 0 THEN NULL ELSE CONCAT('n', g) END \
+             FROM (SELECT a.n + b.n * 10 + c.n * 100 + e.n * 1000 + 1 AS g \
+             FROM d a CROSS JOIN d b CROSS JOIN d c CROSS JOIN d e) t WHERE g <= 2500"
+        );
+        for sql in [
+            "DROP TABLE IF EXISTS tp_stream",
+            "CREATE TABLE tp_stream (id INT PRIMARY KEY, label NVARCHAR(20), ratio FLOAT, \
+             flag BIT, note NVARCHAR(20) NULL)",
+            &insert,
+        ] {
+            engine.execute(sql, 1).await.unwrap();
+        }
+        let all = "SELECT * FROM tp_stream ORDER BY id";
+        check_stream_matches_query(&engine, all, 1000, 2500).await;
+        check_stream_empty(
+            &engine,
+            "SELECT * FROM tp_stream WHERE id < 0",
+            &STREAM_COLUMNS,
+        )
+        .await;
+        let big = format!(
+            "WITH {d} SELECT a.n x1, b.n x2, c.n x3, e.n x4, f.n x5, h.n x6, \
+             REPLICATE('x', 40) pad FROM d a CROSS JOIN d b CROSS JOIN d c \
+             CROSS JOIN d e CROSS JOIN d f CROSS JOIN d h"
+        );
+        check_stream_stops(&engine, &big, 1000).await;
+        check_stream_stops_in_tx(
+            &engine,
+            &big,
+            "INSERT INTO tp_stream VALUES (-1, 'tx', 0, 1, NULL)",
+            "SELECT id FROM tp_stream WHERE id = -1",
+        )
+        .await;
+        engine.execute("DROP TABLE tp_stream", 1).await.unwrap();
+        check_stream_blob(
+            &engine,
+            "CREATE TABLE tp_blob (id INT PRIMARY KEY, data VARBINARY(MAX))",
+            |digits| format!("0x{digits}"),
+            false,
+        )
+        .await;
     }
 }

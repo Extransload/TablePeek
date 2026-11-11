@@ -9,6 +9,7 @@ import {
   type SeenValue,
 } from "./net/socket";
 import type { DefinitionKind } from "./sqlTools";
+import type { Lexing } from "./sqlSplit";
 import type { InstalledFont } from "./fonts";
 import { t } from "./i18n";
 import { appErrorFromBody, toAppError, type AppError, type UndoReport } from "./errorHelp";
@@ -2524,6 +2525,179 @@ function writeBinaryCell(
   });
 }
 
+// A table's place in an SQL dump the server writes (POST /api/sql/dump):
+// `before` as given, then every row of `select` (null: none) as INSERT
+// statements into `target`, each followed by a newline, then `after`. The
+// result's columns are matched to `columns` by name; `quoted` is how a
+// statement names one, `binary` marks bytes (binary literals) and `declared`
+// is the declared type, for literals that depend on it.
+export interface DumpTablePlan {
+  name: string;
+  before: string;
+  select: string | null;
+  target: string;
+  columns: { name: string; quoted: string; binary: boolean; declared: string | null }[];
+  // One row per INSERT, for an engine whose VALUES takes one.
+  single_row: boolean;
+  after: string;
+}
+
+// The whole file: `head`, each table in order, then `tail`, all written as given.
+export interface DumpPlan {
+  filename: string;
+  head: string;
+  tables: DumpTablePlan[];
+  tail: string;
+}
+
+// How far a dump has got. "waiting": its download hasn't been asked for yet;
+// `rows` counts the current table's rows written so far.
+export interface DumpProgress {
+  state: "waiting" | "running" | "done" | "failed" | "stopped";
+  table: string | null;
+  tables_done: number;
+  tables: number;
+  rows: number;
+  bytes: number;
+  error: ApiRequestError | null;
+}
+
+// Hands the server a dump to write; it starts once its download (see
+// dumpDownloadUrl) is asked for. Resolves to the dump's id.
+async function startDump(conn: string, plan: DumpPlan): Promise<string> {
+  const body = await api<{ id: string }>(`/api/sql/dump?conn=${encodeURIComponent(conn)}`, {
+    method: "POST",
+    body: JSON.stringify(plan),
+  });
+  return body.id;
+}
+
+// The dump's file, streamed as the server writes it: a link the browser
+// downloads itself (the token in the query), so the page never holds it.
+function dumpDownloadUrl(conn: string, id: string): string {
+  return `/api/sql/dump/download?${new URLSearchParams({ conn, id, token: tokenValue })}`;
+}
+
+async function dumpProgress(conn: string, id: string): Promise<DumpProgress> {
+  const body = await api<Omit<DumpProgress, "error"> & { error: unknown }>(
+    `/api/sql/dump/progress?conn=${encodeURIComponent(conn)}&id=${encodeURIComponent(id)}`,
+  );
+  return {
+    ...body,
+    error: body.error === null || body.error === undefined ? null : new ApiRequestError(appErrorFromBody({ error: body.error }, 500)),
+  };
+}
+
+async function stopDump(conn: string, id: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/sql/dump/stop?conn=${encodeURIComponent(conn)}&id=${encodeURIComponent(id)}`, {
+    method: "POST",
+  });
+}
+
+// What a restore did: the statements it ran, whether a stop ended it,
+// whether the transaction it ran in was rolled back, and what ended it
+// early: a statement (its number from 1 and the line it starts on), the
+// file that couldn't be read, or the closing commit.
+export interface RestoreOutcome {
+  statements: number;
+  stopped: boolean;
+  rolledBack: boolean;
+  failure: {
+    stage: "statement" | "read" | "commit";
+    error: ApiRequestError;
+    statement: number | null;
+    line: number | null;
+  } | null;
+}
+
+// Runs an SQL file's statements on the server, in order, as the claimed
+// job's (see claimConn); with `transaction`, in one transaction the server
+// opens, committed at the end and rolled back on a failure or a stop. The
+// browser sends the file straight from disk; the server decodes it with
+// `encoding`, splits it as `lexing` says and replies once it has finished.
+// `id` names the run for restoreProgress and stopRestore.
+function restoreSql(
+  conn: string,
+  id: string,
+  file: Blob,
+  encoding: string,
+  lexing: Lexing,
+  transaction: boolean,
+): Promise<RestoreOutcome> {
+  // Executor form: the lib target (ES2022) has no Promise.withResolvers.
+  return new Promise<RestoreOutcome>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const query = new URLSearchParams({
+      conn,
+      id,
+      encoding,
+      lexing: JSON.stringify(lexing),
+      transaction: String(transaction),
+    });
+    request.open("POST", `/api/sql/restore?${query}`);
+    request.setRequestHeader("x-tablepeek-token", tokenValue);
+    request.setRequestHeader("content-type", "application/octet-stream");
+    request.onload = () => {
+      let body: unknown = null;
+      try {
+        body = JSON.parse(request.responseText);
+      } catch {
+        body = null;
+      }
+      if (request.status >= 200 && request.status < 300 && body !== null && typeof body === "object") {
+        const reply = body as {
+          statements?: number;
+          stopped?: boolean;
+          rolled_back?: boolean;
+          failure?: {
+            stage: "statement" | "read" | "commit";
+            error: unknown;
+            statement: number | null;
+            line: number | null;
+          } | null;
+        };
+        const failure = reply.failure ?? null;
+        resolve({
+          statements: reply.statements ?? 0,
+          stopped: reply.stopped === true,
+          rolledBack: reply.rolled_back === true,
+          failure:
+            failure === null
+              ? null
+              : {
+                  stage: failure.stage,
+                  error: new ApiRequestError(appErrorFromBody({ error: failure.error }, 500)),
+                  statement: failure.statement ?? null,
+                  line: failure.line ?? null,
+                },
+        });
+      } else {
+        if (request.status === 401) {
+          serverRestarted();
+        }
+        reject(new ApiRequestError(appErrorFromBody(body, request.status)));
+      }
+    };
+    request.onerror = () => reject(networkError());
+    request.send(file);
+  });
+}
+
+// How far a running restore has got: statements run and file bytes read.
+async function restoreProgress(conn: string, id: string): Promise<{ statements: number; bytes: number }> {
+  return api<{ statements: number; bytes: number }>(
+    `/api/sql/restore/progress?conn=${encodeURIComponent(conn)}&id=${encodeURIComponent(id)}`,
+  );
+}
+
+// Stops a restore after (or by cancelling) the statement running; its
+// reply then says it was stopped.
+async function stopRestore(conn: string, id: string): Promise<void> {
+  await api<{ ok: boolean }>(`/api/sql/restore/stop?conn=${encodeURIComponent(conn)}&id=${encodeURIComponent(id)}`, {
+    method: "POST",
+  });
+}
+
 async function killSession(conn: string, sessionId: string): Promise<void> {
   await api<{ ok: boolean }>(`/api/kill?conn=${encodeURIComponent(conn)}`, {
     method: "POST",
@@ -2803,6 +2977,13 @@ export const store = {
   binaryCellRef,
   readBinaryCell,
   writeBinaryCell,
+  startDump,
+  dumpDownloadUrl,
+  dumpProgress,
+  stopDump,
+  restoreSql,
+  restoreProgress,
+  stopRestore,
   killSession,
   fetchHistory,
   clearHistory,

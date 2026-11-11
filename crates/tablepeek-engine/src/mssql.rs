@@ -20,8 +20,8 @@ use crate::source_cache::{key_unchanged, SourceCache, KEY_CHANGED};
 use crate::sql_log::{inline_params, Change, Dialect, LogParam, SqlLog};
 use crate::sql_parse::{parse_single_table, trim_ident, tx_controls, TxControl};
 use crate::{
-    build_arrow, hex_bytes, hex_cell, hex_text, humanize_uptime_ko, not_hex, real_json,
-    EngineError, QueryData,
+    build_arrow, hex_bytes, hex_text, hex_value, humanize_uptime_ko, not_hex, real_json,
+    BinaryValues, EngineError, QueryData,
 };
 
 type MssqlClient = Client<Compat<TcpStream>>;
@@ -592,11 +592,7 @@ pub(crate) async fn query(
         while let Some(item) = stream.next().await {
             match item? {
                 QueryItem::Metadata(result_meta) => {
-                    columns = result_meta
-                        .columns()
-                        .iter()
-                        .map(|column| column.name().to_string())
-                        .collect();
+                    columns = meta_columns(&result_meta);
                     column_values = vec![Vec::new(); columns.len()];
                 }
                 QueryItem::Row(row) => {
@@ -604,11 +600,7 @@ pub(crate) async fn query(
                         truncated = true;
                         break;
                     }
-                    for (index, value) in row.into_iter().enumerate() {
-                        if index < column_values.len() {
-                            column_values[index].push(column_json(value));
-                        }
-                    }
+                    push_row(row, &mut column_values, BinaryValues::Shown);
                     count += 1;
                 }
             }
@@ -685,6 +677,124 @@ pub(crate) async fn query(
         rows_affected: None,
         next_page: None,
     })
+}
+
+fn meta_columns(meta: &tiberius::ResultMetadata) -> Vec<String> {
+    meta.columns()
+        .iter()
+        .map(|column| column.name().to_string())
+        .collect()
+}
+
+/// One row's values onto the columns being gathered, as `query` gives them
+/// but for binary values, which come as `how` says.
+fn push_row(row: tiberius::Row, column_values: &mut [Vec<Value>], how: BinaryValues) {
+    for (index, value) in row.into_iter().enumerate() {
+        if let Some(values) = column_values.get_mut(index) {
+            values.push(column_json(value, how));
+        }
+    }
+}
+
+/// Every row of the read `sql` to `sink`, `batch_rows` at a time, as the
+/// server sends them (`SqlDriver::stream_rows`). A plain read moves no
+/// transaction; a failure inside an open one is checked as a data change's.
+pub(crate) async fn stream_rows(
+    inner: &MssqlInner,
+    sql: &str,
+    batch_rows: usize,
+    sink: &crate::driver::RowSink,
+) -> Result<(), EngineError> {
+    let started = Instant::now();
+    let batch_rows = batch_rows.max(1);
+    let mut guard = inner.client().await?;
+    let mut client = take_client(&mut guard, &inner.log)?;
+    let mut columns: Vec<String> = Vec::new();
+    let mut column_values: Vec<Vec<Value>> = Vec::new();
+    let mut count = 0usize;
+    let mut sent_any = false;
+    let batch = |columns: &[String], column_values: Vec<Vec<Value>>, count: usize| {
+        let (schema, batches) = build_arrow(columns, column_values, count)?;
+        Ok::<_, EngineError>(QueryData {
+            kind: "mssql",
+            columns: columns.to_vec(),
+            schema,
+            batches,
+            row_count: count,
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            truncated: false,
+            source_table: None,
+            pk: None,
+            column_kinds: Vec::new(),
+            rows_affected: None,
+            next_page: None,
+        })
+    };
+    // Set when the rows stop coming before the end: Ok once the reader is
+    // gone, the error when a batch could not be built.
+    let mut stopped: Option<Result<(), EngineError>> = None;
+    let outcome: Result<(), tiberius::error::Error> = async {
+        let mut stream = client.query(sql, &[]).await?;
+        while let Some(item) = stream.next().await {
+            match item? {
+                QueryItem::Metadata(result_meta) => {
+                    columns = meta_columns(&result_meta);
+                    column_values = vec![Vec::new(); columns.len()];
+                }
+                QueryItem::Row(row) => {
+                    push_row(row, &mut column_values, BinaryValues::Whole);
+                    count += 1;
+                    if count == batch_rows {
+                        let full =
+                            std::mem::replace(&mut column_values, vec![Vec::new(); columns.len()]);
+                        match batch(&columns, full, count) {
+                            Ok(data) => {
+                                if sink.send(data).await.is_err() {
+                                    stopped = Some(Ok(()));
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                stopped = Some(Err(err));
+                                break;
+                            }
+                        }
+                        sent_any = true;
+                        count = 0;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    if let Some(outcome) = stopped {
+        // The driver has no way to stop a result partway: its next request
+        // first reads the rest of it (a whole table, perhaps). Outside a
+        // transaction the session is dropped instead, as a cancel's KILL
+        // ends it, and the next statement opens a new one; inside one the
+        // rest is left to be read through, so the transaction stays.
+        if !inner.in_tx() {
+            *guard = None;
+        }
+        return outcome;
+    }
+    if let Err(err) = outcome {
+        check_tx(inner, &mut client).await;
+        let err = mssql_err(err);
+        return Err(if inner.take_cancelled() {
+            EngineError::mssql(
+                format!("KILL 요청으로 쿼리가 취소되었습니다: {err}"),
+                ErrorFields::default(),
+            )
+        } else {
+            err
+        });
+    }
+    if count > 0 || !sent_any {
+        let _ = sink.send(batch(&columns, column_values, count)?).await;
+    }
+    Ok(())
 }
 
 /// What a cell is written as: its text bound at `position` and cast to the
@@ -1883,7 +1993,7 @@ fn cd_string(value: Option<&ColumnData<'_>>) -> Option<String> {
     }
 }
 
-fn column_json(data: ColumnData<'static>) -> Value {
+fn column_json(data: ColumnData<'static>, how: BinaryValues) -> Value {
     if matches!(
         &data,
         ColumnData::DateTime(_) | ColumnData::SmallDateTime(_) | ColumnData::DateTime2(_)
@@ -1920,7 +2030,7 @@ fn column_json(data: ColumnData<'static>) -> Value {
             .map(|guid| Value::from(guid.to_string()))
             .unwrap_or(Value::Null),
         ColumnData::Binary(value) => value
-            .map(|bytes| hex_cell(&bytes, false))
+            .map(|bytes| hex_value(&bytes, false, how))
             .unwrap_or(Value::Null),
         ColumnData::Numeric(value) => value
             .map(|number| Value::from(number.to_string()))

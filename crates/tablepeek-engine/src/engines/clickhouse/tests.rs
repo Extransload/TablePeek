@@ -1127,6 +1127,121 @@ async fn clickhouse_writes_exports_itself() {
     assert_eq!(collect(plain).await.unwrap(), "1\n2\n");
 }
 
+/// Every batch `stream_rows` sends for `sql`, and how it ended.
+async fn stream_all(
+    engine: &Engine,
+    sql: &str,
+    batch_rows: usize,
+) -> (Vec<crate::QueryData>, Result<(), EngineError>) {
+    let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+    let send = async move { engine.stream_rows(sql, batch_rows, &sink).await };
+    let collect = async {
+        let mut all = Vec::new();
+        while let Some(batch) = batches.recv().await {
+            all.push(batch);
+        }
+        all
+    };
+    let (result, all) = tokio::join!(send, collect);
+    (all, result)
+}
+
+#[tokio::test]
+async fn clickhouse_streams_rows_as_query_reads_them() {
+    let Some((engine, _turn)) = connect(json!({})).await else {
+        return;
+    };
+    // The same values as a query, column kinds too, a row a batch.
+    let sql = "SELECT * FROM kinds ORDER BY id";
+    let whole = engine.query(sql, usize::MAX).await.unwrap();
+    let (batches, result) = stream_all(&engine, sql, 1).await;
+    result.unwrap();
+    assert_eq!(batches.len(), 2);
+    for batch in &batches {
+        assert_eq!(batch.row_count, 1);
+        assert_eq!(batch.columns, whole.columns);
+        assert_eq!(batch.column_kinds, whole.column_kinds);
+    }
+    // Each batch types its columns by its own values: UInt64's 2 is a number
+    // in its batch, text in a whole result that also holds 2^64 - 1.
+    let text = |rows: Vec<Vec<Value>>| -> Vec<Vec<Option<String>>> {
+        rows.into_iter()
+            .map(|row| row.iter().map(super::client::text_of).collect())
+            .collect()
+    };
+    let rows: Vec<Vec<Value>> = batches.iter().flat_map(|batch| batch.rows_json()).collect();
+    assert_eq!(text(rows), text(whole.rows_json()));
+
+    // Full batches, then the rest.
+    let sql = "SELECT number, toString(number) AS text FROM numbers(25000)";
+    let (batches, result) = stream_all(&engine, sql, 10_000).await;
+    result.unwrap();
+    let counts: Vec<usize> = batches.iter().map(|batch| batch.row_count).collect();
+    assert_eq!(counts, [10_000, 10_000, 5_000]);
+    assert_eq!(
+        batches[2].rows_json()[4_999],
+        vec![json!(24_999), json!("24999")]
+    );
+
+    // No rows: one batch with the columns.
+    let (batches, result) = stream_all(&engine, "SELECT number FROM numbers(0)", 100).await;
+    result.unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].row_count, 0);
+    assert_eq!(batches[0].columns, ["number"]);
+
+    // An error after the first rows fails the stream.
+    let (_, result) = stream_all(
+        &engine,
+        "SELECT number, throwIf(number = 50000, 'boom') FROM numbers(100000) SETTINGS max_block_size = 1000",
+        1_000,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(EngineError::Driver { .. })),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn clickhouse_stream_stops_when_the_reader_does() {
+    let Some((engine, _turn)) = connect(json!({})).await else {
+        return;
+    };
+    let (sink, mut batches) = tokio::sync::mpsc::channel(1);
+    let send = engine.stream_rows("SELECT number FROM system.numbers", 1_000, &sink);
+    let read_two = async {
+        batches.recv().await.unwrap();
+        batches.recv().await.unwrap();
+        drop(batches);
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(send, read_two)
+    })
+    .await
+    .expect("the stream ends once its reader has gone");
+    result.unwrap();
+    // The session takes the next statement, and the server has ended the read.
+    let data = engine.query("SELECT 1 AS one", 10).await.unwrap();
+    assert_eq!(data.rows_json(), vec![vec![json!(1)]]);
+    let mut running = 1;
+    for _ in 0..50 {
+        let count = engine
+            .query(
+                "SELECT count() FROM system.processes WHERE query = 'SELECT number FROM system.numbers'",
+                10,
+            )
+            .await
+            .unwrap();
+        running = count.rows_json()[0][0].as_i64().unwrap();
+        if running == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert_eq!(running, 0);
+}
+
 #[test]
 fn part_condition_follows_mutations() {
     use super::rows::part_condition;

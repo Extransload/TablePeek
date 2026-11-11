@@ -122,6 +122,20 @@ pub trait SqlDriver: Send + Sync {
             "이 엔진은 페이지 토큰으로 이어 읽을 수 없습니다".into(),
         ))
     }
+    /// Sends every row of the read `sql` to `sink` as the database sends
+    /// them, at most `batch_rows` to a batch, each batch a `QueryData` with
+    /// the statement's columns: no row limit, and about one batch in memory
+    /// (a backup reads whole tables). Values are the ones `query` gives,
+    /// except binary ones, which come whole (all their hex) rather than as
+    /// the grid's `<blob N bytes>` placeholder past its size limit.
+    /// Returns once every row is sent, or early (Ok) once `sink` is closed:
+    /// whoever reads it has stopped.
+    async fn stream_rows(
+        &self,
+        sql: &str,
+        batch_rows: usize,
+        sink: &RowSink,
+    ) -> Result<(), EngineError>;
     /// Walks `sql`'s rows from `skip.page` (None: the start), which is row
     /// `skip.offset` of the statement, past `skip.rows` of them without returning any,
     /// for a jump to a far page on an engine that pages by token
@@ -274,6 +288,40 @@ pub struct CountStep {
     pub cursor: Option<String>,
     /// How much of the whole is counted so far, from 0 to 1.
     pub done: f64,
+}
+
+/// Where `SqlDriver::stream_rows` sends a read's rows, a batch at a time.
+/// Bounded: a reader that falls behind holds the engine back.
+pub type RowSink = tokio::sync::mpsc::Sender<QueryData>;
+
+/// `data`'s rows to `sink`, at most `batch_rows` to a batch (at least one
+/// batch, so the columns arrive even when there are no rows). Stops early
+/// once `sink` is closed.
+pub async fn send_in_batches(
+    data: QueryData,
+    batch_rows: usize,
+    sink: &RowSink,
+) -> Result<(), EngineError> {
+    let batch_rows = batch_rows.max(1);
+    if data.row_count <= batch_rows {
+        let _ = sink.send(data).await;
+        return Ok(());
+    }
+    let mut offset = 0;
+    while offset < data.row_count {
+        let (batch, rows) = data.slice_rows(offset, batch_rows)?;
+        let piece = QueryData {
+            batches: vec![batch],
+            row_count: rows,
+            next_page: None,
+            ..data.clone()
+        };
+        if sink.send(piece).await.is_err() {
+            return Ok(());
+        }
+        offset += rows;
+    }
+    Ok(())
 }
 
 /// A file's bytes as the database sends them.

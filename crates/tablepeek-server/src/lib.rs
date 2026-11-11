@@ -34,6 +34,10 @@ pub mod cursors;
 pub mod launch;
 pub mod picker;
 mod search;
+mod sql_dump;
+mod sql_literal;
+mod sql_restore;
+mod sql_split;
 pub mod store;
 pub mod transfer;
 pub mod tunnel;
@@ -187,6 +191,10 @@ pub struct ConnSlot {
     job_tx: std::sync::Mutex<Option<std::time::Instant>>,
     /// A document store's cursors the page keeps open between requests.
     pub cursors: cursors::CursorTable,
+    /// SQL backups planned or running on this connection.
+    dumps: sql_dump::Dumps,
+    /// SQL restores running on this connection.
+    restores: sql_restore::Restores,
 }
 
 /// Whose statement runs on a connection's session now.
@@ -297,6 +305,8 @@ impl ConnSlot {
             holder: std::sync::Mutex::new(Holder::Idle),
             job_tx: std::sync::Mutex::new(None),
             cursors: cursors::CursorTable::default(),
+            dumps: sql_dump::Dumps::default(),
+            restores: sql_restore::Restores::default(),
         }
     }
 
@@ -813,6 +823,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/oidc/callback", get(oidc_callback))
         .merge(search::routes())
         .merge(ai::routes())
+        .merge(sql_dump::routes())
+        .merge(sql_restore::routes())
         .layer(middleware::from_fn_with_state(state.clone(), token_guard))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .with_state(state)
@@ -858,7 +870,11 @@ async fn host_guard(State(state): State<AppState>, request: Request<Body>, next:
 }
 
 /// The routes that may carry the token in the query instead of the header.
-const QUERY_TOKEN_ROUTES: [&str; 2] = ["/api/ws", "/api/doc/gridfs/download"];
+const QUERY_TOKEN_ROUTES: [&str; 3] = [
+    "/api/ws",
+    "/api/doc/gridfs/download",
+    "/api/sql/dump/download",
+];
 
 /// Every API route wants the token, and checks it before the body or the
 /// WebSocket upgrade is read: a stale one (the server restarted) is always
@@ -11204,5 +11220,277 @@ mod tests {
         assert!(store.get(&last).is_none());
         store.remove("page-1");
         assert!(store.get("page-1").is_none() && store.get("page-2").is_some());
+    }
+
+    /// The app on a loopback port, as the page reaches it: its address and
+    /// the server task.
+    async fn served(
+        dir: &std::path::Path,
+    ) -> (String, tokio::task::JoinHandle<std::io::Result<()>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let state = AppState {
+            allowed_hosts: Arc::new(vec![host.clone()]),
+            ..test_state(dir)
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app(state)).await });
+        (format!("http://{host}"), server)
+    }
+
+    async fn api_json(request: reqwest::RequestBuilder) -> Value {
+        let reply = request
+            .header("x-tablepeek-token", "test-token")
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            reply.status().is_success(),
+            "{}",
+            reply.text().await.unwrap()
+        );
+        reply.json().await.unwrap()
+    }
+
+    /// SQLite's lexing, as its dialect gives it to a restore.
+    const SQLITE_LEXING: &str = r#"{"bracketNames":true}"#;
+
+    async fn restore_text(
+        client: &reqwest::Client,
+        base: &str,
+        id: &str,
+        text: String,
+        transaction: bool,
+    ) -> Value {
+        let transaction = transaction.to_string();
+        api_json(
+            client
+                .post(format!("{base}/api/sql/restore"))
+                .query(&[
+                    ("id", id),
+                    ("encoding", "utf-8"),
+                    ("lexing", SQLITE_LEXING),
+                    ("transaction", &transaction),
+                ])
+                .body(text),
+        )
+        .await
+    }
+
+    async fn rows_of(client: &reqwest::Client, base: &str, sql: &str) -> Value {
+        api_json(
+            client
+                .post(format!("{base}/api/query"))
+                .json(&json!({ "sql": sql, "max_rows": 100_000 })),
+        )
+        .await["rows"]
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn sql_dump_restores_every_row_as_it_was() {
+        let dir = temp_dir("sql-dump");
+        let (base, server) = served(&dir).await;
+        let client = reqwest::Client::new();
+        // More rows than a read's batch; quotes, a backslash, a ; and a
+        // comment marker inside text; NULLs; floats JavaScript writes with
+        // an exponent; and blobs past what a grid cell shows.
+        for sql in [
+            "CREATE TABLE src (id INTEGER PRIMARY KEY, name TEXT, score REAL, data BLOB)",
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 12345) \
+             INSERT INTO src SELECT i, \
+             CASE WHEN i % 5 = 0 THEN NULL ELSE 'it''s ' || i || ' \\ ; -- é😀' || char(10) || 'next' END, \
+             CASE i WHEN 1 THEN 1e21 WHEN 2 THEN 1.5e-7 ELSE i * 0.1 END, \
+             CASE WHEN i % 1000 = 0 THEN randomblob(20000) ELSE randomblob(i % 40) END FROM n",
+        ] {
+            api_json(
+                client
+                    .post(format!("{base}/api/exec"))
+                    .json(&json!({ "sql": sql })),
+            )
+            .await;
+        }
+        let column = |name: &str, binary: bool| json!({ "name": name, "quoted": format!("\"{name}\""), "binary": binary, "declared": null });
+        let plan = json!({
+            "filename": "backup.sql",
+            "head": "-- head\n\n",
+            "tables": [{
+                "name": "src",
+                "before": "-- src\nCREATE TABLE dst (id INTEGER PRIMARY KEY, name TEXT, score REAL, data BLOB);\n",
+                "select": "SELECT * FROM \"src\" ORDER BY \"id\"",
+                "target": "\"dst\"",
+                "columns": [column("id", false), column("name", false), column("score", false), column("data", true)],
+                "single_row": false,
+                "after": "\n",
+            }],
+            "tail": "-- end\n",
+        });
+        let id = api_json(client.post(format!("{base}/api/sql/dump")).json(&plan)).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // The link the browser follows carries the token in its query.
+        let download = client
+            .get(format!("{base}/api/sql/dump/download"))
+            .query(&[("id", id.as_str()), ("token", "test-token")])
+            .send()
+            .await
+            .unwrap();
+        assert!(download.status().is_success());
+        assert_eq!(
+            download.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename*=UTF-8''backup.sql"
+        );
+        let file = download.text().await.unwrap();
+        assert!(file.starts_with("-- head\n\n-- src\nCREATE TABLE dst"));
+        assert!(file.ends_with(");\n\n-- end\n"));
+        let progress = api_json(
+            client
+                .get(format!("{base}/api/sql/dump/progress"))
+                .query(&[("id", id.as_str())]),
+        )
+        .await;
+        assert_eq!(progress["state"], json!("done"));
+        assert_eq!(progress["tables_done"], json!(1));
+        assert_eq!(progress["rows"], json!(12345));
+        assert_eq!(progress["bytes"], json!(file.len()));
+
+        // The CREATE TABLE, then 13 INSERTs of at most 1000 rows.
+        let restored = restore_text(&client, &base, "r1", file, false).await;
+        assert_eq!(
+            restored,
+            json!({ "statements": 14, "stopped": false, "rolled_back": false, "failure": null })
+        );
+        let read = "SELECT id, name, score, hex(data) FROM {} ORDER BY id";
+        assert_eq!(
+            rows_of(&client, &base, &read.replace("{}", "dst")).await,
+            rows_of(&client, &base, &read.replace("{}", "src")).await
+        );
+        server.abort();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sql_restore_stops_at_the_failed_statement_and_keeps_the_earlier_ones() {
+        let dir = temp_dir("sql-restore");
+        let (base, server) = served(&dir).await;
+        let client = reqwest::Client::new();
+        let file = "CREATE TABLE r (a INTEGER);\nINSERT INTO r VALUES (1);\n\n-- next\nINSERT INTO missing VALUES (2);\nINSERT INTO r VALUES (3);\n";
+        let outcome = restore_text(&client, &base, "r1", file.into(), false).await;
+        assert_eq!(outcome["statements"], json!(2));
+        assert_eq!(outcome["stopped"], json!(false));
+        assert_eq!(outcome["failure"]["statement"], json!(3));
+        assert_eq!(outcome["failure"]["line"], json!(5));
+        assert_eq!(
+            rows_of(&client, &base, "SELECT a FROM r").await,
+            json!([[1]])
+        );
+
+        // A Stop that reaches the server before its upload: nothing runs.
+        api_json(
+            client
+                .post(format!("{base}/api/sql/restore/stop"))
+                .query(&[("id", "r2")]),
+        )
+        .await;
+        let outcome = restore_text(
+            &client,
+            &base,
+            "r2",
+            "INSERT INTO r VALUES (4);".into(),
+            false,
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            json!({ "statements": 0, "stopped": true, "rolled_back": false, "failure": null })
+        );
+        assert_eq!(
+            rows_of(&client, &base, "SELECT a FROM r").await,
+            json!([[1]])
+        );
+        server.abort();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sql_restore_in_one_transaction_commits_once_or_rolls_back() {
+        let dir = temp_dir("sql-restore-tx");
+        let (base, server) = served(&dir).await;
+        let client = reqwest::Client::new();
+        // The session checks foreign keys; the file's leading PRAGMA turns
+        // them off, which SQLite would ignore inside the transaction.
+        api_json(
+            client
+                .post(format!("{base}/api/exec"))
+                .json(&json!({ "sql": "PRAGMA foreign_keys = ON" })),
+        )
+        .await;
+        let file = "PRAGMA foreign_keys = OFF;\n\
+                    CREATE TABLE t1 (a INTEGER PRIMARY KEY, b INTEGER REFERENCES t1(a));\n\
+                    INSERT INTO t1 VALUES (1, 2);\nINSERT INTO t1 VALUES (2, 1);\n";
+        let outcome = restore_text(&client, &base, "r1", file.into(), true).await;
+        assert_eq!(
+            outcome,
+            json!({ "statements": 4, "stopped": false, "rolled_back": false, "failure": null })
+        );
+        let rows = || rows_of(&client, &base, "SELECT a, b FROM t1 ORDER BY a");
+        assert_eq!(rows().await, json!([[1, 2], [2, 1]]));
+
+        // A failure takes back every statement before it.
+        let file = "INSERT INTO t1 VALUES (3, NULL);\nINSERT INTO missing VALUES (1);\n";
+        let outcome = restore_text(&client, &base, "r2", file.into(), true).await;
+        assert_eq!(outcome["statements"], json!(1));
+        assert_eq!(outcome["rolled_back"], json!(true));
+        assert_eq!(outcome["failure"]["stage"], json!("statement"));
+        assert_eq!(outcome["failure"]["statement"], json!(2));
+        assert_eq!(rows().await, json!([[1, 2], [2, 1]]));
+
+        // A file with its own BEGIN and COMMIT would end the transaction.
+        let file = "INSERT INTO t1 VALUES (4, NULL);\nBEGIN TRANSACTION;\nCOMMIT;\n";
+        let outcome = restore_text(&client, &base, "r3", file.into(), true).await;
+        assert_eq!(
+            outcome["failure"]["error"]["code"],
+            json!("restore_transaction_statement")
+        );
+        assert_eq!(outcome["failure"]["statement"], json!(2));
+        assert_eq!(outcome["failure"]["line"], json!(2));
+        assert_eq!(outcome["rolled_back"], json!(true));
+        assert_eq!(rows().await, json!([[1, 2], [2, 1]]));
+        server.abort();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sql_dump_stopped_before_its_download_never_starts() {
+        let dir = temp_dir("sql-dump-stop");
+        let (base, server) = served(&dir).await;
+        let client = reqwest::Client::new();
+        let plan = json!({ "filename": "b.sql", "head": "", "tables": [], "tail": "" });
+        let id = api_json(client.post(format!("{base}/api/sql/dump")).json(&plan)).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        api_json(
+            client
+                .post(format!("{base}/api/sql/dump/stop"))
+                .query(&[("id", id.as_str())]),
+        )
+        .await;
+        let download = client
+            .get(format!("{base}/api/sql/dump/download"))
+            .query(&[("id", id.as_str()), ("token", "test-token")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(download.status(), StatusCode::BAD_REQUEST);
+        let progress = api_json(
+            client
+                .get(format!("{base}/api/sql/dump/progress"))
+                .query(&[("id", id.as_str())]),
+        )
+        .await;
+        assert_eq!(progress["state"], json!("stopped"));
+        server.abort();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
