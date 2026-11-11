@@ -157,17 +157,18 @@ const FIT_OPTIONS: { value: BackgroundFit; label: string }[] = [
 ];
 
 // The docked parts' own colour over a translucent page (settings.ts).
-type SurfaceKey = "surfaceTop" | "surfaceLeft" | "surfaceRight" | "surfaceBottom" | "surfaceBars";
+type SurfaceKey = "surfaceTop" | "surfaceLeft" | "surfaceRight" | "surfaceBottom" | "surfaceBars" | "surfaceSheet";
 const SURFACE_ROWS: { key: SurfaceKey; label: string; keywords: string }[] = [
   { key: "surfaceTop", label: "상단 바", keywords: "surface top bar tab strip app bar 탭" },
   { key: "surfaceLeft", label: "왼쪽 사이드바", keywords: "surface left sidebar schema tables 테이블 목록" },
   { key: "surfaceRight", label: "오른쪽 사이드바", keywords: "surface right sidebar row detail 행 상세" },
   { key: "surfaceBottom", label: "하단 콘솔", keywords: "surface bottom console log 콘솔" },
   { key: "surfaceBars", label: "도구 막대", keywords: "surface toolbar result bar 결과 막대" },
+  { key: "surfaceSheet", label: "설정 창", keywords: "surface settings sheet 설정" },
 ];
 
 // The floating surfaces' own opacities when they turn to glass (material.ts).
-type FloatingKey = "floatingOpacity" | "sheetOpacity" | "noticeOpacity";
+type FloatingKey = "floatingOpacity" | "noticeOpacity";
 const READABLE_HINT =
   "글자가 읽히도록 뒤가 8px 이상 흐려지면 60% 아래로 내려가지 않고, 덜 흐려지면 불투명합니다.";
 const FLOATING_ROWS: { key: FloatingKey; label: string; keywords: string; hint: string }[] = [
@@ -177,7 +178,6 @@ const FLOATING_ROWS: { key: FloatingKey; label: string; keywords: string; hint: 
     keywords: "floating surface opacity quick look dialog palette menu popover 퀵룩 대화 상자 메뉴",
     hint: `Quick Look, 대화 상자, 명령 팔레트, 메뉴, 툴팁의 바탕입니다. ${READABLE_HINT}`,
   },
-  { key: "sheetOpacity", label: "설정 창", keywords: "settings sheet opacity 설정", hint: READABLE_HINT },
   { key: "noticeOpacity", label: "알림", keywords: "notice toast banner opacity 토스트 배너", hint: READABLE_HINT },
 ];
 

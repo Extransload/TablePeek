@@ -65,21 +65,21 @@ export interface AppSettings {
   materialBlur: number;
   // How opaque the floating surfaces are over the app when they turn to
   // glass (a material other than solid, or a background picture), 0–100:
-  // Quick Look, dialogs, the command palette, menus and the like; the
-  // settings sheet; notices (toasts and banners).
+  // Quick Look, dialogs, the command palette, menus and the like; notices
+  // (toasts and banners).
   floatingOpacity: number;
-  sheetOpacity: number;
   noticeOpacity: number;
   // While the page is translucent (a background picture, a see-through
   // window), how much of its own colour each docked part lays over the page's
   // background, 0–100: 0 runs on as the page does, as Tern's panes do. The
   // top bars, the left sidebar, the right one (row details), the console
-  // below and the results' toolbars.
+  // below, the results' toolbars and the settings sheet.
   surfaceTop: number;
   surfaceLeft: number;
   surfaceRight: number;
   surfaceBottom: number;
   surfaceBars: number;
+  surfaceSheet: number;
   // A picture behind the app (see background.ts): its stamp ("" for none),
   // how it fills the window, how opaque the app's surfaces are over it
   // (0–100) and how much it is blurred (points).
@@ -166,13 +166,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   materialOpacity: 80,
   materialBlur: 20,
   floatingOpacity: 90,
-  sheetOpacity: 90,
   noticeOpacity: 90,
   surfaceTop: 0,
   surfaceLeft: 0,
   surfaceRight: 0,
   surfaceBottom: 0,
   surfaceBars: 0,
+  surfaceSheet: 0,
   backgroundImage: "",
   backgroundFit: "cover",
   backgroundOpacity: 80,
@@ -244,13 +244,13 @@ function readSettings(): AppSettings {
       materialOpacity: Math.round(clampSize(parsed.materialOpacity, 0, 100, DEFAULT_SETTINGS.materialOpacity)),
       materialBlur: Math.round(clampSize(parsed.materialBlur, 0, MATERIAL_BLUR_MAX, DEFAULT_SETTINGS.materialBlur)),
       floatingOpacity: Math.round(clampSize(parsed.floatingOpacity, 0, 100, DEFAULT_SETTINGS.floatingOpacity)),
-      sheetOpacity: Math.round(clampSize(parsed.sheetOpacity, 0, 100, DEFAULT_SETTINGS.sheetOpacity)),
       noticeOpacity: Math.round(clampSize(parsed.noticeOpacity, 0, 100, DEFAULT_SETTINGS.noticeOpacity)),
       surfaceTop: Math.round(clampSize(parsed.surfaceTop, 0, 100, DEFAULT_SETTINGS.surfaceTop)),
       surfaceLeft: Math.round(clampSize(parsed.surfaceLeft, 0, 100, DEFAULT_SETTINGS.surfaceLeft)),
       surfaceRight: Math.round(clampSize(parsed.surfaceRight, 0, 100, DEFAULT_SETTINGS.surfaceRight)),
       surfaceBottom: Math.round(clampSize(parsed.surfaceBottom, 0, 100, DEFAULT_SETTINGS.surfaceBottom)),
       surfaceBars: Math.round(clampSize(parsed.surfaceBars, 0, 100, DEFAULT_SETTINGS.surfaceBars)),
+      surfaceSheet: Math.round(clampSize(parsed.surfaceSheet, 0, 100, DEFAULT_SETTINGS.surfaceSheet)),
       backgroundImage: typeof parsed.backgroundImage === "string" ? parsed.backgroundImage : "",
       backgroundFit: BACKGROUND_FITS.includes(parsed.backgroundFit as BackgroundFit)
         ? (parsed.backgroundFit as BackgroundFit)
@@ -504,8 +504,15 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--bg-solid", opaque.bg);
   root.style.setProperty("--panel-solid", opaque.panel);
   root.style.setProperty("--head-solid", opaque.head);
-  root.style.setProperty("--line", palette.line);
-  root.style.setProperty("--line-soft", mixHex(opaque.line, opaque.bg, 0.4));
+  // Over a translucent page the lines between parts are hairlines of the
+  // ink, as Tern's are, so they read over whatever shows through; the
+  // theme's own line colour would sink into a picture's dark parts.
+  const translucentPage = pictured || seeThrough(settings);
+  root.style.setProperty("--line", translucentPage ? hexToRgba(opaque.ink, 0.16) : palette.line);
+  root.style.setProperty(
+    "--line-soft",
+    translucentPage ? hexToRgba(opaque.ink, 0.1) : mixHex(opaque.line, opaque.bg, 0.4),
+  );
   root.style.setProperty("--ink", palette.ink);
   root.style.setProperty("--muted", palette.muted);
   root.style.setProperty("--faint", palette.faint);
@@ -552,13 +559,14 @@ export function applySettings(settings: AppSettings): void {
   }
   // The docked parts' own colours over a translucent page (styles.css,
   // "Translucent page").
-  root.classList.toggle("translucent-page", pictured || seeThrough(settings));
+  root.classList.toggle("translucent-page", translucentPage);
   for (const [part, value] of [
     ["top", settings.surfaceTop],
     ["left", settings.surfaceLeft],
     ["right", settings.surfaceRight],
     ["bottom", settings.surfaceBottom],
     ["bars", settings.surfaceBars],
+    ["sheet", settings.surfaceSheet],
   ] as const) {
     root.style.setProperty(`--surface-${part}`, `${value}%`);
   }

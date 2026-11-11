@@ -4,6 +4,12 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- Over a background picture or in a see-through window, the sidebars, the editor, the table, the console and the settings sheet are set apart again: the lines between them are hairlines of the text colour, as Tern's are, where the theme's line colour sank into the picture.
+- The sidebar, the row detail column and the console no longer slide in and out on their own while the editor and the table beside them jump to their new size: what is beside them now gives way and takes the room back as they move.
+- Over a background picture or in a see-through window, the settings sheet no longer stands apart as a blurred pane of its own: docked beside the app, it runs on from it over the same picture, as Tern's settings do, with nearly solid cards so its words read. **Opacity by area › Settings sheet** (0% by default) lays its own colour over it, in place of its floating opacity.
+
 ## [0.7.1] - 2026-11-11
 
 A photograph as the built-in background picture.

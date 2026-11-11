@@ -5491,10 +5491,6 @@ html.floating-glass :is(
   backdrop-filter: var(--glass-filter);
 }
 
-html.floating-glass .settings-sheet {
-  --floating-fill: var(--glass-fill-sheet);
-}
-
 html.floating-glass :is(.error-toasts > .error-notice, .error-notice.banner, .flash-toast, .oidc-banner) {
   --floating-fill: var(--glass-fill-notice);
 }
@@ -5567,6 +5563,26 @@ html.translucent-page .console-panel {
 
 html.translucent-page :is(.data-toolbar, .result-sets) {
   background: color-mix(in srgb, var(--panel-solid) var(--surface-bars), transparent);
+}
+
+/* The settings sheet is docked beside the app, over nothing but the page:
+   over a translucent page it is one more area, not glass, so the picture runs
+   on under it unblurred as it does under the app, and what it holds paints
+   the page's own colours. (:root outranks the floating surfaces' glass rule,
+   whose list holds a two-class selector.) */
+html.translucent-page:root .settings-sheet {
+  --bg: inherit;
+  --panel: inherit;
+  --head: inherit;
+  background: color-mix(in srgb, var(--panel-solid) var(--surface-sheet), transparent);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Its cards stay nearly solid there, as Tern's do, so their words read over
+   any part of the picture. */
+html.translucent-page:root .settings-sheet .settings-group {
+  background: color-mix(in srgb, var(--panel-solid) 88%, transparent);
 }
 
 .sr-only {

@@ -42,10 +42,9 @@ export interface MaterialPicks {
   materialBlur: number;
   // How opaque the floating surfaces are, 0–100: their own picks, apart
   // from the window's, so they stay readable over a see-through window or a
-  // picture. The settings sheet and the notices have theirs; the others
-  // share one.
+  // picture. The notices have theirs; the others share one. (The settings
+  // sheet is docked, not floating: settings.ts, surfaceSheet.)
   floatingOpacity: number;
-  sheetOpacity: number;
   noticeOpacity: number;
 }
 
@@ -140,7 +139,6 @@ export function applyMaterial(picks: MaterialPicks, colors: MaterialColors, foll
     const picked = picks.floatingOpacity / 100;
     const fill = Math.max(picked, least);
     root.style.setProperty("--glass-fill", rgba(colors.panel, fill));
-    root.style.setProperty("--glass-fill-sheet", rgba(colors.panel, Math.max(picks.sheetOpacity / 100, least)));
     root.style.setProperty("--glass-fill-notice", rgba(colors.panel, Math.max(picks.noticeOpacity / 100, least)));
     root.style.setProperty("--glass-well", rgba(colors.bg, fill * 0.55));
     root.style.setProperty("--glass-raise", rgba(colors.head, fill * 0.45));

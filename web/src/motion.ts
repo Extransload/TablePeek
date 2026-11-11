@@ -149,18 +149,26 @@ export function unhook(copy: HTMLElement): void {
 // A stand-in for an element about to leave the page: a copy laid exactly over
 // it, beside it in the same parent (so its styles still apply), that plays
 // `keyframes` and goes. Measure now, while the element is still there; call
-// the result once it's gone.
+// the result once it's gone. `inFlow`: the copy takes the element's place in
+// the layout instead, at its size, so what is beside it moves as it plays (a
+// docked panel sliding out).
 export function ghost(
   element: HTMLElement,
   keyframes: Keyframe[],
   options: KeyframeAnimationOptions,
+  { inFlow = false }: { inFlow?: boolean } = {},
 ): () => void {
   if (reducedMotion()) {
     return () => {};
   }
   const rect = element.getBoundingClientRect();
   const parent = element.parentElement;
-  const next = element.nextSibling;
+  // What followed it, so the copy goes back in before the first of them still
+  // there (a splitter beside a panel may leave with it).
+  const followers: Node[] = [];
+  for (let node = element.nextSibling; node !== null; node = node.nextSibling) {
+    followers.push(node);
+  }
   const copy = element.cloneNode(true) as HTMLElement;
   // A copy starts scrolled to the top; it should show what was on screen.
   const originals = [element, ...element.querySelectorAll<HTMLElement>("*")];
@@ -173,20 +181,23 @@ export function ghost(
   return () => {
     const host = parent?.isConnected ? parent : document.body;
     Object.assign(copy.style, {
-      position: "absolute",
-      left: "0px",
-      top: "0px",
       width: `${rect.width}px`,
       height: `${rect.height}px`,
-      margin: "0",
       boxSizing: "border-box",
       pointerEvents: "none",
     });
-    host.insertBefore(copy, next !== null && next.parentNode === host ? next : null);
-    // Wherever the containing block is, correct by what it put the copy at.
-    const placed = copy.getBoundingClientRect();
-    copy.style.left = `${rect.left - placed.left}px`;
-    copy.style.top = `${rect.top - placed.top}px`;
+    if (inFlow) {
+      Object.assign(copy.style, { flex: "none", minWidth: "0px", minHeight: "0px" });
+    } else {
+      Object.assign(copy.style, { position: "absolute", left: "0px", top: "0px", margin: "0" });
+    }
+    host.insertBefore(copy, followers.find((node) => node.parentNode === host) ?? null);
+    if (!inFlow) {
+      // Wherever the containing block is, correct by what it put the copy at.
+      const placed = copy.getBoundingClientRect();
+      copy.style.left = `${rect.left - placed.left}px`;
+      copy.style.top = `${rect.top - placed.top}px`;
+    }
     for (const [node, top, left] of scrolled) {
       node.scrollTop = top;
       node.scrollLeft = left;
