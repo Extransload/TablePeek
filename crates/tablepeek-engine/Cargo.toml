@@ -44,7 +44,7 @@ hickory-resolver = "0.26"
 # Also Elasticsearch's and OpenSearch's REST API, with a TLS config of our
 # own (fingerprint pinning) handed to it.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
-sha2 = "0.10"
+sha2 = "0.11"
 base64 = "0.22"
 # The reply bodies reqwest hands over, kept as they came (the version it uses).
 bytes = "1"
