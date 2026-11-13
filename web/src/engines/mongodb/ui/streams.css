@@ -273,9 +273,6 @@ button.mg-watch-chip.on {
   display: flex;
   gap: 8px;
 }
-.mg-watch-raw-bar svg {
-  transition: transform var(--motion-fast) var(--ease-out);
-}
 .mg-watch-raw-bar .mg-watch-open {
   transform: rotate(90deg);
 }

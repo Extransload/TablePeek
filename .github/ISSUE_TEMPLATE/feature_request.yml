@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest something TablePeek could do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The task or problem, in your own words. Name the database engine if it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: How you would like TablePeek to handle it. Other tools that do it well are useful references.
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do today
+      description: Any workaround you use now.

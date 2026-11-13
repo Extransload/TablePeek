@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { writeClipboard } from "../../../clipboard";
+import { Collapse } from "../../../components/Collapse";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
 import { ChevronIcon, CopyIcon, PlusIcon, RefreshIcon, SearchIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
@@ -297,26 +298,30 @@ function FieldRows({ nodes, depth, collapsed, filtering, onToggle }: { nodes: Fi
                 </span>
               ))}
             </div>
-            {openable && open ? (
-              <div role="group">
-                {node.multi.map((sub) => (
-                  <div key={sub.path} className="es-frow multi" role="treeitem" aria-level={depth + 2} style={{ paddingLeft: 8 + (depth + 1) * 18 }} title={sub.path}>
-                    <span className="es-fchev-space" />
-                    <span className="es-fname mono">
-                      <span className="panel-dim">{node.name}.</span>
-                      {sub.name}
-                    </span>
-                    <TypeBadge type={sub.type} />
-                    <span className="es-chip dim">{t("다중 필드")}</span>
-                    {paramChips(sub.def).map((chip) => (
-                      <span key={chip.text} className={`es-chip mono${chip.warn ? " warn" : ""}`}>
-                        {chip.text}
-                      </span>
+            {openable ? (
+              <Collapse open={open} role="group" stagger>
+                {() => (
+                  <>
+                    {node.multi.map((sub) => (
+                      <div key={sub.path} className="es-frow multi" role="treeitem" aria-level={depth + 2} style={{ paddingLeft: 8 + (depth + 1) * 18 }} title={sub.path}>
+                        <span className="es-fchev-space" />
+                        <span className="es-fname mono">
+                          <span className="panel-dim">{node.name}.</span>
+                          {sub.name}
+                        </span>
+                        <TypeBadge type={sub.type} />
+                        <span className="es-chip dim">{t("다중 필드")}</span>
+                        {paramChips(sub.def).map((chip) => (
+                          <span key={chip.text} className={`es-chip mono${chip.warn ? " warn" : ""}`}>
+                            {chip.text}
+                          </span>
+                        ))}
+                      </div>
                     ))}
-                  </div>
-                ))}
-                <FieldRows nodes={node.children} depth={depth + 1} collapsed={collapsed} filtering={filtering} onToggle={onToggle} />
-              </div>
+                    <FieldRows nodes={node.children} depth={depth + 1} collapsed={collapsed} filtering={filtering} onToggle={onToggle} />
+                  </>
+                )}
+              </Collapse>
             ) : null}
           </div>
         );
@@ -435,7 +440,7 @@ export function MappingPanel({ host, index, kind, refreshSeq, onChanged }: Index
 
   return (
     <div className="mg-pane es-pane">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <IndexPicker names={names} value={current} onChange={setPicked} />
         <span className="mg-agg-count">{reply === null ? t("매핑") : t("필드 {count}개", { count: total.toLocaleString() })}</span>
         {reply !== null && current !== null ? (

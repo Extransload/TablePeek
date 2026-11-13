@@ -1,0 +1,1767 @@
+/* The key-value workbench (Redis, Valkey), RedisInsight-style: overview
+   strip, Browser (key list | key details), CLI, Slow log, Server. Every
+   pane is one of the app's areas (.surface-top, -left, -bars, -main,
+   -bottom: styles.css "Translucent page"), so Settings › Appearance ›
+   Opacity decides how much colour each lays over a background picture or
+   a see-through window; the theme colours below are only what a pane shows
+   without one (the area rules win there). Nothing inside a pane lays a
+   pane-sized background of its own: only marks (badges, chips, selection,
+   hover, focus) and sticky headers, which take their area's colour. Type
+   badges follow RedisInsight's colours. */
+
+:root {
+  --kv-string: #6a1dc3;
+  --kv-hash: #364cff;
+  --kv-list: #008556;
+  --kv-set: #9c5c2b;
+  --kv-zset: #a00a6b;
+  --kv-stream: #6a741b;
+  --kv-json: #3f4b5f;
+  --kv-other: #6b7280;
+  --kv-row: 26px;
+}
+
+/* ---- the workbench ---- */
+
+.kv-wb {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.kv-top {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  height: 40px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--head);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+.kv-top .kv-db {
+  flex: none;
+  width: 168px;
+  height: 26px;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+/* The picker keeps focus after a database is picked; a quiet accent border
+   in place of the form fields' halo, which read as a second frame here. */
+.kv-top .kv-db:focus-visible {
+  border-color: var(--accent-line);
+  box-shadow: none;
+}
+.kv-stat-error {
+  color: var(--warn);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+.kv-stats {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.kv-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.kv-stat-k {
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+.kv-stat-v {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.kv-sections {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+}
+.kv-sections button {
+  height: 24px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: calc(var(--r-md) - 2px);
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+.kv-sections button:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+.kv-sections button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.kv-top-gauge {
+  position: relative;
+  width: 18px;
+  height: 18px;
+}
+
+.kv-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- Browser: key list | key details ---- */
+
+.kv-browser {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.kv-keys-pane {
+  display: flex;
+  flex: none;
+  width: var(--kv-keys-w, 440px);
+  max-width: 70%;
+  min-width: 240px;
+  min-height: 0;
+  background: color-mix(in srgb, var(--panel) 84%, var(--bg));
+}
+.kv-split {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  z-index: 2;
+  border-left: 1px solid var(--line-soft);
+  background: transparent;
+  cursor: col-resize;
+  background-clip: content-box;
+}
+.kv-split:hover,
+.kv-split:focus-visible {
+  outline: none;
+  border-left-color: var(--accent-line);
+}
+.kv-details-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* ---- key list ---- */
+
+.kv-keys {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+/* Two rows, so a narrow list never pushes its buttons past its edge: the
+   search with the type filter, then the view and the actions. */
+.kv-keys-head,
+.kv-keys-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.kv-keys-head {
+  padding: 8px 8px 4px;
+}
+.kv-keys-bar {
+  padding: 0 8px 6px;
+}
+.kv-search {
+  display: flex;
+  flex: 1;
+  min-width: 80px;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--faint);
+}
+.kv-search:focus-within {
+  border-color: var(--accent);
+}
+.kv-search input,
+.kv-search input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]) {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+.kv-search input:focus,
+.kv-search input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.kv-search-small {
+  flex: none;
+  width: 200px;
+}
+button.kv-tool {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  position: relative;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+button.kv-tool:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--ink);
+}
+button.kv-tool.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+button.kv-tool.kv-add {
+  color: var(--ink);
+}
+.kv-tool-count {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: calc(9.5px * var(--ui-scale, 1));
+  line-height: 14px;
+  text-align: center;
+}
+.kv-seg {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.kv-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+.kv-seg button + button {
+  border-left: 1px solid var(--line);
+}
+.kv-seg button:hover {
+  color: var(--ink);
+}
+.kv-seg button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.kv-sep-mark {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--hover-fill);
+  font-family: var(--mono);
+  font-weight: 400;
+}
+
+.kv-keys-cols {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  padding: 0 10px 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+}
+.kv-col-type {
+  flex: none;
+  width: 52px;
+}
+.kv-col-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.kv-keys-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.kv-keys-scroll:focus,
+.kv-keys-scroll:focus-visible {
+  outline: none;
+}
+.kv-keys-canvas {
+  position: relative;
+}
+.kv-keys-note {
+  padding: 16px 12px;
+  text-align: center;
+}
+.kv-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--kv-row);
+  padding-right: 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+.kv-row:hover {
+  background: var(--hover-fill);
+}
+.kv-row.selected {
+  background: var(--accent-soft);
+}
+.kv-keys-scroll:focus-visible .kv-row.cursor {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.kv-chevron {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--faint);
+}
+.kv-chevron.open svg {
+  transform: rotate(90deg);
+}
+.kv-folder-icon {
+  flex: none;
+  color: var(--faint);
+}
+.kv-folder .kv-name {
+  color: var(--ink);
+}
+.kv-name {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.kv-name-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kv-name-tail {
+  flex: none;
+}
+.kv-count {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+}
+.kv-ttl,
+.kv-size {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.kv-ttl {
+  width: 64px;
+}
+.kv-size {
+  width: 58px;
+}
+.kv-ttl.live {
+  color: var(--warn);
+}
+.kv-keys-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+.kv-foot-text {
+  white-space: nowrap;
+}
+.kv-foot-error {
+  color: var(--error);
+}
+
+/* ---- type badge ---- */
+
+.kv-type {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 52px;
+  height: 16px;
+  padding: 0 3px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--kv-ink, var(--kv-other));
+  color: #fff;
+  font-family: var(--mono);
+  font-size: calc(9px * var(--ui-scale, 1));
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.kv-type-string { --kv-ink: var(--kv-string); }
+.kv-type-hash { --kv-ink: var(--kv-hash); }
+.kv-type-list { --kv-ink: var(--kv-list); }
+.kv-type-set { --kv-ink: var(--kv-set); }
+.kv-type-zset { --kv-ink: var(--kv-zset); }
+.kv-type-stream { --kv-ink: var(--kv-stream); }
+.kv-type-json { --kv-ink: var(--kv-json); }
+.kv-type-other { --kv-ink: var(--kv-other); }
+
+/* ---- buttons ---- */
+
+button.kv-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  font-size: inherit;
+}
+button.kv-link:hover {
+  text-decoration: underline;
+}
+button.kv-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+button.kv-btn.small {
+  height: 22px;
+  padding: 0 8px;
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+button.kv-btn.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+button.kv-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+button.kv-icon.small {
+  width: 18px;
+  height: 18px;
+}
+button.kv-icon:hover:not(:disabled) {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+button.kv-icon.danger:hover:not(:disabled) {
+  color: var(--error);
+}
+button.kv-icon.ok {
+  color: var(--ok, var(--accent));
+}
+
+/* ---- key details ---- */
+
+.kv-details {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+/* One line: type, name, facts, actions. */
+.kv-details-head {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  container: kvhead / inline-size;
+}
+.kv-details-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 28px;
+}
+.kv-details-title > button.kv-key-title {
+  display: block;
+  flex: 0 1 auto;
+  line-height: 24px;
+}
+button.kv-key-title {
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink);
+  font-size: calc(13px * var(--ui-scale, 1));
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+button.kv-key-title:hover:not(:disabled) {
+  border-color: var(--line);
+}
+button.kv-key-title:disabled {
+  opacity: 1;
+  cursor: default;
+}
+input.kv-name-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  font-size: calc(14px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+/* The key's facts on the name's line, as chips; on a narrow pane the
+   encoding and size go first, then the length. */
+.kv-details-facts {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+.kv-details-facts > .kv-fact {
+  flex: none;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--hover-fill);
+}
+.kv-details-facts > .kv-fact:has(> button.kv-fact-btn) {
+  padding: 0 2px 0 1px;
+}
+@container kvhead (max-width: 620px) {
+  .kv-details-facts > .kv-fact-encoding,
+  .kv-details-facts > .kv-fact-size {
+    display: none;
+  }
+}
+@container kvhead (max-width: 480px) {
+  .kv-details-facts > .kv-fact-length {
+    display: none;
+  }
+}
+.kv-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.kv-fact-k {
+  color: var(--faint);
+}
+.kv-fact-v {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.kv-fact-v.live {
+  color: var(--warn);
+}
+button.kv-fact-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  font-size: inherit;
+}
+button.kv-fact-btn:hover:not(:disabled) {
+  border-color: var(--line);
+}
+button.kv-fact-btn:disabled {
+  opacity: 1;
+}
+input.kv-ttl-input {
+  width: 190px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+.kv-ro {
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--line));
+  border-radius: 3px;
+  color: var(--warn);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+}
+.kv-details-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.kv-pad {
+  padding: 14px;
+}
+
+/* ---- a value ---- */
+
+.kv-value {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.kv-value-bar,
+.kv-page-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 12px 6px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+.kv-bar-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  white-space: nowrap;
+}
+.kv-warn {
+  color: var(--warn);
+}
+/* The formatter and the list's push side: as tall as the buttons beside
+   them, the text centred in the box and clear of the chevron. */
+.kv-value-bar select.kv-format {
+  flex: none;
+  box-sizing: border-box;
+  height: 26px;
+  margin: 0;
+  padding: 0 26px 0 9px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  line-height: 24px;
+}
+.kv-value-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+.kv-value-error {
+  padding: 8px 12px 0;
+}
+.kv-loading {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+/* ---- rows (hash, list, set, zset, stream; INFO, slow log, clients) ---- */
+
+.kv-rows {
+  position: relative;
+  min-width: 0;
+}
+.kv-rows:focus,
+.kv-rows:focus-visible {
+  outline: none;
+}
+.kv-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+.kv-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 28px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--area-fill, var(--bg));
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+html.translucent-page .kv-grid th {
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.kv-grid th:first-child,
+.kv-grid td:first-child {
+  padding-left: 14px;
+}
+.kv-grid td {
+  max-width: 0;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.kv-grid tbody tr:hover {
+  background: var(--hover-fill);
+}
+.kv-grid tbody tr.selected,
+.kv-grid tbody tr.editing {
+  background: var(--accent-soft);
+}
+.kv-rows:focus-visible .kv-grid tbody tr.selected {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.kv-grid .num {
+  text-align: right;
+}
+.kv-grid .kv-col-key {
+  width: 34%;
+}
+.kv-grid .kv-col-num {
+  width: 64px;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+.kv-grid .kv-col-score {
+  width: 160px;
+}
+.kv-grid .kv-col-id {
+  width: 190px;
+}
+.kv-grid-actions {
+  width: 84px;
+  white-space: nowrap;
+  text-align: right;
+}
+.kv-grid td.kv-grid-actions {
+  max-width: none;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  vertical-align: middle;
+}
+.kv-row-tools {
+  display: inline-flex;
+  opacity: 0;
+}
+.kv-grid tr:hover .kv-row-tools,
+.kv-grid tr.selected .kv-row-tools,
+.kv-row-tools:focus-within {
+  opacity: 1;
+}
+.kv-cell {
+  display: -webkit-box;
+  overflow: hidden;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.kv-cell.empty {
+  color: var(--faint);
+  font-style: italic;
+}
+.kv-bin-mark {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 3px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--type-binary);
+  font-family: var(--mono);
+  font-size: calc(9px * var(--ui-scale, 1));
+  line-height: 13px;
+  vertical-align: 1px;
+}
+.kv-box-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+.kv-box {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  min-height: 24px;
+  padding: 3px 6px;
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.45;
+  resize: vertical;
+}
+.kv-box.invalid {
+  border-color: var(--error);
+}
+.kv-new-row td {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.kv-new-bar td {
+  padding: 6px 10px 8px 14px;
+}
+.kv-new-bar td > * {
+  vertical-align: middle;
+}
+.kv-new-bar td {
+  white-space: nowrap;
+}
+.kv-new-bar button + button {
+  margin-left: 6px;
+}
+.kv-new-bar .spacer {
+  display: inline-block;
+  width: 12px;
+}
+.kv-rows-error {
+  padding: 8px 14px;
+}
+.kv-empty {
+  padding: 28px 0;
+  text-align: center;
+}
+
+/* ---- empty states ---- */
+
+.kv-empty-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+.kv-empty-title {
+  color: var(--ink);
+  font-size: calc(14px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+.kv-empty-state p {
+  max-width: 420px;
+  margin: 0;
+}
+
+/* ---- delete popover ---- */
+
+.kv-popover {
+  position: fixed;
+  z-index: 60;
+  width: 260px;
+  padding: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+.kv-popover-text {
+  margin-bottom: 10px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.kv-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* ---- dialogs ---- */
+
+.kv-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+.kv-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.kv-input-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.kv-mini-seg {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.kv-mini-seg button {
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+}
+.kv-mini-seg button + button {
+  border-left: 1px solid var(--line);
+}
+.kv-mini-seg button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.kv-textarea {
+  width: 100%;
+  min-height: 110px;
+  padding: 7px 9px;
+  resize: vertical;
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.5;
+}
+.kv-form .invalid {
+  border-color: var(--error);
+}
+.kv-field-error {
+  color: var(--error);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+.kv-kind-seg {
+  flex-wrap: wrap;
+}
+.kv-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.kv-pair {
+  display: grid;
+  grid-template-columns: 1fr 1.6fr 28px;
+  align-items: end;
+  gap: 8px;
+}
+.kv-pair-remove {
+  height: 28px;
+}
+button.kv-add-pair {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+/* ---- CLI ---- */
+
+.kv-cli {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.kv-cli-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 16px;
+  background: var(--bg);
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+.kv-cli-hint {
+  padding: 4px 0 10px;
+}
+.kv-entry {
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.kv-entry + .kv-entry {
+  padding-top: 8px;
+}
+.kv-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+.kv-prompt {
+  flex: none;
+  color: var(--faint);
+}
+.kv-entry-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-weight: 600;
+}
+.kv-class {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: calc(10px * var(--ui-scale, 1));
+  line-height: 16px;
+}
+.kv-class-write {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+.kv-class-danger {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+}
+.kv-entry-time {
+  flex: none;
+  font-family: var(--mono);
+}
+button.kv-entry-copy {
+  opacity: 0;
+}
+.kv-entry:hover .kv-entry-copy,
+.kv-entry-copy:focus-visible {
+  opacity: 1;
+}
+.kv-entry-pending {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--muted);
+}
+.kv-entry-error {
+  padding-top: 4px;
+}
+.kv-reply {
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.kv-r-index,
+.kv-r-punct {
+  color: var(--faint);
+}
+.kv-r-type {
+  color: var(--syntax-type, var(--muted));
+}
+.kv-r-nil {
+  color: var(--syntax-null, var(--faint));
+  font-style: italic;
+}
+.kv-r-int,
+.kv-r-number {
+  color: var(--syntax-number);
+}
+.kv-r-string {
+  color: var(--syntax-string);
+}
+.kv-r-status {
+  color: var(--ok, var(--ink));
+}
+.kv-r-bool {
+  color: var(--syntax-bool, var(--syntax-keyword));
+}
+.kv-r-text {
+  color: var(--ink);
+}
+.kv-r-error {
+  color: var(--error);
+}
+.kv-cli-input {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.kv-cli-input .kv-prompt {
+  line-height: 26px;
+}
+.kv-cli-input textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  padding: 4px 8px;
+  resize: none;
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.45;
+}
+
+/* The flow (Settings › Appearance › CLI input): one scrolling page from
+   the top, as a terminal's, the prompt and its field right after the last
+   reply, no frame of its own; Stop and Clear float in its top-right corner. */
+.kv-cli.flow .kv-entry {
+  border-bottom: 0;
+  padding: 2px 0 6px;
+}
+.kv-cli.flow .kv-entry + .kv-entry {
+  padding-top: 2px;
+}
+/* In the log's right margin, taking no room from the lines (a float would
+   push the first entry's time aside). */
+.kv-cli.flow .kv-cli-log {
+  padding-right: 44px;
+}
+.kv-cli-float {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  height: 0;
+  margin-right: -36px;
+}
+.kv-cli-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 0 24px;
+}
+.kv-cli-line .kv-prompt {
+  line-height: 1.5;
+}
+.kv-cli-line textarea,
+.kv-cli-line textarea:hover,
+.kv-cli-line textarea:focus,
+.kv-cli-line textarea:focus-visible {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  resize: none;
+  color: var(--ink);
+  font-size: calc(12px * var(--ui-scale, 1));
+  font-weight: 600;
+  line-height: 1.5;
+  caret-color: var(--accent);
+}
+
+/* ---- Slow log, Server ---- */
+
+.kv-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.kv-page-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
+}
+.kv-info-cols {
+  columns: 2 460px;
+  column-gap: 24px;
+  padding: 12px 16px 24px;
+}
+.kv-info-section {
+  break-inside: avoid;
+  margin-bottom: 16px;
+}
+.kv-info-cols .kv-grid th:first-child,
+.kv-info-cols .kv-grid td:first-child {
+  padding-left: 8px;
+}
+.kv-section-title {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.kv-info-table td {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+.kv-info-name {
+  width: 45%;
+  color: var(--muted);
+}
+.kv-slow-cmd {
+  width: 50%;
+}
+
+/* ---- the value panel (ValuePanel.tsx): a string, a RedisJSON document,
+   or a row's value in the viewer ---- */
+
+.kv-value-bar > button.kv-btn,
+.kv-value-bar > .kv-seg,
+.kv-value-bar > .kv-search {
+  align-self: center;
+}
+.kv-info {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.kv-info-format {
+  color: var(--ink);
+  font-weight: 600;
+}
+.kv-info-inner {
+  padding-left: 6px;
+}
+.kv-value-body > .kv-code {
+  flex: 1;
+  min-height: 0;
+}
+.kv-code {
+  display: flex;
+  min-width: 0;
+}
+.kv-code .cm-editor {
+  flex: 1;
+  min-width: 0;
+}
+.kv-code.editing .cm-editor.cm-focused {
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.cm-kv-tag {
+  color: var(--syntax-keyword, var(--accent));
+}
+.cm-kv-attr {
+  color: var(--syntax-variable, var(--ink));
+}
+.cm-kv-comment {
+  color: var(--syntax-comment, var(--faint));
+  font-style: italic;
+}
+.cm-kv-entity {
+  color: var(--syntax-number, var(--ink));
+}
+.cm-kv-error {
+  text-decoration: underline wavy var(--error);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+}
+
+/* Quick Look's explorer laid in the pane instead of over the window: no
+   fill, frame or shadow of its own (the pane's area shows through), and a
+   floating surface's opaque colours taken back off it. */
+.kv-vp .json-view.embedded,
+html.floating-glass .kv-vp .json-view.embedded {
+  --bg: inherit;
+  --panel: inherit;
+  --head: inherit;
+  position: relative;
+  inset: auto;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.kv-vp .json-view.embedded .json-view-lines {
+  background: transparent;
+}
+.kv-vp .json-view.embedded .json-view-head {
+  padding-left: 14px;
+}
+
+/* Hex: offset | 16 bytes | ASCII. */
+.kv-hex {
+  padding: 10px 14px;
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1.6;
+  white-space: pre;
+}
+.kv-hex-row {
+  display: flex;
+  gap: 18px;
+}
+.kv-hex-off {
+  color: var(--faint);
+  user-select: none;
+}
+.kv-hex-bytes {
+  display: inline-grid;
+  grid-template-columns: repeat(8, 2ch) 1ch repeat(8, 2ch);
+  column-gap: 0.6ch;
+  color: var(--ink);
+}
+.kv-hex-byte:nth-child(9) {
+  grid-column: 10;
+}
+.kv-hex-byte.zero {
+  color: var(--faint);
+}
+.kv-hex-byte.ctl {
+  color: var(--type-binary, var(--syntax-number));
+}
+.kv-hex-ascii {
+  color: var(--type-string, var(--muted));
+}
+.kv-hex-dot {
+  color: var(--faint);
+}
+.kv-hex-more {
+  margin-top: 6px;
+}
+
+/* A row's value coloured by kind (the jv-* inks), cut when long. */
+.kv-cell-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.kv-cell-wrap > .kv-cell {
+  flex: 1;
+  min-width: 0;
+}
+.kv-cell-wrap.expanded > .kv-cell {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+.kv-cell.jv-string {
+  color: var(--ink);
+}
+.kv-cell-tools {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+button.kv-cell-more {
+  height: 18px;
+  padding: 0 2px;
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+button.kv-cell-open {
+  opacity: 0;
+}
+.kv-grid tr:hover button.kv-cell-open,
+.kv-grid tr.selected button.kv-cell-open,
+button.kv-cell-open:focus-visible {
+  opacity: 1;
+}
+
+/* The viewer over the table: Quick Look's large box, the value panel in it. */
+.cell-pop.kv-peek {
+  --kv-peek-side: max(24px, calc((100vw - var(--settings-dock, 0px) - 1100px) / 2));
+  top: 6vh;
+  bottom: 6vh;
+  left: var(--kv-peek-side);
+  right: calc(var(--settings-dock, 0px) + var(--kv-peek-side));
+  overflow: hidden;
+}
+.kv-peek-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.kv-peek-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(12px * var(--ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kv-peek-title strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.kv-peek-sep {
+  padding: 0 6px;
+  color: var(--faint);
+}
+.kv-peek-col {
+  margin-left: 8px;
+  color: var(--faint);
+  font-family: var(--ui);
+}
+.kv-peek .kv-value-bar {
+  background: transparent;
+}
+
+
+/* Markdown drawn from a value (ui/Markdown.tsx). */
+.kv-md {
+  max-width: 860px;
+  padding: 12px 18px 24px;
+  color: var(--ink);
+  font-size: calc(13px * var(--ui-scale, 1));
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.kv-md h1,
+.kv-md h2,
+.kv-md h3,
+.kv-md h4,
+.kv-md h5,
+.kv-md h6 {
+  margin: 1em 0 0.4em;
+  line-height: 1.3;
+}
+.kv-md h1 {
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 1.6em;
+}
+.kv-md h2 {
+  font-size: 1.3em;
+}
+.kv-md h3 {
+  font-size: 1.12em;
+}
+.kv-md p,
+.kv-md ul,
+.kv-md ol,
+.kv-md blockquote,
+.kv-md pre,
+.kv-md table {
+  margin: 0 0 0.8em;
+}
+.kv-md ul,
+.kv-md ol {
+  padding-left: 1.5em;
+}
+.kv-md li input[type="checkbox"] {
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+.kv-md code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--hover-fill);
+  color: var(--syntax-string, var(--ink));
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+.kv-md pre.kv-md-code {
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  white-space: pre;
+}
+.kv-md blockquote {
+  padding: 0 0 0 12px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+.kv-md hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+}
+.kv-md-link {
+  color: var(--accent);
+}
+.kv-md-table {
+  border-collapse: collapse;
+}
+.kv-md-table th,
+.kv-md-table td {
+  padding: 4px 10px;
+  border: 1px solid var(--line-soft);
+  text-align: left;
+}
+
+/* A timestamp read as a date. */
+.kv-when {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 18px;
+  margin: 0;
+  padding: 14px 18px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
+}
+.kv-when dt {
+  color: var(--muted);
+}
+.kv-when dd {
+  margin: 0;
+  color: var(--ink);
+}
+.kv-md .kv-md {
+  padding: 0;
+}
+.kv-md li:has(> input[type="checkbox"]) {
+  margin-left: -1.2em;
+  list-style: none;
+}
+
+/* ---- one toolbar above a value (ValuePanel.tsx, the row views) ---- */
+
+.kv-value-bar {
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 8px 4px 12px;
+  overflow: hidden;
+}
+.kv-value-bar > * {
+  flex-shrink: 0;
+}
+.kv-value-bar > .kv-bar-note {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kv-vbar {
+  container: kvbar / inline-size;
+}
+.kv-info {
+  gap: 6px;
+  color: var(--faint);
+}
+.kv-info > span + span::before {
+  content: "·";
+  padding-right: 6px;
+  color: var(--faint);
+}
+.kv-info-lock {
+  color: var(--muted);
+}
+.kv-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+button.kv-icon.kv-bar-icon {
+  width: 26px;
+  height: 26px;
+}
+button.kv-icon.kv-bar-icon.on {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+button.kv-edit-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+button.kv-icon.kv-more {
+  display: none;
+}
+@container kvbar (max-width: 700px) {
+  .kv-vbar .kv-fold {
+    display: none;
+  }
+  .kv-vbar button.kv-icon.kv-more {
+    display: inline-flex;
+  }
+  .kv-vbar .kv-edit-btn .kv-btn-label {
+    display: none;
+  }
+  .kv-vbar button.kv-edit-btn {
+    width: 26px;
+    padding: 0;
+    justify-content: center;
+  }
+}
+
+/* The explorer's own controls, drawn into the toolbar's slot. */
+.kv-bar-slot {
+  display: inline-flex;
+  flex-shrink: 1 !important;
+  min-width: 0;
+}
+.kv-bar-slot:empty {
+  display: none;
+}
+.kv-bar-slot .json-view-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.kv-bar-slot .json-view-mode {
+  flex: none;
+  margin-right: 4px;
+}
+.kv-bar-slot .json-view-mode button {
+  height: 24px;
+  padding: 0 8px;
+  font-size: calc(11.5px * var(--ui-scale, 1));
+}
+.kv-bar-slot .json-view-search.compact {
+  flex: 0 1 150px;
+  width: 150px;
+  min-width: 70px;
+  height: 26px;
+  margin: 0;
+  transition: flex-basis var(--motion-fast, 120ms) ease, width var(--motion-fast, 120ms) ease;
+}
+.kv-bar-slot .json-view-search.compact:focus-within {
+  flex-basis: 240px;
+  width: 240px;
+}
+.kv-bar-slot .icon-button {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+.kv-bar-slot .flip {
+  transform: rotate(180deg);
+}
+@container kvbar (max-width: 560px) {
+  .kv-bar-slot .json-view-search.compact {
+    width: 90px;
+    flex-basis: 90px;
+  }
+}
+
+/* The picked node's path heads the explorer's value pane. */
+.kv-vp .json-view.embedded .json-view-value {
+  padding-top: 0;
+}
+.json-view-pane-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  height: 32px;
+  margin: 0 -4px 2px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.json-view-pane-head .json-view-crumbs {
+  flex: 1;
+  overflow-x: hidden;
+}
+.json-view-pane-head .icon-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  height: 24px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+/* A narrow toolbar makes room for the search while it is used. */
+@container kvbar (max-width: 700px) {
+  .kv-vbar:has(.json-view-search:focus-within) .kv-info,
+  .kv-vbar:has(.json-view-search:focus-within) .json-view-mode {
+    display: none;
+  }
+  .kv-vbar:has(.json-view-search:focus-within) .json-view-search.compact {
+    flex-basis: 200px;
+    width: 200px;
+  }
+}

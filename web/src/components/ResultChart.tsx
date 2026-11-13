@@ -1004,7 +1004,7 @@ export function ResultChart({ columns, rows, settings, scope, warn, themeKey, on
 
   return (
     <div className="analysis-view">
-      <div className="analysis-controls">
+      <div className="analysis-controls surface-bars">
         <div className="view-tabs analysis-types" role="group" aria-label={t("차트 종류")}>
           {CHART_TYPES.map((type) => (
             <button

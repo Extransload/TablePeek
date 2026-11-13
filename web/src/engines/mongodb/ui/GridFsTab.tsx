@@ -266,7 +266,7 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
 
   return (
     <div className="mg-root mg-gridfs">
-      <div className="mg-agg-bar mg-gridfs-bar">
+      <div className="mg-agg-bar mg-gridfs-bar surface-bars">
         <span className="mg-agg-count">
           GridFS · <span className="mono">{`${db}.${bucket}`}</span>
         </span>
@@ -313,7 +313,7 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
         />
       </div>
       {uploads.length > 0 ? (
-        <div className="mg-gridfs-uploads" aria-live="polite">
+        <div className="mg-gridfs-uploads surface-bars" aria-live="polite">
           {uploads.map((u) => (
             <div key={u.id} className={`mg-gridfs-upload ${u.state}`}>
               <span className="mono mg-gridfs-upname">{u.name}</span>
@@ -459,7 +459,7 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
         )}
         {dragging ? <div className="mg-gridfs-drop">{t("놓으면 {bucket} 버킷에 올립니다", { bucket })}</div> : null}
       </div>
-      <div className="data-toolbar mg-pager mg-gridfs-pager">
+      <div className="data-toolbar mg-pager mg-gridfs-pager surface-bars">
         <span className="panel-dim">
           {total !== null ? t("파일 {count}개", { count: total.toLocaleString() }) : files !== null ? t("파일 {count}개 이상", { count: (page * PAGE_SIZE + files.length).toLocaleString() }) : ""}
         </span>

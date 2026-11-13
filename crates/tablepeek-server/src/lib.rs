@@ -32,6 +32,7 @@ pub mod ai;
 mod background;
 mod chatgpt;
 pub mod cursors;
+mod keyvalue;
 pub mod launch;
 pub mod picker;
 mod search;
@@ -823,6 +824,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/oidc/logins", get(oidc_logins).delete(oidc_cancel))
         .route("/api/oidc/callback", get(oidc_callback))
         .merge(search::routes())
+        .merge(keyvalue::routes())
         .merge(ai::routes())
         .merge(background::routes())
         .merge(sql_dump::routes())
@@ -6022,7 +6024,8 @@ mod tests {
                 "sqlite",
                 "mongodb",
                 "elasticsearch",
-                "opensearch"
+                "opensearch",
+                "redis"
             ]
         );
         let postgres = &engines[0];
@@ -6070,6 +6073,11 @@ mod tests {
             assert_eq!(search["capabilities"]["language"], json!("es-dsl"));
             assert_eq!(search["error_code_prefix"], json!("es"));
         }
+        let redis = by_id("redis");
+        assert_eq!(redis["paradigm"], json!("keyvalue"));
+        assert_eq!(redis["aliases"], json!(["valkey"]));
+        assert_eq!(redis["url_schemes"], json!(["redis", "rediss"]));
+        assert_eq!(redis["capabilities"]["explain"], json!(null));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

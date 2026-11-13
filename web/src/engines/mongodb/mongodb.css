@@ -696,9 +696,6 @@ input.mg-pop-search {
   width: 12px;
   color: var(--muted);
 }
-.mg-f-sum .cell-pop-chevron svg {
-  transition: transform 0.1s ease;
-}
 .mg-f-sum .cell-pop-chevron.open svg {
   transform: rotate(90deg);
 }
@@ -997,9 +994,6 @@ input.mg-f-input.invalid {
   margin-left: -2ch;
   color: var(--faint);
   cursor: pointer;
-}
-.mg-jl-fold svg {
-  transition: transform 0.1s ease;
 }
 .mg-jl-fold.open svg {
   transform: rotate(90deg);

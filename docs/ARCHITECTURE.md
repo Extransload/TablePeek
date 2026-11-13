@@ -1,19 +1,19 @@
 # TablePeek 아키텍처 설계
 
-작성: 2026-10-16 · 갱신: 2026-10-19 · 상태: M18.1 UI 보정 완료 (M5 배포 대기)
+작성: 2026-10-16 · 갱신: 2026-11-12 · 상태: 배포 중 (v0.8.0까지 릴리스, 데스크톱 앱·AI로 SQL 작성·MCP 포함)
 
 ## 1. 제품 정의
 
-성능을 최우선으로 하는 크로스플랫폼(macOS·Windows) DB 클라이언트.
-설치형 단일 바이너리(CLI)가 로컬 엔진을 띄우고, UI는 브라우저에서 동작한다.
+성능을 최우선으로 하는 크로스플랫폼(macOS·Windows·Linux) DB 클라이언트.
+단일 바이너리(CLI)가 로컬 엔진을 띄우고 UI는 브라우저에서 동작한다. macOS(Apple silicon)·Windows에는 같은 서버를 앱 안에서 띄워 네이티브 창에 보여 주는 데스크톱 앱(Tauri 2)도 있다.
 
 ### 확정 결정 (논의 결과)
 
 | 항목 | 결정 | 근거 |
 |---|---|---|
 | 제품명 | TablePeek (`tablepeek`) | 담백한 두 단어 이름. "테이블을 가볍게 들여다본다"는 성격을 담음 |
-| 배포 형태 | Model C — 로컬 동반자 (CLI + 브라우저 UI) | 서버 운영 비용 0. 무설치 SaaS는 로컬 DB 접속 불가 + 자격증명 보관 부담 |
-| UI 위치 | 웹(브라우저) 단독, 네이티브 GUI 앱 없음 | 한글 IME·에디터 성숙도, 크로스플랫폼 자동 확보 |
+| 배포 형태 | Model C — 로컬 동반자 (CLI + 브라우저 UI, 또는 같은 서버를 품은 데스크톱 앱) | 서버 운영 비용 0. 무설치 SaaS는 로컬 DB 접속 불가 + 자격증명 보관 부담 |
+| UI 위치 | 웹 UI 하나. 브라우저 탭 또는 데스크톱 앱(Tauri 2, macOS·Windows)의 웹뷰에서 같은 서버 페이지를 연다. 데스크톱 앱은 페이지에 네이티브 API를 열지 않는다 | 한글 IME·에디터 성숙도, 크로스플랫폼 자동 확보 |
 | 엔진 언어 | Rust (tokio) | 성능 최우선, 메모리 안전, 단일 툴체인 |
 | 엔진 노출 | 127.0.0.1 전용 HTTP + WebSocket (M2 적용), Host 헤더 검증 | 브라우저는 DB에 직접 TCP 연결 불가 — 물리적 제약 |
 | 결과 전송 | M0: JSON → M2 이후: Arrow IPC 스트리밍 (적용) | 컬럼형 버퍼로 zero-copy 정렬·필터, 윈도우 페치로 전량 로드 회피 |
@@ -22,7 +22,7 @@
 | 파일 탐색 | OS 기본 파일 선택 창(`/api/fs/pick`: macOS `NSOpenPanel`(첫 선택 때 띄워 계속 쓰는 JXA 헬퍼: 첫 표시 ~1초, 이후 ~0.1초), Windows `OpenFileDialog`, Linux zenity/kdialog). 없는 환경은 엔진측 디렉터리 API(`/api/fs/list`) + 브라우저 모달 | 서버가 루프백 전용이라 선택 창이 브라우저와 같은 화면에 뜸. 경로 직접 입력은 오타·미검증 위험 |
 | 원격 접속 | SSH 터널 내장(russh, M4) + OS 키체인(keyring) | 클라우드 릴레이·서버 비용 불필요, 비밀 정보는 키체인만 |
 | 편집 안전 | PK 기반 단일 셀 UPDATE + 명시적 트랜잭션(M3), 행 추가/삭제(M9) | 안전한 최소 편집 표면. 세션 스냅샷 패치로 일관성 유지. 구조 변경 시 전 세션 무효화 |
-| 다중 DB | SQLite · PostgreSQL · MySQL/MariaDB · CockroachDB · SQL Server | 드라이버 선택은 연결 모달에서. 서버 프로세스당 활성 DB 1개(교체형) |
+| 다중 DB | 엔진 13종: SQLite · PostgreSQL · MySQL/MariaDB · CockroachDB · SQL Server · Oracle · ClickHouse · Cassandra · ScyllaDB · MongoDB · Elasticsearch · OpenSearch · Redis/Valkey (구조는 `docs/ENGINES.md`) | 드라이버 선택은 연결 모달에서. 여러 연결을 동시에 열고 상단 연결 바에서 오간다 |
 | AI로 SQL 작성 | 선택 기능(기본 꺼짐). omp처럼 모델 선택기 하나(`모델 · 연결`)를 두고, 그 아래 연결을 모델 계열별로 묶되 연결 방법마다 독립된 행으로 둔다. GPT·OpenAI: ChatGPT 로그인(OpenAI의 오픈소스·로컬 앱용 Sign in with ChatGPT)·Codex CLI·API 키(곧 지원). Claude·Anthropic: API 키(곧 지원). Claude Code CLI 연결은 Anthropic 약관이 서드파티 앱의 구독 사용을 분명히 허용하지 않아 닫았다. Gemini·Google: API 키(유일한 방법, OS 키체인). 기타: OpenRouter·Ollama·LM Studio(곧 지원). CLI는 사용자가 설치·로그인한 것을 그 요금제로 쓰고 TablePeek은 아무것도 저장하지 않는다. 직접 입력(OpenAI 호환 주소)은 없앴다. 자체 계정·중계 없음 | 서버 운영 비용 0 유지. 같은 모델로 가는 길을 방식별 메뉴로 늘어놓지 않고, 연결은 한 번 하고 모델만 고르게 한다. 모델 목록은 각 제공자에게서 읽는다. 구독 로그인은 제공자가 공식으로 허용한 것만: OpenAI는 허용(Business·Enterprise 워크스페이스는 관리자 승인 없이는 막힘 → Codex CLI·Gemini API 키), Anthropic은 서드파티의 Claude 구독 OAuth를 금지(2026-02) → Claude는 Anthropic API 키로(곧 지원). 입력 중 제안은 ChatGPT·Gemini만(Codex CLI는 답마다 약 6초). 스키마만 보내고 행은 보내지 않는다 |
 | 개발 기간 | 제약 없음 (성능 우선) | |
 
@@ -30,20 +30,20 @@
 
 ```
 [사용자 머신]
-  [브라우저 탭]  웹 UI (React + CodeMirror 6 + Canvas 그리드)
+  [브라우저 탭 또는 데스크톱 앱 창]  웹 UI (React + CodeMirror 6 + Canvas 그리드)
        │  REST + WebSocket(Arrow IPC) + x-tablepeek-token
        ▼
-  [tablepeek CLI 프로세스]
+  [tablepeek CLI 프로세스 또는 데스크톱 앱 프로세스]
     tablepeek-server (axum)
       - 정적 자산(rust-embed), 토큰·Host 검증
       - WS 스트리밍, SSH 터널(russh)
       - store.json(비밀 아님) + OS 키체인(비밀번호·AI 키) + ui-state.json(화면 상태) + ai.json(AI 설정)
       - AI 제공자 호출(reqwest, SSE → NDJSON 중계)
     tablepeek-engine
-      - rusqlite | tokio-postgres(PG·CRDB) | mysql_async(MySQL) | tiberius(TDS)
+      - 엔진 등록부(registry.rs): 엔진마다 DriverFactory·Driver 구현 (rusqlite, tokio-postgres, mysql_async, tiberius, oracledb, …)
               │
               ▼ (SSH 터널 경유 가능)
-  SQLite 파일 / PostgreSQL / MySQL / CockroachDB / SQL Server
+  SQLite 파일 / PostgreSQL / MySQL / CockroachDB / SQL Server / Oracle / ClickHouse / Cassandra·ScyllaDB / MongoDB / Elasticsearch·OpenSearch
 ```
 
 화면 상태(설정·언어·워크스페이스와 탭·초안·열 너비·패널 크기·최근 쿼리 등)는 `~/.tablepeek/ui-state.json`에 키-값으로 둔다. 브라우저 localStorage는 출처(포트 포함)마다 따로라서, 실행마다 포트가 바뀌는 서버에서는 매번 빈 상태가 된다. 페이지는 앱 모듈을 불러오기 전에 `GET /api/ui-state`로 한 번 읽어 메모리에 올리고(`web/src/persist.ts`), 바뀐 키만 잠깐 모았다가 `PUT /api/ui-state`(`{set, remove}`)로 보낸다. 페이지가 숨거나 닫힐 때는 바로 보낸다. 서버는 파일 잠금 아래 파일을 다시 읽고 이름 붙은 키만 바꿔 원자적으로 교체하므로, 같은 폴더를 쓰는 다른 TablePeek 프로세스가 쓴 키는 남는다. 요청에는 페이지 id(`writer`)와 번호(`seq`)가 붙고, 요청마다 아직 저장되지 않은 키를 모두 지금 값으로 싣는다. 서버는 그 페이지가 이미 저장한 번호보다 오래된 요청을 건너뛰므로, 닫힐 때 바로 보낸 요청보다 먼저 나간 요청이 늦게 닿아도 새 값을 덮지 않는다. 초안·열 너비처럼 맵 전체를 읽고 고쳐 쓰는 키가 있어서 페이지의 사본은 늘 최신이어야 한다: 같은 출처의 페이지끼리는 `BroadcastChannel`(`tablepeek.ui-state`)로 바뀐 키를 바로 알리고, 다른 출처(다른 포트의 서버, 데스크톱 앱)가 쓴 것은 페이지가 다시 앞에 오거나 포커스를 받을 때 `GET`으로 다시 읽어, 마지막으로 안 서버 값과 달라진 키만 받는다(이 페이지에서 저장 전이거나 읽는 사이에 바뀐 키는 제외). 읽기에 실패한 페이지(서버 꺼짐, 지난 실행의 토큰)는 메모리에만 두고 저장하지 않는다. 출처마다 처음 한 번, localStorage에 남은 `tablepeek.*` 키 중 서버에 없는 것을 옮겨 오고 표시(`tablepeek.ui-state-imported`)를 남긴다. localStorage에는 실행마다 바뀌는 토큰만 남는다.
@@ -55,7 +55,7 @@
 | `tablepeek` | CLI 엔트리: `serve` 서브커맨드, 브라우저 오픈, MCP stdio 서버 | server, engine |
 | `tablepeek-desktop` | macOS·Windows 데스크톱 앱(Tauri 2). 서버를 앱 안에서 띄우고 네이티브 창에 보여 준다 | server |
 | `tablepeek-server` | axum 라우터, 토큰·Host 인증, 웹 자산(rust-embed), WS 스트리밍, 세션 스냅샷·저널, SSH 터널(russh), store.json·키체인 | engine, types |
-| `tablepeek-engine` | 커넥션·세션·쿼리 실행. 백엔드 enum(rusqlite / tokio-postgres / mysql_async / tiberius), Arrow IPC 직렬화, 쿼리 취소, 행 추가·삭제 | types |
+| `tablepeek-engine` | 커넥션·세션·쿼리 실행. 엔진 등록부(`registry.rs`)와 엔진별 `DriverFactory`·`Driver` 구현(`src/engines/<id>/`), Arrow IPC 직렬화, 쿼리 취소, 행 추가·삭제 | types |
 | `tablepeek-types` | 메시지·결과·접속 설정 공용 타입 (serde) | — |
 
 의존 방향은 항상 위→아래. server는 engine만, engine은 types만 안다.
@@ -121,8 +121,9 @@
 | M17 | 인코딩/HEX 인스펙터, MySQL `prefer` TLS 오류 한정, 키체인 왕복, MCP stdio 서버 | 완료 |
 | M18 | 스피너·탭 모션, SQL syntax preset, JSON 트리 우측 Quick Look, 환경 배지, 행 관계 탭·FK 점프 | 완료 |
 | M18.1 | 그리드 셀 텍스트 대비·헤더 ellipsis, 상단 다중 연결 바, DB 컨텍스트 사이드바, 카테고리 설정 모달, 저장 연결 삭제 | 완료 |
-| M5 | 배포: SemVer 버전(v0.1.0부터, `CHANGELOG.md`), GitHub Releases 바이너리 아카이브 5종 + `SHA256SUMS`(`.github/workflows/release.yml`, `docs/RELEASING.md`), CI, 앱 안 새 버전 알림 | 완료 |
-| M5+ | brew/winget/scoop, 코드 서명·공증, 설치 프로그램 | 이번 범위에서 제외 |
+| M5 | 배포: SemVer 버전(v0.1.0부터, `CHANGELOG.md`), GitHub Releases 명령줄 아카이브 4종(macOS arm64, Linux x64·arm64, Windows x64) + `SHA256SUMS`(`.github/workflows/release.yml`, `docs/RELEASING.md`), CI, 앱 안 새 버전 알림 | 완료 |
+| M5+ | 데스크톱 앱(macOS `.dmg`, Windows NSIS `setup.exe`)과 서명 확인 자동 업데이트(`latest.json`), Homebrew cask(`extransload/tap/tablepeek`). Intel Mac 빌드는 0.6.0에서 뺌 | 완료 |
+| M5++ | 유료 인증서 코드 서명·공증, winget/scoop | 제외 |
 
 ## 8. UI 셸 구성 (M18.1)
 
@@ -136,10 +137,10 @@
 ## 9. 열린 결정
 
 - 원격 접속 중계(클라우드 릴레이) 여부 — 도입 시에만 서버 비용 발생
-- 라이선스 모델 (오픈소스 vs 상용)
-- 다중 접속·탭 UX 상세 — 현재 서버 프로세스당 활성 DB 1개(교체형)
+- 라이선스 모델 — 결정: `AGPL-3.0-only`(0.4.0부터, `LICENSE`). 동봉한 Oracle 드라이버(`crates/vendor/oracledb`)는 자기 라이선스(UPL-1.0 OR Apache-2.0)
+- 다중 접속·탭 UX — 결정: 여러 연결을 동시에 열고 상단 연결 바(M18.1)에서 오간다
 - View Using Encoding: Quick Look은 UTF-8 바이트 기준 재해석을 제공한다. 원본 바이트 복원은 별도 드라이버 계층 설계 필요
 - MCP: `tablepeek mcp`로 읽기 전용 도구를 제공한다. 도구 목록은 기본 연결(`--conn` 또는 서버 기본 연결)의 엔진을 따른다: SQL 엔진이면 `tablepeek_list_tables`·`tablepeek_describe_table`·`tablepeek_query`, MongoDB면 `mongo_list_collections`·`mongo_find`(≤100건)·`mongo_aggregate`(`$out`·`$merge` 거절, ≤100건)·`mongo_schema`(`$sample` ≤200건으로 필드 경로·있는 비율·타입 분포를 MCP 프로세스가 요약)·`mongo_indexes`. 연결을 알 수 없으면 둘 다 낸다. Plugin 샌드박스와 서드파티 드라이버 로딩은 별도 마일스톤
 - AI로 SQL 작성(`crates/tablepeek-server/src/ai.rs`, `web/src/aiEditor.ts`, `web/src/components/AiInlineEdit.tsx`, `web/src/components/AiModelPicker.tsx`, `web/src/components/settings/AiSettings.tsx`, `crates/tablepeek-server/src/ai/cli.rs`): 쓸 수 있는 제공자(연결)는 `chatgpt`·`codex`·`gemini` 세 가지이고(계열별 묶음은 웹의 `AI_METHODS` 표), `openai`·`anthropic`·`openrouter`·`ollama`·`lmstudio`는 `available: false`(곧 지원: 고르면 `provider_unavailable`, 예전 파일에 저장된 선택은 남지만 답하지 않음). `custom`과 `claude`(Claude Code CLI)는 없앴다(예전 파일의 모르는 제공자는 버리고, 그것이 고른 제공자였으면 기본 제공자로). `GET`/`PUT /api/ai`는 켜기와 고른 모델(`provider`+`model`, 제공자마다 마지막 모델을 기억), 입력 중 제안 `autocomplete`(따로 켜는 opt-in)과 그 모델 `complete_model`(`{provider, model}` 또는 `null` = 기본 모델과 같음; `ai.json`에 저장)을 다루고, `providers`에 제공자별 `available`과 CLI 제공자의 `cli {installed, path, version, signed_in, email, account, workspace}`(Codex CLI의 `codex login status`와 app-server `account/read`로 확인)를, 키 제공자(`openai`·`anthropic`·`gemini`·`openrouter`)에는 `has_key`를 싣는다. `PUT /api/ai/providers/{id} {key} | {clear_key: true}`가 키를 키체인 `ai:<provider>`에 넣거나 지운다(쓸 수 있는 키 제공자, 지금은 `gemini`만; 주소는 없음). `GET /api/ai/models?provider=`가 제공자의 모델 목록을 읽는다(ChatGPT 계정 모델, Codex는 `codex debug models`가 목록에 보이라고 한 것, Gemini는 저장한 키로 API 목록; CLI가 없으면 `ai_cli_missing`, 키가 없으면 `ai_not_configured`). `POST /api/ai/sql {conn, prompt, context?}`: 서버가 연결의 `schema`·`relations`로 스키마 요약(약 48,000자, 넘으면 요청에 나온 테이블과 그 FK 이웃 먼저, 나머지는 이름만)을 만들어 제공자에 묻는다: ChatGPT는 Responses SSE, Gemini는 OpenAI 호환 Chat Completions SSE(`reasoning_effort: low`), CLI는 빈 임시 폴더에서 도구를 끈 채 한 번 실행해 stdin으로 요청을 넘긴다(`codex exec --json --ephemeral --ignore-user-config --sandbox read-only`). CLI가 없거나 로그인하지 않았으면 스트림 전에 `ai_cli_missing`·`ai_cli_signed_out`. Codex는 끝난 답이 한 번에 온다. 답을 읽어 `{"status"}`(스키마·모델 단계) → `{"partial": 지금까지의 SQL}`(50ms마다) → `{"done":{sql, read_only, timing}}` 또는 `{"error"}` NDJSON으로 넘긴다. 답의 Markdown 펜스는 걷어내고, `read_only`는 앞 주석과 끝 `;`를 뺀 `is_read_only`. 페이지가 읽기를 그만두면 제공자 요청도 끊긴다. 실행은 하지 않는다. 문서형·검색 엔진은 `unsupported_capability`. `POST /api/ai/complete {conn, before, after}`(`complete`): `autocomplete`가 꺼져 있으면 `ai_autocomplete_off`, 켜져 있으면 `complete_model`(없으면 기본 모델; ChatGPT·Gemini가 아니면 `ai_complete_unsupported`)로 커서 앞뒤 텍스트(`before` ≤8,000자·`after` ≤3,000자, 커서는 `<CURSOR>`)와 스키마 요약(약 24,000자, `/api/ai/sql`과 같은 스키마 캐시)을 묻고 30초 안에 `{"completion"}`을 돌려준다. `clean_completion`이 펜스와, 모델이 되풀이한 커서 앞 텍스트·뒤에 이미 있는 닫는 텍스트를 걷어낸다(빈 문자열은 제안 없음). 페이지가 요청을 끊으면 제공자 요청도 끊긴다. 웹: `aiEditor.ts`가 CodeMirror 확장 셋을 둔다. ① 인라인 편집 자리(`aiZoneField`: 블록 위젯 스페이서 + 스크롤러 안 오버레이 `.cm-ai-zone-host`를 `lineBlockAt`·`documentTop`으로 스페이서 위에 맞춤 — 입력란이 contenteditable 밖이라 IME가 페이지 것 그대로) ② 대기 중인 AI 변경(`aiPendingField`: 범위·원문·선택 오프셋; 스트리밍 쓰기는 `addToHistory(false)`, 수락 때 원문으로 되돌린 뒤 한 번에 다시 써 `isolateHistory`로 실행 취소 한 단계, 거절은 원문·선택 그대로 복원) ③ 고스트 텍스트(`ghostField` + 400ms 멈춤 뒤 `store.completeSql` 호출(앞 6,000자·뒤 2,000자), 키 입력·커서 이동마다 abort, `(before, after)` 캐시 24개, 맞는 타이핑은 소비·다른 타이핑은 해제; 커서 뒤가 공백·닫는 문자일 때만, 선택·자동 완성 팝업·IME 조합·인라인 편집 중엔 묻지 않음). `AiInlineEdit`은 `SqlEditor`가 `createPortal`로 그 오버레이에 그리고, Tab·⌘↵(수락)·Esc(거절)는 상자와 에디터 키맵 둘 다에서 `AiInlineControl`로 받는다. 앱 단축키 `aiSql`(기본 `Mod+e`, `KEYMAP_VERSION` 5가 옛 기본 `Mod+Shift+Space`를 옮김)·`run`·`runAll`이 한글 조합 중(`isComposing`/keyCode 229)에 눌리면 `compositionend` 뒤(최대 600ms)에 실행하고, 상자의 Enter·⌘↵도 조합이 끝난 뒤 DOM 값으로 처리한다. 제안 실패는 에디터에 띄우지 않고 AI 버튼 옆 상태(`aria-describedby`)로만 보이며, 설정으로만 고칠 오류(`ai_autocomplete_off`·`ai_not_configured`·`ai_signed_out`·`ai_usage_limit`·`ai_complete_unsupported` 등)는 AI 상태가 바뀔 때까지 제안을 멈춘다
 - ChatGPT 로그인(`crates/tablepeek-server/src/chatgpt.rs`, `web/src/components/ChatGpt.tsx`): `POST /api/ai/chatgpt/login {new_account?}`가 PKCE·`state`·`nonce`를 만들고 OpenAI authorize URL을 준다(처음엔 `client_id=dynamic_agent_client`+`agent_name_hint=TablePeek`, 이후엔 발급받은 `client_id`+`login_hint`·`id_token_hint`, 설치마다 고정 `ext_agent_host_id=urn:uuid:…`). 브라우저는 이 서버의 `/auth/callback`(`/api` 밖, 토큰 없음, 대기 중인 `state`만 받음, 포트만 실행마다 다름)으로 돌아오고, 서버가 코드를 교환해 ID 토큰의 RS256 서명(JWKS)·`iss`·`aud`·`exp`·`nonce`와 `chatgpt.tokens.use.direct` 범위를 확인한다. 토큰은 `chatgpt.json`(0600, 원자적 교체; OpenAI 안내대로 파일, 키체인 아님)에 두고, 갱신은 `chatgpt.lock` 파일 잠금 아래에서 한다(1시간짜리 액세스 토큰, 갱신마다 바뀌는 30일 갱신 토큰, 데스크톱 앱과 `serve`가 폴더를 같이 써도 경합 없음). 갱신 토큰이 죽으면(`invalid_grant`·`refresh_token_reused` 등) 세션을 지우고 `ai_signed_out`. 요청은 Responses API(`store:false`, `stream:true`, `instructions`+`input`)로 하고 `response.completed`가 와야 끝난 것으로 본다. 사용 한도(`subscription_sharing_usage_limit_exceeded`)는 `ai_usage_limit`. 계정 모델은 `GET /api/ai/models?provider=chatgpt`(`visibility:list`만), `POST /api/ai/chatgpt/logout`(revocation 후 로컬 삭제, 등록·호스트 ID는 유지), `DELETE /api/ai/chatgpt/login`(대기 취소)
-- 추가 드라이버(Oracle/Snowflake/KV·문서형): 별도 마일스톤·제품 결정 필요
+- 추가 드라이버: Oracle·문서형(MongoDB)·검색(Elasticsearch·OpenSearch)·와이드 컬럼(Cassandra·ScyllaDB)·ClickHouse·키-값(Redis·Valkey, `docs/engines/redis.md`)은 들어왔다. Snowflake 등은 별도 마일스톤·제품 결정 필요(`docs/REMAINING-SCOPE.md` §3)

@@ -9,6 +9,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
+import { useRowMotion } from "../../../components/Collapse";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { ChevronIcon, CopyIcon, PlayIcon, RefreshIcon, StopIcon } from "../../../components/icons";
 import { useThemeColors } from "../../../components/ResultChart";
@@ -292,6 +293,8 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
   // Index groups opened or closed against their default (a group with a
   // problem starts open).
   const [toggled, setToggled] = useState<Set<string>>(() => new Set());
+  const shardsRef = useRef<HTMLDivElement | null>(null);
+  const prepareShards = useRowMotion(shardsRef);
   const [taskList, setTaskList] = useState<api.TaskRow[] | null>(null);
   const [tasksError, setTasksError] = useState<unknown>(null);
   const [actionsText, setActionsText] = useState("");
@@ -619,7 +622,7 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
 
   return (
     <div className="mg-root mg-perf es-cl">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">{t("클러스터")}</span>
         {info !== null ? <span className="es-cl-name mono">{info.cluster_name}</span> : null}
         {status !== "" ? <span className={`es-cl-health ${status}`}>{status}</span> : null}
@@ -867,7 +870,7 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
           ) : shownGroups.length === 0 ? (
             <div className="mg-perf-empty panel-dim">{shardList !== null && shardList.length > 0 ? t("조건에 맞는 샤드가 없습니다") : t("샤드가 없습니다")}</div>
           ) : (
-            <div className="mg-perf-scroll es-cl-shards">
+            <div ref={shardsRef} className="mg-perf-scroll es-cl-shards">
               <table className="panel-table mg-struct-table mg-perf-table es-cl-table">
                 <thead>
                   <tr>
@@ -882,14 +885,16 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
                 <tbody>
                   {shownGroups.slice(0, MAX_GROUPS).map(({ group, shards }) => {
                     const open = toggled.has(group.index) !== (group.health === "red" || group.health === "yellow");
-                    const flip = () =>
+                    const flip = () => {
+                      prepareShards();
                       setToggled((set) => {
                         const next = new Set(set);
                         if (!next.delete(group.index)) next.add(group.index);
                         return next;
                       });
+                    };
                     return [
-                      <tr key={group.index} className={`es-cl-group ${group.health}`}>
+                      <tr key={group.index} data-row-key={`g:${group.index}`} data-row-depth={0} className={`es-cl-group ${group.health}`}>
                         <td className="es-cl-group-cell">
                           <span className="es-cl-group-name">
                             <button type="button" className={`es-cl-toggle${open ? " open" : ""}`} aria-expanded={open} aria-label={open ? t("접기") : t("펼치기")} onClick={flip}>
@@ -915,7 +920,12 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
                       </tr>,
                       ...(open
                         ? shards.map((s, i) => (
-                            <tr key={`${group.index}:${s.shard}:${s.primary ? "p" : "r"}:${i}`} className={`es-cl-shard${s.state === "UNASSIGNED" ? " unassigned" : ""}`}>
+                            <tr
+                              key={`${group.index}:${s.shard}:${s.primary ? "p" : "r"}:${i}`}
+                              data-row-key={`s:${group.index}:${s.shard}:${s.primary ? "p" : "r"}:${i}`}
+                              data-row-depth={1}
+                              className={`es-cl-shard${s.state === "UNASSIGNED" ? " unassigned" : ""}`}
+                            >
                               <td className="mono es-cl-shard-num">{`#${s.shard}`}</td>
                               <td>
                                 <span className={`es-cl-prirep${s.primary ? " primary" : ""}`}>{s.primary ? t("프라이머리") : t("레플리카")}</span>

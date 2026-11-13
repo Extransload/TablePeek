@@ -63,7 +63,7 @@ export function DefinitionPanel({ conn, tab, onDetail }: DefinitionPanelProps) {
 
   return (
     <div className="panel">
-      <div className="panel-head">
+      <div className="panel-head surface-bars">
         <span className="panel-title">{tab.name}</span>
         <span className="badge-kind">{label}</span>
         <span className="spacer" />

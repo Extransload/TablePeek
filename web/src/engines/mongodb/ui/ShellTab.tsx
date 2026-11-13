@@ -747,7 +747,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
         }}
       />
       <div className="result-pane mg-shell-results">
-        <div className="data-toolbar mg-docbar">
+        <div className="data-toolbar mg-docbar surface-bars">
           <div className="footer-start">
             <button type="button" className={`footer-button${view === "messages" ? " active" : ""}`} aria-pressed={view === "messages"} onClick={() => setView("messages")}>
               {t("메시지")}

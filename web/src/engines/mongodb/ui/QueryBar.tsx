@@ -5,6 +5,7 @@
 // the explain tab.
 
 import { useCallback, useId, useRef, useState } from "react";
+import { Collapse } from "../../../components/Collapse";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, ColumnsIcon, HistoryIcon, SearchIcon, StarIcon } from "../../../components/icons";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
@@ -291,7 +292,7 @@ export function QueryBar({ ns, namespace, query, onChange, optsOpen, onOptsOpenC
   const shownFields = fields.filter((f) => fieldSearch.trim() === "" || f.path.toLowerCase().includes(fieldSearch.trim().toLowerCase()));
 
   return (
-    <div className="filter-bar mg-qbar">
+    <div className="filter-bar mg-qbar surface-bars">
       <div className="filter-rows">
         <div className="filter-row">
           <div className="mg-pop-anchor" ref={popover !== null ? popRef : undefined}>
@@ -387,7 +388,7 @@ export function QueryBar({ ns, namespace, query, onChange, optsOpen, onOptsOpenC
           <button type="button" className={`mg-qbtn${optsOpen ? " active" : ""}`} title={t("프로젝션·정렬·건너뛰기·개수·collation·hint·maxTimeMS")} onClick={() => onOptsOpenChange(!optsOpen)} aria-expanded={optsOpen}>
             {t("옵션")}
             {optCount > 0 ? <span className="mg-opt-badge">{optCount}</span> : null}
-            <span className="mg-chev">
+            <span className={`mg-chev disclosure-chevron down${optsOpen ? " open" : ""}`}>
               <ChevronDownIcon size={8} />
             </span>
           </button>
@@ -404,39 +405,43 @@ export function QueryBar({ ns, namespace, query, onChange, optsOpen, onOptsOpenC
             <span className="split-hint">⌘↩</span>
           </button>
         </div>
-        {optsOpen ? (
-          <div className="filter-row mg-opts">
-            <label className="mg-qlabel">{t("프로젝션")}</label>
-            <MongoEditor className={`mg-q${invalid("projection")}`} singleLine value={query.projection} onChange={(text) => set("projection", text)} onRun={onRun} role="projection" completion={completion} placeholder={t("{ 필드: 1 }")} error={error?.key === "projection" ? error.range : null} ariaLabel={t("프로젝션")} />
-            <label className="mg-qlabel">{t("정렬")}</label>
-            <MongoEditor className={`mg-q${invalid("sort")}`} singleLine value={query.sort} onChange={(text) => set("sort", text)} onRun={onRun} role="sort" completion={completion} placeholder={t("{ 필드: -1 }")} error={error?.key === "sort" ? error.range : null} ariaLabel={t("정렬")} />
-            <label className="mg-qlabel">{t("건너뛰기")}</label>
-            <input
-              className={`filter-value mg-q-num${invalid("skip")}`}
-              {...fieldErrorProps(errorId, error?.key === "skip" ? say(error.message) : null)}
-              value={query.skip}
-              placeholder="0"
-              inputMode="numeric"
-              spellCheck={false}
-              aria-label={t("건너뛰기")}
-              onChange={(event) => set("skip", event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && onRun()}
-            />
-            <label className="mg-qlabel">{t("개수")}</label>
-            <input
-              className={`filter-value mg-q-num${invalid("limit")}`}
-              {...fieldErrorProps(errorId, error?.key === "limit" ? say(error.message) : null)}
-              value={query.limit}
-              placeholder={t("없음")}
-              inputMode="numeric"
-              spellCheck={false}
-              aria-label={t("개수")}
-              onChange={(event) => set("limit", event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && onRun()}
-            />
-          </div>
-        ) : null}
-        {optsOpen ? <QueryOptionsRow namespace={namespace} query={query} set={set} onRun={onRun} error={error} errorId={errorId} /> : null}
+        <Collapse open={optsOpen} className="filter-rows">
+          {() => (
+            <>
+              <div className="filter-row mg-opts">
+                <label className="mg-qlabel">{t("프로젝션")}</label>
+                <MongoEditor className={`mg-q${invalid("projection")}`} singleLine value={query.projection} onChange={(text) => set("projection", text)} onRun={onRun} role="projection" completion={completion} placeholder={t("{ 필드: 1 }")} error={error?.key === "projection" ? error.range : null} ariaLabel={t("프로젝션")} />
+                <label className="mg-qlabel">{t("정렬")}</label>
+                <MongoEditor className={`mg-q${invalid("sort")}`} singleLine value={query.sort} onChange={(text) => set("sort", text)} onRun={onRun} role="sort" completion={completion} placeholder={t("{ 필드: -1 }")} error={error?.key === "sort" ? error.range : null} ariaLabel={t("정렬")} />
+                <label className="mg-qlabel">{t("건너뛰기")}</label>
+                <input
+                  className={`filter-value mg-q-num${invalid("skip")}`}
+                  {...fieldErrorProps(errorId, error?.key === "skip" ? say(error.message) : null)}
+                  value={query.skip}
+                  placeholder="0"
+                  inputMode="numeric"
+                  spellCheck={false}
+                  aria-label={t("건너뛰기")}
+                  onChange={(event) => set("skip", event.target.value)}
+                  onKeyDown={(event) => event.key === "Enter" && onRun()}
+                />
+                <label className="mg-qlabel">{t("개수")}</label>
+                <input
+                  className={`filter-value mg-q-num${invalid("limit")}`}
+                  {...fieldErrorProps(errorId, error?.key === "limit" ? say(error.message) : null)}
+                  value={query.limit}
+                  placeholder={t("없음")}
+                  inputMode="numeric"
+                  spellCheck={false}
+                  aria-label={t("개수")}
+                  onChange={(event) => set("limit", event.target.value)}
+                  onKeyDown={(event) => event.key === "Enter" && onRun()}
+                />
+              </div>
+              <QueryOptionsRow namespace={namespace} query={query} set={set} onRun={onRun} error={error} errorId={errorId} />
+            </>
+          )}
+        </Collapse>
       </div>
       {/* Over what is below the bar, so the cards do not move. */}
       <div className={`mg-qerror${error !== null ? " on" : ""}`}>

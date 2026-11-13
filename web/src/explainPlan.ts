@@ -379,7 +379,8 @@ export function parseOraclePlan(columns: string[], rows: unknown[][]): ParsedPla
     }
     const operation = cells[2] ?? "";
     const indent = operation.length - operation.trimStart().length;
-    const cost = xplanNumber(/^\s*(\d+)/.exec(cells[costAt] ?? "")?.[1]);
+    // "1219K  (1)": the figure, its K/M/… included, before the CPU share.
+    const cost = xplanNumber(/^\s*(\d+(?:\.\d+)?[KMGTPE]?)/.exec(cells[costAt] ?? "")?.[1]);
     const node: PlanNode = {
       label: operation.trim(),
       subtitle: nameAt > 0 ? text(cells[nameAt]) : undefined,

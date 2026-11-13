@@ -365,7 +365,7 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
 
   return (
     <div className="mg-pane mg-validation">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className={`mg-flag ${state.cls}`}>{state.text}</span>
         <label className="mg-inline">
           {t("검증 수준")}

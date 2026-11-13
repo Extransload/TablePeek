@@ -189,9 +189,6 @@ button.es-fchev {
 button.es-fchev:hover {
   background: var(--line-soft);
 }
-button.es-fchev svg {
-  transition: transform 0.12s ease;
-}
 button.es-fchev.open svg {
   transform: rotate(90deg);
 }

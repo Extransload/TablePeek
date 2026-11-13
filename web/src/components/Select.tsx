@@ -76,14 +76,28 @@ function step(entries: Entry[], from: number, by: number): number {
   return found;
 }
 
-// Under the field, as wide as it at least; above it when there is more room there.
+// Under the field, as wide as it at least, its labels starting where the
+// field's text does (the check column hangs out to the left of the field,
+// as a system menu's does); above it when there is more room there.
 function placeMenu(select: HTMLSelectElement, menu: HTMLElement): void {
   const field = select.getBoundingClientRect();
   // Measured from the corner: a fixed box left near the right edge would
   // come out narrower than its rows.
   menu.style.left = "0px";
   menu.style.top = "0px";
-  menu.style.minWidth = `${field.width}px`;
+  // Layout offsets, not drawn boxes: the list scales in as it opens.
+  const label = menu.querySelector<HTMLElement>(".select-option .context-label");
+  let labelInset = 0;
+  for (let node: HTMLElement | null = label; node !== null && node !== menu; node = node.offsetParent as HTMLElement | null) {
+    labelInset += node.offsetLeft;
+  }
+  if (label !== null) {
+    labelInset += menu.clientLeft;
+  }
+  const style = getComputedStyle(select);
+  const textInset = parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth);
+  const hang = Math.max(0, labelInset - textInset);
+  menu.style.minWidth = `${field.width + hang}px`;
   const below = window.innerHeight - field.bottom - GAP - EDGE;
   const above = field.top - GAP - EDGE;
   const height = Math.min(menu.scrollHeight, MAX_HEIGHT);
@@ -93,7 +107,8 @@ function placeMenu(select: HTMLSelectElement, menu: HTMLElement): void {
   // drawn box would be smaller.
   const width = menu.offsetWidth;
   const tall = menu.offsetHeight;
-  menu.style.left = `${Math.max(EDGE, Math.min(field.left, overlayRight(field.left) - width - EDGE))}px`;
+  const left = field.left - hang;
+  menu.style.left = `${Math.max(EDGE, Math.min(left, overlayRight(left) - width - EDGE))}px`;
   menu.style.top = `${upward ? field.top - GAP - tall : field.bottom + GAP}px`;
 }
 
@@ -142,8 +157,13 @@ export function Select({
     }
   }
 
-  function pick(value: string): void {
+  // `pointer`: picked with the mouse, so the field takes focus back without
+  // the keyboard's focus halo (see onFieldMouseDown).
+  function pick(value: string, pointer = false): void {
     const select = selectRef.current;
+    if (pointer && select !== null) {
+      select.dataset.pointerFocus = "";
+    }
     hide(true);
     if (select === null || select.value === value) {
       return;
@@ -198,6 +218,10 @@ export function Select({
   }, [open, active]);
 
   function onMenuKey(event: globalThis.KeyboardEvent): void {
+    // Keys in the list: the field is the keyboard's again, halo included.
+    if (selectRef.current !== null) {
+      delete selectRef.current.dataset.pointerFocus;
+    }
     let next = active;
     switch (event.key) {
       case "Escape":
@@ -320,8 +344,11 @@ export function Select({
     if (event.defaultPrevented || event.button !== 0) {
       return;
     }
-    // No system box: this one opens instead.
+    // No system box: this one opens instead. Focus taken by a click shows no
+    // halo (the keyboard's focus ring) until a key is pressed on the field,
+    // as a native select's doesn't; it would read as a second frame.
     event.preventDefault();
+    event.currentTarget.dataset.pointerFocus = "";
     event.currentTarget.focus({ preventScroll: true });
     if (open) {
       hide(false);
@@ -332,6 +359,7 @@ export function Select({
 
   function onFieldKeyDown(event: KeyboardEvent<HTMLSelectElement>): void {
     onKeyDown?.(event);
+    delete event.currentTarget.dataset.pointerFocus;
     if (event.defaultPrevented || open) {
       return;
     }
@@ -366,6 +394,13 @@ export function Select({
         aria-activedescendant={open && active >= 0 ? `${listId}-${active}` : undefined}
         onMouseDown={onFieldMouseDown}
         onKeyDown={onFieldKeyDown}
+        onBlur={(event) => {
+          props.onBlur?.(event);
+          // Focus leaving for the open list comes back with pick or hide.
+          if (!open) {
+            delete event.currentTarget.dataset.pointerFocus;
+          }
+        }}
       >
         {children}
       </select>
@@ -408,14 +443,14 @@ export function Select({
                     }}
                     onClick={() => {
                       if (!entry.disabled) {
-                        pick(entry.value);
+                        pick(entry.value, true);
                       }
                     }}
                   >
-                    <span className="context-check" aria-hidden="true">
+                    <span className="context-label">{entry.label}</span>
+                    <span className="context-check select-check" aria-hidden="true">
                       {entry.selected ? <CheckIcon size={9} /> : null}
                     </span>
-                    <span className="context-label">{entry.label}</span>
                   </div>
                 ),
               )}

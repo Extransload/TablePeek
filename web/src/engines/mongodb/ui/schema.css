@@ -22,6 +22,7 @@
   font-size: 11.5px;
 }
 .mg-schema-list {
+  position: relative;
   flex: 1;
   min-height: 0;
   padding: 10px 14px 24px;
@@ -67,9 +68,6 @@ button.mg-schema-toggle {
   border: 0;
   background: transparent;
   color: var(--muted);
-}
-button.mg-schema-toggle svg {
-  transition: transform 0.1s ease;
 }
 button.mg-schema-toggle.open svg {
   transform: rotate(90deg);

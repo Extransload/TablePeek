@@ -10,6 +10,7 @@ import {
   FileIcon,
   FolderIcon,
   GaugeIcon,
+  KeyIcon,
   ListIcon,
   ServerIcon,
   ShieldIcon,
@@ -55,6 +56,8 @@ function tabIcon(tab: WorkbenchTab): ReactElement {
       return <GaugeIcon {...props} />;
     case "searchSecurity":
       return <ShieldIcon {...props} />;
+    case "redis":
+      return <KeyIcon {...props} />;
   }
 }
 
@@ -92,6 +95,8 @@ function tabKindLabel(tab: WorkbenchTab): string {
       return t("클러스터");
     case "searchSecurity":
       return t("보안");
+    case "redis":
+      return "Redis";
   }
 }
 

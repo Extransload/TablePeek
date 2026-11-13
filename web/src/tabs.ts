@@ -7,6 +7,7 @@ import type { AggDraft } from "./engines/mongodb/pipeline";
 import type { DocTabState } from "./engines/mongodb/ui/DocumentWorkbench";
 import type { SearchTabState } from "./engines/elasticsearch/ui/SearchWorkbench";
 import type { SecuritySection, TargetKind } from "./engines/elasticsearch/ui/types";
+import type { RedisState } from "./engines/redis/ui/RedisWorkbench";
 import { buildDataSql, filterKey, firstRowsSql, type FilterState, type SortState } from "./dataQuery";
 import { quoteIdent } from "./ddl";
 import { engineById, type SqlDialect } from "./engines";
@@ -211,6 +212,16 @@ export interface SearchSecurityTab {
   section: SecuritySection;
 }
 
+// A key-value connection's workbench (Redis): one per connection, never
+// shown in the tab strip; it keeps the section, the key shown and the key
+// list's settings.
+export interface RedisTab {
+  id: string;
+  kind: "redis";
+  title: string;
+  redis: RedisState;
+}
+
 export type WorkbenchTab =
   | QueryTab
   | DataTab
@@ -227,7 +238,8 @@ export type WorkbenchTab =
   | SearchIndexTab
   | SearchConsoleTab
   | SearchClusterTab
-  | SearchSecurityTab;
+  | SearchSecurityTab
+  | RedisTab;
 
 export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<DataTab, "id" | "kind">> &
@@ -240,7 +252,8 @@ export type TabPatch = Partial<Omit<QueryTab, "id" | "kind">> &
   Partial<Omit<MongoshTab, "id" | "kind">> &
   Partial<Omit<SearchIndexTab, "id" | "kind">> &
   Partial<Omit<SearchConsoleTab, "id" | "kind">> &
-  Partial<Omit<SearchSecurityTab, "id" | "kind">>;
+  Partial<Omit<SearchSecurityTab, "id" | "kind">> &
+  Partial<Omit<RedisTab, "id" | "kind">>;
 
 export interface TabsState {
   tabs: WorkbenchTab[];
@@ -301,6 +314,10 @@ export function createSearchClusterTab(): SearchClusterTab {
 
 export function createSearchSecurityTab(section: SecuritySection = "users"): SearchSecurityTab {
   return { id: nextId(), kind: "searchSecurity", title: t("보안"), section };
+}
+
+export function createRedisTab(redis: RedisState): RedisTab {
+  return { id: nextId(), kind: "redis", title: "Redis", redis };
 }
 
 // The number in a query tab's default name ("쿼리 3", "Query 3"); null for a

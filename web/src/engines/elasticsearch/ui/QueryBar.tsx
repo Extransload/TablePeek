@@ -3,6 +3,7 @@
 // boxes, ⌘↩ to search, recent queries, and 계획 to profile the query.
 
 import { useMemo, useRef, useState } from "react";
+import { Collapse } from "../../../components/Collapse";
 import { ContextMenu } from "../../../components/ContextMenu";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronDownIcon, HistoryIcon, SearchIcon } from "../../../components/icons";
@@ -76,7 +77,7 @@ export function QueryBar({ index, query, onChange, dslOpen, onDslOpenChange, err
   const invalid = (key: keyof QueryText) => (error !== null && error.key === key ? " invalid" : "");
 
   return (
-    <div className="filter-bar mg-qbar es-qbar">
+    <div className="filter-bar mg-qbar es-qbar surface-bars">
       <div className="filter-rows">
         <div className="filter-row">
           <label className="mg-qlabel">{t("검색어")}</label>
@@ -95,7 +96,7 @@ export function QueryBar({ index, query, onChange, dslOpen, onDslOpenChange, err
           <button type="button" className={`mg-qbtn${dslOpen ? " active" : ""}`} aria-expanded={dslOpen} title={t("Query DSL 편집기 열기·닫기")} onClick={() => onDslOpenChange(!dslOpen)}>
             Query DSL
             {query.dsl.trim() !== "" && !dslOpen ? <span className="mg-opt-badge">1</span> : null}
-            <span className="mg-chev">
+            <span className={`mg-chev disclosure-chevron down${dslOpen ? " open" : ""}`}>
               <ChevronDownIcon size={8} />
             </span>
           </button>
@@ -124,22 +125,24 @@ export function QueryBar({ index, query, onChange, dslOpen, onDslOpenChange, err
             <span className="split-hint">⌘↩</span>
           </button>
         </div>
-        {dslOpen ? (
-          <div className="filter-row es-qdsl-row">
-            <label className="mg-qlabel">DSL</label>
-            <div className={`es-qdsl${invalid("dsl")}`}>
-              <SearchEditor
-                value={query.dsl}
-                onChange={(dsl) => onChange({ ...query, dsl })}
-                onRun={onRun}
-                complete={completeQuery}
-                placeholder={'{ "bool": { "filter": [ { "term": { "status": "paid" } } ] } }'}
-                error={errorAt("dsl")}
-                ariaLabel={t("Query DSL")}
-              />
-            </div>
-          </div>
-        ) : null}
+        <Collapse open={dslOpen} className="filter-row es-qdsl-row">
+          {() => (
+            <>
+              <label className="mg-qlabel">DSL</label>
+              <div className={`es-qdsl${invalid("dsl")}`}>
+                <SearchEditor
+                  value={query.dsl}
+                  onChange={(dsl) => onChange({ ...query, dsl })}
+                  onRun={onRun}
+                  complete={completeQuery}
+                  placeholder={'{ "bool": { "filter": [ { "term": { "status": "paid" } } ] } }'}
+                  error={errorAt("dsl")}
+                  ariaLabel={t("Query DSL")}
+                />
+              </div>
+            </>
+          )}
+        </Collapse>
         <div className="filter-row">
           <label className="mg-qlabel">{t("정렬")}</label>
           <SearchEditor

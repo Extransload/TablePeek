@@ -107,6 +107,7 @@
   font-size: 12px;
 }
 .mg-perf-scroll {
+  position: relative;
   max-height: 340px;
   overflow: auto;
 }

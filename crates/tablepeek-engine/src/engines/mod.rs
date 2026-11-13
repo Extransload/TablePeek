@@ -11,5 +11,6 @@ pub mod mssql;
 pub mod mysql;
 pub mod oracle;
 pub mod postgres;
+pub mod redis;
 pub mod scylladb;
 pub mod sqlite;

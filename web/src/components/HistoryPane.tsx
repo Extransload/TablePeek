@@ -9,6 +9,7 @@ import { ErrorNotice } from "./ErrorNotice";
 import { PromptModal } from "./PromptModal";
 import { LoadingState } from "./Spinner";
 import { SqlText } from "./SqlText";
+import { Collapse } from "./Collapse";
 import { ChevronIcon, SearchIcon } from "./icons";
 
 interface HistoryPaneProps {
@@ -230,8 +231,9 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
                 </span>
                 <span className="schema-section-label">{day.label}</span>
               </div>
-              {isOpen(day.key)
-                ? day.entries.map((entry) => (
+              <Collapse open={isOpen(day.key)} stagger>
+                {() =>
+                  day.entries.map((entry) => (
                     <div
                       className={`history-item${entry.id === selected ? " selected" : ""}${entry.ok ? "" : " failed"}`}
                       key={entry.id}
@@ -253,7 +255,8 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
                       </div>
                     </div>
                   ))
-                : null}
+                }
+              </Collapse>
             </div>
           ))
         )}

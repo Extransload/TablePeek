@@ -185,6 +185,7 @@
 
 /* Shards grouped by index. */
 .es-cl-shards {
+  position: relative;
   max-height: 460px;
 }
 .es-cl-group td {
@@ -221,9 +222,6 @@
 .es-cl-toggle:hover {
   background: var(--hover-fill);
   color: var(--ink);
-}
-.es-cl-toggle svg {
-  transition: transform var(--motion-fast) var(--ease-out);
 }
 .es-cl-toggle.open svg {
   transform: rotate(90deg);

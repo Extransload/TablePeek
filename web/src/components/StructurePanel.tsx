@@ -22,6 +22,7 @@ import { ClusterPicker, onCluster, useCluster } from "./ClusterPicker";
 import { confirmDialog } from "./ConfirmDialog";
 import { DdlPreview } from "./DraftEditors";
 import { t } from "../i18n";
+import { Collapse } from "./Collapse";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { CopyIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
 import { LoadingState, Spinner } from "./Spinner";
@@ -941,7 +942,7 @@ export function StructurePanel({
     <div className="panel structure-panel">
       {/* TablePlus's bar over the grid: the table's name, its primary key and
           a search of the rows below. */}
-      <div className="structure-bar">
+      <div className="structure-bar surface-bars">
         <label className="structure-field">
           <span className="structure-field-label">{t("이름")}</span>
           <input
@@ -1081,109 +1082,115 @@ export function StructurePanel({
               </section>
             ) : null}
 
-            {showProperties && properties.length > 0 && section === "columns" ? (
-              <section className="structure-pane">
-                <div className="structure-section-head">
-                  <span className="structure-section-title">{t("테이블 속성")}</span>
-                </div>
-                <table className="structure-properties">
-                  <tbody>
-                    {properties.map((property) => {
-                      const action = dialect.propertyAction?.(property, table) ?? null;
-                      return (
-                        <tr key={property.name}>
-                          <th>{t(property.name)}</th>
-                          <td>
-                            <code>{t(property.value)}</code>
-                            {action !== null ? (
-                              <button
-                                type="button"
-                                className="link-button structure-property-action"
-                                disabled={busy}
-                                title={t(action.title)}
-                                onClick={() => void runPropertyAction(action)}
-                              >
-                                {t(action.label)}
-                              </button>
-                            ) : null}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </section>
-            ) : null}
+            <Collapse open={showProperties && properties.length > 0 && section === "columns"} className="structure-pane">
+              {() => (
+                <>
+                  <div className="structure-section-head">
+                    <span className="structure-section-title">{t("테이블 속성")}</span>
+                  </div>
+                  <table className="structure-properties">
+                    <tbody>
+                      {properties.map((property) => {
+                        const action = dialect.propertyAction?.(property, table) ?? null;
+                        return (
+                          <tr key={property.name}>
+                            <th>{t(property.name)}</th>
+                            <td>
+                              <code>{t(property.value)}</code>
+                              {action !== null ? (
+                                <button
+                                  type="button"
+                                  className="link-button structure-property-action"
+                                  disabled={busy}
+                                  title={t(action.title)}
+                                  onClick={() => void runPropertyAction(action)}
+                                >
+                                  {t(action.label)}
+                                </button>
+                              ) : null}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </Collapse>
 
-            {showTriggers && section === "columns" ? (
-              <section className="structure-pane">
-                <div className="structure-section-head">
-                  <span className="structure-section-title">{t("트리거")}</span>
-                  {triggers !== null ? <span className="structure-count">{triggers.length}</span> : null}
-                </div>
-                {triggers === null ? (
-                  <div className="structure-empty">{t("트리거 정보를 가져올 수 없습니다")}</div>
-                ) : triggers.length === 0 ? (
-                  <div className="structure-empty">{t("트리거가 없습니다")}</div>
-                ) : (
-                  triggers.map((trigger) => (
-                    <div className="structure-trigger" key={trigger.name}>
-                      <div className="structure-trigger-head">
-                        <span className="structure-trigger-name">{trigger.name}</span>
-                        {trigger.timing || trigger.event ? (
-                          <span className="panel-dim">
-                            {[trigger.timing, trigger.event].filter(Boolean).join(" ")}
-                          </span>
-                        ) : null}
-                        <span className="spacer" />
-                        {trigger.definition ? (
-                          <button
-                            type="button"
-                            className="icon-text-button"
-                            onClick={() => copyDdl(trigger.definition ?? "")}
-                            title={t("복사")}
-                          >
-                            <CopyIcon size={11} />
-                            {t("복사")}
-                          </button>
-                        ) : null}
+            <Collapse open={showTriggers && section === "columns"} className="structure-pane">
+              {() => (
+                <>
+                  <div className="structure-section-head">
+                    <span className="structure-section-title">{t("트리거")}</span>
+                    {triggers !== null ? <span className="structure-count">{triggers.length}</span> : null}
+                  </div>
+                  {triggers === null ? (
+                    <div className="structure-empty">{t("트리거 정보를 가져올 수 없습니다")}</div>
+                  ) : triggers.length === 0 ? (
+                    <div className="structure-empty">{t("트리거가 없습니다")}</div>
+                  ) : (
+                    triggers.map((trigger) => (
+                      <div className="structure-trigger" key={trigger.name}>
+                        <div className="structure-trigger-head">
+                          <span className="structure-trigger-name">{trigger.name}</span>
+                          {trigger.timing || trigger.event ? (
+                            <span className="panel-dim">
+                              {[trigger.timing, trigger.event].filter(Boolean).join(" ")}
+                            </span>
+                          ) : null}
+                          <span className="spacer" />
+                          {trigger.definition ? (
+                            <button
+                              type="button"
+                              className="icon-text-button"
+                              onClick={() => copyDdl(trigger.definition ?? "")}
+                              title={t("복사")}
+                            >
+                              <CopyIcon size={11} />
+                              {t("복사")}
+                            </button>
+                          ) : null}
+                        </div>
+                        {trigger.definition ? <pre className="panel-pre">{trigger.definition}</pre> : null}
                       </div>
-                      {trigger.definition ? <pre className="panel-pre">{trigger.definition}</pre> : null}
-                    </div>
-                  ))
-                )}
-              </section>
-            ) : null}
+                    ))
+                  )}
+                </>
+              )}
+            </Collapse>
 
-            {showDdl && section === "columns" ? (
-              <section className="structure-pane">
-                <div className="structure-section-head">
-                  <span className="structure-section-title">{t("CREATE 문")}</span>
-                  <span className="spacer" />
-                  {detail.ddl !== null ? (
-                    <button
-                      type="button"
-                      className="icon-text-button"
-                      onClick={() => copyDdl(detail.ddl ?? "")}
-                      title={t("복사")}
-                    >
-                      <CopyIcon size={11} />
-                      {t("복사")}
-                    </button>
-                  ) : null}
-                </div>
-                {detail.ddl === null ? (
-                  <div className="structure-empty">{t("DDL 미지원")}</div>
-                ) : (
-                  <pre className="panel-pre">{detail.ddl}</pre>
-                )}
-              </section>
-            ) : null}
+            <Collapse open={showDdl && section === "columns"} className="structure-pane">
+              {() => (
+                <>
+                  <div className="structure-section-head">
+                    <span className="structure-section-title">{t("CREATE 문")}</span>
+                    <span className="spacer" />
+                    {detail.ddl !== null ? (
+                      <button
+                        type="button"
+                        className="icon-text-button"
+                        onClick={() => copyDdl(detail.ddl ?? "")}
+                        title={t("복사")}
+                      >
+                        <CopyIcon size={11} />
+                        {t("복사")}
+                      </button>
+                    ) : null}
+                  </div>
+                  {detail.ddl === null ? (
+                    <div className="structure-empty">{t("DDL 미지원")}</div>
+                  ) : (
+                    <pre className="panel-pre">{detail.ddl}</pre>
+                  )}
+                </>
+              )}
+            </Collapse>
           </>
         )}
       </div>
       {/* The footer, as in TablePlus: the views, then what this one adds. */}
-      <div className="data-toolbar structure-footer">
+      <div className="data-toolbar structure-footer surface-bars">
         {viewTabs}
         {section === "columns" ? (
           <>

@@ -122,8 +122,8 @@ make help                          # full command list
 
 ```sh
 make build        # web bundle + Rust binary
-make test         # Rust tests + TypeScript checks
-make check        # formatting, Rust checks, TypeScript checks
+make test         # Rust tests + TypeScript checks + web unit tests
+make check        # formatting, Rust checks, TypeScript checks, web unit tests
 make test-docker  # integration tests against Docker-backed databases
 make build-kerberos-linux  # Linux binary with Kerberos, built in Docker
 ```
@@ -134,10 +134,13 @@ Individual tools are available too:
 
 ```sh
 cd web && npm run typecheck
+cd web && npm test
 cd web && npm run build
 cargo check --workspace
 cargo test
 ```
+
+`npm test` runs the web unit tests with [Vitest](https://vitest.dev/) in Node, with no browser and no server. They cover the modules that need no page: CSV and JSON import parsing, SQL statement splitting and completion, safe-mode statement review, filter and paging SQL, DDL and import statements per dialect, EXPLAIN plan parsing, chart and pivot sums, copy formats, connection URLs, and the JSON viewer's index. Each test file sits beside its module as `*.test.ts`; `tsc` checks them with the rest of `src`, and the build leaves them out of the bundle. Use `npx vitest` in `web/` to rerun them as files change, or `npx vitest run src/sqlSplit.test.ts` for one file.
 
 ## Test databases
 
@@ -150,6 +153,8 @@ make test-db-down ENGINE=postgres     # stop them and throw the data away
 ```
 
 `make test-db` prints the host, port, and account for each one, so you can also add them as connections in TablePeek and try the app on a real server. Ports are bound to `127.0.0.1` only, and the accounts are test-only: never reuse them on a real server. MySQL listens on 3329, leaving 3307 available for production proxies; set `TABLEPEEK_TEST_MYSQL_PORT` (for `make test-db` and `make test-live` alike) to override it. SQL Server has no arm64 image, so on Apple Silicon it runs under emulation and takes a minute to start.
+
+CI runs the same live tests on every push and pull request: the `live` job in `.github/workflows/ci.yml` starts PostgreSQL, MySQL, and SQL Server as service containers on the ports above, seeds them with the same files, and runs `cargo test -p tablepeek-engine -- --test-threads=1` with `TABLEPEEK_TEST_PG`, `TABLEPEEK_TEST_MYSQL`, and `TABLEPEEK_TEST_MSSQL` set. CockroachDB, MongoDB, ClickHouse, and the TLS and profile servers need a startup command or certificate files that service containers can't take, so their tests run only locally with `make test-db` and `make test-live`.
 
 A few servers for particular tests sit in compose profiles, so `make test-db` leaves them out; name them in `ENGINE` to start them (and `make test-live ENGINE=…` to run their tests):
 

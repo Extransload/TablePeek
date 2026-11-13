@@ -216,7 +216,7 @@ export function SettingsPanel({ host, index, kind, refreshSeq, onChanged }: Inde
 
   return (
     <div className="mg-pane es-pane">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <IndexPicker names={names} value={current} onChange={setPicked} />
         <span className="mg-agg-count">{reply === null ? t("설정") : t("설정 {count}개", { count: rows.length.toLocaleString() })}</span>
         <label className="es-check">

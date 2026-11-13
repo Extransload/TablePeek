@@ -1,5 +1,17 @@
-import { createContext, useContext, useId, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { bothLanguages, t } from "../../i18n";
+import { MinusIcon, PlusIcon } from "../icons";
 import { openSelect } from "../Select";
 
 // The rows of Settings (see SettingsSheet): a name on the left and a
@@ -36,7 +48,7 @@ export function rowControls(row: HTMLElement): HTMLElement[] {
 
 // ⏎ or Space on a row: a lone switch flips, a menu or a picker opens, a
 // field or a colour takes it; a row of several controls is gone into, at
-// its first.
+// its slider if it has one (its − and + come before it), else its first.
 function activateRow(row: HTMLElement): void {
   const controls = rowControls(row);
   const control = controls[0];
@@ -44,7 +56,7 @@ function activateRow(row: HTMLElement): void {
     return;
   }
   if (controls.length > 1) {
-    control.focus();
+    (controls.find((each) => each instanceof HTMLInputElement && each.type === "range") ?? control).focus();
   } else if (control instanceof HTMLSelectElement) {
     openSelect(control);
   } else if (control instanceof HTMLInputElement && (control.type === "checkbox" || control.type === "color")) {
@@ -290,7 +302,10 @@ export function Switch({
   );
 }
 
-// A slider and the value it is at.
+// A slider with − and + beside it and its value in a field that takes a
+// number typed in: ⏎ or leaving the field sets it, clamped to the slider's
+// range; Esc puts back the value it had. − and + step once (ten with Shift)
+// and, held down, keep stepping, faster the longer they are held.
 export function Slider({
   label,
   value,
@@ -304,8 +319,95 @@ export function Slider({
   unit: string;
   onChange(value: number): void;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  // The value and onChange as of the last render, for steps taken while a
+  // button is held (the timer outlives the render that started it).
+  const latest = useRef({ value, onChange });
+  latest.current = { value, onChange };
+  const hold = useRef<number | null>(null);
+  const clamp = (next: number) => Math.min(max, Math.max(0, Math.round(next)));
+  // Steps by `by`; false at the end of the range, where nothing changed.
+  const stepBy = (by: number): boolean => {
+    const next = clamp(latest.current.value + by);
+    if (next === latest.current.value) {
+      return false;
+    }
+    latest.current.value = next;
+    latest.current.onChange(next);
+    return true;
+  };
+  // One function for the life of the slider, so the window listeners it
+  // adds come off again.
+  const stopHold = useCallback(function stopHold() {
+    if (hold.current !== null) {
+      window.clearTimeout(hold.current);
+      hold.current = null;
+    }
+    window.removeEventListener("pointerup", stopHold);
+    window.removeEventListener("blur", stopHold);
+  }, []);
+  useEffect(() => stopHold, [stopHold]);
+  // A press steps at once; held past 400 ms it repeats, every 90 ms at first
+  // and down to every 30 ms, until it is let go (anywhere: the button turns
+  // disabled at the end of the range and hears nothing more) or the range
+  // ends.
+  const startHold = (event: ReactPointerEvent<HTMLButtonElement>, by: number) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const amount = event.shiftKey ? by * 10 : by;
+    stopHold();
+    if (!stepBy(amount)) {
+      return;
+    }
+    window.addEventListener("pointerup", stopHold);
+    window.addEventListener("blur", stopHold);
+    let delay = 90;
+    const repeat = () => {
+      if (!stepBy(amount)) {
+        stopHold();
+        return;
+      }
+      delay = Math.max(30, delay * 0.9);
+      hold.current = window.setTimeout(repeat, delay);
+    };
+    hold.current = window.setTimeout(repeat, 400);
+  };
+  const stepButton = (by: number, name: string, title: string, disabled: boolean, icon: ReactNode) => (
+    <button
+      type="button"
+      className="settings-step"
+      aria-label={name}
+      title={title}
+      disabled={disabled}
+      onPointerDown={(event) => startHold(event, by)}
+      onPointerUp={stopHold}
+      onPointerCancel={stopHold}
+      // The keyboard's ⏎ and Space (a pointer press steps on pointerdown).
+      onClick={(event) => {
+        if (event.detail === 0) {
+          stepBy(event.shiftKey ? by * 10 : by);
+        }
+      }}
+    >
+      {icon}
+    </button>
+  );
+  const commit = () => {
+    if (draft !== null && !cancelled.current) {
+      const typed = Number(draft.trim());
+      if (draft.trim() !== "" && Number.isFinite(typed)) {
+        onChange(clamp(typed));
+      }
+    }
+    cancelled.current = false;
+    setDraft(null);
+  };
   return (
-    <>
+    <span className="settings-slider">
+      {stepButton(-1, t("{label} 줄이기", { label }), t("줄이기 (Shift: 10씩)"), value <= 0, <MinusIcon size={10} />)}
       <input
         type="range"
         className="settings-range"
@@ -316,10 +418,26 @@ export function Slider({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-      <span className="settings-range-value mono">
-        {value}
-        {unit}
+      {stepButton(1, t("{label} 늘리기", { label }), t("늘리기 (Shift: 10씩)"), value >= max, <PlusIcon size={10} />)}
+      <span className="settings-range-value">
+        <input
+          type="number"
+          className="settings-range-input mono"
+          aria-label={t("{label} 값", { label })}
+          min={0}
+          max={max}
+          step={1}
+          value={draft ?? String(value)}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              cancelled.current = true;
+            }
+          }}
+          onBlur={commit}
+        />
+        <span className="settings-range-unit mono">{unit}</span>
       </span>
-    </>
+    </span>
   );
 }

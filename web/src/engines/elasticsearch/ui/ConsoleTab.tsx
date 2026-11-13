@@ -813,7 +813,7 @@ export function ConsoleTab({ host, tabKey, connKey, text, onTextChange, active }
       <div className={narrow ? "h-splitter" : "v-splitter"} role="separator" aria-orientation={narrow ? "horizontal" : "vertical"} onPointerDown={startDrag} />
       <div className="es-console-response">
         {shown !== null ? (
-          <div className="data-toolbar es-console-bar">
+          <div className="data-toolbar es-console-bar surface-bars">
             <div className="footer-start es-console-head">
               {statusChip(shown.outcome)}
               {shown.outcome.kind === "reply" ? (

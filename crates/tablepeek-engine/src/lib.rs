@@ -22,6 +22,7 @@ use tablepeek_types::{
 mod cells;
 pub mod driver;
 pub mod engines;
+pub mod keyvalue;
 mod mssql;
 mod mysql;
 mod postgres;
@@ -849,6 +850,21 @@ impl SearchSession<'_> {
     }
 }
 
+/// The key-value side of the connection open now, held for one operation;
+/// like a search operation it moves the epoch before and after.
+pub struct KeyValueSession<'a> {
+    driver: Arc<dyn Driver>,
+    _finished: EpochBump<'a>,
+}
+
+impl KeyValueSession<'_> {
+    pub fn ops(&self) -> &dyn keyvalue::KeyValueDriver {
+        self.driver
+            .keyvalue()
+            .expect("checked when the session was made")
+    }
+}
+
 /// The SQL side of `driver`, or the error a SQL operation meets on an engine
 /// of another paradigm.
 fn sql_of(driver: &Arc<dyn Driver>) -> Result<&dyn SqlDriver, EngineError> {
@@ -1000,6 +1016,14 @@ impl Engine {
 
     pub async fn databases(&self) -> Result<Vec<String>, EngineError> {
         let driver = self.driver()?;
+        if let Some(keyvalue) = driver.keyvalue() {
+            let listed = keyvalue.databases().await?;
+            return Ok(listed
+                .databases
+                .iter()
+                .map(|db| db.index.to_string())
+                .collect());
+        }
         sql_of(&driver)?.databases().await
     }
 
@@ -1126,6 +1150,23 @@ impl Engine {
         }
         self.epoch.fetch_add(1, Ordering::SeqCst);
         Ok(SearchSession {
+            driver,
+            _finished: EpochBump(&self.epoch),
+        })
+    }
+
+    /// The key-value operations of the connection open now, or the error
+    /// an engine of another paradigm gives.
+    pub fn keyvalue(&self) -> Result<KeyValueSession<'_>, EngineError> {
+        let driver = self.driver()?;
+        if driver.keyvalue().is_none() {
+            return Err(EngineError::Unsupported(format!(
+                "{}에서는 키-값 작업을 할 수 없습니다",
+                registry::label(driver.id())
+            )));
+        }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        Ok(KeyValueSession {
             driver,
             _finished: EpochBump(&self.epoch),
         })
@@ -1311,11 +1352,15 @@ impl Engine {
     }
 
     /// Ends a server session; on a search engine, cancels the task `id`
-    /// names (its sessions are the running tasks).
+    /// names (its sessions are the running tasks); on a key-value store,
+    /// CLIENT KILL ID.
     pub async fn kill_session(&self, id: &str) -> Result<(), EngineError> {
         let driver = self.driver()?;
         if let Some(search) = driver.search() {
             return search.cancel_task(id).await.map(|_| ());
+        }
+        if let Some(keyvalue) = driver.keyvalue() {
+            return keyvalue.kill_client(id).await;
         }
         sql_of(&driver)?.kill_session(id).await
     }

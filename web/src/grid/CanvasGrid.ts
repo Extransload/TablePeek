@@ -339,12 +339,17 @@ export class CanvasGrid {
   // The system font scale and the font this grid was last laid out with.
   private scaleSeen = SCALE;
   private fontSeen = FONT;
+  // The header's and row numbers' fill: the theme's, unless the page is
+  // translucent, where settings.ts sets --grid-head-bg to the main area's
+  // colour (styles.css, "Translucent page"); floating surfaces unset it.
+  private headFill: string;
 
   constructor(host: HTMLElement) {
     this.host = host;
     syncScale();
     this.scaleSeen = SCALE;
     this.fontSeen = FONT;
+    this.headFill = getComputedStyle(host).getPropertyValue("--grid-head-bg").trim() || palette.head;
 
     const scroller = document.createElement("div");
     scroller.className = "grid-scroller";
@@ -427,6 +432,7 @@ export class CanvasGrid {
   // header, the row numbers and every column with it.
   refreshTheme(): void {
     syncScale();
+    this.headFill = getComputedStyle(this.host).getPropertyValue("--grid-head-bg").trim() || palette.head;
     if (this.fontSeen !== FONT) {
       // Text widths change with the font: measure again.
       this.fontSeen = FONT;
@@ -1249,7 +1255,7 @@ export class CanvasGrid {
     ctx.beginPath();
     ctx.rect(0, HEADER_H, gutterW, contentH);
     ctx.clip();
-    ctx.fillStyle = palette.head;
+    ctx.fillStyle = this.headFill;
     ctx.fillRect(0, HEADER_H, gutterW, contentH);
     ctx.font = FONT;
     ctx.textAlign = "right";
@@ -1292,7 +1298,7 @@ export class CanvasGrid {
       }
     }
 
-    ctx.fillStyle = palette.head;
+    ctx.fillStyle = this.headFill;
     ctx.fillRect(0, 0, gutterW, HEADER_H);
     ctx.fillStyle = palette.line;
     ctx.fillRect(0, HEADER_H - 1, w, 1);
@@ -1494,7 +1500,7 @@ export class CanvasGrid {
     ctx.globalAlpha = 1;
     ctx.restore();
 
-    ctx.fillStyle = palette.head;
+    ctx.fillStyle = this.headFill;
     ctx.fillRect(gutterW, 0, contentW, HEADER_H);
     ctx.font = FONT_HEADER;
     ctx.textAlign = "center";

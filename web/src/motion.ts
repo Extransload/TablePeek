@@ -149,17 +149,27 @@ export function unhook(copy: HTMLElement): void {
 // A stand-in for an element about to leave the page: a copy laid exactly over
 // it, beside it in the same parent (so its styles still apply), that plays
 // `keyframes` and goes. Measure now, while the element is still there; call
-// the result once it's gone. `inFlow`: the copy takes the element's place in
-// the layout instead, at its size, so what is beside it moves as it plays (a
-// docked panel sliding out).
+// the result once it's gone (with other keyframes and options, when how it
+// should leave is only known then). `inFlow`: the copy takes the element's
+// place in the layout instead, at its size, so what is beside it moves as it
+// plays (a docked panel sliding out). Many at once: `insert` each, then
+// `start` each, so the page is laid out once for all of them.
+export interface PlayGhost {
+  (keyframes?: Keyframe[], options?: KeyframeAnimationOptions): void;
+  insert(): void;
+  start(keyframes?: Keyframe[], options?: KeyframeAnimationOptions): void;
+}
+
+const NO_GHOST: PlayGhost = Object.assign(() => {}, { insert: () => {}, start: () => {} });
+
 export function ghost(
   element: HTMLElement,
   keyframes: Keyframe[],
   options: KeyframeAnimationOptions,
   { inFlow = false }: { inFlow?: boolean } = {},
-): () => void {
+): PlayGhost {
   if (reducedMotion()) {
-    return () => {};
+    return NO_GHOST;
   }
   const rect = element.getBoundingClientRect();
   const parent = element.parentElement;
@@ -178,7 +188,7 @@ export function ghost(
   );
   unhook(copy);
   copy.classList.add("motion-ghost");
-  return () => {
+  const insert = () => {
     const host = parent?.isConnected ? parent : document.body;
     Object.assign(copy.style, {
       width: `${rect.width}px`,
@@ -192,6 +202,8 @@ export function ghost(
       Object.assign(copy.style, { position: "absolute", left: "0px", top: "0px", margin: "0" });
     }
     host.insertBefore(copy, followers.find((node) => node.parentNode === host) ?? null);
+  };
+  const start = (playKeyframes = keyframes, playOptions = options) => {
     if (!inFlow) {
       // Wherever the containing block is, correct by what it put the copy at.
       const placed = copy.getBoundingClientRect();
@@ -202,11 +214,16 @@ export function ghost(
       node.scrollTop = top;
       node.scrollLeft = left;
     }
-    const animation = copy.animate(keyframes, { fill: "forwards", ...options });
+    const animation = copy.animate(playKeyframes, { fill: "forwards", ...playOptions });
     const remove = () => copy.remove();
     animation.onfinish = remove;
     animation.oncancel = remove;
   };
+  const play = (playKeyframes = keyframes, playOptions = options) => {
+    insert();
+    start(playKeyframes, playOptions);
+  };
+  return Object.assign(play, { insert, start });
 }
 
 // Plays `keyframes` on a copy of the element `ref` points at as it unmounts.

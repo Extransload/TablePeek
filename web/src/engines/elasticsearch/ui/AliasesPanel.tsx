@@ -4,6 +4,7 @@
 // Removing an index (`remove_index`) is never offered here.
 
 import { useEffect, useMemo, useState } from "react";
+import { Collapse } from "../../../components/Collapse";
 import { ErrorNotice, FieldError, fieldErrorProps, notifyError } from "../../../components/ErrorNotice";
 import { PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
 import { Gauge } from "../../../components/Gauge";
@@ -197,19 +198,26 @@ export function AliasesPanel({ host, index, kind, refreshSeq, onChanged }: Index
                   <td className="es-alias-filter">
                     {row.filter === null || row.filter === undefined ? (
                       <span className="panel-dim">—</span>
-                    ) : filterOpen ? (
-                      <div className="es-filter-open">
-                        <pre className="panel-pre">
-                          <ConsoleText text={stringifyJson(row.filter, 2)} />
-                        </pre>
-                        <button type="button" className="icon-text-button" onClick={() => toggleFilter(key)}>
-                          {t("접기")}
-                        </button>
-                      </div>
                     ) : (
-                      <button type="button" className="es-filter-line mono" title={t("펼치기")} onClick={() => toggleFilter(key)}>
-                        {stringifyJson(row.filter)}
-                      </button>
+                      <>
+                        <Collapse open={!filterOpen}>
+                          <button type="button" className="es-filter-line mono" title={t("펼치기")} onClick={() => toggleFilter(key)}>
+                            {stringifyJson(row.filter)}
+                          </button>
+                        </Collapse>
+                        <Collapse open={filterOpen} className="es-filter-open">
+                          {() => (
+                            <>
+                              <pre className="panel-pre">
+                                <ConsoleText text={stringifyJson(row.filter, 2)} />
+                              </pre>
+                              <button type="button" className="icon-text-button" onClick={() => toggleFilter(key)}>
+                                {t("접기")}
+                              </button>
+                            </>
+                          )}
+                        </Collapse>
+                      </>
                     )}
                   </td>
                   <td className="mono">{routingText(row) || <span className="panel-dim">—</span>}</td>
@@ -246,7 +254,7 @@ export function AliasesPanel({ host, index, kind, refreshSeq, onChanged }: Index
 
   return (
     <div className="mg-pane es-pane">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">{shown === null ? t("별칭") : kind === "alias" ? t("인덱스 {count}개", { count: shown.length }) : t("별칭 {count}개", { count: shown.length })}</span>
         <span className="spacer" />
         <button type="button" className="icon-button" title={t("새로고침")} aria-label={t("새로고침")} onClick={() => setReloadSeq((n) => n + 1)}>

@@ -903,6 +903,95 @@ services:
       retries: 60
       start_period: 20s
 
+  # Redis 8 (with its bundled JSON, search and time series modules) on
+  # 16379, the host's 6379 left alone. The default user's password is
+  # tablepeek_test_pw, and the ACL user tablepeek has the same password and
+  # every right. `make test-db` seeds one key of each type in database 0
+  # (a big hash, a binary string, a stream, a JSON document) and a few in
+  # database 1 (redis-seed.sh).
+  redis:
+    image: redis:8
+    command:
+      - redis-server
+      - --requirepass
+      - tablepeek_test_pw
+      - --user
+      - tablepeek
+      - "on"
+      - ">tablepeek_test_pw"
+      - "~*"
+      - "&*"
+      - "+@all"
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "tablepeek_test_pw", "--no-auth-warning", "ping"]
+      interval: 2s
+      retries: 30
+
+  # The same over TLS only, on 16380: a certificate for localhost and
+  # 127.0.0.1 from the test CA (testdb/x509, gen.sh), client certificates
+  # required (testdb/x509/client.pem).
+  redis-tls:
+    image: redis:8
+    profiles: [redis-tls]
+    command:
+      - redis-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /certs/server.pem
+      - --tls-key-file
+      - /certs/server.pem
+      - --tls-ca-cert-file
+      - /certs/ca.pem
+      - --tls-auth-clients
+      - "yes"
+      - --requirepass
+      - tablepeek_test_pw
+    ports:
+      - "127.0.0.1:16380:6379"
+    volumes:
+      - ./:/seed:ro
+      - ./x509:/certs:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/certs/ca.pem", "--cert", "/certs/client.pem", "--key", "/certs/client.pem", "-a", "tablepeek_test_pw", "--no-auth-warning", "ping"]
+      interval: 2s
+      retries: 30
+
+  # Valkey 8 on 16381 and Redis 6.2 (the oldest Redis the engine supports)
+  # on 16382, both with the default user's password only and the same seed
+  # (without the module keys, which they lack).
+  valkey:
+    image: valkey/valkey:8
+    profiles: [valkey]
+    command: ["valkey-server", "--requirepass", "tablepeek_test_pw"]
+    ports:
+      - "127.0.0.1:16381:6379"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "tablepeek_test_pw", "--no-auth-warning", "ping"]
+      interval: 2s
+      retries: 30
+
+  redis-6:
+    image: redis:6.2
+    profiles: [redis-6]
+    command: ["redis-server", "--requirepass", "tablepeek_test_pw"]
+    ports:
+      - "127.0.0.1:16382:6379"
+    volumes:
+      - ./:/seed:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "tablepeek_test_pw", "--no-auth-warning", "ping"]
+      interval: 2s
+      retries: 30
+
 # The keytab the KDC writes for the Kerberos test server.
 volumes:
   kerberos-keytab:

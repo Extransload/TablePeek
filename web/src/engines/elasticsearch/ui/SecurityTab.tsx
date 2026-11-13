@@ -73,7 +73,7 @@ export function SecurityTab({ host, section, onSectionChange, refreshSeq }: Secu
   const user = overview.user;
   return (
     <div className="mg-root mg-coll es-root">
-      <div className="mg-subbar">
+      <div className="mg-subbar surface-top">
         <div className="mg-subtabs" role="tablist">
           {SECTIONS.map((s) => (
             <button key={s.id} type="button" role="tab" aria-selected={section === s.id} className={section === s.id ? "active" : undefined} onClick={() => onSectionChange(s.id)}>
@@ -492,7 +492,7 @@ function SectionView({ ctx, kind, refreshSeq }: { ctx: SecurityContext; kind: Se
 
   return (
     <div className="mg-pane es-pane">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">{shown === null ? t(SECTIONS.find((s) => s.id === kind)?.label ?? "") : t("{count}개", { count: shown.length.toLocaleString() })}</span>
         <input type="search" className="mg-input es-sec-filter" placeholder={t("이름으로 거르기")} aria-label={t("이름으로 거르기")} value={filter} onChange={(event) => setFilter(event.target.value)} />
         <label className="es-check">

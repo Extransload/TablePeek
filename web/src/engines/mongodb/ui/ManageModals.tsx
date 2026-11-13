@@ -9,6 +9,7 @@
 // and close or retarget the tabs involved.
 
 import { useEffect, useMemo, useState } from "react";
+import { Collapse } from "../../../components/Collapse";
 import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
@@ -371,7 +372,7 @@ function CreateModal({ conn, db, view, onEffect, onClose }: { conn: string; db: 
           ) : null}
         </div>
       ) : null}
-      {kind !== "view" && validatorOn ? <MongoEditor value={validatorText} onChange={setValidatorText} role="filter" className="mg-admin-editor" ariaLabel={t("검증 규칙")} /> : null}
+      <Collapse open={kind !== "view" && validatorOn}>{() => <MongoEditor value={validatorText} onChange={setValidatorText} role="filter" className="mg-admin-editor" ariaLabel={t("검증 규칙")} />}</Collapse>
       <CommandPreview command={"error" in plan ? null : plan.command} problem={"error" in plan ? plan.error : null} />
       <Failure error={failure} />
     </AdminModal>

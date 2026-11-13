@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in TablePeek doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a security problem, don't file an issue: report it privately as [SECURITY.md](https://github.com/Extransload/TablePeek/blob/main/SECURITY.md) describes.
+
+        Leave out passwords, tokens, and real data. Replace host names and values with stand-ins if you need to.
+  - type: input
+    id: version
+    attributes:
+      label: TablePeek version
+      description: "`tablepeek --version`, or Settings > General in the app."
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: runs-as
+    attributes:
+      label: How you run TablePeek
+      options:
+        - Desktop app
+        - Command line (tablepeek serve), in a browser
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      description: If you use TablePeek in a browser, which one and which version.
+      placeholder: "Chrome 142, Safari 26, Firefox 145"
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 26.1 (Apple silicon), Windows 11, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: Database engine and server version
+      description: Leave empty if no database is involved. Mention a tunnel or TLS if the connection uses one.
+      placeholder: "PostgreSQL 17.2 over an SSH tunnel"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a connection to …
+        2. Run …
+        3. Click …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: The error message as shown, and a screenshot if it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output from the terminal running `tablepeek serve`, or the browser's developer console. Remove tokens and passwords first.
+      render: text

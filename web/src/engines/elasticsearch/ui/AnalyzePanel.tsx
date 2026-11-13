@@ -406,7 +406,7 @@ export function AnalyzePanel({ host, index, kind, refreshSeq }: IndexPanelProps)
 
   return (
     <div className="mg-pane es-pane">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <IndexPicker names={names} value={current} onChange={setPicked} />
         <div className="segmented" role="group" aria-label={t("분석 방법")}>
           {(

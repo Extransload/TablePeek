@@ -559,7 +559,7 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
 
   return (
     <div className="mg-pane es-pane es-sql">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">SQL</span>
         <span className="panel-dim">{t("⌘↩ 실행 · 선택한 부분만 실행")}</span>
         <span className="spacer" />
@@ -628,7 +628,7 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
         ) : null}
       </div>
       {run !== null ? (
-        <div className="data-toolbar es-sql-foot">
+        <div className="data-toolbar es-sql-foot surface-bars">
           <div className="footer-start">
             <span className="row-range">{t("{count}행", { count: run.rows.length.toLocaleString() })}</span>
             <span className="result-bar-time">{`${Math.round(run.elapsedMs).toLocaleString()} ms`}</span>

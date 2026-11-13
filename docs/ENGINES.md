@@ -1,12 +1,12 @@
 # 엔진 구조: 엔진을 수십 개로 늘릴 수 있게
 
-작성: 2026-10-28 · 상태: 설계 확정, 구현 전
+작성: 2026-10-28 · 갱신: 2026-11-12 · 상태: 구현 완료. 이 구조로 옮겼고(§7), 엔진 13종(SQLite·PostgreSQL·MySQL/MariaDB·CockroachDB·SQL Server·Oracle·ClickHouse·Cassandra·ScyllaDB·MongoDB·Elasticsearch·OpenSearch·Redis/Valkey)이 `crates/tablepeek-engine/src/registry.rs`에 등록되어 있다
 
 TablePeek은 SQLite·PostgreSQL·MySQL/MariaDB·CockroachDB·SQL Server 다섯 엔진으로 시작했고, MongoDB를 시작으로 엔진을 수십 개 더 붙인다. 이 문서는 엔진 하나를 더할 때 **엔진 폴더 하나와 등록 한 줄**만 건드리면 되게 하는 구조와, 그 구조로 옮기면서 지켜야 할 것을 정한다.
 
 ## 1. 지금 구조의 문제
 
-조사 결과(2026-10-28) 기준이다.
+조사 결과(2026-10-28) 기준이다. 옮기기 전 구조의 기록이며, 지금은 `enum Backend`가 없고 엔진마다 `DriverFactory`·`Driver`를 구현한다.
 
 | 위치 | 지금 | 엔진 하나 추가 시 |
 |---|---|---|
@@ -35,7 +35,7 @@ TablePeek은 SQLite·PostgreSQL·MySQL/MariaDB·CockroachDB·SQL Server 다섯 �
   "id": "mongodb",                  // 저장·API·키체인에 쓰는 이름. 한번 정하면 바꾸지 않는다
   "aliases": ["mongo"],             // URL 스킴·옛 이름
   "label": "MongoDB",
-  "paradigm": "document",           // "sql" | "document" | 이후 "keyvalue" | "search" | …
+  "paradigm": "document",           // "sql" | "document" | "search" | "keyvalue" | …
   "family": "mongodb",              // 같은 방언을 쓰는 묶음 (cockroach → "postgres", mariadb → "mysql")
   "transport": "server",            // "server" | "file" | "memory"
   "default_port": 27017,
@@ -106,6 +106,7 @@ TablePeek은 SQLite·PostgreSQL·MySQL/MariaDB·CockroachDB·SQL Server 다섯 �
 - 필드 종류: `text`, `host`, `port`, `secret`, `file`, `path`, `select`, `toggle`, `uri`, `number`, `textarea`.
 - `visible_when`: 객체 하나면 그 안의 조건이 모두 맞을 때, 객체 목록이면 그중 하나라도 맞을 때 보인다. 보이지 않는 필드는 서버로 보내지 않는다.
 - `select` 선택지의 `sets`: 그 선택지를 고르면 함께 바뀌는 다른 필드 값(X.509를 고르면 TLS가 켜짐). 연결 문자열을 붙여 넣을 때도 적용되지만, 문자열이 직접 말한 값이 이긴다.
+- `uri` 필드의 `scheme_sets`: 스킴별로 함께 바뀌는 다른 필드 값(Redis의 `rediss://` → `tls: true`, `redis://` → `tls: false`). 문자열이 직접 말한 값이 이긴다.
 - `secret`은 디스크에 쓰지 않고 키체인에 둔다. 계정 이름은 `conn:{저장 id}:{엔진 id}`(첫 번째 비밀), 그 밖의 비밀은 `conn:{저장 id}:{엔진 id}:{필드 key}`.
 - 첫 번째 비밀(비밀번호)은 그 필드가 보일 때만 묻는다. 서버도 엔진의 `needs_password(config)`가 참일 때만 저장된 비밀번호를 읽고, 없으면 묻게 한다.
 - 검증은 서버가 최종 판단하고, 폼은 `required`·`type`만 미리 검사한다.
@@ -146,6 +147,7 @@ pub trait Driver: Send + Sync {
     fn sql(&self) -> Option<&dyn SqlDriver> { None }
     fn document(&self) -> Option<&dyn DocumentDriver> { None }
     fn search(&self) -> Option<&dyn SearchDriver> { None }
+    fn keyvalue(&self) -> Option<&dyn KeyValueDriver> { None }
 }
 
 #[async_trait]
@@ -198,6 +200,21 @@ pub trait SearchDriver: Send + Sync {
     async fn bulk(&self, req: &BulkRequest, body: String) -> Result<Value, EngineError>;
     async fn export(&self, req: &SearchExportRequest) -> Result<DocStream, EngineError>;
 }
+
+// crates/tablepeek-engine/src/keyvalue.rs
+#[async_trait]
+pub trait KeyValueDriver: Send + Sync {
+    async fn databases(&self) -> Result<Databases, EngineError>;              // 번호별 키 수(INFO keyspace)
+    async fn scan(&self, req: &ScanRequest) -> Result<ScanPage, EngineError>; // SCAN 한 묶음, KEYS는 쓰지 않는다
+    async fn key_info(&self, key: &KeyRef) -> Result<KeyInfo, EngineError>;  // 종류·TTL·MEMORY USAGE·인코딩·길이
+    async fn read(&self, req: &ReadRequest) -> Result<KeyPage, EngineError>;  // 종류별 페이지(HSCAN·LRANGE·SSCAN·ZRANGE·XRANGE·JSON.GET)
+    async fn edit(&self, req: &EditRequest) -> Result<EditOutcome, EngineError>;
+    async fn classify(&self, line: &str, db: u32) -> Result<Classified, EngineError>; // 콘솔 명령: read·write·danger
+    async fn console(&self, req: &ConsoleRequest) -> Result<ConsoleReply, EngineError>; // + stop_console
+    async fn info(&self, section: Option<&str>) -> Result<Vec<InfoSection>, EngineError>; // + slowlog, slowlog_reset
+    async fn kill_client(&self, id: &str) -> Result<(), EngineError>;        // CLIENT KILL ID
+    async fn export(&self, req: &ExportRequest) -> Result<FileStream, EngineError>;
+}
 ```
 
 - 기존 다섯 엔진은 지금 함수(`postgres::schema` 등)를 그대로 두고, 트레이트 구현이 그 함수를 부른다. 동작은 바뀌지 않는다.
@@ -205,6 +222,7 @@ pub trait SearchDriver: Send + Sync {
 - `Engine`은 `Arc<dyn Driver>` 하나를 들고, 지금의 `enum Backend` `match` 18곳은 트레이트 호출로 바뀐다.
 - 오류는 `EngineError::Driver { engine: &'static str, code: Option<String>, message: String, interrupted: bool }` 하나로 모은다. `interrupted`는 취소로 멈춘 문장인지를 드라이버가 만들 때 정한다. 기존 코드 이름(`postgres_error` 등)은 서버가 `engine`에서 만든다.
 - 검색 엔진(`paradigm: "search"`)은 `search()`를 낸다. 값은 서버가 준 JSON 그대로 오가고, 요청·응답 모양은 `/api/search/*` 본문이다(`docs/engines/elasticsearch.md`). 확인이 필요한 규칙(`check_confirmed`·`check_single_index`·`check_alias_actions`)은 `search.rs`에 있어 서버가 보내기 전에 부른다. 검색 엔진의 세션은 실행 중인 작업(tasks)이라 `Engine::kill_session`은 `cancel_task`로 간다.
+- 키-값 엔진(`paradigm: "keyvalue"`)은 `keyvalue()`를 낸다. 키·값은 이진 안전하게 오가며 UTF-8이면 JSON 문자열, 아니면 `{"b64": …}`다. 요청·응답 모양은 `/api/kv/*` 본문이다(`docs/engines/redis.md` §4). 세션은 CLIENT LIST의 클라이언트라 `Engine::kill_session`은 `kill_client`(CLIENT KILL ID)로 간다. 콘솔은 따로 연결 하나를 써서 막는 명령·MULTI가 나머지를 붙잡지 않는다.
 - SQL 엔진의 객체 목록(`DbObjects`)은 `views`·`functions`·`procedures`·`triggers`·`sequences`에 더해, 비어 있으면 빠지는 `materialized_views`·`dictionaries`(ClickHouse)·`types`(Cassandra UDT, Oracle 객체 타입)·`aggregates`(Cassandra)·`synonyms`·`packages`(Oracle)와 엔진이 더한 종류를 갖는다. 웹의 `DefinitionKind`가 같은 종류를 갖고, `opensData(kind)`인 것(뷰·구체화된 뷰·딕셔너리)은 데이터 탭으로 열린다. `/api/definition`은 이 종류들을 받는다.
 - 방언의 `lexing`에는 Oracle을 위한 `slashBlocks`(PL/SQL 단위·익명 블록은 `/`만 있는 줄에서 끝나고 `END;`를 지닌다)와 `qQuotes`(`q'[…]'`)가 있다. 서버의 `Dialect::Oracle`은 `:N` 바인드와 q-문자열을 읽는다.
 - 페이지 토큰(`capabilities.cursor_paging`): 드라이버가 `QueryData.next_page`(남은 행이 시작되는 곳, 불투명한 문자열)를 채우고 `SqlDriver::query_from(sql, max_rows, page)`로 같은 문장을 이어 읽는다(기본 구현은 `Unsupported`). WebSocket `query`가 `page`를 받고 `meta`가 `next_page`를 보낸다. 웹의 `SqlDialect`에는 OFFSET이 없는 엔진을 위한 `keyOrder`·`filterOps`·`filterLogics`·`containsSql`·`allowFilteringClause`·`consistencyLevels`·`noTableRename`·`noTableCopy`, 컬럼에 NOT NULL·기본값이 없고 있는 컬럼의 타입·키 소속이 고정인 엔진을 위한 `fixedColumns`(구조 그리드가 그 열을 빼고 칸을 잠근다), 저장된 행의 키를 바꿀 수 없는 엔진을 위한 `fixedKeys`(그리드가 키 칸을 잠그고 마우스를 올리면 이유를 보인다, `GridEditHandlers.lockedTitle`), 문장 나누기(`Lexing`)에는 `slashComments`·`batchBlocks`가 있다(`docs/engines/cassandra.md`).
@@ -270,6 +288,7 @@ pub fn factory(id: &str) -> Option<&'static dyn DriverFactory>;   // 별칭 포�
 | `elasticsearch`, `opensearch` | `url`, `cloud_id`(Elasticsearch만), `host`, `port`, `tls`(bool), `path_prefix`, `auth`(`none`·`basic`·`api_key`·`bearer`), `user`, `password`(비밀: 비밀번호·API 키·토큰), `tls_ca_file`, `tls_fingerprint`, `tls_skip_verify`(bool), `tls_client_cert`, `tls_client_key` |
 | `clickhouse` | `host`, `port`(8123, HTTPS 8443), `user`(기본 `default`), `password`(비밀), `database`, `tls`(bool, HTTPS), `tls_ca_file`, `tls_skip_verify`(bool) |
 | `oracle` | `connect_mode`(`service`·`sid`·`descriptor`), `host`, `port`(1521), `database`(서비스 이름 또는 SID), `connect_string`(Easy Connect·`(DESCRIPTION=…)`·TNS 별칭), `user`, `password`(비밀), `privilege`(빈 값·`sysdba`·`sysoper`), `tls`(bool, TCPS), `wallet_file`(ewallet.pem), `wallet_password`(비밀), `tnsnames_file` |
+| `redis` | `uri`(`redis://`·`rediss://`), `host`, `port`(6379), `auth`(`none`·`password`), `user`(ACL), `password`(비밀), `database`(번호), `tls`(bool), `tls_ca_file`, `tls_client_cert`, `tls_client_key`, `tls_skip_verify`(bool) |
 
 옛 형식의 엔진별 객체(`postgres: {…}` 등)는 같은 키 이름을 쓰므로, 옮길 때는 객체를 `config`로 옮기기만 하면 된다. 비밀 필드는 저장·응답에서 빠지고, 저장된 비밀이 있으면 응답에 `has_password: true`가 붙는다.
 
@@ -281,6 +300,7 @@ pub fn factory(id: &str) -> Option<&'static dyn DriverFactory>;   // 별칭 포�
 - 바이너리 셀(`capabilities.binary_cells`): `POST /api/sql/cell`(본문 `CellRef` = `{table, pk: [{column, value}], column}`)은 값 전부를 `application/octet-stream`으로 흘려보내고, 중간에 실패하면 응답을 끊는다(일부를 전부로 받지 않게). `POST /api/sql/cell/write?conn=…&cell=<CellRef JSON>`은 본문(새 값의 바이트, 크기 제한 없음)을 받는 대로 엔진에 넘겨 `{rows}`를 돌려준다.
 - 문서형: `/api/doc/*` (MongoDB 사양 문서 참고). 엔진이 `document()`를 갖지 않으면 `unsupported_capability`(400).
 - 검색 엔진: `/api/search/*` (`docs/engines/elasticsearch.md` §4). 엔진이 `search()`를 갖지 않으면 `unsupported_capability`(400). 경로는 `crates/tablepeek-server/src/search.rs`에 모여 있다.
+- 키-값: `/api/kv/*` (`docs/engines/redis.md` §4). 엔진이 `keyvalue()`를 갖지 않으면 `unsupported_capability`(400). 경로는 `crates/tablepeek-server/src/keyvalue.rs`에 모여 있다.
 
 ## 5. 웹
 

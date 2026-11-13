@@ -125,7 +125,7 @@ export function ServerInfoPanel({ conn }: { conn: string }) {
 
   return (
     <div className="panel">
-      <div className="panel-head">
+      <div className="panel-head surface-bars">
         <span className="panel-title">{t("서버 정보")}</span>
         {info ? <span className="panel-stat">{info.driver}</span> : null}
         <span className="spacer" />

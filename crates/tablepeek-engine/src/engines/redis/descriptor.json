@@ -1,0 +1,185 @@
+{
+  "id": "redis",
+  "aliases": [
+    "valkey"
+  ],
+  "label": "Redis",
+  "paradigm": "keyvalue",
+  "family": "redis",
+  "transport": "server",
+  "default_port": 6379,
+  "url_schemes": [
+    "redis",
+    "rediss"
+  ],
+  "error_code_prefix": "redis",
+  "capabilities": {
+    "language": "redis",
+    "objects": [
+      "key"
+    ],
+    "schema": "sampled",
+    "edit_by_key": true,
+    "transactions": "none",
+    "foreign_keys": false,
+    "ddl": false,
+    "databases": "switch",
+    "users": false,
+    "explain": null,
+    "exact_count": true,
+    "dump": null,
+    "import_formats": [],
+    "export_formats": [
+      "json",
+      "text"
+    ],
+    "sessions": {
+      "kill": true
+    },
+    "validation": false,
+    "aggregation": false,
+    "indexes": {
+      "create": false,
+      "drop": false
+    }
+  },
+  "connection": {
+    "fields": [
+      {
+        "key": "uri",
+        "type": "uri",
+        "label": "연결 문자열",
+        "schemes": [
+          "redis",
+          "rediss"
+        ],
+        "scheme_sets": {
+          "redis": {
+            "tls": false
+          },
+          "rediss": {
+            "tls": true
+          }
+        },
+        "fills_others": true,
+        "placeholder": "redis://… 또는 rediss://… (붙여 넣으면 나머지 칸을 채움)"
+      },
+      {
+        "key": "host",
+        "type": "host",
+        "label": "호스트",
+        "required_unless": "uri",
+        "default": "127.0.0.1"
+      },
+      {
+        "key": "port",
+        "type": "port",
+        "label": "포트",
+        "default": 6379
+      },
+      {
+        "key": "auth",
+        "type": "select",
+        "label": "인증 방식",
+        "default": "none",
+        "options": [
+          {
+            "value": "none",
+            "label": "없음"
+          },
+          {
+            "value": "password",
+            "label": "비밀번호 (requirepass·ACL)"
+          }
+        ]
+      },
+      {
+        "key": "user",
+        "type": "text",
+        "label": "사용자 (ACL)",
+        "visible_when": {
+          "auth": [
+            "password"
+          ]
+        },
+        "placeholder": "(선택) 비우면 default 사용자"
+      },
+      {
+        "key": "password",
+        "type": "secret",
+        "label": "비밀번호",
+        "visible_when": {
+          "auth": [
+            "password"
+          ]
+        }
+      },
+      {
+        "key": "database",
+        "type": "number",
+        "label": "데이터베이스 번호",
+        "default": 0,
+        "placeholder": "0–15"
+      },
+      {
+        "key": "tls",
+        "type": "toggle",
+        "label": "TLS",
+        "description": "TLS로 접속 (rediss://)",
+        "default": false
+      },
+      {
+        "key": "tls_ca_file",
+        "type": "file",
+        "label": "CA 인증서",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_client_cert",
+        "type": "file",
+        "label": "클라이언트 인증서",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_client_key",
+        "type": "file",
+        "label": "클라이언트 키",
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      },
+      {
+        "key": "tls_skip_verify",
+        "type": "toggle",
+        "label": "인증서 검사 안 함",
+        "description": "개발용: 서버 인증서를 검사하지 않음",
+        "default": false,
+        "group": "TLS 인증서",
+        "visible_when": {
+          "tls": [
+            true
+          ]
+        }
+      }
+    ],
+    "tunnels": [
+      "ssh",
+      "http"
+    ],
+    "summary": "{host} : {port}",
+    "detail": "{user}@{host}:{port}/{database}"
+  }
+}

@@ -219,15 +219,36 @@ const FIT_OPTIONS: { value: BackgroundFit; label: string }[] = [
   { value: "tile", label: "바둑판" },
 ];
 
-// The docked parts' own colour over a translucent page (settings.ts).
-type SurfaceKey = "surfaceTop" | "surfaceLeft" | "surfaceRight" | "surfaceBottom" | "surfaceBars" | "surfaceSheet";
-const SURFACE_ROWS: { key: SurfaceKey; label: string; keywords: string }[] = [
+// The areas' own colour over a translucent page, and the cards' in them
+// (settings.ts).
+type SurfaceKey =
+  | "surfaceTop"
+  | "surfaceLeft"
+  | "surfaceRight"
+  | "surfaceBottom"
+  | "surfaceBars"
+  | "surfaceMain"
+  | "surfaceSheet"
+  | "surfaceCards";
+const SURFACE_ROWS: { key: SurfaceKey; label: string; keywords: string; hint?: string }[] = [
   { key: "surfaceTop", label: "상단 바", keywords: "surface top bar tab strip app bar 탭" },
   { key: "surfaceLeft", label: "왼쪽 사이드바", keywords: "surface left sidebar schema tables 테이블 목록" },
   { key: "surfaceRight", label: "오른쪽 사이드바", keywords: "surface right sidebar row detail 행 상세" },
   { key: "surfaceBottom", label: "하단 콘솔", keywords: "surface bottom console log 콘솔" },
   { key: "surfaceBars", label: "도구 막대", keywords: "surface toolbar result bar 결과 막대" },
+  {
+    key: "surfaceMain",
+    label: "본문",
+    keywords: "surface main area editor table grid workbench content 에디터 테이블 본문",
+    hint: "에디터, 테이블, 결과, 문서와 키 화면, 정보 페이지, 홈의 바탕입니다.",
+  },
   { key: "surfaceSheet", label: "설정 창", keywords: "surface settings sheet 설정" },
+  {
+    key: "surfaceCards",
+    label: "카드",
+    keywords: "surface cards panel chip code block sticky header 카드 패널",
+    hint: "영역 안의 카드, 패널, 코드 블록이 영역 위에 더 까는 정도입니다. 설정 창의 카드도 이것을 따릅니다.",
+  },
 ];
 
 // The floating surfaces' own opacities when they turn to glass (material.ts).
@@ -1233,7 +1254,13 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 ) : null}
                 {pageTranslucent
                   ? SURFACE_ROWS.map((row) => (
-                      <SettingRow key={row.key} label={row.label} keywords={row.keywords} {...fromDefault(row.key)}>
+                      <SettingRow
+                        key={row.key}
+                        label={row.label}
+                        keywords={row.keywords}
+                        hint={row.hint === undefined ? undefined : t(row.hint)}
+                        {...fromDefault(row.key)}
+                      >
                         <Slider
                           label={t(row.label)}
                           value={settings[row.key]}
@@ -1292,6 +1319,23 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                   label={t("동작 줄이기")}
                   checked={settings.reduceMotion}
                   onChange={(reduceMotion) => onChange({ reduceMotion })}
+                />
+              </SettingRow>
+              <SettingRow
+                label="CLI 입력줄"
+                keywords="cli console terminal prompt input redis tern 콘솔 터미널 프롬프트 입력"
+                hint={t("흐름: 터미널처럼 위에서부터 내려오고 입력줄이 마지막 응답 바로 아래에 붙습니다. 아래 고정: 입력줄이 화면 맨 아래에 머뭅니다.")}
+                {...fromDefault("cliInput")}
+                onActivate={() => onChange({ cliInput: settings.cliInput === "flow" ? "docked" : "flow" })}
+              >
+                <Choice
+                  label={t("CLI 입력줄")}
+                  value={settings.cliInput}
+                  options={[
+                    { value: "flow", label: t("흐름") },
+                    { value: "docked", label: t("아래 고정") },
+                  ]}
+                  onChange={(cliInput) => onChange({ cliInput })}
                 />
               </SettingRow>
             </SettingsGroup>

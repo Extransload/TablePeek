@@ -39,7 +39,7 @@ export function SidebarPanel({ conn, items, queries, history }: SidebarPanelProp
   }
 
   return (
-    <aside className="schema-sidebar" ref={motionRef}>
+    <aside className="schema-sidebar surface-left" ref={motionRef}>
       <div className="sidebar-tabs" role="tablist" aria-label={t("사이드바")}>
         {TABS.map((entry) => (
           <button

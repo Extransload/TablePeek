@@ -30,14 +30,16 @@ export function humanizeElapsed(ms: number | null): string | null {
   if (ms === null || !Number.isFinite(ms) || ms < 0) {
     return null;
   }
-  if (ms < 1000) {
+  // Each unit is picked by the value as it will read once rounded: 999.6ms
+  // is "1.0s", not "1000ms", and 59.96s is "1m", not "60.0s".
+  if (ms < 999.5) {
     return `${Math.round(ms)}ms`;
   }
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) {
-    return t("{seconds}초", { seconds: (Math.round(totalSeconds * 10) / 10).toFixed(1) });
+  const tenths = Math.round(ms / 100) / 10;
+  if (tenths < 60) {
+    return t("{seconds}초", { seconds: tenths.toFixed(1) });
   }
-  const seconds = Math.round(totalSeconds);
+  const seconds = Math.round(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   if (minutes < 60) {

@@ -373,7 +373,7 @@ export function ExplainPanel({ ns, facts, query, active, runSeq, onCreateIndex }
 
   return (
     <div className="mg-pane mg-explain">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">{t("실행 계획")}</span>
         {shown !== null ? <ShellText className="panel-dim mg-explain-cmd mono" text={shown.command} /> : null}
         {stale ? (

@@ -17,6 +17,7 @@ import { RollingNumber } from "./RollingNumber";
 import { LoadingState } from "./Spinner";
 import { PromptModal } from "./PromptModal";
 import { SavedQueryModal } from "./SavedQueryModal";
+import { Collapse } from "./Collapse";
 import { ChevronDownIcon, ChevronIcon, FileIcon, FolderIcon, PlusIcon, SearchIcon } from "./icons";
 
 interface QueriesPaneProps {
@@ -364,8 +365,9 @@ export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
                   <span className="schema-section-label">{group.name}</span>
                   <RollingNumber className="schema-section-count" value={group.queries.length} />
                 </div>
-                {isOpen(group.id)
-                  ? group.queries.map((query) => (
+                <Collapse open={isOpen(group.id)} stagger>
+                  {() =>
+                    group.queries.map((query) => (
                       <div
                         className={`queries-item${
                           selected?.kind === "query" && selected.id === query.id ? " selected" : ""
@@ -391,7 +393,8 @@ export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
                         {query.keyword ? <span className="queries-keyword">{query.keyword}</span> : null}
                       </div>
                     ))
-                  : null}
+                  }
+                </Collapse>
               </div>
             );
           })

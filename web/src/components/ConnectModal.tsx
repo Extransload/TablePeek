@@ -22,6 +22,7 @@ import {
   type FormValues,
 } from "../engines/connection";
 import { t } from "../i18n";
+import { Collapse } from "./Collapse";
 import { confirmDialog } from "./ConfirmDialog";
 import {
   ApiRequestError,
@@ -212,6 +213,13 @@ function autoName(engine: Engine | undefined, form: ConnectForm): string {
   }
   const host = text(form.values, "host").trim() || "localhost";
   const database = text(form.values, "database").trim();
+  // A key-value store's databases are numbers, not names: its address
+  // reads better, with the database only when it isn't the first.
+  if (engine.paradigm === "keyvalue") {
+    const port = text(form.values, "port").trim() || String(engine.default_port ?? "");
+    const address = port === "" ? host : `${host}:${port}`;
+    return database === "" || database === "0" ? address : `${address}/${database}`;
+  }
   return database === "" ? host : `${database} @ ${host}`;
 }
 
@@ -755,7 +763,10 @@ export function ConnectModal({
             ? "연결 성공 · {driver} · 컬렉션 {tables}개 · {ms}ms"
             : engine.workbench === "search"
               ? "연결 성공 · {driver} · 인덱스 {tables}개 · {ms}ms"
-              : "연결 성공 · {driver} · 테이블 {tables}개 · {ms}ms",
+              : engine.paradigm === "keyvalue"
+                ? // Keys are scanned, never listed: the test has no count to show.
+                  "연결 성공 · {driver} · {ms}ms"
+                : "연결 성공 · {driver} · 테이블 {tables}개 · {ms}ms",
           {
             driver: engine.label,
             tables: result.tables,
@@ -1314,7 +1325,9 @@ export function ConnectModal({
                 </button>
                 <span className="cm-tunnel-hint">{t("레플리카셋·읽기 선호처럼 보통은 그대로 두는 설정")}</span>
               </div>
-              {advancedShown ? <section className="cm-card">{renderFields(engine, true)}</section> : null}
+              <Collapse open={advancedShown}>
+                {() => <section className="cm-card">{renderFields(engine, true)}</section>}
+              </Collapse>
             </>
           ) : null}
 
@@ -1348,8 +1361,8 @@ export function ConnectModal({
             </div>
           ) : null}
 
-          {form.sshEnabled && tunnels.includes("ssh") ? (
-            <section className="cm-card cm-reveal">
+          <Collapse open={form.sshEnabled && tunnels.includes("ssh")}>
+            <section className="cm-card">
               <Row label={t("서버")} htmlFor="cm-ssh-host">
                 <div className="cm-pair">
                   <input
@@ -1432,10 +1445,10 @@ export function ConnectModal({
                 </Row>
               )}
             </section>
-          ) : null}
+          </Collapse>
 
-          {form.httpEnabled && tunnels.includes("http") ? (
-            <section className="cm-card cm-reveal">
+          <Collapse open={form.httpEnabled && tunnels.includes("http")}>
+            <section className="cm-card">
               <Row label={t("프록시")} htmlFor="cm-http-host">
                 <div className="cm-pair">
                   <input
@@ -1483,7 +1496,7 @@ export function ConnectModal({
                 </div>
               </Row>
             </section>
-          ) : null}
+          </Collapse>
         </div>
 
         {/* An error shows once, here: explained when a rule knows it, its

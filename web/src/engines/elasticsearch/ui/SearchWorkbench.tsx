@@ -653,7 +653,7 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
 
   return (
     <div className="mg-root mg-coll es-root">
-      <div className="mg-subbar">
+      <div className="mg-subbar surface-top">
         <div className="mg-subtabs" role="tablist">
           {SUBTABS.map((s) => (
             <button key={s.id} type="button" role="tab" aria-selected={sub === s.id} className={sub === s.id ? "active" : undefined} onClick={() => setSub(s.id)}>
@@ -688,7 +688,7 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
       <div className="mg-panes">
         {sub === "docs" ? (
           <div className="mg-pane mg-docs-pane">
-            <div className="data-toolbar mg-docbar">
+            <div className="data-toolbar mg-docbar surface-bars">
               <div className="footer-start">
                 {editable ? (
                   <button type="button" className="footer-button" title={t("문서 추가 (JSON)")} onClick={() => openEditor("insert", null)}>
@@ -754,7 +754,7 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
                 </div>
               ) : null}
             </div>
-            <div className="data-toolbar mg-pager">
+            <div className="data-toolbar mg-pager surface-bars">
               <div className="footer-start" />
               <div className="footer-middle">
                 <span className="row-range" title={result ? `${Math.round(result.elapsedMs)} ms${result.took !== null ? ` · took ${result.took} ms` : ""}` : undefined}>

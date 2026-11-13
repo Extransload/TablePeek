@@ -95,7 +95,7 @@ export function PivotView({ columns, rows, settings, scope, warn, themeKey, onCh
 
   return (
     <div className="analysis-view">
-      <div className="analysis-controls">
+      <div className="analysis-controls surface-bars">
         <div className="analysis-field">
           <span>{t("행")}</span>
           <span className="analysis-chips">

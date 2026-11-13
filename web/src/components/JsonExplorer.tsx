@@ -13,7 +13,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { writeClipboard } from "../clipboard";
 import { formatBytes } from "../format";
 import { t } from "../i18n";
@@ -40,8 +40,10 @@ import {
   type LineSpans,
 } from "../jsonIndex";
 import { IS_MAC, formatBinding, matchesBinding, withHint } from "../shortcuts";
+import { useRowMotion } from "./Collapse";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { FieldBox } from "./FieldBox";
-import { ChevronDownIcon, ChevronIcon, CloseIcon, CopyIcon, SearchIcon, ShrinkIcon } from "./icons";
+import { ChevronDownIcon, ChevronIcon, CloseIcon, CopyIcon, SearchIcon, ShrinkIcon, UpDownIcon } from "./icons";
 
 // Quick Look's large view of a JSON value: a windowed tree that stays fast at
 // hundreds of thousands of nodes, search over keys and values, the picked
@@ -56,10 +58,18 @@ interface JsonExplorerProps {
   // Where the value comes from (table, column, row).
   title: ReactNode;
   label: string;
-  dialogRef: Ref<HTMLDivElement>;
-  onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>): void;
-  onCollapse(): void;
-  onClose(): void;
+  dialogRef?: Ref<HTMLDivElement>;
+  onDialogKeyDown?(event: KeyboardEvent<HTMLDivElement>): void;
+  // Absent: no shrink or close button (the view embedded in a pane).
+  onCollapse?(): void;
+  onClose?(): void;
+  // Laid out in its container instead of over the window, as a region.
+  // Its own bars go: the mode, search and expand controls are drawn into
+  // `controlsTarget` (the host's toolbar), the picked node's path heads the
+  // value pane, and the node count goes to `onStats`.
+  embedded?: boolean;
+  controlsTarget?: HTMLElement | null;
+  onStats?(nodes: number): void;
 }
 
 // What the view keeps per document while Quick Look shows it, so going back
@@ -607,6 +617,9 @@ export function JsonExplorer({
   onDialogKeyDown,
   onCollapse,
   onClose,
+  embedded,
+  controlsTarget = null,
+  onStats,
 }: JsonExplorerProps) {
   const state = useMemo(() => stateOf(doc), [doc]);
   const { index, open } = state;
@@ -625,6 +638,8 @@ export function JsonExplorer({
   const searchRef = useRef<HTMLInputElement | null>(null);
   const crumbsRef = useRef<HTMLDivElement | null>(null);
   const copiedTimer = useRef(0);
+  const [foldMenu, setFoldMenu] = useState<{ x: number; y: number; anchor: Element } | null>(null);
+  const compact = embedded === true;
 
   const visible = useMemo(() => visibleIds(index, open), [index, open, version]);
   const lines = raw ? linesOf(state, doc, stored) : null;
@@ -718,7 +733,11 @@ export function JsonExplorer({
     }
   }
 
+  // Nodes opening or closing: their rows drop in or fade out, the rows below glide.
+  const prepareRows = useRowMotion(treeRef);
+
   function changed(): void {
+    prepareRows();
     setVersion((value) => value + 1);
     keepPickShown();
   }
@@ -820,12 +839,150 @@ export function JsonExplorer({
 
   const subtreeHint = t("{key}+클릭: 하위까지 모두 펼치기·접기", { key: IS_MAC ? "⌥" : "Alt" });
 
+  useEffect(() => {
+    onStats?.(index.count);
+  }, [index, onStats]);
+
+  const depths = DEPTHS.filter((depth) => depth <= Math.max(1, index.maxDepth));
+  const modeSwitch = (
+    <div className="segmented json-view-mode" role="group" aria-label={t("보기")}>
+      <button type="button" className={raw ? "" : "active"} aria-pressed={!raw} onClick={() => setRaw(false)}>
+        {t("트리")}
+      </button>
+      <button type="button" className={raw ? "active" : ""} aria-pressed={raw} onClick={() => setRaw(true)}>
+        Raw
+      </button>
+    </div>
+  );
+  const searchBox = (
+    <label className={`field-search json-view-search${compact ? " compact" : ""}`}>
+      <SearchIcon size={12} />
+      <input
+        ref={searchRef}
+        placeholder={raw ? t("원문 검색…") : t("키·값 검색…")}
+        title={withHint(t("검색"), formatBinding("Mod+f"))}
+        aria-label={t("검색")}
+        value={query}
+        spellCheck={false}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          // ⌘↩ is left to the dialog, which switches to the small view.
+          if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) {
+            event.preventDefault();
+            // Pressed before the typing settles, the search runs now.
+            if (query.trim() !== needle) {
+              setNeedle(query.trim());
+            } else {
+              step(event.shiftKey ? -1 : 1);
+            }
+          } else if (event.key === "Escape" && query !== "") {
+            event.preventDefault();
+            event.stopPropagation();
+            setQuery("");
+          }
+        }}
+      />
+      {needle !== "" ? (
+        <span className={`json-view-count${matches.length === 0 ? " none" : ""}`}>
+          {matches.length === 0
+            ? t("결과 없음")
+            : `${(matchAt + 1).toLocaleString()} / ${matches.length.toLocaleString()}`}
+        </span>
+      ) : null}
+    </label>
+  );
+  const stepButtons = (
+    <>
+      <button
+        type="button"
+        className="icon-button"
+        title={withHint(t("이전 결과"), "⇧↩")}
+        aria-label={t("이전 결과")}
+        disabled={matches.length === 0}
+        onClick={() => step(-1)}
+      >
+        <ChevronDownIcon size={11} className="flip" />
+      </button>
+      <button
+        type="button"
+        className="icon-button"
+        title={withHint(t("다음 결과"), "↩")}
+        aria-label={t("다음 결과")}
+        disabled={matches.length === 0}
+        onClick={() => step(1)}
+      >
+        <ChevronDownIcon size={11} />
+      </button>
+    </>
+  );
+  const crumbs = (
+    <div className="json-view-crumbs" ref={crumbsRef}>
+      {chain.map((id, depth) => (
+        <span key={id} className="json-view-crumb-step">
+          {depth > 0 ? <span className="json-view-crumb-sep">›</span> : null}
+          <button
+            type="button"
+            className={`json-view-crumb${id === selected ? " current" : ""}`}
+            onClick={() => select(id, "center")}
+          >
+            {id === 0
+              ? "$"
+              : kindAt(index, index.parents[id]) === "array"
+                ? `[${index.keys[id]}]`
+                : index.keys[id]}
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+  const foldItems = (): ContextMenuItem[] => [
+    { label: t("모두 펼치기"), onSelect: expandAll },
+    { label: t("모두 접기"), onSelect: collapseAll },
+    ...depths.map((depth, at) => ({
+      label: t("깊이 {depth}까지 펼치기", { depth }),
+      separatorBefore: at === 0,
+      onSelect: () => expandToDepth(depth),
+    })),
+  ];
+  // Embedded: the controls in the host's toolbar, as few and small as they go.
+  const hostControls =
+    compact && controlsTarget !== null
+      ? createPortal(
+          <div className="json-view-controls">
+            {modeSwitch}
+            {searchBox}
+            {stepButtons}
+            {!raw ? (
+              <button
+                type="button"
+                className="icon-button"
+                title={t("펼치기·접기 (1–9: 그 깊이까지)")}
+                aria-label={t("펼치기·접기")}
+                aria-haspopup="menu"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setFoldMenu(foldMenu !== null ? null : { x: rect.left, y: rect.bottom + 4, anchor: event.currentTarget });
+                }}
+              >
+                <UpDownIcon size={11} />
+              </button>
+            ) : (
+              <span className="json-view-meta">{t("{count}줄", { count: (lines?.length ?? 0).toLocaleString() })}</span>
+            )}
+            {foldMenu !== null ? (
+              <ContextMenu x={foldMenu.x} y={foldMenu.y} anchor={foldMenu.anchor} items={foldItems()} onClose={() => setFoldMenu(null)} />
+            ) : null}
+          </div>,
+          controlsTarget,
+        )
+      : null;
+
   return (
     <div
-      className="json-view"
+      className={`json-view${embedded === true ? " embedded" : ""}`}
       ref={dialogRef}
-      role="dialog"
-      aria-modal="true"
+      role={embedded === true ? "region" : "dialog"}
+      aria-modal={embedded === true ? undefined : "true"}
       aria-label={label}
       tabIndex={-1}
       onContextMenu={(event) => event.stopPropagation()}
@@ -836,119 +993,70 @@ export function JsonExplorer({
           searchRef.current?.select();
           return;
         }
-        onDialogKeyDown(event);
+        onDialogKeyDown?.(event);
       }}
     >
-      <div className="json-view-head">
-        <span className="json-view-title">{title}</span>
-        <span className="json-view-meta">
-          {t("노드 {count}개", { count: index.count.toLocaleString() })}
-          {size !== null ? ` · ${size}` : ""}
-        </span>
-        <span className="spacer" />
-        <div className="segmented json-view-mode" role="group" aria-label={t("보기")}>
-          <button type="button" className={raw ? "" : "active"} aria-pressed={!raw} onClick={() => setRaw(false)}>
-            {t("트리")}
-          </button>
-          <button type="button" className={raw ? "active" : ""} aria-pressed={raw} onClick={() => setRaw(true)}>
-            Raw
-          </button>
-        </div>
-        <button
-          type="button"
-          className="icon-button"
-          title={withHint(t("작게 보기"), `Esc · ${formatBinding("Mod+Enter")}`)}
-          aria-label={t("작게 보기")}
-          onClick={onCollapse}
-        >
-          <ShrinkIcon size={11} />
-        </button>
-        <button type="button" className="icon-button" title={t("닫기")} aria-label={t("닫기")} onClick={onClose}>
-          <CloseIcon size={11} />
-        </button>
-      </div>
-      <div className="json-view-tools">
-        <label className="field-search json-view-search">
-          <SearchIcon size={12} />
-          <input
-            ref={searchRef}
-            placeholder={raw ? t("원문 검색…") : t("키·값 검색…")}
-            title={withHint(t("검색"), formatBinding("Mod+f"))}
-            value={query}
-            spellCheck={false}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              // ⌘↩ is left to the dialog, which switches to the small view.
-              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) {
-                event.preventDefault();
-                // Pressed before the typing settles, the search runs now.
-                if (query.trim() !== needle) {
-                  setNeedle(query.trim());
-                } else {
-                  step(event.shiftKey ? -1 : 1);
-                }
-              } else if (event.key === "Escape" && query !== "") {
-                event.preventDefault();
-                event.stopPropagation();
-                setQuery("");
-              }
-            }}
-          />
-          {needle !== "" ? (
-            <span className={`json-view-count${matches.length === 0 ? " none" : ""}`}>
-              {matches.length === 0
-                ? t("결과 없음")
-                : `${(matchAt + 1).toLocaleString()} / ${matches.length.toLocaleString()}`}
+      {compact ? (
+        hostControls
+      ) : (
+        <>
+          <div className="json-view-head">
+            <span className="json-view-title">{title}</span>
+            <span className="json-view-meta">
+              {t("노드 {count}개", { count: index.count.toLocaleString() })}
+              {size !== null ? ` · ${size}` : ""}
             </span>
-          ) : null}
-        </label>
-        <button
-          type="button"
-          className="icon-button"
-          title={withHint(t("이전 결과"), "⇧↩")}
-          aria-label={t("이전 결과")}
-          disabled={matches.length === 0}
-          onClick={() => step(-1)}
-        >
-          <ChevronDownIcon size={11} className="flip" />
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          title={withHint(t("다음 결과"), "↩")}
-          aria-label={t("다음 결과")}
-          disabled={matches.length === 0}
-          onClick={() => step(1)}
-        >
-          <ChevronDownIcon size={11} />
-        </button>
-        <span className="spacer" />
-        {raw ? (
-          <span className="json-view-meta">{t("{count}줄", { count: (lines?.length ?? 0).toLocaleString() })}</span>
-        ) : (
-          <>
-            <button type="button" onClick={expandAll}>
-              {t("모두 펼치기")}
-            </button>
-            <button type="button" onClick={collapseAll}>
-              {t("모두 접기")}
-            </button>
-            <span className="json-view-depth-label">{t("깊이")}</span>
-            <div className="segmented json-view-depth" role="group" aria-label={t("이 깊이까지 펼치기")}>
-              {DEPTHS.filter((depth) => depth <= Math.max(1, index.maxDepth)).map((depth) => (
-                <button
-                  type="button"
-                  key={depth}
-                  title={withHint(t("깊이 {depth}까지 펼치기", { depth }), String(depth))}
-                  onClick={() => expandToDepth(depth)}
-                >
-                  {depth}
+            <span className="spacer" />
+            {modeSwitch}
+            {onCollapse !== undefined ? (
+              <button
+                type="button"
+                className="icon-button"
+                title={withHint(t("작게 보기"), `Esc · ${formatBinding("Mod+Enter")}`)}
+                aria-label={t("작게 보기")}
+                onClick={onCollapse}
+              >
+                <ShrinkIcon size={11} />
+              </button>
+            ) : null}
+            {onClose !== undefined ? (
+              <button type="button" className="icon-button" title={t("닫기")} aria-label={t("닫기")} onClick={onClose}>
+                <CloseIcon size={11} />
+              </button>
+            ) : null}
+          </div>
+          <div className="json-view-tools">
+            {searchBox}
+            {stepButtons}
+            <span className="spacer" />
+            {raw ? (
+              <span className="json-view-meta">{t("{count}줄", { count: (lines?.length ?? 0).toLocaleString() })}</span>
+            ) : (
+              <>
+                <button type="button" onClick={expandAll}>
+                  {t("모두 펼치기")}
                 </button>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
+                <button type="button" onClick={collapseAll}>
+                  {t("모두 접기")}
+                </button>
+                <span className="json-view-depth-label">{t("깊이")}</span>
+                <div className="segmented json-view-depth" role="group" aria-label={t("이 깊이까지 펼치기")}>
+                  {depths.map((depth) => (
+                    <button
+                      type="button"
+                      key={depth}
+                      title={withHint(t("깊이 {depth}까지 펼치기", { depth }), String(depth))}
+                      onClick={() => expandToDepth(depth)}
+                    >
+                      {depth}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
       {raw && lines !== null ? (
         <div className="json-view-body">
           <LinesView
@@ -962,34 +1070,19 @@ export function JsonExplorer({
         </div>
       ) : (
         <>
-          <div className="json-view-path">
-            <div className="json-view-crumbs" ref={crumbsRef}>
-              {chain.map((id, depth) => (
-                <span key={id} className="json-view-crumb-step">
-                  {depth > 0 ? <span className="json-view-crumb-sep">›</span> : null}
-                  <button
-                    type="button"
-                    className={`json-view-crumb${id === selected ? " current" : ""}`}
-                    onClick={() => select(id, "center")}
-                  >
-                    {id === 0
-                      ? "$"
-                      : kindAt(index, index.parents[id]) === "array"
-                        ? `[${index.keys[id]}]`
-                        : index.keys[id]}
-                  </button>
-                </span>
-              ))}
+          {compact ? null : (
+            <div className="json-view-path">
+              {crumbs}
+              <button type="button" onClick={() => copy("path")}>
+                <CopyIcon size={10} />
+                {copied === "path" ? t("복사했습니다") : t("경로 복사")}
+              </button>
+              <button type="button" onClick={() => copy("value")} title={withHint(t("값 복사"), formatBinding("Mod+c"))}>
+                <CopyIcon size={10} />
+                {copied === "value" ? t("복사했습니다") : t("값 복사")}
+              </button>
             </div>
-            <button type="button" onClick={() => copy("path")}>
-              <CopyIcon size={10} />
-              {copied === "path" ? t("복사했습니다") : t("경로 복사")}
-            </button>
-            <button type="button" onClick={() => copy("value")} title={withHint(t("값 복사"), formatBinding("Mod+c"))}>
-              <CopyIcon size={10} />
-              {copied === "value" ? t("복사했습니다") : t("값 복사")}
-            </button>
-          </div>
+          )}
           <div className="json-view-body">
             <VirtualList
               className="cell-pop-tree json-view-tree"
@@ -1010,6 +1103,7 @@ export function JsonExplorer({
                 return (
                   <div
                     key={id}
+                    data-row-key={id}
                     role="treeitem"
                     aria-level={index.depths[id] + 1}
                     aria-selected={id === selected}
@@ -1059,6 +1153,31 @@ export function JsonExplorer({
             {/* The picked node as the popover's right side shows it: an
                 object's or array's members as field boxes, or the value alone. */}
             <div className="json-view-value">
+              {compact ? (
+                <div className="json-view-pane-head">
+                  {crumbs}
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title={copied === "path" ? t("복사했습니다") : t("경로 복사")}
+                    aria-label={t("경로 복사")}
+                    onClick={() => copy("path")}
+                  >
+                    <CopyIcon size={10} />
+                    <span className="json-view-pane-tag">{t("경로")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title={copied === "value" ? t("복사했습니다") : withHint(t("값 복사"), formatBinding("Mod+c"))}
+                    aria-label={t("값 복사")}
+                    onClick={() => copy("value")}
+                  >
+                    <CopyIcon size={10} />
+                    <span className="json-view-pane-tag">{t("값")}</span>
+                  </button>
+                </div>
+              ) : null}
               {shown < 0 ? null : !isContainer(index, shown) ? (
                 <div className="field-list json-view-single">
                   <ExplorerField key={shown} state={state} doc={doc} stored={stored} id={shown} />

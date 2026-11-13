@@ -182,7 +182,7 @@ export function RowDetailPanel({
   }
 
   return (
-    <aside className="row-detail" ref={motionRef} aria-label={t("행 상세")}>
+    <aside className="row-detail surface-right" ref={motionRef} aria-label={t("행 상세")}>
       <label className="field-search">
         <SearchIcon size={12} />
         <input

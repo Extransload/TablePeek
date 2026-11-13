@@ -106,7 +106,8 @@ impl Mcp {
 
     /// The tools for the connection a call goes to without its own `conn`
     /// (--conn, else the server's default): MongoDB's for a document store,
-    /// the search tools for a search engine, SQL's otherwise; all of them
+    /// the search tools for a search engine, only the connection list for a
+    /// key-value store, SQL's otherwise; all of them
     /// when that connection can't be told.
     fn tools(&self) -> Value {
         let conns = self
@@ -126,6 +127,9 @@ impl Mcp {
         match paradigm {
             Some("document") => tools.extend(mongo_tools()),
             Some("search") => tools.extend(search_tools()),
+            // A key-value store (Redis) has no read-only tools yet: its
+            // keys are browsed in the TablePeek UI.
+            Some("keyvalue") => {}
             Some(_) => tools.extend(sql_tools()),
             None => {
                 tools.extend(sql_tools());

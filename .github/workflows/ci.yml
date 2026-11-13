@@ -41,6 +41,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
+      - run: npm test
+        working-directory: web
       # `npm run build` type-checks before bundling.
       - run: npm run build
         working-directory: web
@@ -70,8 +72,110 @@ jobs:
           path: web/dist
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Live database tests stay off: none of the TABLEPEEK_TEST_* flags is set.
+      # Live database tests stay off here: none of the TABLEPEEK_TEST_* flags
+      # is set. The live job below runs them against real servers.
       - run: cargo test --workspace --locked
+
+  # The engine's live tests against the test databases of testdb/compose.yml,
+  # as service containers on the ports and accounts the tests expect. A
+  # service container takes no command and no files from the repository, so
+  # only the servers that start as they are run here, and the steps below
+  # seed them as `make test-db` does. The others (CockroachDB and MongoDB
+  # need a command; ClickHouse, the TLS variants and the rest need config
+  # or certificate files) stay with `make test-db` and `make test-live`.
+  live:
+    name: Live databases
+    needs: web
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5433:5432
+        env:
+          POSTGRES_USER: tablepeek
+          POSTGRES_PASSWORD: tablepeek_test_pw
+          POSTGRES_DB: tablepeek_test
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U tablepeek -d tablepeek_test"
+          --health-interval 2s
+          --health-retries 60
+      mysql:
+        image: mysql:8.0
+        ports:
+          - 3329:3306
+        env:
+          MYSQL_ROOT_PASSWORD: root_pw
+          MYSQL_DATABASE: tablepeek_test
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot_pw --silent"
+          --health-interval 2s
+          --health-retries 90
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        ports:
+          - 14330:1433
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: MsSql_test_pw1
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -Q 'SELECT 1'"
+          --health-interval 5s
+          --health-retries 60
+          --health-start-period 20s
+    env:
+      TABLEPEEK_TEST_PG: "1"
+      TABLEPEEK_TEST_MYSQL: "1"
+      TABLEPEEK_TEST_MYSQL_PORT: "3329"
+      TABLEPEEK_TEST_MSSQL: "1"
+      TABLEPEEK_TEST_REDIS: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      # The same seeds, in the same order, as the images' init scripts and
+      # `make test-db` run them.
+      - name: Seed PostgreSQL
+        run: |
+          for seed in postgres postgres-shop; do
+            docker exec -i ${{ job.services.postgres.id }} \
+              psql -v ON_ERROR_STOP=1 -q -U tablepeek -d tablepeek_test < testdb/$seed.sql > /dev/null
+          done
+      - name: Seed MySQL
+        run: |
+          for seed in mysql mysql-shop; do
+            docker exec -i ${{ job.services.mysql.id }} \
+              mysql -uroot -proot_pw --default-character-set=utf8mb4 tablepeek_test < testdb/$seed.sql > /dev/null
+          done
+      - name: Seed SQL Server
+        run: |
+          docker cp testdb ${{ job.services.mssql.id }}:/seed
+          for seed in mssql mssql-shop; do
+            docker exec ${{ job.services.mssql.id }} \
+              /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P MsSql_test_pw1 -b -r0 -i /seed/$seed.sql > /dev/null
+          done
+      # Redis takes its password and ACL user on the command line, which a
+      # service container can't be given, so it runs as a step, as in
+      # testdb/compose.yml.
+      - name: Start and seed Redis
+        run: |
+          docker run -d --name redis -p 127.0.0.1:16379:6379 redis:8 \
+            redis-server --requirepass tablepeek_test_pw \
+            --user tablepeek on '>tablepeek_test_pw' '~*' '&*' '+@all'
+          for _ in $(seq 1 30); do
+            docker exec redis redis-cli -a tablepeek_test_pw --no-auth-warning ping 2>/dev/null | grep -q PONG && break
+            sleep 1
+          done
+          docker cp testdb redis:/seed
+          docker exec redis sh /seed/redis-seed.sh redis-cli -a tablepeek_test_pw --no-auth-warning
+      # One test at a time, as `make test-live` runs them: the tests share
+      # each server's tables.
+      - run: cargo test -p tablepeek-engine -p tablepeek-server --locked -- --test-threads=1
 
   # The desktop app compiles only for macOS and Windows (on Linux the
   # workspace build above leaves Tauri out).

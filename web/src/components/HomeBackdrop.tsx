@@ -123,6 +123,12 @@ class Field {
     this.h = rect.height;
     this.canvas.width = Math.max(1, Math.round(rect.width * this.dpr));
     this.canvas.height = Math.max(1, Math.round(rect.height * this.dpr));
+    // Hidden (no size): the floor's grid can't be sized from a zero focal
+    // length (it would ask for arrays of Infinity); draw skips it until the
+    // next resize gives it room.
+    if (this.w < 1 || this.h < 1) {
+      return;
+    }
     const f = this.focal();
     this.half = Math.ceil(((this.w / 2 + 40) * Z_FAR) / f / CELL_W);
     this.rows = Math.ceil((Z_FAR - this.zStart()) / CELL_D) + 1;

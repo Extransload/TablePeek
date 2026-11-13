@@ -1,6 +1,6 @@
 # 남은 범위와 결정 기록
 
-작성: 2026-10-19 · 갱신: 2026-10-30 (엔진 12종, 남은 한계 정리)
+작성: 2026-10-19 · 갱신: 2026-11-12 (배포·데스크톱 앱·AI 제공자·Redis 현황 반영)
 
 이 문서는 "모두 처리" 범위 중 구현을 마친 항목, 의도적으로 보류한 항목, 별도 마일스톤이 필요한 항목을 구분한다. 완료 판정은 코드 존재가 아니라 빌드·테스트·실서버 확인 근거를 기준으로 한다.
 
@@ -47,13 +47,15 @@ MCP 서버는 구현했다. Plugin은 샌드박스·권한·프로세스 격리 
 |---|---|
 | Snowflake, BigQuery, DynamoDB, Cloudflare D1 | 아직 없음. 인증·쿼리 API·타입 체계가 각각 별도 |
 | Vertica | PG wire protocol과 호환되지 않아 현행 PG 드라이버로 접속 불가 |
-| Redis, DuckDB, 설치 프로그램, 스키마 비교 | 사용자 결정으로 제외. TablePeek은 웹 전용으로 유지 |
+| DuckDB, 스키마 비교 | 사용자 결정으로 제외 |
+| Redis | 제외 결정을 뒤집어 지원한다. 접속과 작업 화면은 `docs/engines/redis.md` |
+| 데스크톱 앱 | 웹 전용 결정을 뒤집어 v0.2.0부터 macOS(Apple silicon)·Windows용 Tauri 앱(`crates/tablepeek-desktop`)을 함께 낸다. 앱 안에서 같은 서버를 띄워 같은 화면을 보여 준다. Linux는 명령줄 바이너리만 |
 | Plugin 샌드박스 | 권한·프로세스 격리·매니페스트·배포 설계가 선행되어야 함. MCP는 별도로 구현됨 |
-| 배포(M5) | 완료: SemVer(v0.1.0부터, `CHANGELOG.md`), 태그 `vX.Y.Z`로 GitHub Releases에 macOS(arm64·x64)·Linux(x64·arm64)·Windows(x64) 일반 아카이브와 `SHA256SUMS` 게시(`.github/workflows/release.yml`, 절차는 `docs/RELEASING.md`), 소스 빌드 병행, 앱 안 새 버전 알림(하루 한 번 확인, 설정에서 끔). 제외: 코드 서명·공증, 설치 프로그램, 패키지 매니저(brew/winget/scoop), 바이너리 자동 교체 |
+| 배포(M5) | 완료: SemVer(v0.1.0부터, `CHANGELOG.md`), 태그 `vX.Y.Z`로 GitHub Releases에 명령줄 아카이브 4종(macOS arm64, Linux x64·arm64, Windows x64)과 `SHA256SUMS`, 데스크톱 앱(macOS `.dmg`, Windows NSIS `setup.exe`)과 업데이터 매니페스트 `latest.json`을 게시한다(`.github/workflows/release.yml`, 절차는 `docs/RELEASING.md`). 정식 릴리스마다 Homebrew cask(`extransload/tap/tablepeek`)를 갱신한다. 앱 안 새 버전 알림(하루 한 번 확인, 설정에서 끔), 데스크톱 앱은 서명을 확인한 업데이트를 백그라운드에서 받아 다시 시작할 때 설치한다. Intel Mac 빌드는 0.6.0에서 뺐다(커밋 5c9e6a8). 제외: 유료 인증서 코드 서명·공증(앱은 ad-hoc 서명만), winget/scoop, 명령줄 바이너리 자동 교체 |
 
 Oracle, MongoDB, Cassandra·ScyllaDB, Elasticsearch·OpenSearch, ClickHouse는 이후 엔진으로 들어왔다(`docs/ENGINES.md`, `docs/MONGODB.md`, `docs/engines/*.md`).
 
-AI 기능은 제외 결정을 뒤집어 "AI로 SQL 작성" 하나만 넣었다(2026-11-05). 설정은 omp처럼 모델 선택기 하나와 제공자 연결 목록으로 한다: ChatGPT 구독(2026-11-09, OpenAI의 오픈소스·로컬 앱용 Sign in with ChatGPT), API 키(OpenAI·Anthropic·Gemini·OpenRouter), Ollama·LM Studio, 직접 입력 주소. 기본은 꺼져 있다. 자체 계정과 중계 서버는 두지 않는다. ChatGPT Business·Enterprise 워크스페이스는 관리자 승인 없이는 구독 로그인이 막혀 API 키를 써야 한다(설치된 Codex CLI를 실행해 우회하는 제공자를 한때 넣었다가 선택지가 겹쳐 뺐다). Claude 구독 로그인은 Anthropic이 서드파티 사용을 금지해 넣지 않는다(`docs/GUIDE.md#write-sql-with-ai`, `docs/ARCHITECTURE.md` §1·§9). 문서형·검색 엔진(MongoDB 쿼리, ES DSL) 작성은 범위 밖이다.
+AI 기능은 제외 결정을 뒤집어 "AI로 SQL 작성" 하나만 넣었다(2026-11-05). 설정은 omp처럼 모델 선택기 하나와 모델 계열별 연결 목록으로 한다. 지금 쓸 수 있는 연결은 셋이다: ChatGPT 구독(2026-11-09, OpenAI의 오픈소스·로컬 앱용 Sign in with ChatGPT), 이 컴퓨터에 설치·로그인한 Codex CLI(TablePeek은 로그인 정보를 저장하지 않는다), Gemini API 키(OS 키체인). OpenAI·Anthropic·OpenRouter API 키와 Ollama·LM Studio는 서버에 호출 경로가 있지만 `available: false`라 설정에 "곧 지원"으로만 보이고, 고르면 서버가 `provider_unavailable`로 거절한다(`crates/tablepeek-server/src/ai.rs`의 `Provider::available`). 직접 입력 주소(`custom`)와 Claude Code CLI 연결은 없앴다. 기본은 꺼져 있다. 자체 계정과 중계 서버는 두지 않는다. ChatGPT Business·Enterprise 워크스페이스는 관리자 승인 없이는 구독 로그인이 막힐 수 있어, 그때는 Codex CLI나 Gemini API 키를 쓴다. 입력 중 제안은 ChatGPT와 Gemini만 한다(CLI는 답마다 몇 초 걸림). Claude 구독 로그인은 Anthropic이 서드파티 사용을 금지해 넣지 않는다(`docs/GUIDE.md#write-sql-with-ai`, `docs/ARCHITECTURE.md` §1·§9). 문서형·검색 엔진(MongoDB 쿼리, ES DSL) 작성은 범위 밖이다.
 
 Redshift/Percona/Yugabyte/MariaDB는 현행 호환 드라이버로 접속을 시도할 수 있지만, 카탈로그·DDL·함수 차이를 전부 보증하지 않는다. 서버 정보의 호환 모드 표시는 진단 보조이며 완전 지원 선언이 아니다.
 

@@ -42,6 +42,7 @@ import { awaitsTernThemes, loadTernThemes } from "./ternThemes";
 // Light, dark, or the system's, as Tern has it: each with a theme of its own.
 export type ThemeMode = "light" | "dark" | "system";
 export const THEME_MODES: readonly ThemeMode[] = ["light", "dark", "system"];
+export type CliInput = "flow" | "docked";
 export type CsvEncoding = "utf-8" | "euc-kr" | "utf-16le";
 // The parts of the data table a colour can be picked for: each kind of value
 // and NULL.
@@ -72,16 +73,20 @@ export interface AppSettings {
   floatingOpacity: number;
   noticeOpacity: number;
   // While the page is translucent (a background picture, a see-through
-  // window), how much of its own colour each docked part lays over the page's
+  // window), how much of its own colour each area lays over the page's
   // background, 0–100: 0 runs on as the page does, as Tern's panes do. The
   // top bars, the left sidebar, the right one (row details), the console
-  // below, the results' toolbars and the settings sheet.
+  // below, the results' toolbars, the main area (editors, tables, workbench
+  // content) and the settings sheet; then the cards, panels and sticky
+  // things inside any of them (styles.css, "Translucent page").
   surfaceTop: number;
   surfaceLeft: number;
   surfaceRight: number;
   surfaceBottom: number;
   surfaceBars: number;
+  surfaceMain: number;
   surfaceSheet: number;
+  surfaceCards: number;
   // A picture behind the app (see background.ts): its stamp ("" for none),
   // how it fills the window and how much it is blurred (points).
   backgroundImage: string;
@@ -109,6 +114,10 @@ export interface AppSettings {
   // Motion kept to a minimum: transitions and animations jump to their end
   // (see motion.ts). Only this decides; the system's preference isn't read.
   reduceMotion: boolean;
+  // Where a console's input line is (the Redis CLI): "flow" right after the
+  // last reply, everything running down from the top as in a terminal
+  // (Tern); "docked" in a bar fixed under the output.
+  cliInput: CliInput;
   uppercaseKeywords: boolean;
   syntaxPreset: SyntaxPresetId;
   // Colours picked in Settings → Appearance over the syntax colours, by theme:
@@ -172,7 +181,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   surfaceRight: 0,
   surfaceBottom: 0,
   surfaceBars: 0,
+  surfaceMain: 0,
   surfaceSheet: 0,
+  // The settings sheet's cards were this opaque before they had a row.
+  surfaceCards: 88,
   backgroundImage: "",
   backgroundFit: "cover",
   backgroundBlur: 0,
@@ -189,6 +201,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   scrollbarX: true,
   scrollbarY: true,
   reduceMotion: false,
+  cliInput: "flow",
   uppercaseKeywords: true,
   syntaxPreset: "tablepeek",
   syntaxColors: {},
@@ -235,6 +248,7 @@ function readSettings(): AppSettings {
       version: SETTINGS_VERSION,
       language: parsed.language === "en" ? "en" : "ko",
       reduceMotion: parsed.reduceMotion === true,
+      cliInput: parsed.cliInput === "docked" ? "docked" : "flow",
       themeMode: THEME_MODES.includes(parsed.themeMode as ThemeMode) ? (parsed.themeMode as ThemeMode) : DEFAULT_SETTINGS.themeMode,
       themeLight: readThemeId(parsed.themeLight, DEFAULT_SETTINGS.themeLight),
       themeDark: readThemeId(parsed.themeDark, DEFAULT_SETTINGS.themeDark),
@@ -261,7 +275,9 @@ function readSettings(): AppSettings {
       surfaceRight: Math.round(clampSize(parsed.surfaceRight, 0, 100, DEFAULT_SETTINGS.surfaceRight)),
       surfaceBottom: Math.round(clampSize(parsed.surfaceBottom, 0, 100, DEFAULT_SETTINGS.surfaceBottom)),
       surfaceBars: Math.round(clampSize(parsed.surfaceBars, 0, 100, DEFAULT_SETTINGS.surfaceBars)),
+      surfaceMain: Math.round(clampSize(parsed.surfaceMain, 0, 100, DEFAULT_SETTINGS.surfaceMain)),
       surfaceSheet: Math.round(clampSize(parsed.surfaceSheet, 0, 100, DEFAULT_SETTINGS.surfaceSheet)),
+      surfaceCards: Math.round(clampSize(parsed.surfaceCards, 0, 100, DEFAULT_SETTINGS.surfaceCards)),
       backgroundImage: typeof parsed.backgroundImage === "string" ? parsed.backgroundImage : "",
       backgroundFit: BACKGROUND_FITS.includes(parsed.backgroundFit as BackgroundFit)
         ? (parsed.backgroundFit as BackgroundFit)
@@ -390,6 +406,21 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// The data table's alternate rows over a translucent page: the theme's step
+// from its background to its stripe, as that much of a wash of the ink. A
+// layer of the stripe colour at the page opacity would lay the page's
+// background a second time on every other row, darkening the table apart
+// from the page.
+function stripeWash(palette: Palette): string {
+  const luminance = (hex: string): number => {
+    const value = Number.parseInt(hex.replace("#", ""), 16);
+    return 0.2126 * (value >> 16) + 0.7152 * ((value >> 8) & 255) + 0.0722 * (value & 255);
+  };
+  const span = luminance(palette.ink) - luminance(palette.bg);
+  const step = span === 0 ? 0 : (luminance(palette.rowAlt) - luminance(palette.bg)) / span || 0;
+  return hexToRgba(palette.ink, Math.round(Math.min(1, Math.max(0, step)) * 1000) / 1000);
+}
+
 // The theme's palette as `settings` draw it: their accent (or the theme's),
 // the alternate row background or not, and the data table colours picked
 // for this theme.
@@ -496,7 +527,7 @@ export function applySettings(settings: AppSettings): void {
   // stay those of the opaque ones.
   const pictured = settings.backgroundImage !== "";
   const translucentPage = pictured || seeThrough(settings);
-  const palette = translucentPage ? seeThroughColors(opaque, settings) : opaque;
+  const palette = translucentPage ? { ...seeThroughColors(opaque, settings), rowAlt: stripeWash(opaque) } : opaque;
   applyPalette(palette);
   root.dataset.theme = theme.id;
   root.dataset.mode = theme.mode;
@@ -562,7 +593,7 @@ export function applySettings(settings: AppSettings): void {
     root.classList.toggle("reduce-motion", settings.reduceMotion);
     window.dispatchEvent(new CustomEvent("tablepeek:motion"));
   }
-  // The docked parts' own colours over a translucent page (styles.css,
+  // The areas' own colours over a translucent page (styles.css,
   // "Translucent page").
   root.classList.toggle("translucent-page", translucentPage);
   for (const [part, value] of [
@@ -571,9 +602,18 @@ export function applySettings(settings: AppSettings): void {
     ["right", settings.surfaceRight],
     ["bottom", settings.surfaceBottom],
     ["bars", settings.surfaceBars],
+    ["main", settings.surfaceMain],
     ["sheet", settings.surfaceSheet],
+    ["cards", settings.surfaceCards],
   ] as const) {
     root.style.setProperty(`--surface-${part}`, `${value}%`);
+  }
+  // The data table draws its header on a canvas, which can't mix colours
+  // from variables: the main area's colour, worked out here.
+  if (translucentPage) {
+    root.style.setProperty("--grid-head-bg", hexToRgba(opaque.head, settings.surfaceMain / 100));
+  } else {
+    root.style.removeProperty("--grid-head-bg");
   }
   applyMaterial(settings, { ...opaque, mode: theme.mode }, settings.themeMode === "system", pictured);
   applyBackground(settings);

@@ -244,7 +244,7 @@ export function FilterBar({
 
   return (
     <div
-      className="filter-bar"
+      className="filter-bar surface-bars"
       onKeyDown={(event) => {
         // ⌘↩ applies every checked condition, as TablePlus's Apply All.
         if (

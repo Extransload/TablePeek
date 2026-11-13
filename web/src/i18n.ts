@@ -1,4 +1,5 @@
 import { SEARCH_EN } from "./engines/elasticsearch/i18n.en";
+import { REDIS_EN } from "./engines/redis/i18n.en";
 import * as uiState from "./persist";
 
 export type Language = "ko" | "en";
@@ -375,6 +376,16 @@ const EN: Record<string, string> = {
   "동작 줄이기": "Reduce motion",
   "기본값에서 바뀜": "Changed from default",
   "재설정": "Reset",
+  "CLI 입력줄": "CLI input",
+  "흐름": "Flow",
+  "아래 고정": "Docked",
+  "흐름: 터미널처럼 위에서부터 내려오고 입력줄이 마지막 응답 바로 아래에 붙습니다. 아래 고정: 입력줄이 화면 맨 아래에 머뭅니다.": "Flow: runs down from the top as in a terminal, the input line right under the last reply. Docked: the input line stays at the bottom.",
+  "실행 중인 명령 멈추기 (⌃C)": "Stop the running command (⌃C)",
+  "{label} 줄이기": "Decrease {label}",
+  "{label} 늘리기": "Increase {label}",
+  "{label} 값": "{label} value",
+  "줄이기 (Shift: 10씩)": "Decrease (Shift: by 10)",
+  "늘리기 (Shift: 10씩)": "Increase (Shift: by 10)",
   "색 재설정": "Reset colors",
   "모양": "Appearance",
   "모드": "Mode",
@@ -455,6 +466,12 @@ const EN: Record<string, string> = {
   "오른쪽 사이드바": "Right sidebar",
   "하단 콘솔": "Console below",
   "도구 막대": "Toolbars",
+  "본문": "Main area",
+  "에디터, 테이블, 결과, 문서와 키 화면, 정보 페이지, 홈의 바탕입니다.":
+    "The background of the editors, tables, results, document and key views, info pages and Home.",
+  "카드": "Cards",
+  "영역 안의 카드, 패널, 코드 블록이 영역 위에 더 까는 정도입니다. 설정 창의 카드도 이것을 따릅니다.":
+    "How much more the cards, panels and code blocks inside an area lay over it. The settings sheet's cards follow it too.",
   "떠 있는 창": "Floating surfaces",
   "설정 창": "Settings sheet",
   "알림": "Notices",
@@ -3356,6 +3373,9 @@ const EN: Record<string, string> = {
   // ---- Elasticsearch / OpenSearch search workbench (SearchWeb) ----
   ...SEARCH_EN,
   // ---- end SearchWeb ----
+  // ---- Redis / Valkey key-value workbench (RedisWeb) ----
+  ...REDIS_EN,
+  // ---- end RedisWeb ----
   // ---- MongoDB and search views in the app's detail panel (MongoPanel) ----
   "선택된 단계가 없습니다": "No stage selected",
   "선택된 인덱스가 없습니다": "No index selected",
@@ -3773,6 +3793,10 @@ const PLURALS: Record<string, string> = {
   events: "event",
   locations: "location",
   ones: "one",
+  keys: "key",
+  members: "member",
+  entries: "entry",
+  clients: "client",
   models: "model",
   violate: "violates",
   pass: "passes",
@@ -3878,6 +3902,29 @@ const SERVER_PREFIXES: [RegExp, string][] = [
   [/^바이너리 컬럼이 아닙니다: /, "Not a binary column: "],
   [/^값이 너무 큽니다: (\d+)바이트까지만 쓸 수 있습니다 \((.+)\)$/, "The value is too large: at most $1 bytes can be written ($2)"],
   [/^업로드를 임시 파일에 담지 못했습니다: /, "Couldn't keep the upload in a temporary file: "],
+  // Redis / Valkey (crates/tablepeek-engine/src/engines/redis, /api/kv/*).
+  [/^데이터베이스 (\d+)이\(가\) 없습니다 \(ERR DB index is out of range\)$/, "Database $1 doesn't exist (ERR DB index is out of range)"],
+  [/^키의 타입이 (.+)입니다 \((.+)을\(를\) 기대했습니다\)$/, "The key is a $1 (expected a $2)"],
+  [/^같은 이름의 키가 이미 있습니다: /, "A key by that name already exists: "],
+  [/^같은 이름의 필드가 이미 있습니다: /, "A field by that name already exists: "],
+  [/^같은 멤버가 이미 있습니다: /, "That member already exists: "],
+  [/^필드가 이미 있습니다: /, "The field already exists: "],
+  [/^필드가 없습니다: /, "No such field: "],
+  [/^키 (\d+)개를 한 번에 훑는 동안 서버가 다른 명령을 받지 않습니다 \(SCAN을 쓰세요\)$/, "The server takes no other commands while it walks $1 keys at once (use SCAN)"],
+  [/^키 (\d+)개를 한꺼번에 지웁니다$/, "Deletes $1 keys at once"],
+  [/^(-?\d+)번 항목이 읽은 뒤에 바뀌었습니다\. 다시 불러온 뒤 고치세요$/, "Item $1 changed since it was read. Reload, then edit"],
+  [/^(.+) 타입의 키는 내보낼 수 없습니다$/, "Keys of type $1 can't be exported"],
+  [/^내보내기 형식은 json 또는 text입니다: /, "The export format is json or text: "],
+  [/^만들 수 없는 타입입니다: /, "This type can't be created: "],
+  [/^점수는 숫자여야 합니다: /, "The score must be a number: "],
+  [/^JSON이 올바르지 않습니다: /, "Invalid JSON: "],
+  [/^b64 값이 올바르지 않습니다: /, "Invalid b64 value: "],
+  [/^연결 문자열이 올바르지 않습니다: /, "Invalid connection string: "],
+  [/^TLS 서버 이름 오류: /, "TLS server name error: "],
+  [/^(\S+:\d+)에 연결할 수 없습니다: /, "Can't connect to $1: "],
+  [/^(\S+:\d+)에서 응답이 없습니다 \(시간 초과\)$/, "No answer from $1 (timed out)"],
+  [/^위험한 명령\((.+)\)은 확인이 필요합니다 \(confirmed: true\)$/, "The dangerous command $1 needs confirming (confirmed: true)"],
+  [/^클라이언트 id는 숫자입니다: /, "A client id is a number: "],
   // AI SQL (crates/tablepeek-server/src/ai.rs).
   [/^AI 설정을 저장할 수 없습니다: /, "Can't save the AI settings: "],
   [/^알 수 없는 AI 제공자입니다: /, "Unknown AI provider: "],

@@ -2927,6 +2927,7 @@ function setInfo(message: string | null): void {
 
 export const store = {
   token,
+  historyChanged,
   getState,
   subscribe,
   refreshMeta,

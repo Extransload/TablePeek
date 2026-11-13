@@ -9,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { appAreaWidth } from "./dock";
+import { Collapse } from "./components/Collapse";
 import { CommandPalette, type PaletteAction, type PaletteSource } from "./components/CommandPalette";
 import { ColumnPicker, type ColumnEntry } from "./components/ColumnPicker";
 import { ConnectModal } from "./components/ConnectModal";
@@ -106,6 +107,7 @@ import { ConsoleTab } from "./engines/elasticsearch/ui/ConsoleTab";
 import { SearchSidebar } from "./engines/elasticsearch/ui/SearchSidebar";
 import { SecurityTab } from "./engines/elasticsearch/ui/SecurityTab";
 import { SearchWorkbench } from "./engines/elasticsearch/ui/SearchWorkbench";
+import { DEFAULT_REDIS_STATE, RedisWorkbench, type RedisRequest, type RedisState } from "./engines/redis/ui/RedisWorkbench";
 import type { SearchAdminEffect, SearchAdminRequest, TargetKind } from "./engines/elasticsearch/ui/types";
 import {
   AlertIcon,
@@ -231,6 +233,7 @@ import {
   createSearchSecurityTab,
   createSearchIndexTab,
   createServerTab,
+  createRedisTab,
   freeQueryNumber,
   migrateTabsState,
   patchFromOutcome,
@@ -243,6 +246,7 @@ import {
   tabById,
   type DataTab,
   type DefinitionTab,
+  type RedisTab,
   type TableView,
   type TabsState,
   type WorkbenchTab,
@@ -638,6 +642,8 @@ export default function App() {
   const [searchAdmin, setSearchAdmin] = useState<SearchAdminRequest | null>(null);
   // The search workbench's write confirmations (safe mode).
   const searchConfirm = useConfirm();
+  // What the app asks of a key-value connection's workbench (palette, ⌘T).
+  const [kvRequest, setKvRequest] = useState<RedisRequest | null>(null);
   const [metaNonce, setMetaNonce] = useState(0);
   const [pinnedTables, setPinnedTables] = useState<Record<string, string[]>>(() =>
     loadTableMap(PINNED_KEY),
@@ -988,6 +994,13 @@ export default function App() {
   const searchHost: SearchHost | null =
     searchConn && activeConnId !== null ? { conn: activeConnId, notify, confirm: searchConfirm.confirm, safeMode: alertMode, readOnly: false } : null;
   const caps = meta !== null ? capabilitiesOf(meta) : undefined;
+  // A key-value store (Redis): key browser, key tabs, console, INFO.
+  const kvConn = activeEngine?.workbench === "keyvalue";
+  // The database it works in: the last part of `redis://host:port/<db>`.
+  const kvDb = kvConn && meta?.path ? Number(/\/(\d+)$/.exec(meta.path)?.[1] ?? 0) : 0;
+  const kvAddress = kvConn && meta?.path ? (/^\w+:\/\/(?:[^@/]*@)?([^/]+)/.exec(meta.path)?.[1] ?? "") : "";
+  // Its workbench's state, kept in the connection's one tab.
+  const kvState = (kvConn ? tabs?.tabs.find((tab): tab is RedisTab => tab.kind === "redis")?.redis : undefined) ?? DEFAULT_REDIS_STATE;
   const sqlDialect = activeEngine?.sql;
   const home = activeConnId === null || workspace === null;
   const activeTab = tabs !== null ? activeTabOf(tabs) : null;
@@ -1293,6 +1306,9 @@ export default function App() {
     if (engineById(meta.kind)?.workbench === "search") {
       return createSearchConsoleTab(1, "");
     }
+    if (engineById(meta.kind)?.workbench === "keyvalue") {
+      return createRedisTab(DEFAULT_REDIS_STATE);
+    }
     const reopen = reopenableDrafts(conn)[0];
     if (reopen === undefined) {
       return createQueryTab(nextQueryNumber(conn), seedSqlForMeta(meta));
@@ -1420,6 +1436,27 @@ export default function App() {
       return;
     }
     activateNewTab(conn, createSearchSecurityTab());
+  }
+
+  // A key-value connection's workbench state, kept in its one tab (tabs of
+  // any other kind are dropped: the workbench has none).
+  function setRedisState(redis: RedisState): void {
+    const conn = activeConnIdRef.current;
+    const current = conn !== null ? tabsOf(conn) : null;
+    if (conn === null || current === null) {
+      return;
+    }
+    const tab = current.tabs.find((entry) => entry.kind === "redis");
+    if (tab !== undefined) {
+      setTabsFor(conn, patchTab(current, tab.id, { redis }));
+      return;
+    }
+    const created = createRedisTab(redis);
+    setTabsFor(conn, { tabs: [created], activeId: created.id });
+  }
+
+  function askRedis(kind: RedisRequest["kind"]): void {
+    setKvRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, kind }));
   }
 
   // After a search management dialog: the sidebar reads again, a new index
@@ -2417,9 +2454,13 @@ export default function App() {
       openMongoshTab();
       return;
     }
-    // A search connection's new tab is a console tab.
+    // A search connection's new tab is a console tab, as is a key-value one's.
     if (engineById(workspacesRef.current[conn]?.meta.kind ?? "")?.workbench === "search") {
       openSearchConsoleTab();
+      return;
+    }
+    if (engineById(workspacesRef.current[conn]?.meta.kind ?? "")?.workbench === "keyvalue") {
+      askRedis("cli");
       return;
     }
     // As TablePlus does: the query tabs closed earlier come back first, lowest
@@ -3537,7 +3578,7 @@ export default function App() {
         setSettingsOpen(true);
         return;
       case "refresh":
-        if (activeEngine?.workbench === "document" || activeEngine?.workbench === "search") {
+        if (activeEngine?.workbench === "document" || activeEngine?.workbench === "search" || activeEngine?.workbench === "keyvalue") {
           setDocRefreshSeq((value) => value + 1);
           return;
         }
@@ -3551,7 +3592,7 @@ export default function App() {
     }
     // A document or search connection's editors run, save and switch
     // databases on their own (⌘↩ in the query bar, mongosh or the console).
-    if ((activeEngine?.workbench === "document" || activeEngine?.workbench === "search") && (action === "run" || action === "runAll" || action === "applyChanges" || action === "dbSwitch")) {
+    if ((activeEngine?.workbench === "document" || activeEngine?.workbench === "search" || activeEngine?.workbench === "keyvalue") && (action === "run" || action === "runAll" || action === "applyChanges" || action === "dbSwitch")) {
       return;
     }
     switch (action) {
@@ -4717,7 +4758,7 @@ export default function App() {
   function paletteActions(): PaletteAction[] {
     const result = store.getState().result;
     const active = currentTab();
-    return [
+    const actions: PaletteAction[] = [
       { id: "new-tab", label: t("새 쿼리 탭"), hint: shortcutHint(settings.keymap, "newTab"), run: createNewTab },
       { id: "home", label: t("연결 홈"), run: goHome },
       { id: "open-tables", label: t("테이블 데이터 열기"), sourceId: "tables" },
@@ -4852,6 +4893,18 @@ export default function App() {
       { id: "history", label: t("실행 기록"), sourceId: "history" },
       { id: "favorites", label: t("저장한 쿼리"), sourceId: "favorites" },
       { id: "drafts", label: t("초안 복구"), sourceId: "drafts" },
+    ];
+    if (!kvConn) {
+      return actions;
+    }
+    // A key-value connection has no SQL, tables, imports, dumps, tabs or
+    // bottom console: its workbench has the CLI and the server pages.
+    const sqlOnly = new Set(["new-tab", "server-info", "close-tab", "console", "open-tables", "open-views", "open-structure", "er-diagram", "export", "export-tables", "format-beautify", "format-minify", "split-side", "create-table", "import-csv", "import-json", "import-sql", "dump-backup", "dump-restore", "user-manager", "favorites", "drafts"]);
+    return [
+      { id: "kv-cli", label: "Redis CLI", hint: shortcutHint(settings.keymap, "newTab"), run: () => askRedis("cli") },
+      { id: "kv-server", label: t("서버 (INFO·클라이언트)"), run: () => askRedis("server") },
+      { id: "kv-create", label: t("키 만들기…"), disabled: caps?.edit_by_key === false, run: () => askRedis("create") },
+      ...actions.filter((action) => !sqlOnly.has(action.id)),
     ];
   }
 
@@ -6169,7 +6222,7 @@ export default function App() {
   if (booting) {
     return (
       <div className="app">
-        <div className="home">
+        <div className="home surface-main">
           <div className="home-loading">{t("불러오는 중…")}</div>
         </div>
       </div>
@@ -6181,7 +6234,7 @@ export default function App() {
     <div className="app">
       {/* Home is its own welcome page; the bar belongs to the workspace. */}
       {!home ? (
-        <header className="appbar" {...DRAG_REGION}>
+        <header className="appbar surface-top" {...DRAG_REGION}>
           <BrandLogo onClick={goHome} />
           <ConnSwitcher
             conns={conns}
@@ -6190,7 +6243,7 @@ export default function App() {
             entering={entering}
             activeDetail={
               meta !== null
-                ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${documentConn ? t("컬렉션 {count}개", { count: meta.tables.length }) : searchConn ? t("인덱스 {count}개", { count: meta.tables.length }) : tTableCount(meta.tables.length)}`
+                ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${documentConn ? t("컬렉션 {count}개", { count: meta.tables.length }) : searchConn ? t("인덱스 {count}개", { count: meta.tables.length }) : kvConn ? `db${kvDb}` : tTableCount(meta.tables.length)}`
                 : null
             }
             onSwitch={(id) => void enterConn(id)}
@@ -6251,9 +6304,28 @@ export default function App() {
           onEditConnection={(saved) => openConnectionEditor(saved)}
           savedVersion={savedVersion}
         />
+      ) : kvConn && activeConnId !== null ? (
+        // A key-value connection's workbench owns the whole area: no tabs,
+        // generic sidebar, bottom console or detail column.
+        <RedisWorkbench
+          key={activeConnId}
+          conn={activeConnId}
+          connKey={stableKeyOf(activeConnId).replace(/\/\d+$/, "")}
+          db={kvDb}
+          address={kvAddress}
+          readOnly={caps?.edit_by_key === false}
+          safeMode={alertMode}
+          onSafeMode={setAlertMode}
+          notify={notify}
+          refreshSeq={docRefreshSeq}
+          state={kvState}
+          onState={setRedisState}
+          onSwitchDb={(db) => void switchToDatabase(String(db))}
+          request={kvRequest}
+        />
       ) : (
         <>
-          <div className="tabbar">
+          <div className="tabbar surface-top">
             <button
               type="button"
               className={`icon-button tabbar-side${schemaOpen ? " active" : ""}`}
@@ -6487,7 +6559,7 @@ export default function App() {
             ) : null}
             <div className="workbench-stack" ref={stackRef}>
               <div
-                className={`workbench-main${splitSide === "right" ? " right" : ""}`}
+                className={`workbench-main surface-main${splitSide === "right" ? " right" : ""}`}
                 ref={mainRef}
               >
                 {activeTab?.kind === "query" ? (
@@ -6828,7 +6900,7 @@ export default function App() {
                   ) : (
                     <>
                       {activeDataTab && activeConnId !== null && (activeDataTab.view ?? "data") === "data" ? (
-                        <div className="data-toolbar">
+                        <div className="data-toolbar surface-bars">
                               <DataTabToolbar
                                 tab={activeDataTab}
                                 viewTabs={tableViewTabs}
@@ -6961,6 +7033,12 @@ export default function App() {
                         />
                       ) : (
                         <>
+                      {/* Opens and closes in place; another tab's bar is simply there. */}
+                      <Collapse
+                        key={activeDataTab?.id}
+                        className="filter-bar-slot"
+                        open={activeConnId !== null && filterVisible}
+                      >
                       {activeDataTab && activeConnId !== null && filterVisible ? (
                         <FilterBar
                           key={activeDataTab.id}
@@ -6997,10 +7075,11 @@ export default function App() {
                           }}
                         />
                       ) : null}
+                      </Collapse>
                       {/* Several statements' results: one segment each, the
                           one shown marked, so it's plain which result this is. */}
                       {!dataView && chipsShown && resultChips !== null ? (
-                        <div className="result-sets" role="tablist" aria-label={t("쿼리 결과")}>
+                        <div className="result-sets surface-bars" role="tablist" aria-label={t("쿼리 결과")}>
                           {resultChips.entries.map((entry, index) => {
                             const status =
                               entry.outcome.kind === "ok"
@@ -7030,7 +7109,7 @@ export default function App() {
                         </div>
                       ) : null}
                       {dataView && state.info && state.status !== "running" ? (
-                        <div className="data-notice info">{tServer(state.info)}</div>
+                        <div className="data-notice info surface-bars">{tServer(state.info)}</div>
                       ) : null}
                       <div className="result-body" ref={resultBodyRef}>
                         <div className={`result-layer grid-layer${paneView === "grid" ? "" : " hidden"}${staleRows ? " stale" : ""}`}>
@@ -7281,9 +7360,9 @@ export default function App() {
                   // A document or search tab's views portal their selection
                   // here; the other tabs of those connections have none.
                   activeTab !== null && Object.hasOwn(DOC_PANEL_TABS, activeTab.kind) ? (
-                    <aside key="slot" ref={docSlotRef} className="row-detail mg-detail" aria-label={t("행 상세")} />
+                    <aside key="slot" ref={docSlotRef} className="row-detail mg-detail surface-right" aria-label={t("행 상세")} />
                   ) : (
-                    <aside key="none" ref={detailMotion} className="row-detail mg-detail" aria-label={t("행 상세")}>
+                    <aside key="none" ref={detailMotion} className="row-detail mg-detail surface-right" aria-label={t("행 상세")}>
                       <div className="panel-empty mg-detail-empty">{t("이 탭에는 보여 줄 상세 정보가 없습니다")}</div>
                     </aside>
                   )

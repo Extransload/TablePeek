@@ -10,6 +10,7 @@
 // summary in the app's detail panel.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useRowMotion } from "../../../components/Collapse";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon, DownloadIcon, RefreshIcon, ShieldIcon } from "../../../components/icons";
 import { LoadingState } from "../../../components/Spinner";
@@ -347,7 +348,7 @@ function FieldRow({ field, geo, sampleSize, open, selected, onToggle, onPick, on
   const total = types.reduce((n, [, c]) => n + c, 0) || 1;
   const missing = sampleSize - field.count;
   return (
-    <div className={`mg-sfield${selected ? " selected" : ""}`}>
+    <div className={`mg-sfield${selected ? " selected" : ""}`} data-row-key={field.path} data-row-depth={field.depth}>
       <div
         className="mg-schema-left"
         style={{ paddingLeft: field.depth * 18 }}
@@ -474,7 +475,10 @@ export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onD
   const completionRef = useRef<CompletionContext>({ fields: sampled });
   completionRef.current = { fields: sampled };
 
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const prepareRows = useRowMotion(listRef);
   const toggle = (path: string) => {
+    prepareRows();
     setOpen((prev) => {
       const next = new Set(prev);
       if (next.has(path)) {
@@ -525,7 +529,7 @@ export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onD
 
   function pickRow(list: HTMLElement | null, path: string): void {
     setPicked(path);
-    list?.querySelectorAll(".mg-sfield")[order.indexOf(path)]?.scrollIntoView({ block: "nearest" });
+    list?.querySelectorAll(".mg-sfield[data-row-key]")[order.indexOf(path)]?.scrollIntoView({ block: "nearest" });
   }
 
   let summary = "";
@@ -540,7 +544,7 @@ export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onD
 
   return (
     <div className="mg-pane mg-schema">
-      <div className="mg-agg-bar mg-schema-bar">
+      <div className="mg-agg-bar mg-schema-bar surface-bars">
         <span className="mg-agg-count">{t("필터")}</span>
         <MongoEditor
           value={text}
@@ -577,7 +581,7 @@ export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onD
           {t("분석")}
         </button>
       </div>
-      <div className="mg-agg-bar mg-schema-sub">
+      <div className="mg-agg-bar mg-schema-sub surface-bars">
         <span className="panel-dim mg-schema-sum" title={result?.command}>
           {loading ? t("분석 중…") : summary}
         </span>
@@ -607,6 +611,7 @@ export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onD
         </button>
       </div>
       <div
+        ref={listRef}
         className="mg-schema-list"
         tabIndex={-1}
         onClick={(event) => {

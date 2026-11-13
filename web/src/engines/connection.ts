@@ -299,10 +299,19 @@ function parseConnectionString(engine: Engine, text: string): ParsedUrl | null {
       set(key, key === "kerberos_canonicalize" ? (canonicalize[value] ?? value) : value);
     }
   }
+  // What the scheme says (rediss:// → TLS) yields to what the string's
+  // options say.
+  const uriField = engine.connection.fields.find((field) => field.type === "uri" && field.fills_others === true);
+  for (const [key, value] of Object.entries(uriField?.scheme_sets?.[scheme.toLowerCase()] ?? {})) {
+    if (values[key] === undefined && has.has(key)) {
+      values[key] = value;
+    }
+  }
   // The authentication the string says: a mechanism with a choice of its
   // own (X.509, AWS, PLAIN for LDAP, GSSAPI for Kerberos, OIDC; never a
-  // password's mechanism), a password by a user, else none. What the
-  // choice sets (X.509's TLS) yields to what the string says.
+  // password's mechanism), a password (with or without a user: Redis
+  // writes `redis://:secret@host`), else none. What the choice sets
+  // (X.509's TLS) yields to what the string says.
   const auth = has.get("auth");
   if (auth !== undefined) {
     const own: Record<string, string> = {
@@ -316,7 +325,7 @@ function parseConnectionString(engine: Engine, text: string): ParsedUrl | null {
     if (mechanism !== undefined) {
       delete values.auth_mechanism;
     }
-    const choice = mechanism ?? (values.user !== undefined ? "password" : "none");
+    const choice = mechanism ?? (values.user !== undefined || values.password !== undefined ? "password" : "none");
     for (const [key, value] of Object.entries(choiceValues(auth, choice))) {
       if (key === auth.key || values[key] === undefined) {
         values[key] = value;

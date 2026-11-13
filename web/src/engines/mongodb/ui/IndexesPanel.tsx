@@ -170,7 +170,7 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, facts,
 
   return (
     <div className="mg-pane mg-indexes">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">
           {indexes === null
             ? t("인덱스")

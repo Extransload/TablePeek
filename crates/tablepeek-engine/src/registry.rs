@@ -408,6 +408,7 @@ static FACTORIES: &[&dyn DriverFactory] = &[
     &engines::mongodb::FACTORY,
     &engines::elasticsearch::FACTORY,
     &engines::elasticsearch::OPENSEARCH,
+    &engines::redis::FACTORY,
 ];
 
 pub fn factories() -> &'static [&'static dyn DriverFactory] {

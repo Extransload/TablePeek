@@ -7,6 +7,7 @@
 // stops the polling; the charts keep their history per tab.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useRowMotion } from "../../../components/Collapse";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { PlayIcon, RefreshIcon, StopIcon } from "../../../components/icons";
 import { useThemeColors } from "../../../components/ResultChart";
@@ -268,6 +269,8 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
   const [level, setLevel] = useState("1");
   const [slowms, setSlowms] = useState("100");
   const [expanded, setExpanded] = useState<number | null>(null);
+  const entriesRef = useRef<HTMLDivElement | null>(null);
+  const prepareEntries = useRowMotion(entriesRef);
   const [busy, setBusy] = useState(false);
   const [pendingReview, setPendingReview] = useState<{ item: ReviewItem; resolve(ok: boolean): void } | null>(null);
   const colors = useThemeColors("perf");
@@ -496,7 +499,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
 
   return (
     <div className="mg-root mg-perf">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">{t("서버 성능")}</span>
         {sample !== null ? (
           <span className="mg-perf-stats">
@@ -691,7 +694,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
                 : t("system.profile에 기록이 없습니다. 프로파일링을 켜면 여기에 쌓입니다")}
             </div>
           ) : (
-            <div className="mg-perf-scroll">
+            <div className="mg-perf-scroll" ref={entriesRef}>
               <table className="panel-table mg-struct-table mg-perf-table">
                 <thead>
                   <tr>
@@ -717,7 +720,16 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
                     const ns = entry.get("ns");
                     const planSummary = entry.get("planSummary");
                     return [
-                      <tr key={i} className={`mg-perf-row${expanded === i ? " open" : ""}`} onClick={() => setExpanded(expanded === i ? null : i)}>
+                      <tr
+                        key={i}
+                        className={`mg-perf-row${expanded === i ? " open" : ""}`}
+                        data-row-key={i}
+                        data-row-depth={0}
+                        onClick={() => {
+                          prepareEntries();
+                          setExpanded(expanded === i ? null : i);
+                        }}
+                      >
                         <td className="mono">{ts instanceof BsonDate ? clockText(Number(ts.ms), true) : ""}</td>
                         <td className="mono">{typeof op === "string" ? op : ""}</td>
                         <td className="mono">{typeof ns === "string" ? ns : ""}</td>
@@ -729,7 +741,7 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
                         </td>
                       </tr>,
                       expanded === i ? (
-                        <tr key={`${i}:doc`} className="mg-perf-detail">
+                        <tr key={`${i}:doc`} className="mg-perf-detail" data-row-key={`${i}:doc`} data-row-depth={1}>
                           <td colSpan={7}>
                             <pre className="mono">
                               <ShellText text={toShellPretty(entry)} />

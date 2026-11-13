@@ -10,7 +10,8 @@ import {
 } from "../errorHelp";
 import { getLanguage, t, tServer } from "../i18n";
 import { DURATION, EASE, flip, ghost, measure, type Rects } from "../motion";
-import { AlertIcon, CheckIcon, CloseIcon, CopyIcon } from "./icons";
+import { Collapse } from "./Collapse";
+import { AlertIcon, CheckIcon, ChevronIcon, CloseIcon, CopyIcon } from "./icons";
 
 // Every error the app shows goes through here (docs/ERRORS.md §3): a box
 // (ErrorNotice), a line under a field (FieldError), or a toast (notifyError).
@@ -107,6 +108,7 @@ export function ErrorNotice({
   const help = useMemo(() => explainError(appError, context, engine), [appError, context, engine]);
   // The copy button's last outcome, shown for a moment.
   const [copy, setCopy] = useState<"done" | "failed" | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
     if (copy === null) {
@@ -240,22 +242,34 @@ export function ErrorNotice({
       {!banner ? fixes : null}
       {!banner ? buttons : null}
       {hasDetails ? (
-        <details className="error-notice-raw">
-          <summary>{t("자세히")}</summary>
-          {banner ? fixes : null}
-          {rows.length > 0 ? (
-            <dl className="error-notice-codes">
-              {rows.map(([label, value]) => (
-                <div key={label}>
-                  <dt>{label}</dt>
-                  <dd className="mono">{value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-          <pre className="mono">{original}</pre>
-          {extra !== "" ? <pre className="mono">{extra}</pre> : null}
-        </details>
+        <div className="error-notice-raw">
+          <button
+            type="button"
+            className="error-notice-raw-toggle"
+            aria-expanded={detailsOpen}
+            onClick={() => setDetailsOpen((open) => !open)}
+          >
+            <span className={`disclosure-chevron${detailsOpen ? " open" : ""}`} aria-hidden="true">
+              <ChevronIcon size={9} />
+            </span>
+            {t("자세히")}
+          </button>
+          <Collapse open={detailsOpen}>
+            {banner ? fixes : null}
+            {rows.length > 0 ? (
+              <dl className="error-notice-codes">
+                {rows.map(([label, value]) => (
+                  <div key={label}>
+                    <dt>{label}</dt>
+                    <dd className="mono">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+            <pre className="mono">{original}</pre>
+            {extra !== "" ? <pre className="mono">{extra}</pre> : null}
+          </Collapse>
+        </div>
       ) : null}
     </div>
   );

@@ -7,6 +7,7 @@
 // `onAdmin`.
 
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
+import { Collapse } from "../../../components/Collapse";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { ChevronIcon, EyeIcon, LinkIcon, ListIcon, MoreIcon, SearchIcon } from "../../../components/icons";
@@ -241,7 +242,8 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
     );
   };
 
-  const section = (id: string, label: string, count: number, body: ReactElement[] | ReactElement) => {
+  // `body` is built only while the section is open.
+  const section = (id: string, label: string, count: number, body: () => ReactElement[] | ReactElement) => {
     const isOpen = !folded.has(id) || query !== "";
     return (
       <div className="schema-section" key={id}>
@@ -264,7 +266,9 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
           <span className="schema-section-label">{label}</span>
           <RollingNumber className="schema-section-count" value={count} />
         </div>
-        {isOpen ? body : null}
+        <Collapse open={isOpen} stagger>
+          {body}
+        </Collapse>
       </div>
     );
   };
@@ -286,7 +290,7 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
           "indices",
           t("인덱스"),
           shown.indices.length,
-          shown.indices.length === 0
+          () => shown.indices.length === 0
             ? empty(t("인덱스가 없습니다"))
             : shown.indices.map((row) =>
                 item(
@@ -317,7 +321,7 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
           "aliases",
           t("별칭"),
           shown.aliases.length,
-          shown.aliases.length === 0
+          () => shown.aliases.length === 0
             ? empty(t("별칭이 없습니다"))
             : shown.aliases.map(([name, rows]) =>
                 item(
@@ -336,7 +340,7 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
               "streams",
               t("데이터 스트림"),
               shown.streams.length,
-              shown.streams.length === 0
+              () => shown.streams.length === 0
                 ? empty(t("데이터 스트림이 없습니다"))
                 : shown.streams.map((row) =>
                     item(

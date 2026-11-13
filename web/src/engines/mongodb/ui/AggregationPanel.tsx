@@ -691,7 +691,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
     }
     results = (
       <div className="mg-agg-results">
-        <div className="mg-agg-results-head">
+        <div className="mg-agg-results-head surface-bars">
           {head}
           <button type="button" className="icon-button" title={t("닫기")} aria-label={t("닫기")} onClick={() => setOutcome(null)}>
             <CloseIcon size={10} />
@@ -708,7 +708,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
 
   return (
     <div className="mg-pane mg-agg">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">
           {mode === "stages" ? t("{coll}에서 시작 · 단계 {count}개", { coll: ns.coll, count: `${onCount}/${stages.length}` }) : t("{coll}에서 시작", { coll: ns.coll })}
         </span>

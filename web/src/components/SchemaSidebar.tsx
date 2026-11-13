@@ -2,7 +2,6 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,13 +16,13 @@ import { store, type ObjectList, type TableDetail, type TableSchema } from "../s
 import { opensData, type DefinitionKind } from "../sqlTools";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { createTemplate, dropTemplate, type ObjectKind } from "../templates";
+import { Collapse } from "./Collapse";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ErrorNotice, notifyError } from "./ErrorNotice";
 import { RollingNumber } from "./RollingNumber";
 import { LoadingState } from "./Spinner";
 import { Gauge } from "./Gauge";
 import { TableInfoCard } from "./TableInfoCard";
-import { playTreeMove, prepareTreeMove, type TreeMove } from "./treeMotion";
 import { TABLE_COLORS, tableColorValue } from "../tableColors";
 import {
   ChevronIcon,
@@ -286,37 +285,11 @@ export function SchemaSidebar({
     void load();
   }, [load, nonce, serverEpoch]);
 
-  // A node opening or closing animates once the change is on screen.
-  const treeMoveRef = useRef<TreeMove | null>(null);
-  useLayoutEffect(() => {
-    const move = treeMoveRef.current;
-    if (move !== null) {
-      treeMoveRef.current = null;
-      playTreeMove(move);
-    }
-  });
-
-  function toggle(name: string, from: HTMLElement): void {
-    const node = from.closest<HTMLElement>(".schema-table");
-    if (node !== null && listRef.current !== null) {
-      // A ghost of the rows closing a moment ago may still sit beside them.
-      treeMoveRef.current = prepareTreeMove(listRef.current, node, () =>
-        node.querySelector<HTMLElement>(":scope > .schema-cols:not(.motion-ghost)"),
-      );
-    }
+  function toggle(name: string): void {
     setExpanded((prev) => ({ ...prev, [name]: !(prev[name] ?? false) }));
   }
 
-  function toggleSection(key: string, fallback: boolean, head: HTMLElement): void {
-    if (listRef.current !== null) {
-      treeMoveRef.current = prepareTreeMove(listRef.current, head, () => {
-        let rows = head.nextElementSibling;
-        while (rows !== null && rows.classList.contains("motion-ghost")) {
-          rows = rows.nextElementSibling;
-        }
-        return rows instanceof HTMLElement && rows.classList.contains("schema-rows") ? rows : null;
-      });
-    }
+  function toggleSection(key: string, fallback: boolean): void {
     setSections((prev) => {
       const next = { ...prev, [key]: !(prev[key] ?? fallback) };
       uiState.setItem("tablepeek.sidebar-sections", JSON.stringify(next));
@@ -793,7 +766,7 @@ export function SchemaSidebar({
               }
             } else if (event.key === " ") {
               event.preventDefault();
-              toggle(table.name, event.currentTarget);
+              toggle(table.name);
             }
           }}
         >
@@ -804,7 +777,7 @@ export function SchemaSidebar({
             title={isOpen ? t("컬럼 접기") : t("컬럼 펼치기")}
             onClick={(event) => {
               event.stopPropagation();
-              toggle(table.name, event.currentTarget);
+              toggle(table.name);
             }}
           >
             <ChevronIcon size={10} />
@@ -815,9 +788,9 @@ export function SchemaSidebar({
           </span>
           {isPinned ? <PinIcon size={9} className="schema-pin" /> : null}
         </div>
-        {isOpen && (
-          <div className="schema-cols">
-            {table.columns.map((column) => (
+        <Collapse open={isOpen} className="schema-cols" stagger>
+          {() =>
+            table.columns.map((column) => (
               <div className="schema-col" key={column.name}>
                 {column.pk ? (
                   <KeyIcon size={10} className="schema-col-pk" />
@@ -830,9 +803,9 @@ export function SchemaSidebar({
                 <span className="schema-col-type">{column.decl_type ?? ""}</span>
                 {column.not_null ? <span className="badge-nn">NOT NULL</span> : null}
               </div>
-            ))}
-          </div>
-        )}
+            ))
+          }
+        </Collapse>
       </div>
     );
   }
@@ -886,7 +859,7 @@ export function SchemaSidebar({
             <div
               className="schema-section-head gauge-host"
               aria-busy={loading}
-              onClick={(event) => toggleSection("tables", true, event.currentTarget)}
+              onClick={() => toggleSection("tables", true)}
             >
               {/* Fills while the schema is read again. */}
               <Gauge busy={loading} outcome={error ? "error" : "ok"} />
@@ -896,10 +869,9 @@ export function SchemaSidebar({
               <span className="schema-section-label">{t("테이블")}</span>
               <RollingNumber className="schema-section-count" value={tableCount} />
             </div>
-            {/* Each open section's rows sit in one box, which its open and close motion clips. */}
-            {tablesOpen ? (
-              <div className="schema-rows">
-                {tableCount === 0 ? (
+            <Collapse open={tablesOpen} className="schema-rows">
+              {() =>
+                tableCount === 0 ? (
                   <div className="schema-empty">
                     {query === "" ? t("테이블이 없습니다") : t("검색 결과가 없습니다")}
                   </div>
@@ -924,9 +896,9 @@ export function SchemaSidebar({
                       />
                     ) : null}
                   </>
-                )}
-              </div>
-            ) : null}
+                )
+              }
+            </Collapse>
             {objectFiltered !== null &&
               OBJECT_SECTIONS.map(({ kind, key: listKey, label }) => {
                 const names = objectFiltered[listKey] ?? [];
@@ -939,7 +911,7 @@ export function SchemaSidebar({
                   <div className="schema-section" key={key}>
                     <div
                       className="schema-section-head"
-                      onClick={(event) => toggleSection(key, false, event.currentTarget)}
+                      onClick={() => toggleSection(key, false)}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         setSectionMenu({ x: event.clientX, y: event.clientY, obj: kind });
@@ -951,9 +923,8 @@ export function SchemaSidebar({
                       <span className="schema-section-label">{t(label)}</span>
                       <RollingNumber className="schema-section-count" value={names.length} />
                     </div>
-                    {isOpen ? (
-                      <div className="schema-rows">
-                        {names.map((name) => (
+                    <Collapse open={isOpen} className="schema-rows" stagger>
+                        {() => names.map((name) => (
                           <div
                             className="schema-object-row"
                             key={`${kind}:${name}`}
@@ -1027,8 +998,7 @@ export function SchemaSidebar({
                             ) : null}
                           </div>
                         ))}
-                      </div>
-                    ) : null}
+                    </Collapse>
                   </div>
                 );
               })}

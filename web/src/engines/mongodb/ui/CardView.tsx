@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
+import { Collapse } from "../../../components/Collapse";
 import { confirmDialog } from "../../../components/ConfirmDialog";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
@@ -640,11 +641,15 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
                 {valEl}
               </div>
               {fieldError}
-              {open ? (
-                <div className="mg-kids">
-                  {rows(v, path, 1)}
-                  {(Array.isArray(v) ? v.length : v.size) === 0 ? <div className="mg-n empty">{Array.isArray(v) ? t("빈 배열") : t("빈 문서")}</div> : null}
-                </div>
+              {isContainer(v) ? (
+                <Collapse open={open} className="mg-kids" stagger>
+                  {() => (
+                    <>
+                      {rows(v, path, 1)}
+                      {(Array.isArray(v) ? v.length : v.size) === 0 ? <div className="mg-n empty">{Array.isArray(v) ? t("빈 배열") : t("빈 문서")}</div> : null}
+                    </>
+                  )}
+                </Collapse>
               ) : null}
             </div>
             {typeEl}
@@ -669,15 +674,21 @@ export function DocFields({ doc, readOnly = false, filter = "", allOpen = false,
             </div>,
           );
         }
-        if (open) {
-          out.push(...rows(v, path, depth + 1));
-          if ((Array.isArray(v) ? v.length : v.size) === 0) {
-            out.push(
-              <div key={`${path}#empty`} className="mg-n empty" style={{ paddingLeft: depth * 16 + 4 }}>
-                {Array.isArray(v) ? t("빈 배열") : t("빈 문서")}
-              </div>,
-            );
-          }
+        if (isContainer(v)) {
+          out.push(
+            <Collapse key={`${path}#kids`} open={open} stagger>
+              {() => (
+                <>
+                  {rows(v, path, depth + 1)}
+                  {(Array.isArray(v) ? v.length : v.size) === 0 ? (
+                    <div className="mg-n empty" style={{ paddingLeft: depth * 16 + 4 }}>
+                      {Array.isArray(v) ? t("빈 배열") : t("빈 문서")}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </Collapse>,
+          );
         }
       }
     }

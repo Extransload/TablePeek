@@ -11,6 +11,7 @@
 // The connection's default database starts open.
 
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { Collapse } from "../../../components/Collapse";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon, DatabaseIcon, FolderIcon, MoreIcon, SearchIcon, TableIcon } from "../../../components/icons";
@@ -289,12 +290,14 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
           <span className="mg-side-badge">GridFS</span>
           {files.count !== null ? <span className="schema-section-count mg-side-count">{files.count.toLocaleString()}</span> : null}
         </div>
-        {isOpen ? (
-          <>
-            {collRow(db, files, true)}
-            {chunks !== undefined ? collRow(db, chunks, true) : null}
-          </>
-        ) : null}
+        <Collapse open={isOpen} stagger>
+          {() => (
+            <>
+              {collRow(db, files, true)}
+              {chunks !== undefined ? collRow(db, chunks, true) : null}
+            </>
+          )}
+        </Collapse>
       </div>
     );
   };
@@ -408,7 +411,9 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
                   <span className="schema-section-label">{db.name}</span>
                   {loaded?.state === "ok" ? <span className="schema-section-count">{loaded.list.length}</span> : null}
                 </div>
-                {isOpen ? renderCollections(db.name) : null}
+                <Collapse open={isOpen} stagger>
+                  {() => renderCollections(db.name)}
+                </Collapse>
               </div>
             );
           })

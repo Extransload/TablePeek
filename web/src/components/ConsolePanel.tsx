@@ -142,7 +142,7 @@ export function ConsolePanel({ conn, height }: ConsolePanelProps) {
   }
 
   return (
-    <section className="console-panel" ref={motionRef} style={{ height }} aria-label={t("콘솔")}>
+    <section className="console-panel surface-bottom" ref={motionRef} style={{ height }} aria-label={t("콘솔")}>
       {error !== null ? <ErrorNotice error={error} variant="compact" /> : null}
       {entries !== null && entries.length === 0 ? (
         <div className="console-empty">{t("이 연결에서 실행되는 SQL이 여기에 기록됩니다")}</div>

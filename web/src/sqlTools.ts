@@ -63,6 +63,9 @@ const SESSION_KEYWORDS = new Set([
   "use",
 ]);
 const DML = /\b(insert|update|delete|merge|replace)\b/i;
+// EXPLAIN ANALYZE …, or an ANALYZE among PostgreSQL's parenthesized options
+// that isn't switched off (ANALYZE FALSE, OFF or 0).
+const EXPLAIN_ANALYZE = /^explain\s+(?:analy[sz]e\b|\((?:[^)]*,)?\s*analy[sz]e\b(?!\s+(?:false|off|0)\b))/i;
 
 // Oracle's q'[…]' text, as sqlSplit's qQuoteAt reads it.
 const Q_QUOTED = /(?<![\w$#])[nN]?[qQ]'(?:\[[\s\S]*?\]|\{[\s\S]*?\}|\([\s\S]*?\)|<[\s\S]*?>|(\S)[\s\S]*?\1)'/g;
@@ -122,10 +125,10 @@ export function classifyStatement(sql: string, dialect?: SqlDialect): ReviewItem
     return scan.includes("=") ? item("write", "설정을 변경합니다") : null;
   }
   if (keyword === "with" || keyword === "explain") {
-    // WITH ... DELETE, and EXPLAIN ANALYZE, actually run the data change; so
-    // does CQL's EXPLAIN, which traces the statement as it runs.
-    const runs =
-      keyword === "with" || lex.batchBlocks === true || /^explain\s+(\(.*?\)\s*)?analy[sz]e\b/i.test(scan);
+    // WITH ... DELETE, and EXPLAIN ANALYZE (or PostgreSQL's EXPLAIN
+    // (ANALYZE, …) unless it says ANALYZE FALSE), actually run the data
+    // change; so does CQL's EXPLAIN, which traces the statement as it runs.
+    const runs = keyword === "with" || lex.batchBlocks === true || EXPLAIN_ANALYZE.test(scan);
     return runs && DML.test(scan) ? item("write", "데이터를 변경합니다") : null;
   }
   if (READ_KEYWORDS.has(keyword)) {

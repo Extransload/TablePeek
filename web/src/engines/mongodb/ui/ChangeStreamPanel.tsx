@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { writeClipboard } from "../../../clipboard";
+import { Collapse } from "../../../components/Collapse";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon, CopyIcon, TrashIcon } from "../../../components/icons";
 import { Spinner } from "../../../components/Spinner";
@@ -166,7 +167,7 @@ export function ChangeStreamPanel({ conn, db, coll, sessionKey, notify, facts = 
 
   return (
     <div className="mg-pane mg-watch">
-      <div className="mg-agg-bar mg-watch-bar">
+      <div className="mg-agg-bar mg-watch-bar surface-bars">
         {running ? (
           <button type="button" className="mg-qbtn" onClick={() => session.pause()}>
             {t("멈춤")}
@@ -304,7 +305,7 @@ function EventRow({ event, showNs, open, selected, wantBefore, onToggle, notify 
         <span className="mg-watch-id mono">{id !== undefined ? <ShellText text={toShell(id)} /> : null}</span>
         <span className="mg-watch-sum">{summary(doc)}</span>
       </div>
-      {open ? <EventDetail doc={doc} wantBefore={wantBefore} notify={notify} /> : null}
+      <Collapse open={open}>{() => <EventDetail doc={doc} wantBefore={wantBefore} notify={notify} />}</Collapse>
     </div>
   );
 }
@@ -404,11 +405,13 @@ function EventDetail({ doc, wantBefore, notify }: { doc: BsonDocument; wantBefor
           {t("복사")}
         </button>
       </div>
-      {raw ? (
-        <pre className="panel-pre mg-watch-rawtext">
-          <ShellText text={toShellPretty(doc)} />
-        </pre>
-      ) : null}
+      <Collapse open={raw}>
+        {() => (
+          <pre className="panel-pre mg-watch-rawtext">
+            <ShellText text={toShellPretty(doc)} />
+          </pre>
+        )}
+      </Collapse>
     </div>
   );
 }

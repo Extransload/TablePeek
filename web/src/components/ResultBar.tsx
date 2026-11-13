@@ -103,7 +103,7 @@ export function ResultBar({ view, planAvailable, shown, running, canExport, onVi
     ["message", t("메시지")],
   ];
   return (
-    <div className="data-toolbar result-bar">
+    <div className="data-toolbar result-bar surface-bars">
       <div className="footer-start">
         <div className="view-tabs">
           {views.map(([key, label]) => (

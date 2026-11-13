@@ -1,9 +1,10 @@
 //! What every engine implements. `Driver` is the part all engines share
 //! (status, cancel, server info); each paradigm adds its own set of
 //! operations: `SqlDriver` for SQL databases, `DocumentDriver` for document
-//! stores, `SearchDriver` (crate::search) for search engines. An engine
-//! answers `sql()`, `document()` or `search()` with itself for the
-//! paradigm it speaks and None for the rest.
+//! stores, `SearchDriver` (crate::search) for search engines,
+//! `KeyValueDriver` (crate::keyvalue) for key-value stores. An engine
+//! answers `sql()`, `document()`, `search()` or `keyvalue()` with itself for
+//! the paradigm it speaks and None for the rest.
 
 use std::path::PathBuf;
 
@@ -87,6 +88,10 @@ pub trait Driver: Send + Sync {
     }
 
     fn search(&self) -> Option<&dyn crate::search::SearchDriver> {
+        None
+    }
+
+    fn keyvalue(&self) -> Option<&dyn crate::keyvalue::KeyValueDriver> {
         None
     }
 }

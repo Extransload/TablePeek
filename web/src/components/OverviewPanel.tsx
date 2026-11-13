@@ -127,7 +127,7 @@ export function OverviewPanel({
 
   return (
     <div className="panel">
-      <div className="panel-head">
+      <div className="panel-head surface-bars">
         <span className="panel-title">{t("테이블 개요")}</span>
         <span className="panel-stat">
           {t("테이블 {count}개", { count: schemas === null ? "…" : schemas.length })}
@@ -151,7 +151,7 @@ export function OverviewPanel({
           {t("새로고침")}
         </button>
       </div>
-      <div className="schema-search overview-search">
+      <div className="schema-search overview-search surface-bars">
         <SearchIcon size={11} className="schema-search-icon" />
         <input
           value={search}

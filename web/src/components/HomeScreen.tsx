@@ -484,7 +484,7 @@ export function HomeScreen({
 
   return (
     <div
-      className="home"
+      className="home surface-main"
       onContextMenu={(event) => {
         // Anywhere on the page (fields aside) offers what the list's empty space does.
         if ((event.target as HTMLElement).closest("input, textarea")) {

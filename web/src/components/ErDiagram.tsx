@@ -881,7 +881,7 @@ export function ErDiagram({ conn, refreshKey, storageKey, tabId, focus, focusSeq
 
   return (
     <div className="panel er-panel">
-      <div className="panel-head er-head">
+      <div className="panel-head er-head surface-bars">
         <span className="panel-title">{t("ER 다이어그램")}</span>
         <span className="panel-stat">{t("테이블 {count}개", { count: model === null ? "…" : model.cards.length })}</span>
         <span className="panel-stat">{t("관계 {count}개", { count: model === null ? "…" : model.relationCount })}</span>

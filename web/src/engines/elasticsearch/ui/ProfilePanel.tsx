@@ -7,6 +7,7 @@
 // rewritten. The raw profile is a toggle away.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Collapse } from "../../../components/Collapse";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
@@ -121,11 +122,9 @@ function NodeRow({ node, total, depth, slowest }: { node: ProfileNode; total: nu
         <Bar share={total > 0 ? node.timeMs / total : 0} />
         <span className="es-ptime mono">{msText(node.timeMs)}</span>
       </div>
-      {open ? (
-        <div style={{ paddingLeft: 30 + depth * 18 }}>
-          <Breakdown node={node} />
-        </div>
-      ) : null}
+      <Collapse open={open} style={{ paddingLeft: 30 + depth * 18 }}>
+        {() => <Breakdown node={node} />}
+      </Collapse>
       {node.children.map((child, i) => (
         <NodeRow key={i} node={child} total={total} depth={depth + 1} slowest={slowest} />
       ))}
@@ -359,7 +358,7 @@ export function ProfilePanel({ host, index, query, active, runSeq, refreshSeq }:
 
   return (
     <div className="mg-pane es-pane">
-      <div className="mg-agg-bar">
+      <div className="mg-agg-bar surface-bars">
         <span className="mg-agg-count">{t("실행 계획")}</span>
         {shown !== null ? <span className="panel-dim mg-explain-cmd mono">{requestText("GET", `/${index}/_search`)}</span> : null}
         {stale && body !== null ? (

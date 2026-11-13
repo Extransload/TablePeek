@@ -6,8 +6,9 @@
 // block's, the document's) and a middle-click opens it in Quick Look, as ⌘↩
 // on the list does for the picked block.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { writeClipboard } from "../../../clipboard";
+import { Collapse } from "../../../components/Collapse";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CopyIcon, PencilIcon, TrashIcon } from "../../../components/icons";
@@ -87,6 +88,14 @@ interface Line {
   path: string | null;
 }
 
+// A line, and for an opened object or array the lines inside it, closing
+// bracket last (null while folded, or on a line that doesn't fold).
+interface FoldNode {
+  key: string;
+  line: Line;
+  inner: FoldNode[] | null;
+}
+
 // An EJSON wrapper ({ "$oid": … }, { "$date": { "$numberLong": … } })
 // stays on one line.
 function isWrapper(v: EJSON): boolean {
@@ -137,31 +146,31 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
 
   const ro = readOnly || !doc.has("_id") || onSave === undefined;
 
-  const lines = useMemo(() => {
-    const out: Line[] = [];
+  const tree = useMemo(() => {
     const cut = full ? null : truncation(doc);
     const cutArrays = new Set(cut?.arrays.map((a) => a.path));
     const isFolded = (path: string, depth: number) => toggled.has(path) !== (allFolded && depth >= 1);
     const scalar = (v: BsonValue, e: EJSON) => (json ? ejsonText(v, { relaxed: true, exactNumbers: true, indent: 0 }) : canonical ? (isWrapper(e) ? stringifyJson(e).replace(/":/g, '": ') : JSON.stringify(e)) : toShell(v));
-    const walk = (v: BsonValue, e: EJSON, path: string, depth: number, prefix: string, comma: boolean) => {
+    const walk = (v: BsonValue, e: EJSON, path: string, depth: number, prefix: string, comma: boolean, key: string): FoldNode => {
       const tail = comma ? "," : "";
       const container = (Array.isArray(v) || isDocument(v)) && !(canonical && isWrapper(e));
       if (!container) {
-        out.push({ depth, text: `${prefix}${scalar(v, e)}${tail}`, fold: null, folded: false, summary: null, more: null, path });
-        return;
+        return { key, line: { depth, text: `${prefix}${scalar(v, e)}${tail}`, fold: null, folded: false, summary: null, more: null, path }, inner: null };
       }
       const arr = Array.isArray(v);
       let keys = Array.isArray(v) ? v.map((_, i) => String(i)) : isDocument(v) ? [...v.keys()] : [];
       const [open, close] = arr ? ["[", "]"] : ["{", "}"];
       if (keys.length === 0) {
-        out.push({ depth, text: `${prefix}${open}${close}${tail}`, fold: null, folded: false, summary: null, more: null, path });
-        return;
+        return { key, line: { depth, text: `${prefix}${open}${close}${tail}`, fold: null, folded: false, summary: null, more: null, path }, inner: null };
       }
       if (isFolded(path, depth)) {
-        out.push({ depth, text: `${prefix}${open} … ${close}${tail}`, fold: path, folded: true, summary: arr ? t("{count}개", { count: keys.length }) : t("필드 {count}개", { count: keys.length }), more: null, path });
-        return;
+        return {
+          key,
+          line: { depth, text: `${prefix}${open} … ${close}${tail}`, fold: path, folded: true, summary: arr ? t("{count}개", { count: keys.length }) : t("필드 {count}개", { count: keys.length }), more: null, path },
+          inner: null,
+        };
       }
-      out.push({ depth, text: `${prefix}${open}`, fold: path, folded: false, summary: null, more: null, path });
+      const line: Line = { depth, text: `${prefix}${open}`, fold: path, folded: false, summary: null, more: null, path };
       let more: string | null = null;
       if (cut !== null && depth === 0 && !arr && cut.shownFields < keys.length) {
         more = t("… 필드 {count}개 더", { count: keys.length - cut.shownFields });
@@ -170,19 +179,19 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
         more = t("… {count}개 더", { count: keys.length - VIEW_LIMITS.arrayItems });
         keys = keys.slice(0, VIEW_LIMITS.arrayItems);
       }
-      keys.forEach((k, i) => {
+      const kids = keys.map((k, i) => {
         const child = (Array.isArray(v) ? v[Number(k)] : isDocument(v) ? v.get(k) : null) ?? null;
         const childE = Array.isArray(e) ? e[Number(k)] : e !== null && typeof e === "object" ? e[k] : null;
         const childPath = path === "" ? k : `${path}.${k}`;
-        walk(child, childE, childPath, depth + 1, arr ? "" : `${canonical || json ? JSON.stringify(k) : shellKey(k)}: `, i < keys.length - 1 || more !== null);
+        return walk(child, childE, childPath, depth + 1, arr ? "" : `${canonical || json ? JSON.stringify(k) : shellKey(k)}: `, i < keys.length - 1 || more !== null, `f:${k}`);
       });
       if (more !== null) {
-        out.push({ depth: depth + 1, text: "", fold: null, folded: false, summary: null, more, path: null });
+        kids.push({ key: "more", line: { depth: depth + 1, text: "", fold: null, folded: false, summary: null, more, path: null }, inner: null });
       }
-      out.push({ depth, text: `${close}${tail}`, fold: null, folded: false, summary: null, more: null, path: null });
+      kids.push({ key: "close", line: { depth, text: `${close}${tail}`, fold: null, folded: false, summary: null, more: null, path: null }, inner: null });
+      return { key, line, inner: kids };
     };
-    walk(doc, toEJSON(doc), "", 0, "", false);
-    return out;
+    return walk(doc, toEJSON(doc), "", 0, "", false, "doc");
   }, [doc, canonical, json, toggled, allFolded, full]);
 
   const toggle = (path: string) =>
@@ -304,54 +313,59 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
       </div>
     );
   } else {
-    body = (
-      <div className="mg-jcode">
-        {lines.map((line, i) => (
-          <div
-            key={i}
-            className="mg-jl"
-            style={{ paddingLeft: `${line.depth * 2 + 2}ch` }}
-            onContextMenu={
-              line.path === null
-                ? undefined
-                : (event) => {
+    // An opened object or array shows its lines and closing bracket in a
+    // Collapse, so folding moves (and with it the lines below).
+    const render = ({ key, line, inner }: FoldNode): ReactNode => (
+      <Fragment key={key}>
+        <div
+          className="mg-jl"
+          style={{ paddingLeft: `${line.depth * 2 + 2}ch` }}
+          onContextMenu={
+            line.path === null
+              ? undefined
+              : (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openMenu(event.clientX, event.clientY, line, event.currentTarget);
+                }
+          }
+          onAuxClick={
+            line.path === null
+              ? undefined
+              : (event) => {
+                  if (event.button === 1) {
                     event.preventDefault();
                     event.stopPropagation();
-                    openMenu(event.clientX, event.clientY, line, event.currentTarget);
+                    lookAt(line.path ?? "", event.currentTarget);
                   }
-            }
-            onAuxClick={
-              line.path === null
-                ? undefined
-                : (event) => {
-                    if (event.button === 1) {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      lookAt(line.path ?? "", event.currentTarget);
-                    }
-                  }
-            }
-          >
-            {line.fold !== null ? (
-              <span className={`mg-jl-fold${line.folded ? "" : " open"}`} onClick={() => toggle(line.fold ?? "")}>
-                <ChevronIcon size={8} />
-              </span>
-            ) : null}
-            {line.more !== null ? (
-              <span className="mg-jl-sum">
-                {line.more}{" "}
-                <button type="button" className="icon-text-button" onClick={() => setFull(true)}>
-                  {t("전체 보기")}
-                </button>
-              </span>
-            ) : (
-              <ShellText text={line.text} />
-            )}
-            {line.summary !== null ? <span className="mg-jl-sum">{line.summary}</span> : null}
-          </div>
-        ))}
-      </div>
+                }
+          }
+        >
+          {line.fold !== null ? (
+            <span className={`mg-jl-fold${line.folded ? "" : " open"}`} onClick={() => toggle(line.fold ?? "")}>
+              <ChevronIcon size={8} />
+            </span>
+          ) : null}
+          {line.more !== null ? (
+            <span className="mg-jl-sum">
+              {line.more}{" "}
+              <button type="button" className="icon-text-button" onClick={() => setFull(true)}>
+                {t("전체 보기")}
+              </button>
+            </span>
+          ) : (
+            <ShellText text={line.text} />
+          )}
+          {line.summary !== null ? <span className="mg-jl-sum">{line.summary}</span> : null}
+        </div>
+        {line.fold !== null ? (
+          <Collapse open={inner !== null} stagger>
+            {() => inner?.map(render)}
+          </Collapse>
+        ) : null}
+      </Fragment>
     );
+    body = <div className="mg-jcode">{render(tree)}</div>;
   }
 
   return (

@@ -679,7 +679,7 @@ export function DocumentWorkbench({
   return (
     <OpenValidationContext.Provider value={openValidation}>
     <div className="mg-root mg-coll">
-      <div className="mg-subbar">
+      <div className="mg-subbar surface-top">
         <div className="mg-subtabs" role="tablist">
           {SUBTABS.filter((s) => !(readOnly && (s.id === "indexes" || s.id === "validation" || s.id === "changes"))).map((s) => (
             <button key={s.id} type="button" role="tab" aria-selected={sub === s.id} className={sub === s.id ? "active" : undefined} onClick={() => setSub(s.id)}>
@@ -712,7 +712,7 @@ export function DocumentWorkbench({
       <div className="mg-panes">
         {sub === "docs" ? (
           <div className="mg-pane mg-docs-pane">
-            <div className="data-toolbar mg-docbar">
+            <div className="data-toolbar mg-docbar surface-bars">
               <div className="footer-start">
                 {editable ? (
                   <button
@@ -801,7 +801,7 @@ export function DocumentWorkbench({
                 </div>
               ) : null}
             </div>
-            <div className="data-toolbar mg-pager">
+            <div className="data-toolbar mg-pager surface-bars">
               <div className="footer-start" />
               <div className="footer-middle">
                 <button

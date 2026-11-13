@@ -3,6 +3,7 @@ import type { SqlDialect } from "../engines/sqlDialect";
 import { parseExplainPlan, type PlanNode } from "../explainPlan";
 import { t } from "../i18n";
 import type { GridResult } from "../store";
+import { Collapse } from "./Collapse";
 
 interface ExplainPlanPanelProps {
   result: GridResult;
@@ -174,9 +175,9 @@ export function ExplainPlanPanel({ result, dialect }: ExplainPlanPanelProps) {
             depth={0}
           />
         ))}
-        {rawOpen && plan.raw ? (
-          <pre className="plan-raw">{plan.raw}</pre>
-        ) : null}
+        <Collapse open={rawOpen && Boolean(plan.raw)}>
+          {() => <pre className="plan-raw">{plan.raw}</pre>}
+        </Collapse>
       </div>
     </div>
   );

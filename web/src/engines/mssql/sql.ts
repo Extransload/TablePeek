@@ -53,14 +53,11 @@ function alterColumn(table: string, column: ColumnDraft, change: ColumnChange): 
   return statements;
 }
 
-// sp_rename takes the new name alone, in the table's own schema.
+// sp_rename takes the object as a quoted name in a string, and the new name
+// alone (in the object's own schema) as plain text.
 function renameTable(table: string, newName: string): string {
-  const target = newName.includes(".")
-    ? newName
-    : table.split(".")[0]
-      ? `${table.split(".")[0]}.${newName}`
-      : newName;
-  return `EXEC sp_rename N'${table}', N'${target.split(".").pop() ?? target}'`;
+  const bare = newName.split(".").pop() ?? newName;
+  return `EXEC sp_rename ${sql.stringLiteral(quoteIdent(sql, table))}, ${sql.stringLiteral(bare)}`;
 }
 
 // SQL Server: [names], N'…' text, bit for booleans, OFFSET … FETCH paging
@@ -93,7 +90,8 @@ export const sql: SqlDialect = {
 
   rebuildsTable: false,
   addColumn,
-  renameColumn: (table, from, to) => `EXEC sp_rename N'${table}.${from}', N'${to}', 'COLUMN'`,
+  renameColumn: (table, from, to) =>
+    `EXEC sp_rename ${sql.stringLiteral(`${quoteIdent(sql, table)}.${sql.quotePart(from)}`)}, ${sql.stringLiteral(to)}, 'COLUMN'`,
   alterColumn,
   dropIndex: (table, name) => `DROP INDEX ${quoteIdent(sql, name)} ON ${quoteIdent(sql, table)}`,
   // A column with a default can't go before its constraint does.

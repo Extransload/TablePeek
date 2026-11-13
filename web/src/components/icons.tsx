@@ -588,3 +588,22 @@ export function GaugeIcon({ size = 12, className }: IconProps) {
     </svg>
   );
 }
+
+// A line running on and turning back under itself: wrap long lines.
+export function WrapIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M2.6 4h10.8M2.6 8h9.2a2 2 0 0 1 0 4H8.6M10 10.6 8.6 12l1.4 1.4M2.6 12h3.4" />
+    </svg>
+  );
+}
+
+// Stacked sheets: layers inside a value (decode what's nested in it).
+export function LayersIcon({ size = 12, className }: IconProps) {
+  return (
+    <svg {...BASE} width={px(size)} height={px(size)} className={className}>
+      <path d="M8 2.6 13.4 5.4 8 8.2 2.6 5.4Z" />
+      <path d="M2.6 8.2 8 11l5.4-2.8M2.6 10.8 8 13.6l5.4-2.8" />
+    </svg>
+  );
+}

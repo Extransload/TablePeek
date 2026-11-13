@@ -23,7 +23,7 @@ endif
 
 # Throwaway test databases (testdb/compose.yml): every engine, or the ones
 # ENGINE names, e.g. ENGINE=postgres or ENGINE="mysql mssql".
-TESTDB_ENGINES := postgres mysql cockroach mssql mongodb
+TESTDB_ENGINES := postgres mysql cockroach mssql mongodb redis
 # MongoDB servers for particular tests, started only when ENGINE names them
 # (each is the compose profile of the same name): TLS with X.509 logins,
 # Enterprise with LDAP, Kerberos (with a KDC), OIDC (with an identity
@@ -42,6 +42,8 @@ TESTDB_EXTRAS += cassandra scylladb scylladb-cluster
 TESTDB_EXTRAS += clickhouse clickhouse-cluster
 # Oracle Database Free (about 2 GB; one heavy profile at a time).
 TESTDB_EXTRAS += oracle
+# Redis over TLS with client certificates, Valkey 8 and Redis 6.2.
+TESTDB_EXTRAS += redis-tls valkey redis-6
 ENGINE ?= $(TESTDB_ENGINES)
 TESTDB_SERVICES_mongodb-ldap := openldap mongodb-ldap
 TESTDB_SERVICES_mongodb-kerberos := kdc mongodb-kerberos
@@ -86,7 +88,11 @@ TESTDB_ENV := $(if $(filter postgres,$(ENGINE)),TABLEPEEK_TEST_PG=1) \
 	$(if $(filter scylladb,$(ENGINE)),TABLEPEEK_TEST_SCYLLADB=1) \
 	$(if $(filter clickhouse,$(ENGINE)),TABLEPEEK_TEST_CLICKHOUSE=1) \
 	$(if $(filter clickhouse-cluster,$(ENGINE)),TABLEPEEK_TEST_CLICKHOUSE_CLUSTER=1) \
-	$(if $(filter oracle,$(ENGINE)),TABLEPEEK_TEST_ORACLE=1)
+	$(if $(filter oracle,$(ENGINE)),TABLEPEEK_TEST_ORACLE=1) \
+	$(if $(filter redis,$(ENGINE)),TABLEPEEK_TEST_REDIS=1) \
+	$(if $(filter redis-tls,$(ENGINE)),TABLEPEEK_TEST_REDIS_TLS=1) \
+	$(if $(filter valkey,$(ENGINE)),TABLEPEEK_TEST_VALKEY=1) \
+	$(if $(filter redis-6,$(ENGINE)),TABLEPEEK_TEST_REDIS_6=1)
 # Kerberos (GSSAPI) is built in on macOS; elsewhere the test needs the
 # kerberos feature, and with it the Kerberos headers and libclang.
 TESTDB_FEATURES := $(if $(filter mongodb-kerberos,$(ENGINE)),--features tablepeek-engine/kerberos)
@@ -125,22 +131,23 @@ help:
 		'  make run DEMO=1 DEMO_ROWS=500000   Set demo row count' \
 		'  make run DB=path/to.sqlite   Open a SQLite file' \
 		'  make mcp                     Run the MCP stdio server' \
-		'  make test                    Run Rust tests and TypeScript checks' \
+		'  make test                    Run Rust tests, TypeScript checks and web unit tests' \
 		'  make test-docker             Run Docker-backed integration tests' \
 		'  make test-db                 Start the test databases in Docker, seeded' \
-		'  make test-db ENGINE=postgres Start only some (postgres mysql cockroach mssql mongodb)' \
+		'  make test-db ENGINE=postgres Start only some (postgres mysql cockroach mssql mongodb redis)' \
 		'  make test-db ENGINE=mongodb-rs   Also: mongodb-x509 mongodb-ldap mongodb-kerberos mongodb-oidc mongodb-aws mongodb-rs mongodb-atlas mongodb-sharded' \
 		'  make test-db ENGINE=elasticsearch  Also, one at a time: elasticsearch elasticsearch-tls elasticsearch-7 elasticsearch-6 opensearch opensearch-1 opensearch-3' \
 		'  make test-db ENGINE=cassandra    Also, one at a time: cassandra scylladb' \
 		'  make test-db ENGINE=clickhouse   Also: clickhouse (HTTP 18123, HTTPS 18443, SSH 2223) clickhouse-cluster (two servers, 18124 18125)' \
 		'  make test-db ENGINE=oracle       Also: oracle (Oracle Database 23ai Free, port 15210, about 2 GB)' \
+		'  make test-db ENGINE=redis-tls    Also: redis-tls (TLS, client certificates, 16380) valkey (16381) redis-6 (16382)' \
 		'  make test-live ENGINE=mysql  Run the engine live tests against them' \
 		'  make build-kerberos-linux    Build a Linux binary with Kerberos in Docker (target/linux/release)' \
 		'  make test-live-linux ENGINE=mongodb-kerberos   Run the live tests in that Linux container' \
 		'  make test-oracle-oob         Oracle out-of-band break test, on the test network (after make test-db ENGINE=oracle)' \
 		'  make test-db-down            Stop them and throw their data away' \
 		'  TABLEPEEK_TEST_MYSQL_PORT=3329 make test-db ENGINE=mysql   Another MySQL port' \
-		'  make check                   Check versions, formatting, Rust, and TypeScript' \
+		'  make check                   Check versions, formatting, Rust, TypeScript, and web unit tests' \
 		'  make fmt                     Format Rust code' \
 		'  make version V=0.2.0         Bump the version everywhere and open a CHANGELOG section' \
 		'  make clean                   Remove Rust and web build artifacts' \
@@ -171,6 +178,7 @@ desktop-bundle: web
 test: web
 	$(CARGO) test
 	cd web && $(NPM) run typecheck
+	cd web && $(NPM) test
 
 test-docker: web
 	TABLEPEEK_TEST_PG=1 TABLEPEEK_TEST_MYSQL=1 TABLEPEEK_TEST_COCKROACH=1 TABLEPEEK_TEST_MSSQL=1 TABLEPEEK_TEST_DOCKER=1 $(CARGO) test
@@ -180,7 +188,7 @@ testdb-engines:
 	if [ -n "$$unknown" ]; then echo "Unknown ENGINE: $$unknown (use: $(TESTDB_ENGINES) $(TESTDB_EXTRAS))" >&2; exit 2; fi
 
 test-db: testdb-engines
-	$(if $(filter mongodb-x509 mongodb-oidc mongodb-aws clickhouse oracle elasticsearch-tls,$(ENGINE)),sh testdb/x509/gen.sh)
+	$(if $(filter mongodb-x509 mongodb-oidc mongodb-aws clickhouse oracle elasticsearch-tls redis-tls,$(ENGINE)),sh testdb/x509/gen.sh)
 	$(if $(filter elasticsearch-tls,$(ENGINE)),sh testdb/elasticsearch-tls/gen.sh)
 	$(if $(filter oracle,$(ENGINE)),sh testdb/oracle-wallet.sh)
 	$(if $(filter clickhouse,$(ENGINE)),sh testdb/clickhouse/gen.sh)
@@ -211,6 +219,10 @@ test-db: testdb-engines
 	$(if $(filter oracle,$(ENGINE)),$(TESTDB) exec -T oracle sqlplus -s -L 'sys/Oracle_test_pw1@//localhost/FREE as sysdba' @/seed/oracle-memory.sql > /dev/null; if [ $$? -eq 3 ]; then $(TESTDB) restart oracle && $(TESTDB) up -d --wait oracle; fi)
 	$(foreach seed,oracle oracle-shop,$(if $(filter oracle,$(ENGINE)),$(TESTDB) exec -T -e NLS_LANG=AMERICAN_AMERICA.AL32UTF8 oracle sqlplus -s -L 'sys/Oracle_test_pw1@//localhost/FREEPDB1 as sysdba' @/seed/$(seed).sql > /dev/null;))
 	$(if $(filter oracle,$(ENGINE)),$(TESTDB) exec -T oracle bash /seed/oracle-tls.sh)
+	$(if $(filter redis,$(ENGINE)),$(TESTDB) exec -T redis sh /seed/redis-seed.sh redis-cli -a tablepeek_test_pw --no-auth-warning)
+	$(if $(filter redis-tls,$(ENGINE)),$(TESTDB) exec -T redis-tls sh /seed/redis-seed.sh redis-cli --tls --cacert /certs/ca.pem --cert /certs/client.pem --key /certs/client.pem -a tablepeek_test_pw --no-auth-warning)
+	$(if $(filter valkey,$(ENGINE)),$(TESTDB) exec -T valkey sh /seed/redis-seed.sh valkey-cli -a tablepeek_test_pw --no-auth-warning)
+	$(if $(filter redis-6,$(ENGINE)),$(TESTDB) exec -T redis-6 sh /seed/redis-seed.sh redis-cli -a tablepeek_test_pw --no-auth-warning)
 	@printf '%s\n' 'Ready on 127.0.0.1 (test-only accounts; sample data in schema shop, or database shop on MySQL):'
 	$(if $(filter postgres,$(ENGINE)),@printf '%s\n' '  PostgreSQL   port 5433   tablepeek / tablepeek_test_pw   database tablepeek_test')
 	$(if $(filter mysql,$(ENGINE)),@printf '%s\n' '  MySQL        port $(TABLEPEEK_TEST_MYSQL_PORT)   root / root_pw                  database tablepeek_test')
@@ -238,15 +250,19 @@ test-db: testdb-engines
 	$(if $(filter clickhouse,$(ENGINE)),@printf '%s\n' '  ClickHouse     port 18123 (HTTP) and 18443 (HTTPS; CA testdb/x509/ca.pem)  tablepeek / tablepeek_test_pw  database tablepeek_test; sample database shop' '                 also as clickhouse.tablepeek.test:8123/8443 through SSH 127.0.0.1:2223  user tablepeek  key testdb/ssh/id_ed25519')
 	$(if $(filter clickhouse-cluster,$(ENGINE)),@printf '%s\n' '  ClickHouse x2  cluster tp_cluster: ch-node1 port 18124 and ch-node2 port 18125 (HTTP)  tablepeek / tablepeek_test_pw')
 	$(if $(filter oracle,$(ENGINE)),@printf '%s\n' '  Oracle         port 15210  tablepeek / tablepeek_test_pw  service FREEPDB1  sample schema SHOP (shop / tablepeek_test_pw)  SYS: Oracle_test_pw1' '                 TCPS port 15211 (CA testdb/x509/ca.pem); as oracle:1521/2484 through SSH 127.0.0.1:2223  user tablepeek  key testdb/ssh/id_ed25519')
+	$(if $(filter redis,$(ENGINE)),@printf '%s\n' '  Redis 8        port 16379  password tablepeek_test_pw (default user; ACL user tablepeek, same password)  sample keys in db 0 and 1')
+	$(if $(filter redis-tls,$(ENGINE)),@printf '%s\n' '  Redis TLS      port 16380  password tablepeek_test_pw  TLS only: CA testdb/x509/ca.pem  client testdb/x509/client.pem  same keys')
+	$(if $(filter valkey,$(ENGINE)),@printf '%s\n' '  Valkey 8       port 16381  password tablepeek_test_pw  same keys (no JSON module)')
+	$(if $(filter redis-6,$(ENGINE)),@printf '%s\n' '  Redis 6.2      port 16382  password tablepeek_test_pw  same keys (no JSON module)')
 
 test-db-down: testdb-engines
 	$(if $(filter-out $(ENGINE),$(TESTDB_ENGINES)),$(TESTDB) rm --stop --force --volumes $(TESTDB_SERVICES),$(TESTDB) down --volumes)
 
 # The replica set behind SSH is tried through the server's own tunnel too,
-# and Atlas Local's search indexes and the search engines through the
+# and Atlas Local's search indexes, the search engines and Redis through the
 # server's routes.
 test-live: testdb-engines
-	$(TESTDB_ENV) $(CARGO) test -p tablepeek-engine $(if $(filter mongodb-rs mongodb-atlas elasticsearch elasticsearch-tls opensearch clickhouse oracle,$(ENGINE)),-p tablepeek-server) $(TESTDB_FEATURES) -- --test-threads=1
+	$(TESTDB_ENV) $(CARGO) test -p tablepeek-engine $(if $(filter mongodb-rs mongodb-atlas elasticsearch elasticsearch-tls opensearch clickhouse oracle redis redis-tls,$(ENGINE)),-p tablepeek-server) $(TESTDB_FEATURES) -- --test-threads=1
 
 linux-image:
 	printf '%s\n' 'FROM rust:1-bookworm' \
@@ -280,6 +296,7 @@ check: web
 	$(CARGO) fmt --all --check
 	$(CARGO) check --workspace
 	cd web && $(NPM) run typecheck
+	cd web && $(NPM) test
 
 fmt:
 	$(CARGO) fmt --all

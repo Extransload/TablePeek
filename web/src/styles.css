@@ -458,12 +458,13 @@ select {
   overflow: hidden;
 }
 
-/* The editor, the splitter under it and the query results' grid lie on the
-   page's own background: none of them paints another. Stacked, each layer of
-   a translucent background (over a background picture, in a see-through
-   window) would darken them apart from the rest. The selectors outweigh the
-   editor theme's (SqlEditor.tsx), which previews elsewhere keep; the
-   messages and the plan keep theirs, as they cover the grid. */
+/* The editor, the splitter under it and the query results (the grid, the
+   chart and pivot, the messages, the plan) lie on the page's own background:
+   none of them paints another. Stacked, each layer of a translucent
+   background (over a background picture, in a see-through window) would
+   darken them apart from the rest. Only one result view shows at a time
+   (the others are hidden), so none needs to cover another. The selectors
+   outweigh the editor theme's (SqlEditor.tsx), which previews elsewhere keep. */
 .editor-pane {
   flex: 0 1 35%;
   min-height: 90px;
@@ -483,7 +484,8 @@ select {
   background-color: transparent;
 }
 
-.grid-layer {
+.grid-layer,
+.analysis-layer {
   --grid-scroller-bg: transparent;
 }
 
@@ -561,7 +563,6 @@ select {
   font-family: var(--mono);
   font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
-  background: var(--bg);
 }
 
 .message-info {
@@ -578,7 +579,6 @@ select {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg);
 }
 
 .plan-head {
@@ -866,11 +866,6 @@ select {
   background: transparent;
   color: var(--faint);
   border-radius: 0;
-}
-
-/* Turns on the spring the rows below it unroll on (treeMotion.ts). */
-.schema-toggle svg {
-  transition: transform var(--motion-spring) var(--ease-spring);
 }
 
 .schema-toggle.open svg {
@@ -1255,6 +1250,10 @@ select {
   font-family: var(--mono);
   font-size: calc(11px * var(--ui-scale, 1));
   white-space: nowrap;
+}
+
+.filter-bar-slot {
+  flex: none;
 }
 
 .filter-bar {
@@ -4018,6 +4017,36 @@ input[type="color"]::-webkit-color-swatch {
   animation: tablepeek-delayed-in var(--motion-fast) ease var(--loading-delay) both;
 }
 
+/* Disclosure chevrons: every arrow that opens and closes something turns the
+   same way, alongside the content's own motion (Collapse.tsx). */
+.disclosure-chevron {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.schema-toggle svg,
+.launcher-chevron svg,
+.cell-pop-chevron svg,
+.kv-chevron svg,
+.es-fchev svg,
+.es-cl-toggle svg,
+.mg-jl-fold svg,
+.mg-schema-toggle svg,
+.mg-watch-raw-bar svg,
+.disclosure-chevron svg {
+  transition: transform var(--motion-slow) var(--ease-spring);
+}
+
+.disclosure-chevron.open svg {
+  transform: rotate(90deg);
+}
+
+.disclosure-chevron.down.open svg {
+  transform: rotate(180deg);
+}
+
 /* Settings → Appearance → Reduce motion (never the system's preference). */
 html.reduce-motion *,
 html.reduce-motion *::before,
@@ -4051,6 +4080,13 @@ textarea:focus-visible {
   outline: none;
   border-color: var(--accent-line);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* A menu field focused by a click (Select.tsx, data-pointer-focus) shows
+   no halo, as a native select clicked doesn't: the halo is the keyboard's. */
+select[data-pointer-focus]:focus-visible {
+  border-color: var(--accent-line);
+  box-shadow: none;
 }
 
 .appbar {
@@ -5206,11 +5242,62 @@ button.settings-picker-button > svg:last-child {
   accent-color: var(--accent);
 }
 
+.settings-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+button.settings-step {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+button.settings-step:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--ink);
+}
+
+button.settings-step:disabled {
+  opacity: 0.4;
+}
+
+/* The value: a number typed in, its unit after it. */
 .settings-range-value {
-  min-width: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   color: var(--muted);
   font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.settings-range-value input.settings-range-input {
+  width: 40px;
+  height: 22px;
+  padding: 0 4px;
+  font-size: calc(11px * var(--ui-scale, 1));
   text-align: right;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.settings-range-value input.settings-range-input::-webkit-inner-spin-button,
+.settings-range-value input.settings-range-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.settings-range-unit {
+  min-width: 14px;
 }
 
 /* An on/off setting: a switch. */
@@ -5510,6 +5597,9 @@ button.settings-picker-remove {
   --bg: var(--bg-solid);
   --panel: var(--panel-solid);
   --head: var(--head-solid);
+  /* The data table's header takes its theme colour here, not the main
+     area's (settings.ts). */
+  --grid-head-bg: initial;
 }
 
 /* ── Window material (material.ts): glass or clear, or a background
@@ -5584,42 +5674,163 @@ html.floating-glass .palette-backdrop {
 }
 
 /* ── Translucent page (settings.ts): over a background picture or in a
-   see-through window the page's background is laid once, under everything;
-   the docked parts lay as much of their own colour over it as Settings picks
-   for each (--surface-*, 0% by default: none, so they run on as the page
-   does, as Tern's panes do) instead of a translucent layer of it each,
-   which would darken them apart from the rest. ── */
-html.translucent-page :is(.appbar, .tabbar) {
-  background: color-mix(in srgb, var(--head-solid) var(--surface-top), transparent);
+   see-through window the page's background is laid once, under everything
+   (body); every pane is one of the areas below and lays as much of its own
+   colour over it as Settings › Appearance › Opacity picks for that area
+   (--surface-*, 0% by default: none, so it runs on as the page does, as
+   Tern's panes do) instead of a translucent layer of the page each, which
+   would darken it apart from the rest. A view marks its panes with these
+   classes; nothing inside an area lays a pane-sized background of its own.
+
+   Surface                                          Area (class › setting)
+   app bar, tab bar, Mongo collection sub-tabs      .surface-top › Top bars
+   schema / collection / index / key sidebar        .surface-left › Left sidebar
+   row detail, document and hit detail column       .surface-right › Right sidebar
+   console under the workbench                      .surface-bottom › Console below
+   result and data toolbars, result-set tabs,       .surface-bars › Toolbars
+     Chart / Pivot bar, filter bar, structure bar,
+     status line, panel heads, overview search,
+     Mongo aggregation / index / plan bars, GridFS
+     uploads, data notice strip
+   SQL editor, grid, messages, plan, chart, pivot,  .surface-main › Main area
+     structure / DDL / server info / overview,
+     ER diagram, Mongo and Elasticsearch tab
+     content, Home (launcher)
+   settings sheet                                   .settings-sheet › Settings sheet
+   cards, chips, panels and code blocks inside any  --panel / --head › Cards
+     area (settings cards, Mongo document cards,
+     plan cards, structure sections, ER cards, the
+     lock card), sticky table headers' fallback
+   sticky table headers                             their area's colour, blurred
+   data table header and row numbers (canvas)       Main area (--grid-head-bg)
+   inputs, selects, editors, wells (--bg)           none: the area shows through
+   dialogs, palette, Quick Look, menus, popovers    Floating surfaces
+   toasts, banners (error, server, update)          Notices
+   lock screen                                      the page (the app is hidden)
+   ── */
+html.translucent-page {
+  --grid-scroller-bg: transparent;
 }
 
-html.translucent-page .schema-sidebar {
-  background: color-mix(in srgb, color-mix(in srgb, var(--panel-solid) 84%, var(--bg-solid)) var(--surface-left), transparent);
+/* Inside an area the page's colour is already laid: what paints --bg (a
+   pane, an editor, a field's well) lays nothing more, and what paints
+   --panel or --head (a card, a chip, a code block) lays the Cards amount of
+   the theme's colour. */
+html.translucent-page
+  :is(.surface-top, .surface-left, .surface-right, .surface-bottom, .surface-bars, .surface-main, .settings-sheet,
+    .er-card, .er-note, .lock-screen) {
+  --bg: transparent;
+  --panel: color-mix(in srgb, var(--panel-solid) var(--surface-cards), transparent);
+  --head: color-mix(in srgb, var(--head-solid) var(--surface-cards), transparent);
 }
 
-html.translucent-page .row-detail {
-  background: color-mix(in srgb, var(--panel-solid) var(--surface-right), transparent);
+html.translucent-page .surface-top {
+  --area-fill: color-mix(in srgb, var(--head-solid) var(--surface-top), transparent);
 }
 
-html.translucent-page .console-panel {
-  background: color-mix(in srgb, var(--panel-solid) var(--surface-bottom), transparent);
+html.translucent-page .surface-left {
+  --area-fill: color-mix(in srgb, color-mix(in srgb, var(--panel-solid) 84%, var(--bg-solid)) var(--surface-left), transparent);
 }
 
-html.translucent-page :is(.data-toolbar, .result-sets) {
-  background: color-mix(in srgb, var(--panel-solid) var(--surface-bars), transparent);
+html.translucent-page .surface-right {
+  --area-fill: color-mix(in srgb, var(--panel-solid) var(--surface-right), transparent);
+}
+
+html.translucent-page .surface-bottom {
+  --area-fill: color-mix(in srgb, var(--panel-solid) var(--surface-bottom), transparent);
+}
+
+html.translucent-page .surface-bars {
+  --area-fill: color-mix(in srgb, var(--panel-solid) var(--surface-bars), transparent);
+}
+
+/* The main area is the page's own part: at 100% it is the theme's
+   background, as it is without a picture. */
+html.translucent-page .surface-main {
+  --area-fill: color-mix(in srgb, var(--bg-solid) var(--surface-main), transparent);
 }
 
 /* The settings sheet is docked beside the app, over nothing but the page,
    never a floating surface: over a translucent page it is one more area, so
-   the picture runs on under it as it does under the app. Its cards stay
-   nearly solid there, as Tern's do, so their words read over any part of the
-   picture. */
+   the picture runs on under it as it does under the app. Its cards are
+   Cards, nearly solid by default as Tern's are, so their words read over any
+   part of the picture. */
 html.translucent-page .settings-sheet {
-  background: color-mix(in srgb, var(--panel-solid) var(--surface-sheet), transparent);
+  --area-fill: color-mix(in srgb, var(--panel-solid) var(--surface-sheet), transparent);
+}
+
+html.translucent-page
+  :is(.surface-top, .surface-left, .surface-right, .surface-bottom, .surface-bars, .surface-main, .settings-sheet) {
+  background: var(--area-fill);
 }
 
 html.translucent-page .settings-sheet .settings-group {
-  background: color-mix(in srgb, var(--panel-solid) 88%, transparent);
+  background: var(--panel);
+}
+
+/* Home keeps its glow over the main area's colour. */
+html.translucent-page .home {
+  background:
+    radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%),
+    var(--area-fill);
+}
+
+/* A strip with a tint keeps the tint over its area's colour. */
+html.translucent-page .data-notice {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--accent) 8%, transparent),
+    color-mix(in srgb, var(--accent) 8%, transparent)
+  );
+}
+
+/* Panes inside an area that painted a panel of their own run on from it. */
+html.translucent-page :is(.structure-pane, .schema-conn, .sidebar-connections) {
+  background: transparent;
+}
+
+/* Sticky headers and feet: the rows scroll under them, so they take their
+   area's colour and blur what passes beneath, which keeps their words
+   readable even at 0%. */
+html.translucent-page :is(.panel-table th, .overview-table th, .mg-struct-table th) {
+  background: var(--area-fill, var(--head));
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+html.translucent-page .mg-detail .mg-card-foot {
+  background:
+    linear-gradient(color-mix(in srgb, var(--warn) 8%, transparent), color-mix(in srgb, var(--warn) 8%, transparent)),
+    var(--area-fill, var(--panel));
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+/* A dark code block in the theme's own colours is a card here. */
+html.translucent-page .panel-code {
+  background: var(--panel);
+}
+
+/* Banners in the page's flow are notices, at their opacity. */
+html.translucent-page .server-banner {
+  background:
+    linear-gradient(color-mix(in srgb, var(--error) 10%, transparent), color-mix(in srgb, var(--error) 10%, transparent)),
+    var(--glass-fill-notice);
+}
+
+html.translucent-page .update-banner {
+  background:
+    linear-gradient(color-mix(in srgb, var(--accent) 9%, transparent), color-mix(in srgb, var(--accent) 9%, transparent)),
+    var(--glass-fill-notice);
+}
+
+/* Locked, the app is hidden and the lock card lies on the page itself. */
+html.translucent-page #root:has(> .lock-screen) > :not(.lock-screen),
+html.translucent-page body:has(> #root > .lock-screen) > :not(#root) {
+  visibility: hidden;
+}
+
+html.translucent-page .lock-screen {
+  background: transparent;
 }
 
 .sr-only {
@@ -6310,21 +6521,6 @@ button.cm-tunnel.active {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
-.cm-reveal {
-  animation: cm-reveal 160ms ease-out both;
-}
-
-@keyframes cm-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-}
-
-html.reduce-motion .cm-reveal {
-  animation: none;
-}
-
 .cm-foot {
   display: flex;
   flex: none;
@@ -6976,9 +7172,22 @@ button.error-notice-icon-button:last-child {
   font-size: calc(11px * var(--ui-scale, 1));
 }
 
-.error-notice-raw summary {
+button.error-notice-raw-toggle {
+  gap: 3px;
   width: fit-content;
-  cursor: pointer;
+  height: auto;
+  margin-left: -12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+}
+
+button.error-notice-raw-toggle:hover {
+  background: transparent;
+  color: var(--ink);
 }
 
 .error-notice-raw pre {
@@ -6994,7 +7203,7 @@ button.error-notice-icon-button:last-child {
   overflow-wrap: anywhere;
 }
 
-.error-notice-raw > .error-notice-fixes {
+.error-notice-raw .error-notice-fixes {
   margin-top: 4px;
   padding-left: 0;
 }
@@ -8032,10 +8241,6 @@ button.launcher-more {
   color: var(--faint);
 }
 
-.launcher-chevron svg {
-  transition: transform var(--motion-slow) var(--ease-spring);
-}
-
 .launcher-chevron.open svg {
   transform: rotate(90deg);
 }
@@ -8734,6 +8939,8 @@ html.launcher-dragging .hover-tooltip {
 }
 
 .cell-pop-tree {
+  /* Holds the copies of closing rows (Collapse.tsx), clipped to it. */
+  position: relative;
   flex: 0 0 42%;
   min-width: 240px;
   padding: 10px 6px;
@@ -8779,10 +8986,6 @@ html.launcher-dragging .hover-tooltip {
   justify-content: center;
   width: 14px;
   color: var(--muted);
-}
-
-.cell-pop-chevron svg {
-  transition: transform 100ms ease;
 }
 
 .cell-pop-chevron.open svg {
@@ -12006,6 +12209,12 @@ select:not([multiple]) {
   background-repeat: no-repeat;
 }
 
+/* Text clear of the left border, as the chevron is of the right. At no
+   specificity (:where), so any field padded on purpose keeps its own. */
+select:where(:not([multiple])) {
+  padding-left: 8px;
+}
+
 /* The connection dialog pads its fields itself, at higher specificity. */
 .cm-modal .cm-value select {
   padding-right: 24px;
@@ -12026,9 +12235,17 @@ select:not([multiple]) {
 }
 
 .select-menu .select-option .context-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The picked one's check sits at the row's end, so every label starts where
+   the field's text does (Select.tsx placeMenu). */
+.select-menu .select-option .select-check {
+  margin-left: 8px;
 }
 
 .select-menu .select-option.disabled {
@@ -12430,10 +12647,6 @@ html.reduce-motion .er-card {
 
 /* Chart and Pivot views of a result: their settings in a bar along the top
    (the Data view's footer stays below), then the chart or the pivot grid. */
-.result-layer.analysis-layer {
-  background: var(--bg);
-}
-
 .analysis-pane,
 .analysis-view {
   position: absolute;
@@ -13062,12 +13275,6 @@ html[data-mode="light"] .chart-tip {
 }
 
 /* ── Motion: panels ── */
-
-/* A closing tree node's ghost is laid inside the list, so the list clips it
-   and it scrolls with the rows (treeMotion.ts). */
-.schema-list {
-  position: relative;
-}
 
 /* Quick Look dims the window as it grows into the large view and lifts the
    dim as it shrinks back to the popover (CellInspector's morph). */

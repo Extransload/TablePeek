@@ -11,6 +11,7 @@ import {
 import { useAppAreaWidth } from "../dock";
 import { t } from "../i18n";
 import { animate, DURATION, EASE, ghost } from "../motion";
+import { useRowMotion } from "./Collapse";
 import type { RowSource } from "../grid/rowSource";
 import { JsonRowSource } from "../grid/rowSource";
 import { containerSize, inkOf, inlineText, kindOf, type JsonKind } from "../jsonIndex";
@@ -347,7 +348,11 @@ export function CellInspector({
     treeRef.current?.querySelector(".cell-pop-row.selected")?.scrollIntoView({ block: "nearest" });
   }, [selected, rows, big]);
 
+  // Nodes opening or closing: their rows drop in or fade out, the rows below glide.
+  const prepareRows = useRowMotion(treeRef);
+
   function toggle(path: string): void {
+    prepareRows();
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(path)) {
@@ -584,21 +589,26 @@ export function CellInspector({
                     <button
                       type="button"
                       key={`${entry.parent}:more`}
+                      data-row-key={`${entry.parent}:more`}
+                      data-row-depth={entry.depth + 2}
                       className="cell-pop-more"
                       style={{ paddingLeft: 10 + entry.depth * 18 + 18 }}
-                      onClick={() =>
+                      onClick={() => {
+                        prepareRows();
                         setLimits((prev) => ({
                           ...prev,
                           [entry.parent]: (prev[entry.parent] ?? CHILD_PAGE) + CHILD_PAGE,
-                        }))
-                      }
+                        }));
+                      }}
                     >
                       {t("{count}개 더 보기", { count: entry.more.toLocaleString() })}
                     </button>
                   ) : (
                     <div
                       key={entry.path}
+                      data-row-key={entry.path}
                       role="treeitem"
+                      aria-level={entry.depth + 1}
                       aria-selected={entry.path === current?.path}
                       aria-expanded={
                         entry.kind === "object" || entry.kind === "array" ? expanded.has(entry.path) : undefined

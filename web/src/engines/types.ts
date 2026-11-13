@@ -99,6 +99,9 @@ export interface ConnectionField {
   // A pasted connection string that fills the other fields.
   fills_others?: boolean;
   schemes?: string[];
+  // What a pasted connection string's scheme says of other fields, by
+  // scheme ("rediss" → TLS on), unless the string itself says otherwise.
+  scheme_sets?: Record<string, Record<string, string | boolean>>;
   // Consecutive fields with the same group share one row under this label.
   group?: string;
   // A toggle's text beside its switch.
@@ -171,8 +174,9 @@ export interface EngineErrorHelp {
   rules?: ErrorRule[];
 }
 
-// The workbench a paradigm opens in ("search": Elasticsearch / OpenSearch).
-export type Workbench = "sql" | "document" | "search";
+// The workbench a paradigm opens in ("search": Elasticsearch / OpenSearch,
+// "keyvalue": Redis / Valkey).
+export type Workbench = "sql" | "document" | "search" | "keyvalue";
 
 // What only the web knows about an engine.
 export interface EngineWebParts {
