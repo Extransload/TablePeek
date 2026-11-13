@@ -12,7 +12,7 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 # engine's `Forwarder` (the version the engine already uses).
 async-trait = "0.1"
 axum = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 # An uploaded SQL file decoded as the page's TextDecoder would (sql_split).
 encoding_rs = "0.8"
 fontdb = "0.24"
