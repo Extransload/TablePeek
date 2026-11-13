@@ -14,7 +14,7 @@ exclude = ["crates/vendor/oracledb"]
 # The one version every crate takes; web/package.json carries the same
 # number (`make check` compares them, `make version V=x.y.z` bumps both).
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 repository = "https://github.com/Extransload/TablePeek"
 license = "AGPL-3.0-only"
