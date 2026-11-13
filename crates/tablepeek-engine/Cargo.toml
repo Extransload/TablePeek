@@ -9,7 +9,7 @@ license.workspace = true
 async-trait = "0.1"
 arrow = { version = "60.0.0", features = ["ipc"] }
 chrono = "0.4.45"
-futures-util = { version = "=0.3.32", features = ["io"] }
+futures-util = { version = "=0.3.34", features = ["io"] }
 fallible-iterator = "0.2"
 mysql_async = { version = "0.37.1", features = ["default-rustls-ring"] }
 tablepeek-types = { path = "../tablepeek-types" }
