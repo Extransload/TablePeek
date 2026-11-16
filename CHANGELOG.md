@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- **Shortcuts of their own in the app and in a browser.** Settings › Shortcuts now keeps one set for the desktop app and one for TablePeek in a browser tab, so changing one leaves the other alone; the app starts from the shortcuts both shared. In the app, ⌘T, ⌘W and ⇧⌘[ / ⇧⌘] open, close and switch tabs as in other Mac apps, without the ⌥ keys a browser needs, and only the app menu's keys (⌘Q, ⌘H, ⇧⌘W) are marked as taken.
+
 ## [0.10.1] - 2026-11-16
 
 Connections that were open come back open after an update or a restart.

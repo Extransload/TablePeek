@@ -24,7 +24,7 @@ import {
   type Material,
 } from "./material";
 import * as uiState from "./persist";
-import { KEYMAP_VERSION, normalizeKeymap, storedKeymap, type Keymap } from "./shortcuts";
+import { IN_DESKTOP_APP, KEYMAP_VERSION, normalizeKeymap, storedKeymap, type Keymap } from "./shortcuts";
 import {
   EXTRA_SYNTAX_VARIABLES,
   paletteSyntax,
@@ -222,6 +222,12 @@ const ACCENT_SOFT = "rgba(64, 130, 238, 0.18)";
 
 type Listener = (settings: AppSettings) => void;
 const listeners = new Set<Listener>();
+// The desktop app and browser tabs share every setting but the keymap: each
+// keeps its own (see DEFAULT_KEYMAP), saved under its own name; `keymap` in
+// memory is always this one's.
+const KEYMAP_FIELD = IN_DESKTOP_APP ? "keymapApp" : "keymap";
+const OTHER_KEYMAP_FIELD = IN_DESKTOP_APP ? "keymap" : "keymapApp";
+
 let current = readSettings();
 // A look tried on from a Settings menu (a theme or font highlighted there),
 // drawn over the saved settings until the menu closes: never saved, sent to
@@ -303,8 +309,12 @@ function readSettings(): AppSettings {
         typeof parsed.queryTimeout === "number" && Number.isFinite(parsed.queryTimeout)
           ? Math.min(MAX_QUERY_TIMEOUT, Math.max(0, Math.trunc(parsed.queryTimeout)))
           : DEFAULT_SETTINGS.queryTimeout,
-      // Settings saved before keymapVersion existed count as version 1.
-      keymap: normalizeKeymap(parsed.keymap, typeof parsed.keymapVersion === "number" ? parsed.keymapVersion : 1),
+      // Settings saved before keymapVersion existed count as version 1. The
+      // app starts from the keymap both shared before they were kept apart.
+      keymap: normalizeKeymap(
+        merged[KEYMAP_FIELD] ?? merged.keymap,
+        typeof parsed.keymapVersion === "number" ? parsed.keymapVersion : 1,
+      ),
       keymapVersion: KEYMAP_VERSION,
     };
     // Saved back in today's shape at once, so they are moved over once.
@@ -317,9 +327,19 @@ function readSettings(): AppSettings {
   }
 }
 
-// The keymap is saved as its changes only (see storedKeymap).
+// The keymap is saved as its changes only (see storedKeymap), the other
+// side's as it was saved.
 function writeSettings(settings: AppSettings): void {
-  uiState.setItem(uiState.SETTINGS_KEY, JSON.stringify({ ...settings, keymap: storedKeymap(settings.keymap) }));
+  let other: unknown;
+  try {
+    other = (JSON.parse(uiState.getItem(uiState.SETTINGS_KEY) ?? "null") as Record<string, unknown> | null)?.[OTHER_KEYMAP_FIELD];
+  } catch {
+    other = undefined;
+  }
+  uiState.setItem(
+    uiState.SETTINGS_KEY,
+    JSON.stringify({ ...settings, keymap: undefined, [OTHER_KEYMAP_FIELD]: other, [KEYMAP_FIELD]: storedKeymap(settings.keymap) }),
+  );
 }
 
 // A saved theme still offered (one of Tern's is kept while they load, see

@@ -60,6 +60,7 @@ import {
   KEY_ACTION_LABELS,
   bindingFromEvent,
   isEditingBinding,
+  IN_DESKTOP_APP,
   isReservedBinding,
   matchesBinding,
   type KeyAction,
@@ -1431,9 +1432,13 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
         const anyChanged = KEY_ACTIONS.some((action) => settings.keymap[action].join("\n") !== DEFAULT_KEYMAP[action].join("\n"));
         return (
           <SettingsGroup
-            hint={t("TablePeek 단축키가 브라우저 단축키보다 먼저 실행됩니다. {keys}는 브라우저가 먼저 처리합니다.", {
-              keys: ["Mod+w", "Mod+t", "Mod+n"].map(formatBinding).join(" · "),
-            })}
+            hint={
+              IN_DESKTOP_APP
+                ? t("데스크톱 앱의 단축키입니다. 브라우저 탭의 TablePeek은 단축키를 따로 둡니다.")
+                : t("이 브라우저의 단축키입니다(데스크톱 앱은 따로 둡니다). TablePeek 단축키가 브라우저 단축키보다 먼저 실행되지만 {keys}는 브라우저가 먼저 처리합니다.", {
+                    keys: ["Mod+w", "Mod+t", "Mod+n"].map(formatBinding).join(" · "),
+                  })
+            }
           >
             {KEY_ACTIONS.filter((action) => action !== "aiSql" || aiEnabled).map((action) => {
               const changed = settings.keymap[action].join("\n") !== DEFAULT_KEYMAP[action].join("\n");

@@ -161,7 +161,7 @@ Fifty-two built-in themes are included: TablePeek Dark and Light, Dark Noir and 
 
 ![TablePeek settings docked on the right beside the grid](images/settings.png)
 
-Settings also cover alternating row backgrounds, type colors, the maximum rows and query time limit, CSV delimiter and encoding, SQL syntax presets, keyboard shortcuts, and activity-log retention. Both the SQL editor's syntax colors (Appearance › Syntax colors) and the data table's colors for each kind of value (Appearance › Value colors: string, integer, decimal, big integer, boolean, date, time, JSON, array, enum, UUID, binary, NULL) can be picked per theme. The interface is available in English and Korean.
+Settings also cover alternating row backgrounds, type colors, the maximum rows and query time limit, CSV delimiter and encoding, SQL syntax presets, keyboard shortcuts, and activity-log retention. The desktop app and TablePeek in a browser tab keep separate shortcuts: in the app `Mod+T`, `Mod+W` and `Mod+Shift+[`/`]` open, close and switch tabs, while a browser keeps those keys for itself, so there the tabs use `Alt+T`, `Alt+W` and `Alt+[`/`]`. A shortcut changed in one doesn't change the other. Both the SQL editor's syntax colors (Appearance › Syntax colors) and the data table's colors for each kind of value (Appearance › Value colors: string, integer, decimal, big integer, boolean, date, time, JSON, array, enum, UUID, binary, NULL) can be picked per theme. The interface is available in English and Korean.
 
 Settings, workspaces, and other UI state are kept in `~/.tablepeek/ui-state.json`, so they survive restarts and are shared by the desktop app and `tablepeek serve`.
 
