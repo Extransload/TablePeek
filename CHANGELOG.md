@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-16
+
+Every number in Settings steps with ▲ ▼ and takes typing.
+
 ### Changed
 
 - **Every number in Settings steps and takes typing.** Font sizes, the maximum rows, the query time limit and the activity-log days are a field with ▲ and ▼ beside it, in place of a list or a bare number box: type a number (Enter or leaving the field sets it, kept in range; Esc puts it back), press ↑ or ↓ in the field, or click ▲ ▼, holding them to keep going (Shift steps ten at a time). A font size that follows another shows that size marked as following; emptying its field makes it follow again. The sliders' fields and − + work the same way.
@@ -282,7 +286,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/Extransload/TablePeek/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Extransload/TablePeek/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Extransload/TablePeek/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Extransload/TablePeek/compare/v0.10.0...v0.10.1
