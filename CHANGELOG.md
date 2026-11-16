@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-16
+
+⌘+, ⌘− and ⌘0 size the area you are in.
+
 ### Changed
 
 - **⌘+, ⌘− and ⌘0 size the area you are in.** With the focus in the SQL editor (or another code editor, or the console) they size the editor's font; in the data table, the table's; anywhere else, the interface's. The other areas keep the size they show, and the notice says which one changed. ⌘0 puts that area back to 12px.
@@ -274,7 +278,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/Extransload/TablePeek/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Extransload/TablePeek/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Extransload/TablePeek/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Extransload/TablePeek/compare/v0.9.0...v0.10.0
