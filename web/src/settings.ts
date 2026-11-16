@@ -703,22 +703,40 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   return current;
 }
 
-// ⌘+ / ⌘− / ⌘0: every font size one pixel up or down together, each kept in
-// its own range (the interface's, and the code, editor and table sizes picked
-// apart from it; those that follow it follow), or all back to their defaults
-// (0). Saved like any setting; returns the interface's size now.
-export function zoomFonts(by: -1 | 0 | 1): number {
-  if (by === 0) {
-    const { uiFontSize, codeFontSize, editorFontSize, gridFontSize } = DEFAULT_SETTINGS;
-    return saveSettings({ uiFontSize, codeFontSize, editorFontSize, gridFontSize }).uiFontSize;
+// The parts of the window ⌘+ / ⌘− / ⌘0 size apart: the SQL editor (and the
+// other code editors and the console, which write in its size), the data
+// table, and the interface (everything else).
+export type FontArea = "ui" | "editor" | "grid";
+
+// ⌘+ / ⌘− / ⌘0 on one area: its size one pixel up or down, kept in its range,
+// or back to the default 12px (an editor or table size that would follow the
+// code font at 12px follows it again). The other areas stay as they look: one
+// that followed the size changed keeps the size it had, set apart. Saved like
+// any setting; returns the area's size now.
+export function zoomFonts(by: -1 | 0 | 1, area: FontArea): number {
+  const before = drawnFonts(current);
+  const patch: Partial<AppSettings> = {};
+  if (area === "ui") {
+    patch.uiFontSize = by === 0 ? DEFAULT_SETTINGS.uiFontSize : Math.min(UI_FONT_MAX, Math.max(UI_FONT_MIN, current.uiFontSize + by));
+  } else {
+    const key = area === "editor" ? "editorFontSize" : "gridFontSize";
+    const size = area === "editor" ? before.editorSize : before.gridSize;
+    patch[key] =
+      by !== 0
+        ? Math.min(CODE_FONT_MAX, Math.max(CODE_FONT_MIN, size + by))
+        : before.codeSize === BASE_UI_PX
+          ? null
+          : BASE_UI_PX;
   }
-  const step = (size: number | null) => (size === null ? null : Math.min(CODE_FONT_MAX, Math.max(CODE_FONT_MIN, size + by)));
-  return saveSettings({
-    uiFontSize: Math.min(UI_FONT_MAX, Math.max(UI_FONT_MIN, current.uiFontSize + by)),
-    codeFontSize: step(current.codeFontSize),
-    editorFontSize: step(current.editorFontSize),
-    gridFontSize: step(current.gridFontSize),
-  }).uiFontSize;
+  const after = drawnFonts({ ...current, ...patch });
+  if (area !== "editor" && after.editorSize !== before.editorSize) {
+    patch.editorFontSize = before.editorSize;
+  }
+  if (area !== "grid" && after.gridSize !== before.gridSize) {
+    patch.gridFontSize = before.gridSize;
+  }
+  const saved = drawnFonts(saveSettings(patch));
+  return area === "ui" ? saved.uiSize : area === "editor" ? saved.editorSize : saved.gridSize;
 }
 
 export function subscribeSettings(listener: Listener): () => void {

@@ -160,6 +160,7 @@ import {
   subscribeSettings,
   zoomFonts,
   type AppSettings,
+  type FontArea,
 } from "./settings";
 import { cellToString, fkFilterFor, quickFilterFor } from "./rowOps";
 import {
@@ -5881,13 +5882,23 @@ export default function App() {
         setSettingsOpen(!settingsOpenRef.current);
         return;
       }
-      // ⌘+ / ⌘− / ⌘0 size the app's fonts wherever focus is, dialogs and
-      // the settings sheet included, in place of the browser's page zoom.
+      // ⌘+ / ⌘− / ⌘0 size the font of the area that has focus, in place of
+      // the browser's page zoom: a code editor or the console, the data
+      // table (and its cell editor), or else the interface, dialogs and the
+      // settings sheet included.
       if ((action === "fontBigger" || action === "fontSmaller" || action === "fontReset") && !event.isComposing && !lockedRef.current) {
         event.preventDefault();
         event.stopPropagation();
-        const size = zoomFonts(action === "fontBigger" ? 1 : action === "fontSmaller" ? -1 : 0);
-        notify(t("글자 크기 {size}px", { size }));
+        const area: FontArea =
+          target?.closest(".cm-editor, .console-log") != null
+            ? "editor"
+            : target?.closest(".grid-scroller, .cell-editor, .cell-menu") != null
+              ? "grid"
+              : "ui";
+        const size = zoomFonts(action === "fontBigger" ? 1 : action === "fontSmaller" ? -1 : 0, area);
+        notify(
+          t(area === "editor" ? "에디터 글자 크기 {size}px" : area === "grid" ? "표 글자 크기 {size}px" : "글자 크기 {size}px", { size }),
+        );
         return;
       }
       // ⌥ types characters on macOS (⌥T → †); text fields keep them. The SQL

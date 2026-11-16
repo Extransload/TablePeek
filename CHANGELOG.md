@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- **⌘+, ⌘− and ⌘0 size the area you are in.** With the focus in the SQL editor (or another code editor, or the console) they size the editor's font; in the data table, the table's; anywhere else, the interface's. The other areas keep the size they show, and the notice says which one changed. ⌘0 puts that area back to 12px.
+
 ## [0.11.0] - 2026-11-16
 
 Shortcuts of their own in the desktop app and in a browser tab.

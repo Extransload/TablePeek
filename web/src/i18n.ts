@@ -638,6 +638,8 @@ const EN: Record<string, string> = {
   "글자 작게": "Smaller text",
   "글자 크기 기본값": "Default text size",
   "글자 크기 {size}px": "Text size {size}px",
+  "에디터 글자 크기 {size}px": "Editor text size {size}px",
+  "표 글자 크기 {size}px": "Table text size {size}px",
   "열려 있던 연결 {count}개는 다시 열지 못했습니다. 홈에서 여세요": "Couldn't open {count} connections that were open again. Open them from Home",
   "명령 팔레트": "Command palette",
   "설정 열기": "Open settings",
