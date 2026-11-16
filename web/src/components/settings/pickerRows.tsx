@@ -5,9 +5,8 @@ import { THEMES, type Theme, type ThemeId } from "../../palette";
 import { fontListLabel, pickedFace, SYSTEM_FONT_CHOICES, type FontGroup } from "../../fonts";
 import { previewSettings, type AppSettings } from "../../settings";
 import { ChevronDownIcon } from "../icons";
-import { Select } from "../Select";
 import { Picker, type PickerItem } from "./Picker";
-import { SettingRow } from "./rows";
+import { SettingRow, Stepper } from "./rows";
 
 // The settings rows that open a picker (a theme, a font), and the sizes
 // beside the fonts. Each draws the app with the choice highlighted in its
@@ -239,9 +238,10 @@ export function FontRow({
   );
 }
 
-// A font's size: whole px (a list, so a size never lands half typed, plus
-// the current one if older settings saved one off the steps), and first
-// "follow" for a size that follows another (`follows`, the size it is then).
+// A font's size in whole px: typed in, or stepped with ▲ ▼ (and ↑ ↓ in the
+// field), each step drawn at once. A size that follows another (`follows`,
+// the size it is then) shows that size marked "follows"; emptying the field
+// makes it follow again.
 export function SizeRow({
   label,
   keywords,
@@ -251,7 +251,6 @@ export function SizeRow({
   max,
   defaultValue,
   onChange,
-  preview,
 }: {
   label: string;
   keywords: string;
@@ -261,30 +260,10 @@ export function SizeRow({
   max: number;
   defaultValue: number | null;
   onChange(size: number | null): void;
-  preview(size: number | null): Partial<AppSettings>;
 }) {
-  const sizes = Array.from({ length: max - min + 1 }, (_, index) => min + index);
-  if (value !== null && !sizes.includes(value)) {
-    sizes.push(value);
-    sizes.sort((a, b) => a - b);
-  }
   return (
     <SettingRow label={label} keywords={keywords} changed={value !== defaultValue} onReset={() => onChange(defaultValue)}>
-      <Select
-        aria-label={t(label)}
-        value={value === null ? "" : String(value)}
-        onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}
-        onPreview={(picked) =>
-          previewSettings(picked === null ? null : preview(picked === "" ? null : Number(picked)))
-        }
-      >
-        {follows !== null ? <option value="">{t("따름 · {size}px", { size: follows })}</option> : null}
-        {sizes.map((size) => (
-          <option key={size} value={size}>
-            {size}px
-          </option>
-        ))}
-      </Select>
+      <Stepper label={label} value={value} follows={follows} min={min} max={max} unit="px" onChange={onChange} />
     </SettingRow>
   );
 }

@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- **Every number in Settings steps and takes typing.** Font sizes, the maximum rows, the query time limit and the activity-log days are a field with ▲ and ▼ beside it, in place of a list or a bare number box: type a number (Enter or leaving the field sets it, kept in range; Esc puts it back), press ↑ or ↓ in the field, or click ▲ ▼, holding them to keep going (Shift steps ten at a time). A font size that follows another shows that size marked as following; emptying its field makes it follow again. The sliders' fields and − + work the same way.
+
 ## [0.12.0] - 2026-11-16
 
 ⌘+, ⌘− and ⌘0 size the area you are in.

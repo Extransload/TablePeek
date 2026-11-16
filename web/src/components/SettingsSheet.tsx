@@ -95,6 +95,7 @@ import {
   SettingRow,
   SettingsGroup,
   Slider,
+  Stepper,
   Switch,
 } from "./settings/rows";
 import { VersionSettings } from "./settings/VersionSettings";
@@ -871,17 +872,12 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
             <VersionSettings />
             <SettingsGroup title="활동 로그">
               <SettingRow label="보관 기간(일)" keywords="activity log retention days" {...fromDefault("activityDays")}>
-                <input
-                  type="number"
+                <Stepper
+                  label="보관 기간(일)"
+                  value={settings.activityDays}
                   min={1}
                   max={90}
-                  value={settings.activityDays}
-                  aria-label={t("보관 기간(일)")}
-                  onChange={(event) =>
-                    onChange({
-                      activityDays: Math.min(90, Math.max(1, Number(event.target.value) || 7)),
-                    })
-                  }
+                  onChange={(activityDays) => onChange({ activityDays: activityDays ?? DEFAULT_SETTINGS.activityDays })}
                 />
               </SettingRow>
             </SettingsGroup>
@@ -1041,7 +1037,6 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 max={UI_FONT_MAX}
                 defaultValue={DEFAULT_SETTINGS.uiFontSize}
                 onChange={(size) => onChange({ uiFontSize: size ?? DEFAULT_SETTINGS.uiFontSize })}
-                preview={(size) => ({ uiFontSize: size ?? DEFAULT_SETTINGS.uiFontSize })}
               />
               <FontRow
                 label="코드 글꼴"
@@ -1062,7 +1057,6 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 max={CODE_FONT_MAX}
                 defaultValue={DEFAULT_SETTINGS.codeFontSize}
                 onChange={(codeFontSize) => onChange({ codeFontSize })}
-                preview={(codeFontSize) => ({ codeFontSize })}
               />
               <FontRow
                 label="에디터 글꼴"
@@ -1082,7 +1076,6 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 max={CODE_FONT_MAX}
                 defaultValue={DEFAULT_SETTINGS.editorFontSize}
                 onChange={(editorFontSize) => onChange({ editorFontSize })}
-                preview={(editorFontSize) => ({ editorFontSize })}
               />
               <FontRow
                 label="표 글꼴"
@@ -1102,7 +1095,6 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 max={CODE_FONT_MAX}
                 defaultValue={DEFAULT_SETTINGS.gridFontSize}
                 onChange={(gridFontSize) => onChange({ gridFontSize })}
-                preview={(gridFontSize) => ({ gridFontSize })}
               />
             </SettingsGroup>
             <SettingsGroup title="재질">
@@ -1361,17 +1353,13 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
         return (
           <SettingsGroup title="쿼리">
             <SettingRow label="최대 행" keywords="max rows limit" {...fromDefault("maxRows")}>
-              <input
-                type="number"
+              <Stepper
+                label="최대 행"
+                value={settings.maxRows}
                 min={1}
                 max={MAX_ROWS_LIMIT}
-                value={settings.maxRows}
-                aria-label={t("최대 행")}
-                onChange={(event) =>
-                  onChange({
-                    maxRows: Math.min(MAX_ROWS_LIMIT, Math.max(1, Math.trunc(Number(event.target.value)) || 1)),
-                  })
-                }
+                step={1000}
+                onChange={(maxRows) => onChange({ maxRows: maxRows ?? DEFAULT_SETTINGS.maxRows })}
               />
             </SettingRow>
             <SettingRow
@@ -1380,17 +1368,13 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
               hint={t("MongoDB와 ClickHouse에 쓰입니다. 0이면 제한이 없습니다.")}
               {...fromDefault("queryTimeout")}
             >
-              <input
-                type="number"
+              <Stepper
+                label="쿼리 시간 제한(초)"
+                value={settings.queryTimeout}
                 min={0}
                 max={MAX_QUERY_TIMEOUT}
-                value={settings.queryTimeout}
-                aria-label={t("쿼리 시간 제한(초)")}
-                onChange={(event) =>
-                  onChange({
-                    queryTimeout: Math.min(MAX_QUERY_TIMEOUT, Math.max(0, Math.trunc(Number(event.target.value)) || 0)),
-                  })
-                }
+                step={5}
+                onChange={(queryTimeout) => onChange({ queryTimeout: queryTimeout ?? DEFAULT_SETTINGS.queryTimeout })}
               />
             </SettingRow>
           </SettingsGroup>

@@ -6,12 +6,13 @@ import {
   useId,
   useRef,
   useState,
+  type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { bothLanguages, t } from "../../i18n";
-import { MinusIcon, PlusIcon } from "../icons";
+import { ChevronIcon, MinusIcon, PlusIcon } from "../icons";
 import { openSelect } from "../Select";
 
 // The rows of Settings (see SettingsSheet): a name on the left and a
@@ -48,7 +49,7 @@ export function rowControls(row: HTMLElement): HTMLElement[] {
 
 // ⏎ or Space on a row: a lone switch flips, a menu or a picker opens, a
 // field or a colour takes it; a row of several controls is gone into, at
-// its slider if it has one (its − and + come before it), else its first.
+// its slider or its number field if it has one, else its first.
 function activateRow(row: HTMLElement): void {
   const controls = rowControls(row);
   const control = controls[0];
@@ -56,7 +57,12 @@ function activateRow(row: HTMLElement): void {
     return;
   }
   if (controls.length > 1) {
-    (controls.find((each) => each instanceof HTMLInputElement && each.type === "range") ?? control).focus();
+    const range = controls.find((each) => each instanceof HTMLInputElement && each.type === "range");
+    const field = controls.find((each): each is HTMLInputElement => each instanceof HTMLInputElement && each.classList.contains("settings-stepper-input"));
+    (range ?? field ?? control).focus();
+    if (range === undefined && field !== undefined) {
+      field.select();
+    }
   } else if (control instanceof HTMLSelectElement) {
     openSelect(control);
   } else if (control instanceof HTMLInputElement && (control.type === "checkbox" || control.type === "color")) {
@@ -302,42 +308,47 @@ export function Switch({
   );
 }
 
-// A slider with − and + beside it and its value in a field that takes a
-// number typed in: ⏎ or leaving the field sets it, clamped to the slider's
-// range; Esc puts back the value it had. − and + step once (ten with Shift)
-// and, held down, keep stepping, faster the longer they are held.
-export function Slider({
-  label,
+// The workings shared by every number in Settings: − and + (or ▲ and ▼)
+// that step once on a press (ten steps with Shift) and, held down, keep
+// stepping, faster the longer they are held, until let go or the range ends;
+// ↑ and ↓ in the field doing the same; and the field taking a number typed
+// in, set on ⏎ or leaving it, kept in range, Esc putting back the value.
+// `value` null: the setting follows another (`follows`, its value now); a
+// step starts from there, and emptying the field goes back to following.
+function useNumberSteps({
   value,
+  follows = null,
+  min,
   max,
-  unit,
+  step = 1,
   onChange,
 }: {
-  label: string;
-  value: number;
+  value: number | null;
+  follows?: number | null;
+  min: number;
   max: number;
-  unit: string;
-  onChange(value: number): void;
+  step?: number;
+  onChange(value: number | null): void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
-  const cancelled = useRef(false);
   // The value and onChange as of the last render, for steps taken while a
   // button is held (the timer outlives the render that started it).
-  const latest = useRef({ value, onChange });
-  latest.current = { value, onChange };
+  const shown = value ?? follows ?? min;
+  const latest = useRef({ value: shown, onChange });
+  latest.current = { value: shown, onChange };
   const hold = useRef<number | null>(null);
-  const clamp = (next: number) => Math.min(max, Math.max(0, Math.round(next)));
-  // Steps by `by`; false at the end of the range, where nothing changed.
+  const clamp = (next: number) => Math.min(max, Math.max(min, Math.round(next)));
+  // Steps by `by` steps; false once the range ends (a held button stops).
   const stepBy = (by: number): boolean => {
-    const next = clamp(latest.current.value + by);
-    if (next === latest.current.value) {
+    const next = clamp(latest.current.value + by * step);
+    if (next === latest.current.value && value !== null) {
       return false;
     }
     latest.current.value = next;
     latest.current.onChange(next);
-    return true;
+    return next !== min && next !== max;
   };
-  // One function for the life of the slider, so the window listeners it
+  // One function for the life of the control, so the window listeners it
   // adds come off again.
   const stopHold = useCallback(function stopHold() {
     if (hold.current !== null) {
@@ -375,13 +386,15 @@ export function Slider({
     };
     hold.current = window.setTimeout(repeat, 400);
   };
-  const stepButton = (by: number, name: string, title: string, disabled: boolean, icon: ReactNode) => (
+  // `focusable` false: ▲ and ▼ beside a field, which ↑ and ↓ in it do.
+  const stepButton = (by: 1 | -1, name: string, icon: ReactNode, className = "settings-step", focusable = true) => (
     <button
       type="button"
-      className="settings-step"
+      className={className}
       aria-label={name}
-      title={title}
-      disabled={disabled}
+      title={`${name} (${t("Shift: 10배")})`}
+      tabIndex={focusable ? undefined : -1}
+      disabled={by < 0 ? shown <= min : shown >= max}
       onPointerDown={(event) => startHold(event, by)}
       onPointerUp={stopHold}
       onPointerCancel={stopHold}
@@ -396,18 +409,64 @@ export function Slider({
     </button>
   );
   const commit = () => {
-    if (draft !== null && !cancelled.current) {
-      const typed = Number(draft.trim());
-      if (draft.trim() !== "" && Number.isFinite(typed)) {
+    if (draft !== null) {
+      const text = draft.trim();
+      const typed = Number(text);
+      if (text === "" && follows !== null) {
+        onChange(null);
+      } else if (text !== "" && Number.isFinite(typed)) {
         onChange(clamp(typed));
       }
     }
-    cancelled.current = false;
     setDraft(null);
   };
+  const fieldProps = {
+    type: "text",
+    inputMode: "numeric" as const,
+    spellCheck: false,
+    autoComplete: "off",
+    value: draft ?? (value === null ? "" : String(value)),
+    placeholder: value === null && follows !== null ? String(follows) : undefined,
+    onChange: (event: ChangeEvent<HTMLInputElement>) => setDraft(event.target.value.replace(/[^\d-]/g, "")),
+    onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Escape" && draft !== null) {
+        // The field's own Esc: put the value back, stay in the field.
+        event.preventDefault();
+        event.stopPropagation();
+        setDraft(null);
+      } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        setDraft(null);
+        const by = event.key === "ArrowUp" ? 1 : -1;
+        stepBy(event.shiftKey ? by * 10 : by);
+      } else if (event.key === "Enter") {
+        commit();
+      }
+    },
+    onBlur: commit,
+  };
+  return { shown, stepButton, fieldProps };
+}
+
+// A slider with − and + beside it and its value in a field that takes a
+// number typed in (see useNumberSteps).
+export function Slider({
+  label,
+  value,
+  max,
+  unit,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  unit: string;
+  onChange(value: number): void;
+}) {
+  const { stepButton, fieldProps } = useNumberSteps({ value, min: 0, max, onChange: (next) => onChange(next ?? 0) });
   return (
     <span className="settings-slider">
-      {stepButton(-1, t("{label} 줄이기", { label }), t("줄이기 (Shift: 10씩)"), value <= 0, <MinusIcon size={10} />)}
+      {stepButton(-1, t("{label} 줄이기", { label }), <MinusIcon size={10} />)}
       <input
         type="range"
         className="settings-range"
@@ -418,25 +477,46 @@ export function Slider({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-      {stepButton(1, t("{label} 늘리기", { label }), t("늘리기 (Shift: 10씩)"), value >= max, <PlusIcon size={10} />)}
+      {stepButton(1, t("{label} 늘리기", { label }), <PlusIcon size={10} />)}
       <span className="settings-range-value">
-        <input
-          type="number"
-          className="settings-range-input mono"
-          aria-label={t("{label} 값", { label })}
-          min={0}
-          max={max}
-          step={1}
-          value={draft ?? String(value)}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              cancelled.current = true;
-            }
-          }}
-          onBlur={commit}
-        />
+        <input {...fieldProps} className="settings-range-input settings-stepper-input mono" aria-label={t("{label} 값", { label })} />
         <span className="settings-range-unit mono">{unit}</span>
+      </span>
+    </span>
+  );
+}
+
+// A number: a field that takes it typed in, with ▲ and ▼ beside it (see
+// useNumberSteps). `follows`: the value it shows while it follows another
+// setting (value null), marked as such; emptying the field follows again.
+export function Stepper({
+  label,
+  value,
+  follows = null,
+  min,
+  max,
+  step = 1,
+  unit,
+  onChange,
+}: {
+  label: string;
+  value: number | null;
+  follows?: number | null;
+  min: number;
+  max: number;
+  step?: number;
+  unit?: string;
+  onChange(value: number | null): void;
+}) {
+  const { stepButton, fieldProps } = useNumberSteps({ value, follows, min, max, step, onChange });
+  return (
+    <span className={`settings-stepper${value === null && follows !== null ? " follows" : ""}`}>
+      {value === null && follows !== null ? <span className="settings-stepper-follow">{t("따름")}</span> : null}
+      <input {...fieldProps} className="settings-stepper-input mono" aria-label={t(label)} />
+      {unit !== undefined ? <span className="settings-stepper-unit mono">{unit}</span> : null}
+      <span className="settings-stepper-buttons">
+        {stepButton(1, t("{label} 늘리기", { label: t(label) }), <ChevronIcon size={9} className="up" />, "settings-stepper-button", false)}
+        {stepButton(-1, t("{label} 줄이기", { label: t(label) }), <ChevronIcon size={9} className="down" />, "settings-stepper-button", false)}
       </span>
     </span>
   );

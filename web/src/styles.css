@@ -5300,6 +5300,99 @@ button.settings-step:disabled {
   min-width: 14px;
 }
 
+/* A number setting: the field, its unit, and ▲ ▼ stacked at its end, all in
+   one box like a text field (rows.tsx Stepper). */
+.settings-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.settings-stepper:hover {
+  border-color: color-mix(in srgb, var(--line) 48%, var(--muted));
+}
+
+.settings-stepper:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.settings-stepper-follow {
+  align-self: center;
+  padding-left: 7px;
+  color: var(--faint);
+}
+
+/* As specific as the form fields' own rules, so their well and halo stay off. */
+.settings-stepper input.settings-stepper-input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
+.settings-stepper input.settings-stepper-input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):hover,
+.settings-stepper input.settings-stepper-input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):focus-visible {
+  width: 64px;
+  height: auto;
+  padding: 0 4px 0 8px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  color: var(--ink);
+  font-size: calc(11.5px * var(--ui-scale, 1));
+  text-align: right;
+}
+
+.settings-stepper.follows input.settings-stepper-input::placeholder {
+  color: var(--muted);
+}
+
+.settings-stepper-unit {
+  align-self: center;
+  padding-right: 6px;
+}
+
+.settings-stepper-buttons {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line-soft);
+}
+
+button.settings-stepper-button {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  width: 18px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+button.settings-stepper-button + button.settings-stepper-button {
+  border-top: 1px solid var(--line-soft);
+}
+
+button.settings-stepper-button:hover:not(:disabled) {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+
+button.settings-stepper-button:disabled {
+  opacity: 0.35;
+}
+
+.settings-stepper-button .up {
+  transform: rotate(-90deg);
+}
+
+.settings-stepper-button .down {
+  transform: rotate(90deg);
+}
+
 /* An on/off setting: a switch. */
 input.settings-switch {
   appearance: none;
