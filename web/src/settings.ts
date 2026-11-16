@@ -683,6 +683,24 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   return current;
 }
 
+// ⌘+ / ⌘− / ⌘0: every font size one pixel up or down together, each kept in
+// its own range (the interface's, and the code, editor and table sizes picked
+// apart from it; those that follow it follow), or all back to their defaults
+// (0). Saved like any setting; returns the interface's size now.
+export function zoomFonts(by: -1 | 0 | 1): number {
+  if (by === 0) {
+    const { uiFontSize, codeFontSize, editorFontSize, gridFontSize } = DEFAULT_SETTINGS;
+    return saveSettings({ uiFontSize, codeFontSize, editorFontSize, gridFontSize }).uiFontSize;
+  }
+  const step = (size: number | null) => (size === null ? null : Math.min(CODE_FONT_MAX, Math.max(CODE_FONT_MIN, size + by)));
+  return saveSettings({
+    uiFontSize: Math.min(UI_FONT_MAX, Math.max(UI_FONT_MIN, current.uiFontSize + by)),
+    codeFontSize: step(current.codeFontSize),
+    editorFontSize: step(current.editorFontSize),
+    gridFontSize: step(current.gridFontSize),
+  }).uiFontSize;
+}
+
 export function subscribeSettings(listener: Listener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

@@ -21,7 +21,10 @@ export type KeyAction =
   | "openSettings"
   | "openFilter"
   | "duplicateRows"
-  | "aiSql";
+  | "aiSql"
+  | "fontBigger"
+  | "fontSmaller"
+  | "fontReset";
 
 export type Keymap = Record<KeyAction, string[]>;
 
@@ -43,6 +46,9 @@ export const KEY_ACTIONS: KeyAction[] = [
   "openFilter",
   "duplicateRows",
   "aiSql",
+  "fontBigger",
+  "fontSmaller",
+  "fontReset",
 ];
 
 // The desktop app marks the page's root before any of its scripts run (see
@@ -80,6 +86,11 @@ export const DEFAULT_KEYMAP: Keymap = {
   // taken over by the capture-phase handler's preventDefault, and the
   // desktop app's menu has no ⌘E item.
   aiSql: ["Mod+e"],
+  // As a browser zooms, but the app's own font sizes (Settings › Appearance ›
+  // Font): ⌘= and ⌘+ (⇧⌘=) larger, ⌘− smaller, ⌘0 back to the defaults.
+  fontBigger: ["Mod+=", "Mod+Shift+="],
+  fontSmaller: ["Mod+-"],
+  fontReset: ["Mod+0"],
 };
 
 export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
@@ -100,6 +111,9 @@ export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
   openFilter: "데이터 필터 열기",
   duplicateRows: "선택한 행 복제",
   aiSql: "AI로 SQL 작성",
+  fontBigger: "글자 크게",
+  fontSmaller: "글자 작게",
+  fontReset: "글자 크기 기본값",
 };
 
 const CODE_KEYS: Record<string, string> = {

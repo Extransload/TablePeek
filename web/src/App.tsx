@@ -158,6 +158,7 @@ import {
   getSettings,
   saveSettings,
   subscribeSettings,
+  zoomFonts,
   type AppSettings,
 } from "./settings";
 import { cellToString, fkFilterFor, quickFilterFor } from "./rowOps";
@@ -5819,6 +5820,15 @@ export default function App() {
         event.preventDefault();
         event.stopPropagation();
         setSettingsOpen(!settingsOpenRef.current);
+        return;
+      }
+      // ⌘+ / ⌘− / ⌘0 size the app's fonts wherever focus is, dialogs and
+      // the settings sheet included, in place of the browser's page zoom.
+      if ((action === "fontBigger" || action === "fontSmaller" || action === "fontReset") && !event.isComposing && !lockedRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        const size = zoomFonts(action === "fontBigger" ? 1 : action === "fontSmaller" ? -1 : 0);
+        notify(t("글자 크기 {size}px", { size }));
         return;
       }
       // ⌥ types characters on macOS (⌥T → †); text fields keep them. The SQL

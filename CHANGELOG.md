@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Text size from the keyboard.** ⌘+ (or ⌘=) and ⌘− make every font in the app one pixel larger or smaller together, and ⌘0 puts them back to the defaults, wherever focus is; a notice shows the size. They are the same sizes as Settings › Appearance › Font, and can be rebound in Settings › Shortcuts.
+
 ## [0.9.0] - 2026-11-13
 
 Redis and Valkey, with a workbench of their own; every area's background in Settings; every list and tree opening and closing with motion.
