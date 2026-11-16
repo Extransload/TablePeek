@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- After an update, or quitting and opening the app again, the connections that were open come back open, with their tabs where they were, instead of the app starting at Home with them gone. Those that need a password typed in stay closed, and a notice says how many.
+
 ## [0.10.0] - 2026-11-16
 
 Text size from the keyboard: ⌘+, ⌘− and ⌘0.

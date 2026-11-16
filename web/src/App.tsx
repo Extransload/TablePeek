@@ -356,6 +356,9 @@ interface Workspace {
 interface PersistedPayload {
   activeConnId: string | null;
   workspaces: Record<string, Workspace>;
+  // Each open connection's saved profile, to open it again after the server
+  // restarts and gives it a new id.
+  savedIds?: Record<string, string>;
 }
 
 
@@ -5583,10 +5586,59 @@ export default function App() {
           kept[id] = ws;
         }
       }
+      // Connections the server no longer has (it restarted: an update, the
+      // app quit and opened again) come back from their saved profiles, tabs
+      // and all, under the id the server gives them now. Only those that can
+      // connect without asking: a password kept in the keychain or none to
+      // give. The rest are left for the user to open.
+      const savedOf = persisted?.savedIds ?? {};
+      const lost = Object.keys(workspacesRef.current).filter((id) => kept[id] === undefined && savedOf[id] !== undefined);
+      const moved: Record<string, string> = {};
+      if (lost.length > 0) {
+        const profiles = await store.listConnections().catch(() => [] as SavedConnection[]);
+        const reopened = await Promise.all(
+          lost.map(async (id) => {
+            const saved = profiles.find((entry) => entry.id === savedOf[id]);
+            const engine = saved === undefined ? undefined : engineById(saved.driver);
+            if (saved === undefined || engine === undefined) {
+              return null;
+            }
+            const secret = engine.connection.fields.find((field) => field.type === "secret");
+            if (secret !== undefined && fieldVisible(secret, valuesFromConfig(engine, saved.config)) && !saved.has_password) {
+              return null;
+            }
+            try {
+              return { id, live: await store.connectSaved(saved.id) };
+            } catch {
+              return null;
+            }
+          }),
+        );
+        for (const entry of reopened) {
+          if (entry !== null) {
+            // A transaction ended with the old session.
+            kept[entry.live.conn] = { ...workspacesRef.current[entry.id], meta: entry.live.meta, tx: "none" };
+            moved[entry.id] = entry.live.conn;
+          }
+        }
+        const failed = lost.length - Object.keys(moved).length;
+        if (failed > 0) {
+          notify(t("열려 있던 연결 {count}개는 다시 열지 못했습니다. 홈에서 여세요", { count: failed }));
+        }
+        if (Object.keys(moved).length > 0) {
+          try {
+            list = await store.listConns();
+            commitConns(list);
+          } catch {
+            // The list from before stays.
+          }
+        }
+      }
       commitWorkspaces(kept);
       const params = new URLSearchParams(window.location.search);
-      const want = params.get("conn");
-      const wantTab = params.get("tab");
+      const asked = params.get("conn") ?? (Object.keys(moved).length > 0 ? (persisted?.activeConnId ?? null) : null);
+      const want = asked === null ? null : (moved[asked] ?? asked);
+      const wantTab = params.get("tab") ?? (asked !== null && moved[asked] !== undefined ? (kept[moved[asked]]?.tabs.activeId ?? null) : null);
       if (want !== null && list.some((conn) => conn.id === want)) {
         if (workspacesRef.current[want] !== undefined) {
           setActiveConnId(want);
@@ -5667,10 +5719,17 @@ export default function App() {
       return;
     }
     try {
-      const payload: PersistedPayload = { activeConnId, workspaces };
+      const savedIds: Record<string, string> = {};
+      for (const id of Object.keys(workspaces)) {
+        const saved = conns.find((conn) => conn.id === id)?.saved_id;
+        if (saved !== undefined) {
+          savedIds[id] = saved;
+        }
+      }
+      const payload: PersistedPayload = { activeConnId, workspaces, savedIds };
       uiState.setItem(WORKSPACES_KEY, JSON.stringify(payload, persistReplacer));
     } catch {}
-  }, [workspaces, activeConnId, booting]);
+  }, [workspaces, activeConnId, booting, conns]);
 
   cycleViewRef.current = cycleTableView;
   formatRef.current = formatCurrent;
