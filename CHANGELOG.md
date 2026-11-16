@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-16
+
+Shortcuts of their own in the desktop app and in a browser tab.
+
 ### Changed
 
 - **Shortcuts of their own in the app and in a browser.** Settings › Shortcuts now keeps one set for the desktop app and one for TablePeek in a browser tab, so changing one leaves the other alone; the app starts from the shortcuts both shared. In the app, ⌘T, ⌘W and ⇧⌘[ / ⇧⌘] open, close and switch tabs as in other Mac apps, without the ⌥ keys a browser needs, and only the app menu's keys (⌘Q, ⌘H, ⇧⌘W) are marked as taken.
@@ -266,7 +270,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Extransload/TablePeek/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Extransload/TablePeek/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Extransload/TablePeek/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Extransload/TablePeek/compare/v0.8.0...v0.9.0
