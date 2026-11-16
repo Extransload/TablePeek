@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-16
+
+Connections that were open come back open after an update or a restart.
+
 ### Fixed
 
 - After an update, or quitting and opening the app again, the connections that were open come back open, with their tabs where they were, instead of the app starting at Home with them gone. Those that need a password typed in stay closed, and a notice says how many.
@@ -258,7 +262,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/Extransload/TablePeek/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Extransload/TablePeek/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Extransload/TablePeek/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Extransload/TablePeek/compare/v0.7.3...v0.8.0
