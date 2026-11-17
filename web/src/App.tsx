@@ -67,6 +67,7 @@ import { ActivityModal } from "./components/ActivityModal";
 import { BrandLogo } from "./components/BrandLogo";
 import { MetricsModal } from "./components/MetricsModal";
 import { LockScreen } from "./components/LockScreen";
+import { LaunchIntro, takeLaunchIntro } from "./components/LaunchIntro";
 import { OverviewPanel } from "./components/OverviewPanel";
 import { ErDiagram } from "./components/ErDiagram";
 import { CellInspector, type CellAnchor, type FkReference } from "./components/CellInspector";
@@ -693,6 +694,8 @@ export default function App() {
   const [applying, setApplying] = useState(false);
   const [, setPendingVersion] = useState(0);
   const [locked, setLocked] = useState<boolean>(() => getPasscodeHash() !== null);
+  // Played once per launch as the app opens (Settings → Appearance), not over the lock screen.
+  const [launchIntro, setLaunchIntro] = useState<boolean>(() => !locked && takeLaunchIntro(settings));
   // The bottom console stays open or closed per connection, like the row
   // detail panel. historyVersion bumps after each editor run so it refetches.
   const [consolePanels, setConsolePanels] = useState<Record<string, boolean>>(() =>
@@ -7832,6 +7835,7 @@ export default function App() {
       <ChatGptWelcomeHost />
     </div>
     {locked ? <LockScreen onUnlock={() => setLocked(false)} /> : null}
+    {launchIntro ? <LaunchIntro onDone={() => setLaunchIntro(false)} /> : null}
     <HoverTooltip />
     </>
   );

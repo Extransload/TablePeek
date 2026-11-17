@@ -114,6 +114,9 @@ export interface AppSettings {
   // Motion kept to a minimum: transitions and animations jump to their end
   // (see motion.ts). Only this decides; the system's preference isn't read.
   reduceMotion: boolean;
+  // The mark, the name and the tagline shown for a moment when the app starts
+  // (components/LaunchIntro.tsx); never under reduceMotion.
+  launchIntro: boolean;
   // Where a console's input line is (the Redis CLI): "flow" right after the
   // last reply, everything running down from the top as in a terminal
   // (Tern); "docked" in a bar fixed under the output.
@@ -201,6 +204,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   scrollbarX: true,
   scrollbarY: true,
   reduceMotion: false,
+  launchIntro: true,
   cliInput: "flow",
   uppercaseKeywords: true,
   syntaxPreset: "tablepeek",
@@ -254,6 +258,7 @@ function readSettings(): AppSettings {
       version: SETTINGS_VERSION,
       language: parsed.language === "en" ? "en" : "ko",
       reduceMotion: parsed.reduceMotion === true,
+      launchIntro: parsed.launchIntro !== false,
       cliInput: parsed.cliInput === "docked" ? "docked" : "flow",
       themeMode: THEME_MODES.includes(parsed.themeMode as ThemeMode) ? (parsed.themeMode as ThemeMode) : DEFAULT_SETTINGS.themeMode,
       themeLight: readThemeId(parsed.themeLight, DEFAULT_SETTINGS.themeLight),

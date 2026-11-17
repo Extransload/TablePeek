@@ -1315,6 +1315,18 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 />
               </SettingRow>
               <SettingRow
+                label="시작할 때 인트로 보기"
+                keywords="intro splash launch startup logo 인트로 시작 로고"
+                hint={t("앱을 열면 로고를 잠깐 보여 줍니다. 아무 키나 누르거나 클릭하면 바로 넘어갑니다.")}
+                {...fromDefault("launchIntro")}
+              >
+                <Switch
+                  label={t("시작할 때 인트로 보기")}
+                  checked={settings.launchIntro}
+                  onChange={(launchIntro) => onChange({ launchIntro })}
+                />
+              </SettingRow>
+              <SettingRow
                 label="CLI 입력줄"
                 keywords="cli console terminal prompt input redis tern 콘솔 터미널 프롬프트 입력"
                 hint={t("흐름: 터미널처럼 위에서부터 내려오고 입력줄이 마지막 응답 바로 아래에 붙습니다. 아래 고정: 입력줄이 화면 맨 아래에 머뭅니다.")}

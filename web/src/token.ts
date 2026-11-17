@@ -1,7 +1,8 @@
 // The server's per-run token. The launch URL carries it once (?token=…); it is
 // taken off the address bar and kept in this origin's localStorage so a
-// reload still has it. It is the one thing kept there: the rest of the page's
-// state lives on the server (persist.ts), and loading it needs this token.
+// reload still has it, along with the run the launch intro last played for
+// (LaunchIntro.tsx); the rest of the page's state lives on the server
+// (persist.ts), and loading it needs this token.
 
 export const TOKEN_KEY = "tablepeek.token";
 

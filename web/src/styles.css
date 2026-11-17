@@ -2737,6 +2737,139 @@ html[data-theme="light"] {
   background: var(--bg);
 }
 
+/* The intro played as the app opens (LaunchIntro.tsx), slowly: the picture
+   comes up out of the dark and keeps drifting closer, the mark pops in and
+   glows, the name and tagline rise, a light runs across "Peek", then it all
+   fades to show the app. It hides the app entirely; only the background
+   picture, darkened toward the edges, shows. */
+.launch-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-color: var(--bg-solid);
+  user-select: none;
+}
+
+.launch-intro::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    radial-gradient(
+      ellipse 60% 55% at 50% 45%,
+      color-mix(in srgb, var(--bg-solid) 35%, transparent),
+      color-mix(in srgb, var(--bg-solid) 80%, transparent) 70%,
+      color-mix(in srgb, var(--bg-solid) 92%, transparent)
+    ),
+    var(--backdrop-image, none);
+  background-position: center;
+  background-size: cover, var(--backdrop-size, cover);
+  background-repeat: no-repeat, var(--backdrop-repeat, no-repeat);
+  animation: launch-intro-backdrop 6.5s cubic-bezier(0.25, 0.6, 0.3, 1) both;
+}
+
+.launch-intro.leaving {
+  animation: launch-intro-out 0.8s cubic-bezier(0.55, 0, 0.6, 1) forwards;
+}
+
+.launch-intro-mark {
+  border-radius: 22px;
+  box-shadow: 0 18px 60px color-mix(in srgb, #6e5bff 45%, transparent);
+  animation:
+    launch-intro-pop 1.4s cubic-bezier(0.2, 0.9, 0.25, 1.1) 0.3s both,
+    launch-intro-glow 2.6s ease-in-out 1.7s infinite alternate;
+}
+
+.launch-intro-word {
+  margin-top: 22px;
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
+  font-size: 68px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  animation: launch-intro-rise 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.8s both;
+}
+
+.launch-intro-word .brand-word-peek {
+  background-image: linear-gradient(
+    115deg,
+    #4fa3ff 0%,
+    #6e5bff 30%,
+    #a35bff 44%,
+    #f1edff 50%,
+    #a35bff 56%,
+    #6e5bff 70%,
+    #4fa3ff 100%
+  );
+  background-size: 260% 100%;
+  animation: launch-intro-sheen 1.8s ease-in-out 2.3s both;
+}
+
+.launch-intro-tagline {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 19px;
+  animation: launch-intro-rise 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 1.2s both;
+}
+
+@keyframes launch-intro-backdrop {
+  from {
+    opacity: 0;
+    transform: scale(1.1);
+  }
+  25% {
+    opacity: 1;
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes launch-intro-glow {
+  to {
+    box-shadow: 0 18px 80px color-mix(in srgb, #8a6bff 75%, transparent);
+  }
+}
+
+@keyframes launch-intro-sheen {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+@keyframes launch-intro-out {
+  to {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+}
+
+@keyframes launch-intro-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-8deg);
+    filter: blur(8px);
+  }
+}
+
+@keyframes launch-intro-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+    filter: blur(6px);
+  }
+}
+
 .lock-card {
   display: flex;
   flex-direction: column;

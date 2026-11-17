@@ -374,6 +374,9 @@ const EN: Record<string, string> = {
   "가로 스크롤바 항상 표시": "Always show the horizontal scrollbar",
   "세로 스크롤바 항상 표시": "Always show the vertical scrollbar",
   "동작 줄이기": "Reduce motion",
+  "시작할 때 인트로 보기": "Show intro on launch",
+  "앱을 열면 로고를 잠깐 보여 줍니다. 아무 키나 누르거나 클릭하면 바로 넘어갑니다.":
+    "Shows the TablePeek logo for a moment when the app opens. Any key or click skips it.",
   "기본값에서 바뀜": "Changed from default",
   "재설정": "Reset",
   "CLI 입력줄": "CLI input",
