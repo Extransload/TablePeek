@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-17
+
+⌘W closes a connection once its tabs are gone.
+
 ### Fixed
 
 - **⌘W closes the connection once its tabs are gone.** In 0.14.0 a connection whose last tab had been closed stayed open however often ⌘W was pressed. Now the next ⌘W closes it and the next open connection, or Home, comes forward. In a Redis or Valkey connection, which has no tab strip, ⌘W closes the connection at once; the demo or `--db` connection, which can't be closed, is left for Home.
@@ -303,7 +307,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/Extransload/TablePeek/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/Extransload/TablePeek/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Extransload/TablePeek/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Extransload/TablePeek/compare/v0.11.0...v0.12.0
