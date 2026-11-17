@@ -8,7 +8,7 @@
 
 [Install](#install) · [Features](#features) · [Screenshots](#screenshots) · [Documentation](#documentation) · [Changelog](CHANGELOG.md)
 
-![TablePeek over a Milky Way background picture, as a desktop app showing a PostgreSQL query and in a browser tab showing a Redis key decoded from a Python pickle](docs/images/hero.jpg)
+https://github.com/user-attachments/assets/d646b6ce-4a85-489e-b764-b0585b1a2205
 
 </div>
 
@@ -73,6 +73,8 @@ brew install --cask extransload/tap/tablepeek
 **Secure by default.** The server listens on loopback only, behind a per-run token; passwords live in the OS keychain; TLS, client certificates, and SSH or HTTP tunnels for every engine that takes them.
 
 ## Screenshots
+
+![TablePeek over a Milky Way background picture, as a desktop app showing a PostgreSQL query and in a browser tab showing a Redis key decoded from a Python pickle](docs/images/hero.jpg)
 
 | SQL results and row detail | Redis, with a pickled Django session decoded |
 |---|---|
