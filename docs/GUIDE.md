@@ -69,7 +69,7 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 - Copy actions for values, JSON paths, decoded text, and raw hex
 - **Expand** (or `Mod+Enter` again) for a JSON value: a window-filling view built for very large documents, with expand all, collapse all, and expand to a depth; search across keys and values (`Enter`/`Shift+Enter` step through matches); a breadcrumb with path and value copying; long strings shown in full; and a Raw view of the indented text. `Esc` returns to the drawer.
 
-![TablePeek Quick Look showing a JSON value as a tree beside its fields](images/quick-look.png)
+![TablePeek Quick Look showing a JSON value as a tree beside its fields](images/quick-look.jpg)
 
 `Alt`-click opens the cell menu. `Space` opens row details with relationship tabs, including foreign-key navigation. The right panel keeps a field search and says when no row is selected.
 
@@ -83,9 +83,9 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 - Query cancellation and live timing
 - Chart and pivot views of any result or table: bar, line, area, pie/donut, and scatter charts with time bucketing and top-N grouping, and pivot tables with totals that copy as TSV
 
-![TablePeek SQL completion suggesting joins from foreign keys, with ON conditions and an info panel](images/completion.png)
+![TablePeek SQL completion suggesting joins from foreign keys, with ON conditions and an info panel](images/completion.jpg)
 
-![TablePeek chart view showing monthly order totals as a bar chart with a value tooltip](images/chart.png)
+![TablePeek chart view showing revenue by category as a bar chart with a value tooltip](images/chart.jpg)
 
 ## Schema and server tools
 
@@ -95,7 +95,7 @@ The server info tab shows engine version, database size, uptime, and sessions, w
 
 The ER diagram tab draws every table with its columns and foreign keys, laid out automatically. Open it with the diagram button in the top bar (between the connections and settings buttons) or `Mod+P` → "ER diagram". Pan, zoom, drag cards (positions are remembered), search for a table, highlight a table's relations, show keys only, and double-click a table to open its data. A table's context menu in the sidebar opens the diagram centred on it.
 
-![TablePeek ER diagram with the shop schema laid out and one table's relations highlighted](images/er.png)
+![TablePeek ER diagram with the shop schema laid out and one table's relations highlighted](images/er.jpg)
 
 ## MongoDB workbench
 
@@ -114,6 +114,8 @@ The mongosh tab runs mongosh statements. Scripts with variables, loops, and func
 The documents view also has query options (collation, hint, maxTimeMS), bulk update and delete with a before/after preview, and export of the query or pipeline as driver code (mongosh, Python, Node.js, Java, C#, Go, Rust, PHP, Ruby). The schema tab plots GeoJSON and `[lng, lat]` fields on an offline world map and turns a drawn region into a `$geoWithin` filter. The indexes tab manages Atlas Search and vector search indexes where the server has them, and GridFS buckets show in the sidebar with file listing, upload, download, and delete. Documents over 1 MB and arrays over 1,000 elements are cut short in the cards and JSON views, with "Show all".
 
 ## Redis workbench
+
+![TablePeek Redis workbench: the key tree on the left and a Django session stored as a Python pickle, decoded into a tree](images/redis.jpg)
 
 A Redis (or Valkey) connection opens a workbench of its own, laid out like RedisInsight's Browser, in place of the SQL sidebar, tabs, console and detail column. A strip along the top picks the database (each with its key count; empty ones dimmed) and shows the total keys, memory use, operations per second, connected clients and the server version, updated every few seconds. It also switches between four sections:
 
@@ -159,7 +161,7 @@ Fifty-two built-in themes are included: TablePeek Dark and Light, Dark Noir and 
 
 **Color table.** Settings › Appearance shows the color table of the theme shown: background, foreground, and the 16 terminal colors (for a theme not made from one, read from its own colors). The syntax and value colors map to its slots (green strings, yellow numbers, magenta keywords and booleans, cyan functions and dates, blue types and JSON, bright black comments and `NULL`, and so on), so picking a swatch recolors every part mapped to that slot; colors are adjusted where needed to stay readable on the background. Picks are saved per theme. In the settings sheet the table is one row: `Enter` goes into it, the arrow keys move between swatches, `Enter` opens the color picker, and `Backspace` puts a swatch back to the theme's color (on the row, all of them).
 
-![TablePeek settings docked on the right beside the grid](images/settings.png)
+![TablePeek settings docked on the right beside the grid](images/settings.jpg)
 
 Settings also cover alternating row backgrounds, type colors, the maximum rows and query time limit, CSV delimiter and encoding, SQL syntax presets, keyboard shortcuts, and activity-log retention. The desktop app and TablePeek in a browser tab keep separate shortcuts: in the app `Mod+T`, `Mod+W` and `Mod+Shift+[`/`]` open, close and switch tabs, while a browser keeps those keys for itself, so there the tabs use `Alt+T`, `Alt+W` and `Alt+[`/`]`. A shortcut changed in one doesn't change the other. Both the SQL editor's syntax colors (Appearance › Syntax colors) and the data table's colors for each kind of value (Appearance › Value colors: string, integer, decimal, big integer, boolean, date, time, JSON, array, enum, UUID, binary, NULL) can be picked per theme. The interface is available in English and Korean.
 
