@@ -8,7 +8,7 @@
 
 [Install](#install) · [Features](#features) · [Screenshots](#screenshots) · [Documentation](#documentation) · [Changelog](CHANGELOG.md)
 
-![TablePeek over a Milky Way background picture, as a desktop app showing a PostgreSQL query and in a browser tab showing a Redis key decoded from a Python pickle](docs/images/overview.jpg)
+![TablePeek over a Milky Way background picture, as a desktop app showing a PostgreSQL query and in a browser tab showing a Redis key decoded from a Python pickle](docs/images/hero.jpg)
 
 </div>
 
