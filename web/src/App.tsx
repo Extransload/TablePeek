@@ -924,6 +924,9 @@ export default function App() {
   const cycleViewRef = useRef<(delta: -1 | 1) => void>(() => {});
   const tabAtRef = useRef<(position: number) => boolean>(() => false);
   const formatRef = useRef<(mode: "beautify" | "minify") => void>(() => {});
+  // Each query tab's last Beautify: the text it replaced and what it wrote, so
+  // Beautify again on that result puts the text back.
+  const beautifiedRef = useRef(new Map<string, { before: string; after: string }>());
   const serverConnRef = useRef(false);
 
   workspacesRef.current = workspaces;
@@ -2369,19 +2372,35 @@ export default function App() {
     setAlertMode(((alertMode + 1) % 3) as SafeMode);
   }
 
+  // Beautify toggles: on the text it just wrote it puts back what was there;
+  // on SQL that is already laid out (nothing to put back) it folds it to one
+  // line, as Minify does. Minify only minifies.
   function formatCurrent(mode: "beautify" | "minify"): void {
     const tab = currentTab();
     if (tab === null || tab.kind !== "query") {
       return;
     }
     const dialect = sqlDialect;
+    const minify = (sqlText: string): string =>
+      formatSql(settingsRef.current.uppercaseKeywords ? uppercaseSql(sqlText, dialect) : sqlText, "minify", dialect);
     editorRef.current?.format((sqlText) => {
       if (sqlText.trim() === "") {
         return sqlText;
       }
-      const prepared =
-        mode === "minify" && settingsRef.current.uppercaseKeywords ? uppercaseSql(sqlText, dialect) : sqlText;
-      return formatSql(prepared, mode, dialect);
+      if (mode === "minify") {
+        return minify(sqlText);
+      }
+      const last = beautifiedRef.current.get(tab.id);
+      beautifiedRef.current.delete(tab.id);
+      if (last !== undefined && last.after === sqlText) {
+        return last.before;
+      }
+      const after = formatSql(sqlText, "beautify", dialect);
+      if (after === sqlText) {
+        return minify(sqlText);
+      }
+      beautifiedRef.current.set(tab.id, { before: sqlText, after });
+      return after;
     });
   }
 
