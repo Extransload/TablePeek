@@ -8,7 +8,7 @@
 
 [Install](#install) · [Features](#features) · [Screenshots](#screenshots) · [Documentation](#documentation) · [Changelog](CHANGELOG.md)
 
-![TablePeek as a desktop app (dark theme over a background picture) and in a browser tab (light theme), both showing a PostgreSQL query and its results](docs/images/overview.jpg)
+![TablePeek as a desktop app (dark theme over a Milky Way background picture) and in a browser tab (light theme), both showing a PostgreSQL query and its results](docs/images/overview.jpg)
 
 </div>
 
