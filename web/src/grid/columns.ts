@@ -1,7 +1,7 @@
 import type { SqlDialect } from "../engines/sqlDialect";
 import type { TableDetail } from "../store";
 
-// What a grid knows about a column beyond its name, as TablePlus shows it:
+// What a grid knows about a column beyond its name, shown in its cells:
 // key columns in their own colour, ⌃⌄ on dates (a picker) and on enum and
 // boolean cells (a list), → on foreign keys (open the row it points at).
 export type CellKind =

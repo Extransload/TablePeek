@@ -2652,7 +2652,7 @@ pub(crate) fn float_text<F: Into<f64> + std::fmt::Display + Copy>(value: F) -> S
 /// edited back: its hex is twice its size, for every row of a result.
 pub(crate) const BLOB_HEX_MAX: usize = 16 << 10;
 
-/// Binary as hex, as TablePlus shows it, in the engine's own notation:
+/// Binary as hex, as the grid shows it, in the engine's own notation:
 /// `\x00ff` on PostgreSQL (its text form), `0x00FF` on the others.
 pub(crate) fn hex_cell(bytes: &[u8], postgres: bool) -> Value {
     if bytes.len() > BLOB_HEX_MAX {

@@ -399,7 +399,7 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: calc(12px * var(--ui-scale, 1));
-  /* Titles sit in the middle of their tab, as in TablePlus. */
+  /* Titles sit in the middle of their tab. */
   text-align: center;
 }
 
@@ -447,7 +447,7 @@ select {
   display: flex;
 }
 
-/* A taller console pushes the panes above up, as in TablePlus: the results
+/* A taller console pushes the panes above up: the results
    give way first, then the editor down to its bar; nothing draws over it. */
 .workbench-main {
   flex: 1;
@@ -4445,7 +4445,7 @@ select[data-pointer-focus]:focus-visible {
   padding: 10px 12px;
 }
 
-/* The list under a cell editor: types, defaults, YES/NO, as in TablePlus. */
+/* The list under a cell editor: types, defaults, YES/NO. */
 .cell-menu {
   position: fixed;
   z-index: 60;
@@ -8449,7 +8449,7 @@ button.launcher-more {
   line-height: 14px;
 }
 
-/* The connection's color goes into its tags, as in TablePlus. */
+/* The connection's color goes into its tags. */
 .launcher-tag {
   display: inline-block;
   flex: 0 4 auto;
@@ -8973,7 +8973,7 @@ html.launcher-dragging .hover-tooltip {
 }
 
 /* ── Cell popover (middle click on a cell) ──────────────────────
-   Floats beside the cell like TablePlus: JSON tree on the left, the picked
+   Floats beside the cell: JSON tree on the left, the picked
    node's value on the right. Clicking outside closes it. */
 
 .cell-pop-backdrop {
@@ -9678,7 +9678,7 @@ button.json-view-crumb.current {
   padding: 0 10px;
 }
 
-/* TablePlus's alert: a narrow card, the message, two equal buttons. */
+/* The alert: a narrow card, the message, two equal buttons. */
 .alert-modal {
   width: min(300px, calc(100vw - 32px));
   gap: 10px;
@@ -9722,7 +9722,7 @@ button.json-view-crumb.current {
   font-style: italic;
 }
 
-/* ── Sidebar tabs (TablePlus: Items · Queries · History) ────── */
+/* ── Sidebar tabs (Items · Queries · History) ────── */
 
 .sidebar-tabs {
   display: flex;
@@ -9930,7 +9930,7 @@ button.json-view-crumb.current {
   opacity: 0.75;
 }
 
-/* ── Bottom console (TablePlus style) ───────────────────────────
+/* ── Bottom console ───────────────────────────
    Docked under the editor and results; this connection's runs, newest last. */
 
 .workbench-stack {
@@ -10100,7 +10100,7 @@ body.row-resizing * {
   color: var(--syntax-label);
 }
 
-/* What an open panel says when it has nothing to show (TablePlus style). */
+/* What an open panel says when it has nothing to show. */
 .panel-empty {
   display: flex;
   flex: 1;
@@ -10117,7 +10117,7 @@ body.row-resizing * {
 }
 
 /* ── Field boxes (right panel, cell popover) ────────────────────
-   TablePlus style: name and type over a boxed value. */
+   Name and type over a boxed value. */
 
 .field-search {
   display: flex;
@@ -11030,7 +11030,7 @@ button.schema-more {
   border-radius: 7px;
 }
 
-/* ── One-line data footer (TablePlus style) ─────────────────── */
+/* ── One-line data footer ─────────────────── */
 
 .data-toolbar {
   overflow: visible;
@@ -11280,7 +11280,7 @@ html.reduce-motion .gauge-fill::after {
   transition: opacity var(--motion-fast) ease var(--loading-delay);
 }
 
-/* ── Grid corner: fit the columns to their contents (TablePlus) ── */
+/* ── Grid corner: fit the columns to their contents ── */
 
 button.grid-fit-button {
   position: absolute;
@@ -11306,7 +11306,7 @@ button.grid-fit-button[hidden] {
   display: none;
 }
 
-/* ── Structure and Index views (TablePlus): a bar over the grid, the
+/* ── Structure and Index views: a bar over the grid, the
    view's own buttons in the footer ─────────────────────────────── */
 
 .structure-bar {
@@ -11704,7 +11704,7 @@ button.column-picker-move {
   }
 }
 
-/* ── Editor bar's right end (TablePlus): limit · Beautify · Run Current ── */
+/* ── Editor bar's right end: limit · Beautify · Run Current ── */
 
 .editor-actions {
   display: flex;
@@ -11796,7 +11796,7 @@ button.split-button {
   background: var(--accent-hover, var(--accent));
 }
 
-/* ── Several statements' results (TablePlus's Query 1 | Query 2) ─────────
+/* ── Several statements' results (Query 1 | Query 2) ─────────
    Full-width segments, the shown one filled, so a run of several statements
    can't pass for one result; many of them scroll sideways instead of
    squeezing. */
@@ -11886,7 +11886,7 @@ button.result-set.failed .result-set-status {
   animation: none;
 }
 
-/* ── Result bar (TablePlus): Data | Message, rows · time, Export ──────
+/* ── Result bar: Data | Message, rows · time, Export ──────
    The query result's footer is a .data-toolbar, so it has the Data view's
    height, buttons and three-part layout; these rules are its own parts. */
 .data-toolbar .result-bar-status {
@@ -12020,7 +12020,7 @@ button.result-set.failed .result-set-status {
 }
 
 /* ── Export window: format tabs, the items or result scope, the format's
-   options and the file name, as TablePlus lays them out ─────────────── */
+   options and the file name ─────────────── */
 
 .export-window {
   width: min(780px, 94vw);

@@ -1,6 +1,6 @@
 import * as uiState from "./persist";
 
-// Widths a table's columns were given by hand, as TablePlus keeps them: the
+// Widths a table's columns were given by hand, kept per table: the
 // table opens with them again after it is closed, switched away from, or the
 // app restarts. Keyed by the connection's stable key and the table, then the
 // column name; widths are at a font scale of 1, so they follow a font change.

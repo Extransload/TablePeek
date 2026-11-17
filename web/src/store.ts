@@ -259,7 +259,7 @@ export interface HistoryEntry {
   error?: string;
 }
 
-// A saved query (TablePlus's "Queries"), shared by every connection.
+// A saved query (the sidebar's "Queries"), shared by every connection.
 export interface Favorite {
   id: string;
   name: string;

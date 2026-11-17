@@ -94,7 +94,7 @@ function valuePlaceholder(row: FilterRow): string {
   }
 }
 
-// TablePlus's names for the operators that aren't SQL as written.
+// Display names for the operators that aren't SQL as written.
 function opLabel(op: FilterOp): string {
   switch (op) {
     case "CONTAINS":
@@ -110,7 +110,7 @@ function opLabel(op: FilterOp): string {
   }
 }
 
-// TablePlus's filter: conditions in rows, each applied on its own with its
+// The filter: conditions in rows, each applied on its own with its
 // Apply button (or Return), which then reads Applied; or all the checked
 // ones at once with Apply All (⌘↩), AND by default, OR from its menu. A
 // row's + adds a copy below it, its − removes it (the last one turns the
@@ -152,7 +152,7 @@ export function FilterBar({
     }
   }, [draft.rows.length]);
 
-  // Opened from its button or ⌘F, as in TablePlus: a bar with no conditions
+  // Opened from its button or ⌘F: a bar with no conditions
   // starts with one, ready for its value, on the picked column; so does a
   // lone row not yet filled in.
   useEffect(() => {
@@ -246,7 +246,7 @@ export function FilterBar({
     <div
       className="filter-bar surface-bars"
       onKeyDown={(event) => {
-        // ⌘↩ applies every checked condition, as TablePlus's Apply All.
+        // ⌘↩ applies every checked condition (Apply All).
         if (
           event.key === "Enter" &&
           (event.metaKey || event.ctrlKey) &&
@@ -319,7 +319,7 @@ export function FilterBar({
                   aria-describedby={failed ? errorId : undefined}
                   onChange={(event) => patchRow(row.id, { value: event.target.value })}
                   onKeyDown={(event) => {
-                    // Return applies this condition, as TablePlus does.
+                    // Return applies this condition.
                     if (
                       event.key === "Enter" &&
                       !event.metaKey &&

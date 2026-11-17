@@ -15,7 +15,7 @@
 //! - On macOS the page's bar is the title bar (see titlebar.rs).
 //! - The page is told it runs in the app (`data-app="desktop"` on its root,
 //!   set before its scripts run), so its keys can differ from a browser
-//!   tab's: ⌘R refreshes the view, as in TablePlus, where a browser reloads.
+//!   tab's: ⌘R refreshes the view, where a browser reloads the page.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

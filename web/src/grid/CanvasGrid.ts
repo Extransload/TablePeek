@@ -190,7 +190,7 @@ const CARRY_SLOP = 4;
 const CARRY_STIFFNESS = 560;
 const CARRY_DAMPING = 34;
 
-// Values listed under a cell's editor, as TablePlus offers types and defaults.
+// Values listed under a cell's editor: types and defaults to pick from.
 // A strict cell takes only these; others also accept typing.
 export interface CellChoices {
   options: string[];
@@ -250,7 +250,7 @@ export class CanvasGrid {
   private readonly scroller: HTMLDivElement;
   private readonly sizer: HTMLDivElement;
   private readonly canvas: HTMLCanvasElement;
-  // The (0,0) corner, as in TablePlus: sizes every column to its contents again.
+  // The (0,0) corner: sizes every column to its contents again.
   private readonly fitButton: HTMLButtonElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly ro: ResizeObserver;
@@ -585,8 +585,8 @@ export class CanvasGrid {
     this.schedulePaint();
   }
 
-  // Sizes a new source's columns to what they hold, as TablePlus opens a
-  // table: once, when its first rows are there to measure.
+  // Sizes a new source's columns to what they hold, as a table opens:
+  // once, when its first rows are there to measure.
   private fitNewColumns(): void {
     const src = this.source;
     if (!this.autoFit || src === null || (src.rowCount > 0 && src.cell(0, 0) === undefined)) {
@@ -1373,7 +1373,7 @@ export class CanvasGrid {
     ctx.restore();
 
     // Text is clipped once per column; slicing bounds the cost of very long
-    // values, and what still overflows ends in an ellipsis, as in TablePlus.
+    // values, and what still overflows ends in an ellipsis.
     ctx.textBaseline = "middle";
     ctx.font = FONT;
     if (this.charW === 0) {
@@ -1406,7 +1406,7 @@ export class CanvasGrid {
         const y = HEADER_H + r * ROW_H - virtualY + ROW_H / 2;
         const state = rowStates[r - first];
         // A new row's DEFAULT, or a DEFAULT or NOW() staged for the database
-        // to write: faint, as TablePlus shows them until saved.
+        // to write: faint, until saved.
         const label =
           cellStateOf && state === "inserted" && cellStateOf(r, c) === "default"
             ? "DEFAULT"
@@ -1420,7 +1420,7 @@ export class CanvasGrid {
         const accessory = state === "deleted" ? null : this.accessoryAt(r, c, v);
         const room = cw - CELL_PAD * 2 - (accessory !== null ? ACCESSORY_W : 0);
         if (v === null) {
-          // NULL sits faint in the middle of its cell, as in TablePlus.
+          // NULL sits faint in the middle of its cell.
           ctx.fillStyle = state === "deleted" ? palette.faint : palette.nullInk;
           ctx.textAlign = "center";
           ctx.fillText(this.fitText("NULL", room), x + CELL_PAD + room / 2, y);

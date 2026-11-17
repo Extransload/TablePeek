@@ -281,7 +281,7 @@ export const SYNTAX_VARIABLES: Record<keyof SyntaxColors, string> = {
 };
 
 // What Settings → Appearance recolours: the preset's colours, strings told apart
-// by their quote (as TablePlus colours 'single', "double" and `backtick`
+// by their quote ('single', "double" and `backtick`
 // quoted text apart), and plain text. Unpicked, the last three follow the
 // string colour and the theme's ink.
 export type SyntaxColorKey = keyof SyntaxColors | "stringDouble" | "stringBacktick" | "text";

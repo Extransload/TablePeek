@@ -177,13 +177,13 @@ Write SQL with AI from your own ChatGPT subscription, Codex CLI or Gemini API ke
 
 ### Added
 
-- **Reorder columns by dragging their headers**, as in TablePlus. Drag a header sideways and the column lifts and follows the pointer while the others slide aside to show where it lands; the grid scrolls near its edges, release drops it, `Esc` sends it back. A short press still sorts or selects and the header's edge still resizes. `⌥←`/`⌥→` moves the current column one place. Staged edits, the selection, widths and sorts stay with their columns, and copy, export, Quick Look and the row detail panel follow the new order. A table tab keeps the order as its column order (shown in the Columns picker) across paging and refreshes without reading the rows again; a query result keeps it until it runs again. Reduce motion makes the moves instant.
+- **Reorder columns by dragging their headers.** Drag a header sideways and the column lifts and follows the pointer while the others slide aside to show where it lands; the grid scrolls near its edges, release drops it, `Esc` sends it back. A short press still sorts or selects and the header's edge still resizes. `⌥←`/`⌥→` moves the current column one place. Staged edits, the selection, widths and sorts stay with their columns, and copy, export, Quick Look and the row detail panel follow the new order. A table tab keeps the order as its column order (shown in the Columns picker) across paging and refreshes without reading the rows again; a query result keeps it until it runs again. Reduce motion makes the moves instant.
 
 ## [0.3.3] - 2026-11-05
 
 ### Changed
 
-- **⌘R refreshes in the desktop app**, as in TablePlus: the schema is read again and the table in front reloads (F5 still works). A browser tab keeps ⌘R for reloading the page unless you bind it in Settings › Shortcuts. Shortcuts are now saved as the ones you changed only, so a Refresh you never changed follows each place's default; a Refresh left at the old default picks up ⌘R in the app once.
+- **⌘R refreshes in the desktop app**: the schema is read again and the table in front reloads (F5 still works). A browser tab keeps ⌘R for reloading the page unless you bind it in Settings › Shortcuts. Shortcuts are now saved as the ones you changed only, so a Refresh you never changed follows each place's default; a Refresh left at the old default picks up ⌘R in the app once.
 - **The row detail panel (⌘I) colors values by type** like the data grid: numbers, booleans, dates, times, UUIDs, binary and enums in their type colors, JSON objects and arrays token by token, and NULL in the grid's NULL color. With "Color by type" off, values read plain. The MongoDB table view's shared values for several selected rows are colored the same way.
 
 ### Fixed

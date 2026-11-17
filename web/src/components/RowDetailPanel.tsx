@@ -84,7 +84,7 @@ function sharedValues(source: RowSource, columns: string[], rows: SelectedRows):
   });
 }
 
-// TablePlus-style right panel, its field search always on top: the picked
+// A right panel, its field search always on top: the picked
 // row's fields (a result row, or a column or index of the Structure and
 // Index views), or with no row the table's sizes and comment, or "No row
 // selected" when the tab has no table either.

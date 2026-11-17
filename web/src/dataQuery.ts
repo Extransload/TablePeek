@@ -52,10 +52,10 @@ export interface FilterRow {
   // Checked: taken by Apply All.
   enabled: boolean;
   // In effect: chosen by the last Apply (its own, or Apply All while it was
-  // checked), as TablePlus marks it "Applied". Rows saved before this existed
+  // checked), which the bar marks "Applied". Rows saved before this existed
   // count their check (see inEffect).
   applied?: boolean;
-  // TablePlus's Raw SQL: `value` is a WHERE condition used as written, and
+  // Raw SQL: `value` is a WHERE condition used as written, and
   // column and op are ignored.
   raw?: boolean;
   // The value is text (a Quick Filter on a text column): always a quoted

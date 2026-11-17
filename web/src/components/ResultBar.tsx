@@ -91,7 +91,7 @@ function MorphStatus({ className, title, children }: { className: string; title?
   );
 }
 
-// The query result's footer, laid out as the Data view's: TablePlus's
+// The query result's footer, laid out as the Data view's: the
 // Data | Message switch (with Chart and Pivot of the rows beside Data), the
 // rows and time of the result shown, and Export.
 export function ResultBar({ view, planAvailable, shown, running, canExport, onView, onExport }: ResultBarProps) {

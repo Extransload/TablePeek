@@ -22,7 +22,7 @@ const TABS: { id: SidebarTab; ko: string; en: string }[] = [
 // The tab each connection last showed, kept while the app runs.
 const chosen = new Map<string, SidebarTab>();
 
-// TablePlus's left sidebar: Items, Queries and History over one pane. A pane
+// The left sidebar: Items, Queries and History over one pane. A pane
 // stays mounted once opened, so switching back keeps its scroll and search.
 export function SidebarPanel({ conn, items, queries, history }: SidebarPanelProps) {
   const [tab, setTab] = useState<SidebarTab>(() => chosen.get(conn) ?? "items");

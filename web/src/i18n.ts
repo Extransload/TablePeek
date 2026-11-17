@@ -1455,7 +1455,7 @@ const EN: Record<string, string> = {
   "필드 검색…": "Search for field…",
   "행 상세 보기": "Show row details",
   "행 수를 계산하지 못했습니다": "Could not count the rows",
-  // Console log, History and Queries (TablePlus's left sidebar tabs).
+  // Console log, History and Queries (the left sidebar's tabs).
   "콘솔을 불러오지 못했습니다": "Could not load the console",
   "콘솔을 비우지 못했습니다": "Could not clear the console",
   "이 연결에서 실행되는 SQL이 여기에 기록됩니다": "Every statement sent on this connection is logged here",

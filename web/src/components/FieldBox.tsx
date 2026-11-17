@@ -65,7 +65,7 @@ function displayText(text: string): string {
   }
 }
 
-// One labelled value in TablePlus style: name and type above a boxed value,
+// One labelled value: name and type above a boxed value,
 // with NULL (in the grid's NULL ink) and empty strings shown as placeholders.
 // Copy takes the value as stored, not the indented view.
 export function FieldBox({ name, type, value, text, showAll, json, kind, action, note }: FieldBoxProps) {

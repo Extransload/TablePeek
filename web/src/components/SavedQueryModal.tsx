@@ -17,7 +17,7 @@ interface SavedQueryModalProps {
 const EDITOR_TAB = "saved-query-editor";
 const NO_SCHEMA: Record<string, CompletionColumn[]> = {};
 
-// TablePlus's saved query window: name, keyword for autocompletion, and the SQL.
+// The saved query window: name, keyword for autocompletion, and the SQL.
 export function SavedQueryModal({ query, folder = null, onClose }: SavedQueryModalProps) {
   const [name, setName] = useState(query?.name ?? t("제목 없음"));
   const [keyword, setKeyword] = useState(query?.keyword ?? "");

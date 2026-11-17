@@ -423,7 +423,7 @@ const highlightStyle = HighlightStyle.define([
   { tag: tags.labelName, color: "var(--syntax-label)" },
 ]);
 
-// Quoted text by its quote, as TablePlus colours 'single', "double" and
+// Quoted text by its quote, colouring 'single', "double" and
 // `backtick` (or [bracket]) quoted text apart: the grammar tags strings and
 // quoted names alike, so the quote decides.
 const QUOTE_MARKS: Record<string, Decoration> = {

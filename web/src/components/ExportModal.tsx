@@ -92,7 +92,7 @@ interface Item {
   kind: ItemKind;
 }
 
-// What the SQL format writes for an item, as TablePlus's Structure, Drop and Data.
+// What the SQL format writes for an item: its Structure, Drop and Data.
 interface ItemFlags {
   structure: boolean;
   drop: boolean;

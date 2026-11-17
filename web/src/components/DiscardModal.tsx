@@ -8,7 +8,7 @@ interface DiscardModalProps {
   onCancel(): void;
 }
 
-// TablePlus's warning before staged changes are thrown away (a refresh, a
+// A warning before staged changes are thrown away (a refresh, a
 // closed tab, another page). Cancel has the focus, so Return keeps the changes.
 export function DiscardModal({ applyHint, onDiscard, onCancel }: DiscardModalProps) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);

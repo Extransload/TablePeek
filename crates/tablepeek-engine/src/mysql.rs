@@ -1765,7 +1765,7 @@ fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
-/// One key column's WHERE term, written as TablePlus writes it: the key as a
+/// One key column's WHERE term, written as a plain comparison: the key as a
 /// literal (`= 'k1'`, a bare number, `X'…'`, `IS NULL`), not a cast
 /// parameter. `CAST(? AS CHAR)` takes the connection's collation as firmly as
 /// the column holds its own, and MySQL refuses to compare two strings whose
@@ -2162,7 +2162,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_are_compared_as_literals_like_tableplus() {
+    fn keys_are_compared_as_literals() {
         let term = |data_type: &str, value: Value| key_term("k", data_type, &value, false);
         assert_eq!(term("varchar", Value::from("k1")), "`k` = 'k1'");
         assert_eq!(

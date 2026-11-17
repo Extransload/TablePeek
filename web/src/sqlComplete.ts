@@ -2,8 +2,8 @@ import type { SqlDialect } from "./engines/sqlDialect";
 import { FUNCTIONS_WITHOUT_ENGINE } from "./engines/sqlFunctions";
 import { escapeString, lexingFor, loneSlashAt, qQuoteAt, splitSqlRanges } from "./sqlSplit";
 
-// What the SQL editor offers at the cursor, as in TablePlus, and a little
-// more. After "alias." or "table." that table's columns alone; right after
+// What the SQL editor offers at the cursor, and a little more.
+// After "alias." or "table." that table's columns alone; right after
 // FROM, INTO, UPDATE or TABLE the tables; right after JOIN the tables a
 // foreign key ties to the statement's first, each with its ON condition;
 // right after ON those conditions; anywhere else the columns of the tables

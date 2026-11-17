@@ -10,7 +10,7 @@ import { ScopeContext, SettingRow } from "./rows";
 // The colours Settings picks for the theme shown: its colour table, the SQL
 // editor's syntax colours and the data table's by kind of value.
 
-// The SQL editor's every coloured part, as TablePlus lists them; a row may
+// The SQL editor's every coloured part, one row each; a row may
 // set parts that read as one (NULL and booleans, operators and punctuation).
 export const SYNTAX_COLOR_ROWS: { label: string; keys: SyntaxColorKey[] }[] = [
   { label: "키워드", keys: ["keyword"] },

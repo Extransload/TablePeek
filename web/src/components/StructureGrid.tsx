@@ -24,7 +24,7 @@ export interface GridColumn {
   // The cell's text; null shows NULL, as in the data grid.
   value(row: number): string | null;
   commit?(row: number, value: string): void;
-  // The list under the editor, as TablePlus offers types and values.
+  // The list under the editor, offering types and values.
   choices?(row: number): CellChoices | null;
   ink?(row: number): string | null;
   readOnly?(row: number): boolean;

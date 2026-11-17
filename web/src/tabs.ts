@@ -35,7 +35,7 @@ export interface QueryTab {
   analysis?: AnalysisState;
 }
 
-// TablePlus's Data | Structure | Index, one grid each.
+// The table views Data | Structure | Index, one grid each.
 export type TableView = "data" | "structure" | "index";
 
 export interface DataTab {
@@ -66,7 +66,7 @@ export interface DataTab {
   // none), so a count is only shown for the filter it belongs to.
   count?: number;
   countFilter?: string;
-  // TablePlus's temporary tab (italic): a single click opened it, and the next
+  // The temporary tab (italic): a single click opened it, and the next
   // single click on another table reuses it. A double-click or a staged change
   // keeps it.
   preview?: boolean;

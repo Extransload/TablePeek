@@ -33,7 +33,7 @@ interface StructurePanelProps {
   dialect: SqlDialect;
   table: string;
   data: TableDetail | undefined;
-  // The Data | Structure | Index switch, which leads the footer as in TablePlus.
+  // The Data | Structure | Index switch, which leads the footer.
   viewTabs?: ReactNode;
   // Renames the table (the Name field); resolves true once it's done.
   onRename?(name: string): Promise<boolean>;
@@ -44,7 +44,7 @@ interface StructurePanelProps {
   // Unsaved edits appeared: a temporary tab showing them is kept.
   onPending?(): void;
   // Which of the table's grids fills the panel: its columns (Structure) or its
-  // indexes (Index), as TablePlus shows them one at a time.
+  // indexes (Index), shown one at a time.
   section?: "columns" | "indexes";
 }
 
@@ -81,7 +81,7 @@ function unique(items: string[]): string[] {
   return [...new Set(items.filter((item) => item !== ""))];
 }
 
-// Off flags (NO, FALSE) recede, as in TablePlus.
+// Off flags (NO, FALSE) recede.
 // YES/NO and TRUE/FALSE flags are booleans: in the boolean ink, as the Data
 // tab shows true and false.
 function flagInk(): string | null {
@@ -233,7 +233,7 @@ export function StructurePanel({
   const rebuilds = dialect.rebuildsTable;
   const editsKey = `${conn}:${table}`;
   const origDraft = useMemo(() => (detail === null ? null : draftsFromDetail(detail)), [detail]);
-  // The tables are always editable, as in TablePlus; edits stay here until saved.
+  // The tables are always editable; edits stay here until saved.
   const [draft, setDraft] = useState<StructureDraft | null>(() => {
     const kept = unsavedEdits.get(editsKey);
     return kept !== undefined && kept.detail === data ? kept.draft : origDraft;
@@ -768,7 +768,7 @@ export function StructurePanel({
       : [
           {
             header: "column_default",
-            // No default shows NULL, as TablePlus does.
+            // No default shows NULL.
             value: (row: number) => (columns[row].def === "" ? null : columns[row].def),
             choices: () => ({ options: defaultChoices }),
             commit: (row: number, value: string) =>
@@ -940,7 +940,7 @@ export function StructurePanel({
 
   return (
     <div className="panel structure-panel">
-      {/* TablePlus's bar over the grid: the table's name, its primary key and
+      {/* The bar over the grid: the table's name, its primary key and
           a search of the rows below. */}
       <div className="structure-bar surface-bars">
         <label className="structure-field">
@@ -1189,7 +1189,7 @@ export function StructurePanel({
           </>
         )}
       </div>
-      {/* The footer, as in TablePlus: the views, then what this one adds. */}
+      {/* The footer: the views, then what this one adds. */}
       <div className="data-toolbar structure-footer surface-bars">
         {viewTabs}
         {section === "columns" ? (

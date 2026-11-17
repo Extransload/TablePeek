@@ -160,7 +160,7 @@ function visibleRows(
   return rows;
 }
 
-// TablePlus-style popover beside a cell: a JSON tree on the left, the picked
+// A popover beside a cell: a JSON tree on the left, the picked
 // node's value on the right, and Raw for the cell text as stored.
 export function CellInspector({
   source,
@@ -546,7 +546,7 @@ export function CellInspector({
             </div>
           ) : reference && referenceRows !== null ? (
             // The referenced table filtered to this key, as a table, its
-            // columns found by name: TablePlus's foreign key viewer.
+            // columns found by name: the foreign key viewer.
             <div className="cell-pop-detail full cell-pop-ref">
               <div className="cell-pop-detail-head">
                 <span className="cell-pop-detail-key">

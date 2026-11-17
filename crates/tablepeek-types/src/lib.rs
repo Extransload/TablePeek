@@ -168,7 +168,7 @@ pub struct FsListing {
     pub entries: Vec<FsEntry>,
 }
 
-/// A value the database writes itself, as TablePlus's Set Value offers it.
+/// A value the database writes itself, as the grid's Set Value offers it.
 /// The client names one; each backend writes its own keyword or function,
 /// so no SQL text ever comes from the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

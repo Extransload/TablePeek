@@ -12,7 +12,7 @@ interface DriverPickerModalProps {
   onClose(): void;
 }
 
-// A new connection starts, as in TablePlus, by picking the kind of database:
+// A new connection starts by picking the kind of database:
 // nothing is picked until the user picks it. Double-click or Enter creates.
 export function DriverPickerModal({ onPick, onClose }: DriverPickerModalProps) {
   const choices = engines();

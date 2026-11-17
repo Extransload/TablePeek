@@ -28,7 +28,7 @@ interface OpenMenu {
   items: ContextMenuItem[];
 }
 
-// The editor bar's right end, as in TablePlus: the row limit, Beautify and
+// The editor bar's right end: the row limit, Beautify and
 // Run Current, each with the rest of its choices behind ⌄.
 export function EditorActions({
   limit,

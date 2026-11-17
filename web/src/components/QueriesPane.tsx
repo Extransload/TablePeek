@@ -26,7 +26,7 @@ interface QueriesPaneProps {
   onInsert(sql: string): void;
 }
 
-// Queries outside any folder sit under this heading, as in TablePlus.
+// Queries outside any folder sit under this heading.
 const UNGROUPED = "";
 
 type Selection = { kind: "query"; id: string } | { kind: "folder"; id: string } | null;
@@ -40,7 +40,7 @@ interface Group {
 type Editing = { query: Favorite | null; folder: string | null } | null;
 type Naming = { folder: FavoriteFolder | null } | null;
 
-// TablePlus's Queries tab: saved queries, ungrouped first and then by folder.
+// The Queries tab: saved queries, ungrouped first and then by folder.
 // A double-click opens one in its own tab; drag one onto a folder to move it.
 export function QueriesPane({ onOpen, onRun, onInsert }: QueriesPaneProps) {
   const [favorites, setFavorites] = useState<Favorite[] | null>(null);

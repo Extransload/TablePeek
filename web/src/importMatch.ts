@@ -1,4 +1,4 @@
-// Which destination column each source column goes to, as TablePlus matches
+// Which destination column each source column goes to, matching
 // them: by name (ignoring case), by position, or by name and then by position
 // for the columns no name matched.
 export type MatchStrategy = "nameOrder" | "name" | "order";

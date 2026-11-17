@@ -111,7 +111,7 @@ function daysIn(year: number, month: number): number {
 const PICKER_W = 260;
 
 // The ⌃⌄ of a date, datetime or time cell: a month to pick the day from and
-// the time under it, as TablePlus offers; Return applies, Escape cancels.
+// the time under it; Return applies, Escape cancels.
 export function DatePicker({ kind, value, nullable, anchor, onPick, onClose }: DatePickerProps) {
   const initial = useMemo(() => parse(value) ?? fromDate(new Date(), null), [value]);
   const [parts, setParts] = useState<Parts>(initial);

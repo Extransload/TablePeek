@@ -2,7 +2,7 @@ import { quoteIdent, quoteName } from "./ddl";
 import type { SqlDialect } from "./engines/sqlDialect";
 import { JsonNumber } from "./importParse";
 
-// How rows that collide with an existing key are handled. TablePlus offers
+// How rows that collide with an existing key are handled. The import offers
 // these for PostgreSQL and MySQL/MariaDB; SQLite has the same two, spelled
 // its own way, CockroachDB is PostgreSQL's ON CONFLICT, SQL Server only
 // inserts (SqlDialect.insertModes).

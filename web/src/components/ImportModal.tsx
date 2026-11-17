@@ -151,7 +151,7 @@ class PreviewSource implements RowSource {
   }
 }
 
-// CSV and JSON into a table, as TablePlus's import: the options, the
+// CSV and JSON into a table: the options, the
 // destination (an existing table or a new one named after the file), how
 // columns match, then the first rows with each header naming where its column
 // goes; clicking a header changes that. Rows go in by chunks in one

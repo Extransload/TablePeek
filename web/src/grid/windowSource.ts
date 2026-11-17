@@ -24,7 +24,7 @@ export interface PendingSummary {
   total: number;
 }
 
-// A value the database writes itself (TablePlus's Set Value ▸ DEFAULT and
+// A value the database writes itself (the cell menu's Set Value ▸ DEFAULT and
 // NOW()), named for the server; `label` is what the cell shows until applied.
 export type ValueExpr = "default" | "now";
 

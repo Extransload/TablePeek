@@ -121,7 +121,7 @@ export interface AppSettings {
   uppercaseKeywords: boolean;
   syntaxPreset: SyntaxPresetId;
   // Colours picked in Settings → Appearance over the syntax colours, by theme:
-  // like TablePlus's, a theme's colours stay with it.
+  // a theme's colours stay with it.
   syntaxColors: Record<string, SyntaxColorPicks>;
   // The same for the data table's colours by kind of value, by theme.
   gridColors: Record<string, GridColorPicks>;

@@ -60,8 +60,7 @@ export const IN_DESKTOP_APP = typeof document !== "undefined" && document.docume
 // so there each of those actions has an Alt key the page may take; the app
 // has no such keys taken and uses the ones a Mac app's tabs do.
 export const DEFAULT_KEYMAP: Keymap = {
-  // ⌘↵ runs the statement at the cursor (or the selection), ⇧⌘↵ all of them,
-  // as in TablePlus.
+  // ⌘↵ runs the statement at the cursor (or the selection), ⇧⌘↵ all of them.
   run: ["Mod+Enter"],
   runAll: ["Mod+Shift+Enter"],
   applyChanges: ["Mod+s"],
@@ -69,12 +68,12 @@ export const DEFAULT_KEYMAP: Keymap = {
   closeTab: IN_DESKTOP_APP ? ["Mod+w"] : ["Mod+w", "Alt+w"],
   nextTab: IN_DESKTOP_APP ? ["Mod+Shift+]", "Alt+]"] : ["Alt+]"],
   prevTab: IN_DESKTOP_APP ? ["Mod+Shift+[", "Alt+["] : ["Alt+["],
-  // TablePlus refreshes with ⌘R. In a browser tab that key reloads the page
+  // Refresh is ⌘R in the app. In a browser tab that key reloads the page
   // (bind it in Settings to take it over); the desktop app has no page reload.
   refresh: IN_DESKTOP_APP ? ["F5", "Mod+r"] : ["F5"],
   toggleSidebar: ["Mod+b"],
   toggleDetail: ["Mod+i"],
-  // TablePlus uses ⇧⌘C, but Chrome keeps that for its element picker.
+  // Not ⇧⌘C: Chrome keeps that for its element picker.
   toggleConsole: ["Mod+j"],
   palette: ["Mod+p"],
   dbSwitch: ["Mod+k"],

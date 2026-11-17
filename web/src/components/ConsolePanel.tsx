@@ -17,7 +17,7 @@ interface ConsolePanelProps {
 const CONSOLE_CAP = 1000;
 const HIGHLIGHT_KEY = "tablepeek.console-highlight";
 
-// "-- 2026-10-23 10:05:50.7580", TablePlus's stamp: local time, four places.
+// "-- 2026-10-23 10:05:50.7580", the stamp: local time, four places.
 function stamp(atMs: number): string {
   const date = new Date(atMs);
   const pad = (value: number, width = 2): string => String(value).padStart(width, "0");
@@ -45,7 +45,7 @@ const ConsoleLine = memo(function ConsoleLine({
   );
 });
 
-// TablePlus's console log docked under the workbench: every statement sent to
+// A console log docked under the workbench: every statement sent to
 // this connection's database, the app's own lookups included, oldest first.
 export function ConsolePanel({ conn, height }: ConsolePanelProps) {
   const [entries, setEntries] = useState<ConsoleEntry[] | null>(null);

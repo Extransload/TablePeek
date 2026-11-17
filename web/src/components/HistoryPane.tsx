@@ -39,7 +39,7 @@ interface Day {
   entries: HistoryEntry[];
 }
 
-// TablePlus's History tab: this connection's statements, newest first, under a
+// The History tab: this connection's statements, newest first, under a
 // heading per day; today's day starts open.
 export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: HistoryPaneProps) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);

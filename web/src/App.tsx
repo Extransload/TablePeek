@@ -255,7 +255,7 @@ import {
 } from "./tabs";
 
 const EMPTY_TABLES: string[] = [];
-// TablePlus's Beautify; only in the SQL editor, so ⌘I keeps its keymap action elsewhere.
+// Beautify; only in the SQL editor, so ⌘I keeps its keymap action elsewhere.
 const BEAUTIFY_KEY = "Mod+i";
 // How long a shortcut pressed mid-composition waits for the IME to commit
 // before it runs anyway.
@@ -1681,7 +1681,7 @@ export default function App() {
     const countKey = filterKey(spec.filter, dialect);
     // The table in front read again: its columns keep their widths (and the
     // same rows their scroll), so the header doesn't jump when a sort, page
-    // or filter swaps the rows under it, as TablePlus keeps it.
+    // or filter swaps the rows under it.
     const keepView =
       live !== null &&
       live.kind === "data" &&
@@ -1922,7 +1922,7 @@ export default function App() {
     }
   }
 
-  // Counts a table's rows as TablePlus does when it opens, unless its size
+  // Counts a table's rows when it opens, unless its size
   // says COUNT(*) would hold the connection long; the footer offers it then.
   function autoCount(conn: string, tabId: string, table: string): void {
     const key = `${conn}:${table}`;
@@ -2468,7 +2468,7 @@ export default function App() {
       askRedis("cli");
       return;
     }
-    // As TablePlus does: the query tabs closed earlier come back first, lowest
+    // The query tabs closed earlier come back first, lowest
     // number first, with their SQL; a fresh one only when none is left.
     const reopen = reopenableDrafts(conn)[0];
     if (reopen !== undefined) {
@@ -2533,7 +2533,7 @@ export default function App() {
     }
   }
 
-  // Refresh (F5) as in TablePlus: the schema is read again, and a table in
+  // Refresh (F5): the schema is read again, and a table in
   // front reloads its rows, after asking about any staged changes.
   function refreshView(): void {
     const conn = activeConnIdRef.current;
@@ -2575,7 +2575,7 @@ export default function App() {
   }
   keepChangedTabsRef.current = keepChangedTabs;
 
-  // Staged grid changes are dropped only after the user agrees (TablePlus's
+  // Staged grid changes are dropped only after the user agrees (the
   // "Discard all changes?"). True when there are none; otherwise asks, and on
   // Discard drops them and runs `proceed`, which repeats the interrupted action.
   function guardPending(sources: (WindowedRowSource | null | undefined)[], proceed: () => void): boolean {
@@ -2950,7 +2950,7 @@ export default function App() {
     store.showSnapshot(conn, snapshotOf(tab));
   }
 
-  // A plain open goes to the temporary tab (TablePlus's italic one), replacing
+  // A plain open goes to the temporary tab (the italic one), replacing
   // the table it showed; `pin` (a double-click) and `newTab` keep a tab.
   function openDataTab(table: string, options?: { view?: TableView; newTab?: boolean; pin?: boolean }): void {
     const conn = activeConnIdRef.current;
@@ -3250,7 +3250,7 @@ export default function App() {
     }
   }
 
-  // Staged inserts copying rows `from`…`to` (TablePlus's Duplicate); key
+  // Staged inserts copying rows `from`…`to` (Duplicate); key
   // columns are left to their defaults.
   async function duplicateRows(from: number, to: number): Promise<void> {
     const result = store.getState().result;
@@ -3380,7 +3380,7 @@ export default function App() {
     // The tab's "allow filtering" switch stays as it was.
     const filter = { ...quickFilterFor(column, value, isText), allowFiltering: tab.filter?.allowFiltering };
     runDataWith(conn, tab, { offset: 0, pageSize: tab.pageSize, filter, sorts: tab.sorts ?? null });
-    // The condition shows in the filter bar, as TablePlus's quick filter does.
+    // The condition shows in the filter bar, as a quick filter.
     setFilterOpen((prev) => ({ ...prev, [tab.id]: true }));
   }
 
@@ -3609,7 +3609,7 @@ export default function App() {
         return;
       case "applyChanges":
         // The structure editor saves its own changes on ⌘S. A saved query's
-        // tab with no staged rows saves the query, as TablePlus does.
+        // tab with no staged rows saves the query.
         if (activeTab?.kind === "query" && activeTab.favoriteId !== undefined && !hasStagedRows()) {
           saveQueryTab(activeTab.id, activeTab.favoriteId);
         } else if (activeTab?.kind === "query" || dataView) {
@@ -3762,7 +3762,7 @@ export default function App() {
     openDataTabFiltered(target.table, target.filter);
   }
 
-  // TablePlus's foreign key viewer: Quick Look on a key cell shows the
+  // The foreign key viewer: Quick Look on a key cell shows the
   // referenced table filtered to the key, as a table. Null when the cell
   // isn't a key.
   async function fkReference(row: number, col: number): Promise<FkReference | null> {
@@ -3810,7 +3810,7 @@ export default function App() {
         sorts: existing.sorts ?? null,
       });
       activate(existing.id);
-      // The condition shows in the filter bar, as TablePlus's quick filter does.
+      // The condition shows in the filter bar, as a quick filter.
       setFilterOpen((prev) => ({ ...prev, [existing.id]: true }));
       return;
     }
@@ -4620,7 +4620,7 @@ export default function App() {
   }
 
   function openNewConnection(options?: NewConnectionOptions): void {
-    // As TablePlus starts one: the kind of database first, unless it's known.
+    // A new connection starts with the kind of database, unless it's known.
     if (options?.driver === undefined && options?.url === undefined) {
       setDriverPick({ group: options?.group });
       return;
@@ -4750,7 +4750,7 @@ export default function App() {
     }
   }
 
-  // File → Import, as TablePlus has it: CSV and JSON open the wizard (on the
+  // File → Import: CSV and JSON open the wizard (on the
   // table, when one was picked); an SQL dump runs from the dump window.
   function openImport(format: ImportFormat | "sql", table: string | null): void {
     if (format === "sql") {
@@ -5072,7 +5072,7 @@ export default function App() {
     }
   }
 
-  // The data and results grids' cell menu, in TablePlus's order. It acts on
+  // The data and results grids' cell menu. It acts on
   // the whole selection; column and cell entries on the cell clicked.
   function menuItems(menuState: MenuState): ContextMenuItem[] {
     const result = menuState.result;
@@ -5274,7 +5274,7 @@ export default function App() {
       allowsEmpty: specsOf.every(
         (spec) => spec === null || spec.kind === "text" || spec.kind === "enum" || spec.kind === "set",
       ),
-      // As TablePlus: DEFAULT where the column has a default or may be NULL
+      // DEFAULT where the column has a default or may be NULL
       // (unknown without the table's structure, so offered); the time only on
       // date and time columns.
       // A new row's DEFAULT is the column left out, which every column takes
@@ -5433,7 +5433,7 @@ export default function App() {
     });
   }
 
-  // TablePlus's Export Tables window: the picked tables and views checked, or
+  // The Export Tables window: the picked tables and views checked, or
   // one table with its fields to choose.
   function openTableExport(picked: string[], columnPick = false): void {
     const conn = activeConnIdRef.current;
@@ -5857,7 +5857,7 @@ export default function App() {
         event.stopPropagation();
         return;
       }
-      // ⌘I in the SQL editor beautifies it, as in TablePlus; elsewhere it
+      // ⌘I in the SQL editor beautifies it; elsewhere it
       // stays whatever the keymap gives it (the right panel by default).
       if (matchesBinding(event, BEAUTIFY_KEY) && target?.closest(".sql-editor") != null && !modalOpen()) {
         event.preventDefault();
@@ -6049,7 +6049,7 @@ export default function App() {
       note !== null && all.indexOf(note) === index && !(chipsShown && note === tabNote),
   );
   const detailPanelOpen = activeKey !== null && detailPanels[activeKey] !== false;
-  // TablePlus's Data | Structure | Index switch, which leads each view's footer.
+  // The Data | Structure | Index switch, which leads each view's footer.
   const tableViewTabs =
     activeDataTab !== null ? (
       <div className="view-tabs">
@@ -6682,7 +6682,7 @@ export default function App() {
                         }
                         aiComplete={aiComplete}
                       />
-                      {/* What acts on the editor lives with it, as in TablePlus. */}
+                      {/* What acts on the editor lives with it. */}
                       <div className="editor-bar">
                         <button
                           type="button"

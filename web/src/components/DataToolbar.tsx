@@ -212,7 +212,7 @@ function rangeText(offset: number, shown: number, total: DataTotal | null): stri
   return total.exact ? t("{range} / {total}행", values) : t("{range} / ≈ {total}행", values);
 }
 
-// The Data view's footer, laid out as TablePlus's: the views and + Row on the
+// The Data view's footer: the views and + Row on the
 // left, where the page sits among all the rows in the middle, and filters,
 // columns and paging on the right.
 export function DataTabToolbar({

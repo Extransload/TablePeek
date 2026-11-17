@@ -6,7 +6,7 @@ export { escapeSqlIdentifier, quoteIdentifier, quoteLiteral };
 
 export type ExportFormat = "csv" | "json" | "sql" | "xlsx";
 
-// How fields are written; every option is TablePlus's CSV option of that name.
+// How fields are written; each option matches the CSV option of that name.
 export interface CsvFormat {
   delimiter?: string;
   // What wraps a field holding the delimiter, a quote or a line break; "" never wraps.

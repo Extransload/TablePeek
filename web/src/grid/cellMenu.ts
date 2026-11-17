@@ -2,7 +2,7 @@ import type { ContextMenuItem } from "../components/ContextMenu";
 import type { CopyFormat } from "../copyFormats";
 import { t } from "../i18n";
 
-// What Set Value puts in the selected cells, as TablePlus names them.
+// What Set Value puts in the selected cells, as the menu names them.
 export type CellValueChoice = "empty" | "null" | "default" | "now";
 
 export interface CellMenuTarget {
@@ -69,7 +69,7 @@ export function deleteRowsLabel(count: number, action: "cancel" | "undo" | "dele
       : t("{count}행 삭제", values);
 }
 
-// The part of a cell's menu every table shares, in TablePlus's order and the
+// The part of a cell's menu every table shares, in one fixed order and the
 // same everywhere; a view adds its own entries after it.
 export function cellMenuItems(target: CellMenuTarget): ContextMenuItem[] {
   const canInsert = target.canInsert === true;

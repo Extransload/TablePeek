@@ -1,7 +1,7 @@
 import * as uiState from "./persist";
 import type { Favorite } from "./store";
 
-// The Queries tab's own settings, as TablePlus keeps them under its "+" menu.
+// The Queries tab's own settings, kept under its "+" menu.
 export type QuerySort = "name" | "created" | "modified";
 
 const SORT_KEY = "tablepeek.queries-sort";

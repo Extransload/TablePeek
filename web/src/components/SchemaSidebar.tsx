@@ -221,7 +221,7 @@ export function SchemaSidebar({
   const forceRef = useRef(false);
   const [filter, setFilter] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number; tables: string[] } | null>(null);
-  // Tables picked in the list, as in TablePlus: a click picks one (and opens
+  // Tables picked in the list: a click picks one (and opens
   // it), ⇧-click the run from the anchor, ⌘-click adds or removes one.
   const [picked, setPicked] = useState(() => pickOnly(activeTable));
   useEffect(() => {
@@ -694,7 +694,7 @@ export function SchemaSidebar({
     return table.name === activeTable || picked.names.has(table.name);
   }
 
-  // Lit rows next to each other read as one box, as in TablePlus: each drops
+  // Lit rows next to each other read as one box: each drops
   // the corners it shares with a lit neighbour (its open columns break the run).
   function renderTableRow(
     table: TableSchema,
@@ -833,7 +833,7 @@ export function SchemaSidebar({
           spellCheck={false}
           onChange={(event) => setFilter(event.target.value)}
         />
-        {/* Everything else the sidebar offers sits behind one menu, as in TablePlus. */}
+        {/* Everything else the sidebar offers sits behind one menu. */}
         <button
           type="button"
           className="icon-button schema-more"

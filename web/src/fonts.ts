@@ -69,8 +69,8 @@ function boldOf(face: InstalledFace, pool: InstalledFace[]): string {
   return (heavier.find((other) => other.weight >= 700) ?? heavier[heavier.length - 1])?.name ?? "";
 }
 
-// What a picked face draws bold, italic and bold italic text in, as
-// TablePlus converts a font to its bold or italic trait: the family's own
+// What a picked face draws bold, italic and bold italic text in, as a
+// font is converted to its bold or italic trait: the family's own
 // faces, nearest the picked weight. An italic face is its own italic.
 function companions(face: InstalledFace, family: InstalledFont): string[] {
   const upright = family.faces.filter((other) => !other.italic);

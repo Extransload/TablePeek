@@ -28,7 +28,7 @@ interface DumpModalProps {
 // How often a running backup or restore is asked how far it has got.
 const BACKUP_POLL_MS = 300;
 const RESTORE_POLL_MS = 250;
-// The start of an SQL file shown before it runs, as TablePlus previews it.
+// The start of an SQL file, previewed before it runs.
 const RESTORE_PREVIEW_BYTES = 100000;
 
 function errorOf(error: unknown, fallback: string): string {

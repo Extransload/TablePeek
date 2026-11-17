@@ -6,7 +6,7 @@ import { cellToString } from "./rowOps";
 // The most rows one copy takes, from the grid or its menu.
 export const COPY_MAX_ROWS = 100_000;
 
-// TablePlus's "Copy Rows As" / "Copy Selected Cells As" formats.
+// The "Copy Rows As" / "Copy Selected Cells As" formats.
 export type CopyFormat = "text" | "json" | "html" | "markdown" | "csv" | "csvHeader" | "insert";
 
 export interface CopyTable {

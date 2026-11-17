@@ -569,7 +569,7 @@ async fn register_slot(
 }
 
 /// Files the data changes that went through on `slot` into its History, as
-/// TablePlus does for changes it commits: GUI cell edits and row inserts or
+/// a record of changes the app commits: GUI cell edits and row inserts or
 /// deletes, and statements the GUI ran asking for History. The engine holds
 /// them back until their transaction commits and drops them on rollback.
 /// Whatever is ready is filed as one batch, one write. Holds the slot weakly
@@ -2945,7 +2945,7 @@ async fn safe_mode_set(
 #[derive(Deserialize)]
 struct NewFavoriteRequest {
     name: String,
-    // May be empty: a new query starts out blank, like TablePlus's "Untitled".
+    // May be empty: a new query starts out blank, with no name yet.
     #[serde(default)]
     sql: String,
     keyword: Option<String>,
