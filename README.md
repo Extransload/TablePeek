@@ -8,7 +8,7 @@
 
 [Install](#install) · [Features](#features) · [Screenshots](#screenshots) · [Documentation](#documentation) · [Changelog](CHANGELOG.md)
 
-https://github.com/user-attachments/assets/d646b6ce-4a85-489e-b764-b0585b1a2205
+https://github.com/user-attachments/assets/af83a3d1-eb16-4060-8ac9-bba24dd29967
 
 </div>
 
