@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- **⌘W closes the connection once its tabs are gone.** In 0.14.0 a connection whose last tab had been closed stayed open however often ⌘W was pressed. Now the next ⌘W closes it and the next open connection, or Home, comes forward. In a Redis or Valkey connection, which has no tab strip, ⌘W closes the connection at once; the demo or `--db` connection, which can't be closed, is left for Home.
+
 ## [0.14.0] - 2026-11-17
 
 An intro as TablePeek starts, ⌘I that toggles Beautify, and ⌘W that closes one level at a time.

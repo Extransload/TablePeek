@@ -3656,11 +3656,20 @@ export default function App() {
         createNewTab();
         return;
       case "closeTab": {
-        const activeId = tabsRefActive();
+        const conn = activeConnIdRef.current;
+        if (conn === null) {
+          return;
+        }
+        // A key-value connection shows one workbench and no tab strip (its
+        // one tab only holds the view's state), so ⌘W closes the connection.
+        const activeId = activeEngine?.workbench === "keyvalue" ? null : tabsRefActive();
         if (activeId !== null) {
           closeTabById(activeId);
-        } else if (activeConnIdRef.current !== null) {
-          void closeConn(activeConnIdRef.current);
+        } else if (connsRef.current.find((summary) => summary.id === conn)?.is_default) {
+          // The default connection (--demo, --db) can't be closed: ⌘W leaves it for home.
+          goHome();
+        } else {
+          void closeConn(conn);
         }
         return;
       }
@@ -4951,12 +4960,14 @@ export default function App() {
     ];
   }
 
+  // The active connection's tab in front, or null when it has none (closing
+  // its last tab leaves activeId empty).
   function tabsRefActive(): string | null {
     const conn = activeConnIdRef.current;
     if (conn === null) {
       return null;
     }
-    return tabsOf(conn)?.activeId ?? null;
+    return tabsOf(conn)?.activeId || null;
   }
 
   function paletteSources(): PaletteSource[] {
