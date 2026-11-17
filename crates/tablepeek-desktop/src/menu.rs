@@ -1,8 +1,9 @@
 //! The macOS menu bar. WKWebView copies, pastes and undoes through the Edit
 //! menu's items, so those keep their usual keys. Every other ⌘ key the
 //! default menu would claim before the page sees it is left to the page:
-//! ⌘W closes a tab in TablePeek, not the window (Close Window is ⇧⌘W here),
-//! and ⌘T, ⌘N, ⌘R and the rest have no item at all.
+//! ⌘W closes the tab in front in TablePeek, then the connection, then the
+//! window from home (window.rs); Close Window is ⇧⌘W here. ⌘T, ⌘N, ⌘R and
+//! the rest have no item at all.
 
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Manager, Wry};

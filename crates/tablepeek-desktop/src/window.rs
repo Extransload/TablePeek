@@ -16,6 +16,9 @@
 //! - The page is told it runs in the app (`data-app="desktop"` on its root,
 //!   set before its scripts run), so its keys can differ from a browser
 //!   tab's: ⌘R refreshes the view, where a browser reloads the page.
+//! - The page closes its own window by going to `CLOSE_WINDOW_PATH` (⌘W once
+//!   nothing is left open in it); the navigation is refused and the window
+//!   closes, and with the last window the app quits.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +33,9 @@ use crate::material::WindowEffects;
 /// Marks the page as the app's before any of its scripts run.
 const MARK_APP: &str = "document.documentElement.dataset.app = 'desktop';";
 
+/// The address the page goes to when it wants its window closed (appWindow.ts).
+const CLOSE_WINDOW_PATH: &str = "/close-window";
+
 /// Numbers the windows after the first ("main"); labels must be unique.
 static WINDOWS: AtomicUsize = AtomicUsize::new(0);
 
@@ -42,6 +48,8 @@ pub fn open(app: &AppHandle, port: u16, url: Url) -> tauri::Result<()> {
     let opener = app.clone();
     let spawner = app.clone();
     let saver = app.clone();
+    let closer = app.clone();
+    let own_label = label.clone();
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("TablePeek")
         .inner_size(1440.0, 900.0)
@@ -51,6 +59,18 @@ pub fn open(app: &AppHandle, port: u16, url: Url) -> tauri::Result<()> {
         .disable_drag_drop_handler()
         .initialization_script(MARK_APP)
         .on_navigation(move |url| {
+            if is_app_page(url, port) && url.path() == CLOSE_WINDOW_PATH {
+                // Closed off this callback: it runs inside the webview's own
+                // navigation decision.
+                let app = closer.clone();
+                let label = own_label.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(window) = app.get_webview_window(&label) {
+                        let _ = window.close();
+                    }
+                });
+                return false;
+            }
             if is_app_page(url, port) || is_inline(url) {
                 return true;
             }

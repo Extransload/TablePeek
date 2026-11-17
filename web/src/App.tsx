@@ -186,6 +186,7 @@ import { loadAutoSave } from "./savedQueries";
 import { isDateKind, specsForTable, withResultKinds } from "./grid/columns";
 import { cellMenuItems, deleteRowsLabel, type CellValueChoice } from "./grid/cellMenu";
 import {
+  IN_DESKTOP_APP,
   IS_MAC,
   actionForEvent,
   ariaKeyshortcuts,
@@ -195,6 +196,7 @@ import {
   withHint,
   type KeyAction,
 } from "./shortcuts";
+import { closeAppWindow } from "./appWindow";
 import type { GridSelection, SortIndicator } from "./grid/CanvasGrid";
 import { subscribePendingChanges, type StagedExpr, type WindowedRowSource } from "./grid/windowSource";
 import { movedIndex } from "./grid/columnMove";
@@ -3611,6 +3613,18 @@ export default function App() {
         }
         refreshView();
         return;
+      case "closeTab":
+        // ⌘W closes what is in front, one level at a time: a tab, then (with
+        // none left) its connection, then at home the app's window, which
+        // quits the app when it is the last one. A browser tab keeps its own
+        // window to the browser.
+        if (!inWorkspace) {
+          if (IN_DESKTOP_APP) {
+            closeAppWindow();
+          }
+          return;
+        }
+        break;
       default:
         break;
     }
@@ -3645,6 +3659,8 @@ export default function App() {
         const activeId = tabsRefActive();
         if (activeId !== null) {
           closeTabById(activeId);
+        } else if (activeConnIdRef.current !== null) {
+          void closeConn(activeConnIdRef.current);
         }
         return;
       }

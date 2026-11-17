@@ -4,6 +4,15 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **An intro as TablePeek starts.** Each launch of the desktop app, and the first browser tab after `tablepeek serve` starts, opens with the TablePeek mark, its name and tagline over your background picture for about five seconds before Home shows. Any key or click skips it; a reload, another tab or a new window doesn't play it again. Turn it off in Settings › Appearance › Show intro on launch; with Reduce motion on it never plays.
+
+### Changed
+
+- **⌘I turns Beautify on and off.** Pressed again on the SQL it just laid out, Beautify puts back the text you had; on SQL that is already laid out (opened that way, or typed so), it folds it onto one line, and the next press lays it out again. Before, a second press did nothing.
+- **⌘W closes one level at a time in the desktop app.** It closes the tab in front; in a connection with no tab left it closes the connection (the next open one comes forward, or Home); at Home it closes the window, and with the last window TablePeek quits, so ⌘Q stays the one key that quits at once. In a browser tab ⌘W still closes tabs and then the connection; Home leaves the browser tab to the browser.
+
 ## [0.13.0] - 2026-11-16
 
 Every number in Settings steps with ▲ ▼ and takes typing.
