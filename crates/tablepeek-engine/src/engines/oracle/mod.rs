@@ -445,6 +445,14 @@ impl Driver for OracleDriver {
         }
     }
 
+    /// A protocol ping on the session statements use, behind the same gate;
+    /// not logged. A lost session is dropped and the next call opens one.
+    async fn ping(&self) -> Result<(), EngineError> {
+        self.inner
+            .run(|ctx| ctx.conn.ping().map_err(|err| session::ora_err(err, None)))
+            .await
+    }
+
     async fn server_info(&self) -> Result<ServerInfo, EngineError> {
         catalog::server_info(&self.inner).await
     }

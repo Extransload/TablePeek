@@ -110,6 +110,14 @@ impl Driver for PgDriver {
         pg::server_info(&self.inner).await
     }
 
+    fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
+
+    async fn ping(&self) -> Result<(), EngineError> {
+        self.inner.ping().await
+    }
+
     fn sql(&self) -> Option<&dyn SqlDriver> {
         Some(self)
     }

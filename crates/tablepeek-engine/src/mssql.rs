@@ -57,6 +57,23 @@ impl MssqlInner {
         self.in_tx.load(Ordering::SeqCst)
     }
 
+    /// `SELECT 1` on the session's client, unlogged: the user never ran it.
+    /// A session ended by a cancel is opened again first, as for a statement.
+    pub(crate) async fn ping(&self) -> Result<(), EngineError> {
+        let mut guard = self.client().await?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| EngineError::Internal("SQL Server 연결이 준비되지 않았습니다".into()))?;
+        client
+            .simple_query("SELECT 1")
+            .await
+            .map_err(mssql_err)?
+            .into_results()
+            .await
+            .map_err(mssql_err)?;
+        Ok(())
+    }
+
     // Done once the KILL has run; None when there is no session to kill.
     pub(crate) fn cancel(&self) -> Option<tokio::task::JoinHandle<()>> {
         let spid = self.spid.load(Ordering::SeqCst);

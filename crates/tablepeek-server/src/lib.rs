@@ -1612,10 +1612,40 @@ async fn connect_with(
     if tunnel.is_some() {
         meta.path = Some(address);
     }
-    let slot = register_slot(state, label, origin.saved_id, Some(req), engine).await;
+    let slot = register_slot(state, label, origin.saved_id, Some(req.clone()), engine).await;
     *slot.tunnel.lock().await = tunnel;
+    slot.engine
+        .set_reviver(reviver_for(req, factory, slot.tunnel.clone()));
     slot.remember(slot.engine.epoch(), &meta);
     Ok((slot, meta))
+}
+
+/// How a connection made from `origin` reaches its server again once it is
+/// found dead: straight, or through its tunnel opened anew (the old one may
+/// be what died), which the slot keeps from then on.
+fn reviver_for(
+    origin: ConnectRequest,
+    factory: &'static dyn registry::DriverFactory,
+    tunnel: Arc<tokio::sync::Mutex<Option<tunnel::Route>>>,
+) -> tablepeek_engine::Reviver {
+    Arc::new(move || {
+        let origin = origin.clone();
+        let tunnel = tunnel.clone();
+        Box::pin(async move {
+            if origin.ssh.is_none() && origin.http_tunnel.is_none() {
+                return Ok(NetRoute::Direct);
+            }
+            let target = factory
+                .tunnel_target(&origin.config)
+                .map_err(|problem| EngineError::BadRequest(problem.message))?;
+            let route = open_external_tunnel(&origin, target).await.map_err(|err| {
+                EngineError::BadRequest(format!("터널을 다시 열지 못했습니다: {err}"))
+            })?;
+            let net = route.as_ref().map_or(NetRoute::Direct, tunnel::Route::net);
+            *tunnel.lock().await = route;
+            Ok(net)
+        })
+    })
 }
 
 /// The file a file engine's settings name (its `path`): opening it again
@@ -3777,7 +3807,7 @@ macro_rules! doc_call {
             if $holder == Holder::Protected {
                 slot.refused_while_job()?;
             }
-            let session = slot.engine.document()?;
+            let session = slot.engine.document().await?;
             let $ops = session.ops();
             $body.await
         })
@@ -3795,7 +3825,7 @@ macro_rules! doc_beside {
         let slot = &$slot;
         let _inflight = InflightGuard::new(slot.inflight.clone());
         async {
-            let session = slot.engine.document()?;
+            let session = slot.engine.document().await?;
             let $ops = session.ops();
             $body.await
         }
@@ -7123,7 +7153,7 @@ mod tests {
         // Going away closes the server's cursor. Counted on this namespace
         // alone: other tests open cursors of their own meanwhile.
         let open_cursors = || async {
-            let session = slot.engine.document().unwrap();
+            let session = slot.engine.document().await.unwrap();
             let reply = session
                 .ops()
                 .command(&driver::CommandRequest {
@@ -7598,7 +7628,7 @@ mod tests {
                 && line.contains("fullDocument: \"updateLookup\"")));
         // Going away closes the change stream's cursor on the server.
         let watching = || async {
-            let session = slot.engine.document().unwrap();
+            let session = slot.engine.document().await.unwrap();
             let reply = session
                 .ops()
                 .command(&driver::CommandRequest {
@@ -7867,7 +7897,7 @@ mod tests {
         };
         // Server cursors still open on the scratch collection.
         let open_cursors = || async {
-            let session = slot.engine.document().unwrap();
+            let session = slot.engine.document().await.unwrap();
             let reply = session
                 .ops()
                 .command(&driver::CommandRequest {
@@ -8045,7 +8075,7 @@ mod tests {
         assert_eq!(slot.cursors.open_count(), 0);
         assert!(closes().await, "the cursor outlived its connection");
         // The slot is gone from the registry; its engine still answers here.
-        let session = slot.engine.document().unwrap();
+        let session = slot.engine.document().await.unwrap();
         for name in [coll.clone(), format!("{coll}_out")] {
             let _ = session
                 .ops()

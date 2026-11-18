@@ -79,6 +79,20 @@ pub trait Driver: Send + Sync {
     /// server session, flush) does it here.
     async fn close(&self) {}
 
+    /// Whether the connection is known to be gone (the server or the network
+    /// closed it), found without asking the server. The engine connects again
+    /// before its next operation (`Engine::set_reviver`).
+    fn is_closed(&self) -> bool {
+        false
+    }
+
+    /// One round trip that does nothing, to learn whether the connection
+    /// still answers after it sat idle. Engines whose client reconnects on its
+    /// own (HTTP, MongoDB, Cassandra) or that open a file keep the default.
+    async fn ping(&self) -> Result<(), EngineError> {
+        Ok(())
+    }
+
     fn sql(&self) -> Option<&dyn SqlDriver> {
         None
     }

@@ -102,7 +102,7 @@ macro_rules! search_call {
             if $holder == Holder::Protected {
                 slot.refused_while_job()?;
             }
-            let session = slot.engine.search()?;
+            let session = slot.engine.search().await?;
             let $ops = session.ops();
             $body.await
         })
@@ -118,7 +118,7 @@ macro_rules! search_beside {
         let slot = &$slot;
         let _inflight = InflightGuard::new(slot.inflight.clone());
         async {
-            let session = slot.engine.search()?;
+            let session = slot.engine.search().await?;
             let $ops = session.ops();
             $body.await
         }
@@ -615,7 +615,7 @@ async fn console(
 ) -> ApiResult<Json<ConsoleReply>> {
     let slot = search_slot(&state, &headers, params.conn.as_deref()).await?;
     let class = {
-        let session = slot.engine.search().map_err(engine_error)?;
+        let session = slot.engine.search().await.map_err(engine_error)?;
         session
             .ops()
             .classify(&req.method, &req.path, req.body.as_deref())
@@ -641,7 +641,7 @@ async fn classify(
     Query(params): Query<ClassifyParams>,
 ) -> ApiResult<Json<Value>> {
     let slot = search_slot(&state, &headers, params.conn.as_deref()).await?;
-    let session = slot.engine.search().map_err(engine_error)?;
+    let session = slot.engine.search().await.map_err(engine_error)?;
     let classified = session
         .ops()
         .classify(&params.method, &params.path, None)

@@ -56,6 +56,11 @@ impl MySqlInner {
         self.in_tx.load(Ordering::SeqCst)
     }
 
+    /// COM_PING on the session's connection, unlogged: the user never ran it.
+    pub(crate) async fn ping(&self) -> Result<(), EngineError> {
+        self.conn.lock().await.ping().await.map_err(mysql_err)
+    }
+
     fn database(&self) -> MutexGuard<'_, Option<String>> {
         self.database.lock().unwrap_or_else(PoisonError::into_inner)
     }

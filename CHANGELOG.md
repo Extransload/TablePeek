@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A connection that dropped comes back by itself.** When the server or the network ended a connection (an idle timeout, a restart, a sleeping laptop, a tunnel that went down), every action failed until the connection was closed and opened again. Now, before running anything on a connection that sat idle for 30 seconds or whose last action failed, TablePeek checks it with a ping and connects again the same way, through a newly opened SSH or HTTP tunnel if it used one, to the database it was switched to. What you ran is never sent twice: the check comes first, so an action that was already under way when the connection dropped still fails once and the next one works. A transaction that was open on the lost connection is reported as rolled back. PostgreSQL, CockroachDB, MySQL and MariaDB, SQL Server, Oracle, Redis and Valkey reconnect this way; MongoDB, Elasticsearch, OpenSearch, Cassandra, ScyllaDB and ClickHouse already recovered on their own.
+
 ## [0.14.1] - 2026-11-17
 
 ⌘W closes a connection once its tabs are gone.

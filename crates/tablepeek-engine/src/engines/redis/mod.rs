@@ -21,6 +21,7 @@ mod reply;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -391,13 +392,21 @@ struct ConsoleConn {
     id: Option<i64>,
 }
 
+/// A connection for the page's reads and edits, and whether it has ended.
+struct BrowseConn {
+    conn: MultiplexedConnection,
+    /// Set once the connection's driver task has finished: the server or
+    /// the network closed it.
+    ended: Arc<AtomicBool>,
+}
+
 pub(crate) struct RedisDriver {
     target: net::Target,
     info: RedisConnectionInfo,
     /// The database the connection works in (the profile's, or the one a
     /// database switch chose).
     db: u32,
-    conns: tokio::sync::Mutex<HashMap<u32, MultiplexedConnection>>,
+    conns: tokio::sync::Mutex<HashMap<u32, BrowseConn>>,
     console: tokio::sync::Mutex<Option<ConsoleConn>>,
     /// Woken by a stop: the console command running now gives up.
     console_stop: tokio::sync::Notify,
@@ -448,25 +457,28 @@ impl RedisDriver {
         // RESP3 where the server speaks it (Redis 6 and later); RESP2 for
         // an older server or a proxy that only knows RESP2.
         let first = match driver.connect(db, Role::Browse).await {
-            Ok((conn, _)) => conn,
+            Ok((conn, _, ended)) => BrowseConn { conn, ended },
             Err(err) if unknown_hello(&err) => {
                 driver.info = driver.info.clone().set_protocol(ProtocolVersion::RESP2);
-                driver.connect(db, Role::Browse).await?.0
+                let (conn, _, ended) = driver.connect(db, Role::Browse).await?;
+                BrowseConn { conn, ended }
             }
             Err(err) => return Err(err),
         };
-        driver.conns.get_mut().insert(db, first.clone());
-        driver.facts = driver.server_facts(first).await?;
+        let conn = first.conn.clone();
+        driver.conns.get_mut().insert(db, first);
+        driver.facts = driver.server_facts(conn).await?;
         Ok(driver)
     }
 
     /// A new connection to `db`, logged in and named for CLIENT LIST
-    /// (`tablepeek`, or `tablepeek-cli` for the CLI's), with its CLIENT ID.
+    /// (`tablepeek`, or `tablepeek-cli` for the CLI's), with its CLIENT ID
+    /// and a flag set once the connection has ended.
     async fn connect(
         &self,
         db: u32,
         role: Role,
-    ) -> Result<(MultiplexedConnection, Option<i64>), EngineError> {
+    ) -> Result<(MultiplexedConnection, Option<i64>, Arc<AtomicBool>), EngineError> {
         let stream = self.target.stream().await?;
         let info = self.info.clone().set_db(i64::from(db));
         // The CLI's command waits as long as it takes (BLPOP 0); the page's
@@ -493,7 +505,12 @@ impl RedisDriver {
                     engine_error(err)
                 }
             })?;
-        tokio::spawn(driver);
+        let ended = Arc::new(AtomicBool::new(false));
+        let flag = ended.clone();
+        tokio::spawn(async move {
+            driver.await;
+            flag.store(true, Ordering::SeqCst);
+        });
         // A name the ACL may refuse; the connection works without it.
         let _ = ::redis::cmd("CLIENT")
             .arg("SETNAME")
@@ -511,7 +528,7 @@ impl RedisDriver {
                 browse.insert(id);
             }
         }
-        Ok((conn, id))
+        Ok((conn, id, ended))
     }
 
     /// INFO server and replication: what the server is, and whether this
@@ -589,11 +606,17 @@ impl RedisDriver {
     /// The connection to `db`, opened when this is its first use.
     async fn conn(&self, db: u32) -> Result<MultiplexedConnection, EngineError> {
         let mut conns = self.conns.lock().await;
-        if let Some(conn) = conns.get(&db) {
-            return Ok(conn.clone());
+        if let Some(browse) = conns.get(&db) {
+            return Ok(browse.conn.clone());
         }
-        let (conn, _) = self.connect(db, Role::Browse).await?;
-        conns.insert(db, conn.clone());
+        let (conn, _, ended) = self.connect(db, Role::Browse).await?;
+        conns.insert(
+            db,
+            BrowseConn {
+                conn: conn.clone(),
+                ended,
+            },
+        );
         Ok(conn)
     }
 
@@ -672,6 +695,23 @@ impl Driver for RedisDriver {
     fn cancel(&self) -> CancelRequest {
         self.stop_console();
         CancelRequest::Done
+    }
+
+    /// The page's connection to the current database has ended. A command
+    /// holding the map counts as alive: it finds out for itself.
+    fn is_closed(&self) -> bool {
+        self.conns.try_lock().is_ok_and(|conns| {
+            conns
+                .get(&self.db)
+                .is_some_and(|browse| browse.ended.load(Ordering::SeqCst))
+        })
+    }
+
+    /// PING on the current database's connection; not logged.
+    async fn ping(&self) -> Result<(), EngineError> {
+        self.send(self.db, &ops::Line::new("PING"), false)
+            .await
+            .map(drop)
     }
 
     async fn server_info(&self) -> Result<ServerInfo, EngineError> {

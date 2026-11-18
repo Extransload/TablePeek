@@ -282,6 +282,22 @@ impl PostgresInner {
         self.tx.is_open()
     }
 
+    /// Whether the connection task has ended (the server or the network
+    /// closed it). A client held by a running statement counts as open.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.client
+            .try_lock()
+            .map(|client| client.is_closed())
+            .unwrap_or(false)
+    }
+
+    /// An empty query on the session's client, unlogged: the user never ran it.
+    pub(crate) async fn ping(&self) -> Result<(), EngineError> {
+        let client = self.client.lock().await;
+        client.simple_query("").await.map_err(EngineError::from)?;
+        Ok(())
+    }
+
     async fn conn(&self) -> PgConn<'_> {
         PgConn {
             client: self.client.lock().await,

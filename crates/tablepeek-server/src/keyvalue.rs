@@ -57,9 +57,10 @@ macro_rules! kv_call {
         let slot = &$slot;
         let _inflight = InflightGuard::new(slot.inflight.clone());
         async {
-            let session = slot.engine.keyvalue()?;
+            let session = slot.engine.keyvalue().await?;
             let $ops = session.ops();
-            $body.await
+            // A failure may mean the connection is gone: the next call checks.
+            slot.engine.noted($body.await)
         }
         .await
         .map_err(engine_error)
@@ -186,7 +187,7 @@ async fn stop(
     Query(params): Query<ConnQuery>,
 ) -> ApiResult<Json<Value>> {
     let slot = kv_slot(&state, &headers, params.conn.as_deref()).await?;
-    let session = slot.engine.keyvalue().map_err(engine_error)?;
+    let session = slot.engine.keyvalue().await.map_err(engine_error)?;
     session.ops().stop_console();
     Ok(Json(json!({})))
 }

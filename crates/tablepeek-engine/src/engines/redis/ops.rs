@@ -1194,7 +1194,7 @@ impl KeyValueDriver for RedisDriver {
             }
         }
         if fresh {
-            let (conn, id) = self.connect(req.db, super::Role::Cli).await?;
+            let (conn, id, _) = self.connect(req.db, super::Role::Cli).await?;
             *guard = Some(super::ConsoleConn {
                 id,
                 conn,

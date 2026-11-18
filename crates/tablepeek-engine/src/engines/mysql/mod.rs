@@ -98,6 +98,10 @@ impl Driver for MySqlDriver {
         imp::server_info(&self.inner).await
     }
 
+    async fn ping(&self) -> Result<(), EngineError> {
+        self.inner.ping().await
+    }
+
     fn sql(&self) -> Option<&dyn SqlDriver> {
         Some(self)
     }

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, RwLock};
 use std::time::{Duration, Instant};
 
@@ -817,7 +817,40 @@ pub struct Engine {
     epoch: AtomicU64,
     // Every statement sent, across driver swaps (a database switch keeps it).
     log: SqlLog,
+    // How the connection open now was made, to make it again once it is
+    // found dead (see `live`); none for a file or the demo.
+    reconnect: Mutex<Option<Reconnect>>,
+    // The way to the server, asked for again on each reconnect (a tunnel
+    // opened anew); none until the server hands one over.
+    reviver: Mutex<Option<Reviver>>,
+    // An operation failed: the next one checks the connection first.
+    suspect: AtomicBool,
+    // When an operation last started, to check a connection that sat idle.
+    last_used: Mutex<Instant>,
+    // One reconnect at a time; the others wait and take its connection.
+    reviving: tokio::sync::Mutex<()>,
 }
+
+/// The engine and the settings the connection open now was made with.
+struct Reconnect {
+    factory: &'static dyn DriverFactory,
+    config: ConnConfig,
+}
+
+/// Gives the network route to connect through again: `Direct`, or a tunnel
+/// opened anew (the old one may be what died).
+pub type Reviver = Arc<
+    dyn Fn() -> futures_util::future::BoxFuture<'static, Result<NetRoute, EngineError>>
+        + Send
+        + Sync,
+>;
+
+/// How long a connection may sit idle before its next operation asks the
+/// server whether it is still there; how long that question may take; how
+/// long a dead connection gets to close.
+const IDLE_CHECK: Duration = Duration::from_secs(30);
+const PING_LIMIT: Duration = Duration::from_secs(5);
+const CLOSE_LIMIT: Duration = Duration::from_secs(5);
 
 /// The document side of the connection open now, held for one operation.
 /// Like a query, the operation moves the epoch before and after it runs:
@@ -896,6 +929,19 @@ impl Engine {
             cancels: Arc::new(CancelsInFlight::default()),
             epoch: AtomicU64::new(0),
             log,
+            reconnect: Mutex::new(None),
+            reviver: Mutex::new(None),
+            suspect: AtomicBool::new(false),
+            last_used: Mutex::new(Instant::now()),
+            reviving: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Lets the engine connect again by itself when it finds its connection
+    /// gone: `reviver` gives the route to the server each time.
+    pub fn set_reviver(&self, reviver: Reviver) {
+        if let Ok(mut slot) = self.reviver.lock() {
+            *slot = Some(reviver);
         }
     }
 
@@ -927,7 +973,8 @@ impl Engine {
         // The old connection's open transaction goes with it.
         self.log.settle(false);
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        old.close().await;
+        // A dead connection's goodbye may wait on a socket nobody answers.
+        let _ = tokio::time::timeout(CLOSE_LIMIT, old.close()).await;
         Ok(())
     }
 
@@ -936,6 +983,106 @@ impl Engine {
             .read()
             .map(|guard| guard.clone())
             .map_err(|_| EngineError::Internal("백엔드 잠금 실패".into()))
+    }
+
+    /// The driver for the next operation, connected again first when its
+    /// connection is gone: the client already knows it closed, or it sat idle
+    /// (or the last operation failed) and doesn't answer a ping. Nothing the
+    /// user ran is sent twice: the check happens before the operation.
+    async fn live(&self) -> Result<Arc<dyn Driver>, EngineError> {
+        let driver = self.driver()?;
+        let idle = match self.last_used.lock() {
+            Ok(mut last) => std::mem::replace(&mut *last, Instant::now()).elapsed(),
+            Err(_) => Duration::ZERO,
+        };
+        let suspect = self.suspect.swap(false, Ordering::SeqCst);
+        if !self.can_revive() {
+            return Ok(driver);
+        }
+        if !driver.is_closed() {
+            if !suspect && idle < IDLE_CHECK {
+                return Ok(driver);
+            }
+            if matches!(
+                tokio::time::timeout(PING_LIMIT, driver.ping()).await,
+                Ok(Ok(()))
+            ) {
+                return Ok(driver);
+            }
+        }
+        self.revive(&driver).await
+    }
+
+    fn can_revive(&self) -> bool {
+        self.reconnect.lock().is_ok_and(|recipe| recipe.is_some())
+            && self.reviver.lock().is_ok_and(|reviver| reviver.is_some())
+    }
+
+    /// Connects again the way the connection open now was made and works on
+    /// the new one. A transaction open on the dead one is gone with it: that
+    /// is reported, once connected again.
+    async fn revive(&self, dead: &Arc<dyn Driver>) -> Result<Arc<dyn Driver>, EngineError> {
+        let _one = self.reviving.lock().await;
+        // Another operation connected again meanwhile.
+        let current = self.driver()?;
+        if !Arc::ptr_eq(&current, dead) {
+            return Ok(current);
+        }
+        let recipe = self
+            .reconnect
+            .lock()
+            .ok()
+            .and_then(|recipe| recipe.as_ref().map(|r| (r.factory, r.config.clone())));
+        let reviver = self.reviver.lock().ok().and_then(|reviver| reviver.clone());
+        let (Some((factory, config)), Some(reviver)) = (recipe, reviver) else {
+            return Ok(current);
+        };
+        let was_in_tx = match dead.sql() {
+            Some(sql) => matches!(
+                tokio::time::timeout(PING_LIMIT, sql.in_tx()).await,
+                Ok(Ok(true))
+            ),
+            None => false,
+        };
+        let connected = async {
+            let net = reviver().await?;
+            factory.connect(&config, &net, self.log.clone()).await
+        }
+        .await;
+        let driver = match connected {
+            Ok(driver) => driver,
+            Err(err) => {
+                // Still unreachable: the next operation tries again.
+                self.suspect.store(true, Ordering::SeqCst);
+                return Err(err);
+            }
+        };
+        self.replace_driver(driver.clone()).await?;
+        if was_in_tx {
+            return Err(EngineError::TxRolledBack(
+                "연결이 끊겨 열려 있던 트랜잭션이 롤백되었습니다. 다시 연결했으니 다시 실행하세요"
+                    .into(),
+            ));
+        }
+        Ok(driver)
+    }
+
+    /// Passes `result` on; a failure that may come from a lost connection
+    /// has the next operation check the connection first. A lost connection
+    /// can look like a cancel (MySQL reports a closed socket as interrupted),
+    /// so any error the database or its client gave counts; the cost is one
+    /// ping. The server calls it for the operations it runs through a session
+    /// (`keyvalue`, …).
+    pub fn noted<T>(&self, result: Result<T, EngineError>) -> Result<T, EngineError> {
+        if let Err(
+            EngineError::Driver { .. }
+            | EngineError::Internal(_)
+            | EngineError::TxOutcomeUnknown(_),
+        ) = &result
+        {
+            self.suspect.store(true, Ordering::SeqCst);
+        }
+        result
     }
 
     /// The id of the engine connected now ("postgres", "sqlite", …).
@@ -963,7 +1110,9 @@ impl Engine {
 
     pub async fn swap_to_file(&self, path: &Path) -> Result<EngineMeta, EngineError> {
         let inner = open_file_inner(path, self.log.clone())?;
-        self.swap(SqliteDriver::open(inner)).await
+        let meta = self.swap(SqliteDriver::open(inner)).await?;
+        self.forget_reconnect();
+        Ok(meta)
     }
 
     pub async fn swap_to_demo(&self, rows: usize) -> Result<EngineMeta, EngineError> {
@@ -971,19 +1120,35 @@ impl Engine {
         let inner = tokio::task::spawn_blocking(move || build_demo_inner(rows, log))
             .await
             .map_err(|e| EngineError::Internal(e.to_string()))??;
-        self.swap(SqliteDriver::open(inner)).await
+        let meta = self.swap(SqliteDriver::open(inner)).await?;
+        self.forget_reconnect();
+        Ok(meta)
     }
 
     /// Connects with `factory`'s engine and, once that worked, works on the
-    /// new connection instead of the current one.
+    /// new connection instead of the current one, and remembers how, to
+    /// connect the same way again should this connection die.
     pub async fn swap_to(
         &self,
-        factory: &dyn DriverFactory,
+        factory: &'static dyn DriverFactory,
         config: &ConnConfig,
         net: &NetRoute,
     ) -> Result<EngineMeta, EngineError> {
         let driver = factory.connect(config, net, self.log.clone()).await?;
-        self.swap(driver).await
+        let meta = self.swap(driver).await?;
+        if let Ok(mut recipe) = self.reconnect.lock() {
+            *recipe = Some(Reconnect {
+                factory,
+                config: config.clone(),
+            });
+        }
+        Ok(meta)
+    }
+
+    fn forget_reconnect(&self) {
+        if let Ok(mut recipe) = self.reconnect.lock() {
+            *recipe = None;
+        }
     }
 
     async fn swap(&self, driver: Arc<dyn Driver>) -> Result<EngineMeta, EngineError> {
@@ -993,38 +1158,38 @@ impl Engine {
     }
 
     pub async fn meta(&self, include_system: bool) -> Result<EngineMeta, EngineError> {
-        let driver = self.driver()?;
-        let meta = driver.meta(include_system).await?;
+        let driver = self.live().await?;
+        let meta = self.noted(driver.meta(include_system).await)?;
         Ok(with_capabilities(&driver, meta))
     }
 
     pub async fn schema(&self, include_system: bool) -> Result<Vec<TableSchema>, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.schema(include_system).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.schema(include_system).await)
     }
 
     /// Every foreign key between the tables the schema list shows, in one call.
     pub async fn relations(&self, include_system: bool) -> Result<Vec<Relation>, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.relations(include_system).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.relations(include_system).await)
     }
 
     pub async fn table_count(&self, name: &str) -> Result<i64, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.table_count(name).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.table_count(name).await)
     }
 
     pub async fn databases(&self) -> Result<Vec<String>, EngineError> {
-        let driver = self.driver()?;
+        let driver = self.live().await?;
         if let Some(keyvalue) = driver.keyvalue() {
-            let listed = keyvalue.databases().await?;
+            let listed = self.noted(keyvalue.databases().await)?;
             return Ok(listed
                 .databases
                 .iter()
                 .map(|db| db.index.to_string())
                 .collect());
         }
-        sql_of(&driver)?.databases().await
+        self.noted(sql_of(&driver)?.databases().await)
     }
 
     pub async fn query(&self, sql: &str, max_rows: usize) -> Result<QueryData, EngineError> {
@@ -1043,7 +1208,7 @@ impl Engine {
         // it finishes, even if the query future is dropped midway.
         self.epoch.fetch_add(1, Ordering::SeqCst);
         let _finished = EpochBump(&self.epoch);
-        let driver = self.driver()?;
+        let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
         if let Ok(mut active) = self.active.lock() {
             *active = Some(driver.clone());
@@ -1055,7 +1220,7 @@ impl Engine {
         if let Ok(mut active) = self.active.lock() {
             *active = None;
         }
-        result
+        self.noted(result)
     }
 
     /// Every row of the read `sql`, sent to `sink` a batch at a time as the
@@ -1069,7 +1234,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         self.epoch.fetch_add(1, Ordering::SeqCst);
         let _finished = EpochBump(&self.epoch);
-        let driver = self.driver()?;
+        let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
         if let Ok(mut active) = self.active.lock() {
             *active = Some(driver.clone());
@@ -1078,7 +1243,7 @@ impl Engine {
         if let Ok(mut active) = self.active.lock() {
             *active = None;
         }
-        result
+        self.noted(result)
     }
 
     /// Passes rows of `sql` without returning them (`SqlDriver::skip_rows`):
@@ -1090,7 +1255,7 @@ impl Engine {
         skip: &driver::SkipRequest,
         budget: std::time::Duration,
     ) -> Result<driver::SkipOutcome, EngineError> {
-        let driver = self.driver()?;
+        let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
         if let Ok(mut active) = self.active.lock() {
             *active = Some(driver.clone());
@@ -1099,7 +1264,7 @@ impl Engine {
         if let Ok(mut active) = self.active.lock() {
             *active = None;
         }
-        result
+        self.noted(result)
     }
 
     /// One part of a count done in parts (`SqlDriver::count_step`).
@@ -1109,7 +1274,7 @@ impl Engine {
         cursor: Option<&str>,
         budget: std::time::Duration,
     ) -> Result<driver::CountStep, EngineError> {
-        let driver = self.driver()?;
+        let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
         if let Ok(mut active) = self.active.lock() {
             *active = Some(driver.clone());
@@ -1118,13 +1283,13 @@ impl Engine {
         if let Ok(mut active) = self.active.lock() {
             *active = None;
         }
-        result
+        self.noted(result)
     }
 
     /// The document operations of the connection open now, or the error an
     /// engine of another paradigm gives.
-    pub fn document(&self) -> Result<DocumentSession<'_>, EngineError> {
-        let driver = self.driver()?;
+    pub async fn document(&self) -> Result<DocumentSession<'_>, EngineError> {
+        let driver = self.live().await?;
         if driver.document().is_none() {
             return Err(EngineError::Unsupported(format!(
                 "{}에서는 문서 작업을 할 수 없습니다",
@@ -1140,8 +1305,8 @@ impl Engine {
 
     /// The search operations of the connection open now, or the error an
     /// engine of another paradigm gives.
-    pub fn search(&self) -> Result<SearchSession<'_>, EngineError> {
-        let driver = self.driver()?;
+    pub async fn search(&self) -> Result<SearchSession<'_>, EngineError> {
+        let driver = self.live().await?;
         if driver.search().is_none() {
             return Err(EngineError::Unsupported(format!(
                 "{}에서는 검색 엔진 작업을 할 수 없습니다",
@@ -1157,8 +1322,8 @@ impl Engine {
 
     /// The key-value operations of the connection open now, or the error
     /// an engine of another paradigm gives.
-    pub fn keyvalue(&self) -> Result<KeyValueSession<'_>, EngineError> {
-        let driver = self.driver()?;
+    pub async fn keyvalue(&self) -> Result<KeyValueSession<'_>, EngineError> {
+        let driver = self.live().await?;
         if driver.keyvalue().is_none() {
             return Err(EngineError::Unsupported(format!(
                 "{}에서는 키-값 작업을 할 수 없습니다",
@@ -1259,8 +1424,8 @@ impl Engine {
     }
 
     pub async fn edit(&self, target: &EditTarget) -> Result<u64, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.edit(target).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.edit(target).await)
     }
 
     /// An edit with the row as the grid last knew it (`SqlDriver::edit_seen`).
@@ -1269,14 +1434,14 @@ impl Engine {
         target: &EditTarget,
         seen: &[PkValue],
     ) -> Result<u64, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.edit_seen(target, seen).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.edit_seen(target, seen).await)
     }
 
     /// An amount added to a column in one atomic write (`SqlDriver::edit_add`).
     pub async fn edit_add(&self, target: &EditTarget) -> Result<u64, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.edit_add(target).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.edit_add(target).await)
     }
 
     pub async fn insert_row(
@@ -1308,13 +1473,13 @@ impl Engine {
             .filter(|value| value.expr != Some(ValueExpr::Default))
             .cloned()
             .collect();
-        let driver = self.driver()?;
-        sql_of(&driver)?.insert_row(table, &values).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.insert_row(table, &values).await)
     }
 
     pub async fn delete_row(&self, table: &str, pk: &[PkValue]) -> Result<u64, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.delete_row(table, pk).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.delete_row(table, pk).await)
     }
 
     /// A delete with the row as the grid last knew it.
@@ -1324,22 +1489,23 @@ impl Engine {
         pk: &[PkValue],
         seen: &[PkValue],
     ) -> Result<u64, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.delete_row_seen(table, pk, seen).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.delete_row_seen(table, pk, seen).await)
     }
 
     pub async fn table_detail(&self, name: &str) -> Result<TableDetail, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.table_detail(name).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.table_detail(name).await)
     }
 
     pub async fn server_info(&self) -> Result<ServerInfo, EngineError> {
-        self.driver()?.server_info().await
+        let driver = self.live().await?;
+        self.noted(driver.server_info().await)
     }
 
     pub async fn objects(&self, include_system: bool) -> Result<DbObjects, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.objects(include_system).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.objects(include_system).await)
     }
 
     pub async fn object_definition(
@@ -1347,15 +1513,15 @@ impl Engine {
         kind: &str,
         name: &str,
     ) -> Result<Option<ObjectDefinition>, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.object_definition(kind, name).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.object_definition(kind, name).await)
     }
 
     /// Ends a server session; on a search engine, cancels the task `id`
     /// names (its sessions are the running tasks); on a key-value store,
     /// CLIENT KILL ID.
     pub async fn kill_session(&self, id: &str) -> Result<(), EngineError> {
-        let driver = self.driver()?;
+        let driver = self.live().await?;
         if let Some(search) = driver.search() {
             return search.cancel_task(id).await.map(|_| ());
         }
@@ -1382,8 +1548,8 @@ impl Engine {
         sql: &str,
         export: &driver::NativeExport,
     ) -> Result<driver::FileStream, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.export_native(sql, export).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.export_native(sql, export).await)
     }
 
     /// One binary cell's whole value (see `SqlDriver::read_cell`).
@@ -1391,8 +1557,8 @@ impl Engine {
         &self,
         cell: &tablepeek_types::CellRef,
     ) -> Result<driver::FileStream, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.read_cell(cell).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.read_cell(cell).await)
     }
 
     /// Replaces one binary cell with streamed bytes (see
@@ -1402,8 +1568,8 @@ impl Engine {
         cell: &tablepeek_types::CellRef,
         data: driver::FileStream,
     ) -> Result<u64, EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.write_cell(cell, data).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.write_cell(cell, data).await)
     }
 
     pub async fn begin_tx(&self) -> Result<(), EngineError> {
@@ -1428,8 +1594,8 @@ impl Engine {
     }
 
     async fn tx(&self, op: TxOp) -> Result<(), EngineError> {
-        let driver = self.driver()?;
-        sql_of(&driver)?.tx(op).await
+        let driver = self.live().await?;
+        self.noted(sql_of(&driver)?.tx(op).await)
     }
 }
 
@@ -6883,5 +7049,65 @@ mod tests {
             false,
         )
         .await;
+    }
+
+    /// A PostgreSQL engine that connects again over a direct route, and the
+    /// id of the server session it holds now.
+    async fn revivable_pg(config: &tablepeek_types::PostgresConfig) -> Engine {
+        let engine = Engine::open_demo(1).unwrap();
+        engine.swap_to_postgres(config).await.unwrap();
+        engine.set_reviver(Arc::new(|| Box::pin(async { Ok(NetRoute::Direct) })));
+        engine
+    }
+
+    async fn backend_pid(engine: &Engine) -> Result<String, EngineError> {
+        let data = engine.query("SELECT pg_backend_pid()::text", 1).await?;
+        Ok(data.cell_string(0, 0).unwrap())
+    }
+
+    /// Ends `pid`'s session from another connection, as an idle timeout, a
+    /// server restart or an administrator would, and waits until the client
+    /// has seen it go.
+    async fn end_backend(config: &tablepeek_types::PostgresConfig, pid: &str) {
+        let other = Engine::open_demo(1).unwrap();
+        other.swap_to_postgres(config).await.unwrap();
+        other
+            .query(&format!("SELECT pg_terminate_backend({pid})"), 1)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    // A connection the server ended is made again before the next statement,
+    // which then runs, instead of failing until the connection is closed and
+    // opened by hand.
+    #[tokio::test]
+    async fn postgres_connection_the_server_ended_is_made_again() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = revivable_pg(&config).await;
+        let before = backend_pid(&engine).await.unwrap();
+        end_backend(&config, &before).await;
+        let after = backend_pid(&engine).await.unwrap();
+        assert_ne!(after, before, "the statement ran on a new session");
+    }
+
+    // A transaction open on the ended connection is gone: the next statement
+    // says so (after connecting again) rather than run as if it were open,
+    // and the one after runs.
+    #[tokio::test]
+    async fn postgres_transaction_on_an_ended_connection_is_reported_rolled_back() {
+        let Some(config) = pg_config() else {
+            return;
+        };
+        let engine = revivable_pg(&config).await;
+        engine.begin_tx().await.unwrap();
+        let pid = backend_pid(&engine).await.unwrap();
+        end_backend(&config, &pid).await;
+        let err = engine.commit_tx().await.unwrap_err();
+        assert!(matches!(err, EngineError::TxRolledBack(_)), "{err:?}");
+        assert!(!engine.in_tx().await.unwrap());
+        assert_ne!(backend_pid(&engine).await.unwrap(), pid);
     }
 }
