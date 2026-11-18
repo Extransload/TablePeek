@@ -565,6 +565,45 @@ export default function App() {
   // An open connection being entered (its workspace read), for its tab's
   // gauge; outcome null while under way.
   const [entering, setEntering] = useState<{ id: string; outcome: GaugeOutcome | null } | null>(null);
+  // Connections whose engine is checking or reconnecting them now ("busy"),
+  // or just failed to reconnect ("failed", for a moment), for their tabs' gauge.
+  const [links, setLinks] = useState<Record<string, "busy" | "failed">>({});
+  useEffect(() => {
+    const timers = new Map<string, number>();
+    const off = store.onLink((conn, state) => {
+      window.clearTimeout(timers.get(conn));
+      timers.delete(conn);
+      setLinks((prev) => {
+        const next = { ...prev };
+        if (state === "checking" || state === "reconnecting") {
+          next[conn] = "busy";
+        } else if (state === "failed") {
+          next[conn] = "failed";
+        } else {
+          delete next[conn];
+        }
+        return next;
+      });
+      if (state === "failed") {
+        // The error has flashed by then; the tab goes back to how it was.
+        timers.set(
+          conn,
+          window.setTimeout(() => {
+            timers.delete(conn);
+            setLinks((prev) => {
+              const next = { ...prev };
+              delete next[conn];
+              return next;
+            });
+          }, 1500),
+        );
+      }
+    });
+    return () => {
+      off();
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, []);
   const [fsOpen, setFsOpen] = useState(false);
   // The system's open dialog is up (it answers when it closes).
   const pickingFileRef = useRef(false);
@@ -6370,6 +6409,7 @@ export default function App() {
             activeId={activeConnId}
             connection={state.connection}
             entering={entering}
+            links={links}
             activeDetail={
               meta !== null
                 ? `${meta.kind}${meta.demo ? ` (${t("데모")})` : ""} · ${documentConn ? t("컬렉션 {count}개", { count: meta.tables.length }) : searchConn ? t("인덱스 {count}개", { count: meta.tables.length }) : kvConn ? `db${kvDb}` : tTableCount(meta.tables.length)}`

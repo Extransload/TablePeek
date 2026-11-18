@@ -239,9 +239,20 @@ interface ConsoleClosedMessage {
   conn: string;
 }
 
+// What a connection's engine is doing about its connection: checking one
+// that sat idle, connecting again, or done (open, or failed to reconnect).
+export type LinkState = "checking" | "reconnecting" | "open" | "failed";
+
+interface LinkMessage {
+  type: "link";
+  conn: string;
+  state: LinkState;
+}
+
 type ServerMessage =
   | ConsoleMessage
   | ConsoleClosedMessage
+  | LinkMessage
   | MetaMessage
   | WindowMessage
   | ErrorMessage
@@ -356,6 +367,7 @@ export class TablePeekSocket {
   private readonly jobQueries = new Set<string>();
   private readonly rowChangeListeners = new Set<(change: RowChange) => void>();
   private readonly consoleListeners = new Set<(update: ConsoleUpdate) => void>();
+  private readonly linkListeners = new Set<(conn: string, state: LinkState) => void>();
   // Connections whose console a panel is showing.
   private readonly consoleWanted = new Set<string>();
   private pendingFrames: unknown[][][] = [];
@@ -647,6 +659,13 @@ export class TablePeekSocket {
     };
   }
 
+  onLink(listener: (conn: string, state: LinkState) => void): () => void {
+    this.linkListeners.add(listener);
+    return () => {
+      this.linkListeners.delete(listener);
+    };
+  }
+
   private emitConsole(update: ConsoleUpdate): void {
     for (const listener of this.consoleListeners) {
       listener(update);
@@ -723,6 +742,12 @@ export class TablePeekSocket {
     }
     if (message.type === "console_closed") {
       this.emitConsole({ conn: message.conn, entries: [], reset: true, closed: true });
+      return;
+    }
+    if (message.type === "link") {
+      for (const listener of this.linkListeners) {
+        listener(message.conn, message.state);
+      }
       return;
     }
     if (message.type === "meta") {

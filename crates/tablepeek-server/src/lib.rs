@@ -19,7 +19,7 @@ use tablepeek_engine::driver;
 use tablepeek_engine::engines::mongodb::oidc;
 use tablepeek_engine::registry::{self, NetRoute, TunnelTarget};
 use tablepeek_engine::sql_log::{Change, LogEntry};
-use tablepeek_engine::{Engine, EngineError, QueryData};
+use tablepeek_engine::{Engine, EngineError, LinkState, QueryData};
 use tablepeek_types::{
     ApiError, ConnConfig, ConnectRequest, DbObjects, EditTarget, EngineMeta, ErrorFields, FsEntry,
     FsListing, InsertValue, ObjectDefinition, PkValue, QueryResult, ServerInfo, TableDetail,
@@ -477,15 +477,32 @@ impl ConnSlot {
     }
 }
 
-#[derive(Default)]
 pub struct Registry {
     map: HashMap<String, Arc<ConnSlot>>,
     order: Vec<String>,
+    // What the open connections' engines say about their connection
+    // (checking it, connecting again), for every page's socket.
+    links: broadcast::Sender<Value>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+            order: Vec::new(),
+            links: broadcast::channel(64).0,
+        }
+    }
 }
 
 impl Registry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The connection-state events from now on (`link` messages).
+    pub fn subscribe_links(&self) -> broadcast::Receiver<Value> {
+        self.links.subscribe()
     }
 
     pub fn insert(&mut self, slot: Arc<ConnSlot>) {
@@ -563,7 +580,22 @@ async fn register_slot(
         origin,
         engine,
     ));
-    state.registry.lock().await.insert(slot.clone());
+    {
+        let mut registry = state.registry.lock().await;
+        let links = registry.links.clone();
+        let conn = slot.id.clone();
+        slot.engine.set_link_listener(Arc::new(move |link| {
+            let state = match link {
+                LinkState::Checking => "checking",
+                LinkState::Reconnecting => "reconnecting",
+                LinkState::Open => "open",
+                LinkState::Failed => "failed",
+            };
+            // Nobody listening (no page open) is fine.
+            let _ = links.send(json!({ "type": "link", "conn": conn, "state": state }));
+        }));
+        registry.insert(slot.clone());
+    }
     record_gui_changes(state, &slot);
     slot
 }
@@ -4747,6 +4779,11 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
     };
     // Console forwarders by connection id; each holds a Sender clone.
     let mut consoles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    // Every connection's checks and reconnects, as `link` messages.
+    let links = tokio::spawn(forward_links(
+        state.registry.lock().await.subscribe_links(),
+        sender.clone(),
+    ));
     // Transaction commands, edits and row changes wait their turn at the
     // connection's gate; run here they would hold up this socket's other
     // messages (fetches, cancels, releases) meanwhile. Each connection's
@@ -4860,10 +4897,24 @@ async fn ws_session(socket: WebSocket, state: AppState, bound: Option<String>) {
     for console in consoles.values() {
         console.abort();
     }
+    links.abort();
     drop(ordered);
     cancel_all_inflight(&state).await;
     drop(sender);
     let _ = writer.await;
+}
+
+/// Passes the engines' connection-state events to this page as they come;
+/// one missed while the page fell behind is skipped (the next one says how
+/// things stand).
+async fn forward_links(mut events: broadcast::Receiver<Value>, sender: Sender) {
+    loop {
+        match events.recv().await {
+            Ok(event) => sender.json(event).await,
+            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => return,
+        }
+    }
 }
 
 /// How long a console forwarder waits for more statements to send along.

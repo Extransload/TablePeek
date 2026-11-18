@@ -14,6 +14,9 @@ interface ConnSwitcherProps {
   activeDetail: string | null;
   // An open connection being entered, its outcome null while under way.
   entering: { id: string; outcome: GaugeOutcome | null } | null;
+  // Connections being checked or connected again by the server ("busy"), or
+  // that just failed to come back ("failed").
+  links: Record<string, "busy" | "failed">;
   onSwitch(id: string): void;
   onClose(id: string): void;
 }
@@ -29,6 +32,7 @@ export function ConnSwitcher({
   connection,
   activeDetail,
   entering,
+  links,
   onSwitch,
   onClose,
 }: ConnSwitcherProps) {
@@ -42,7 +46,9 @@ export function ConnSwitcher({
 
   const activeBusy =
     activeConn !== undefined &&
-    (connection === "connecting" || (entering !== null && entering.id === activeConn.id && entering.outcome === null));
+    (connection === "connecting" ||
+      links[activeConn.id] === "busy" ||
+      (entering !== null && entering.id === activeConn.id && entering.outcome === null));
 
   return (
     <div className="conn-bar">
@@ -62,7 +68,9 @@ export function ConnSwitcher({
             const active = conn.id === activeId;
             const state = active ? connection : "idle";
             const enteringThis = entering !== null && entering.id === conn.id ? entering : null;
-            const busy = state === "connecting" || (enteringThis !== null && enteringThis.outcome === null);
+            const link = links[conn.id];
+            const busy =
+              state === "connecting" || link === "busy" || (enteringThis !== null && enteringThis.outcome === null);
             const style = { "--conn-color": meta?.color || "var(--accent)" } as CSSProperties;
             return (
               <span className="conn-tab-wrap" role="presentation" key={conn.id} data-motion-key={conn.id} style={style}>
@@ -74,21 +82,24 @@ export function ConnSwitcher({
                 className={`conn-tab gauge-host${active ? " active" : ""}${conn.is_default ? "" : " closable"}`}
                 onClick={() => onSwitch(conn.id)}
                 title={`${connLabel(conn)} · ${driverName(conn.kind)} — ${
-                  state === "open"
-                    ? t("연결됨")
-                    : state === "connecting"
-                      ? t("연결 중")
-                      : state === "closed"
-                        ? t("끊김")
-                        : t("연결 열기")
+                  link === "busy"
+                    ? t("연결 확인 중")
+                    : state === "open"
+                      ? t("연결됨")
+                      : state === "connecting"
+                        ? t("연결 중")
+                        : state === "closed"
+                          ? t("끊김")
+                          : t("연결 열기")
                 }${active && activeDetail ? `\n${activeDetail}` : ""}${conn.path ? `\n${conn.path}` : ""}`}
               >
-                {/* Fills in the connection's colour while it connects; a drop
-                    while reconnecting flashes and drains. */}
+                {/* Fills in the connection's colour while it connects, or while
+                    the server checks it after a pause and connects it again; a
+                    drop, or a failed reconnect, flashes and drains. */}
                 <Gauge
                   busy={busy}
                   id={`conn:${conn.id}`}
-                  outcome={enteringThis?.outcome ?? (state === "closed" ? "error" : "ok")}
+                  outcome={enteringThis?.outcome ?? (state === "closed" || link === "failed" ? "error" : "ok")}
                 />
                 <span className={`conn-state-dot conn-state-light ${state}`} aria-hidden="true" />
                 <span className="conn-tab-icon">

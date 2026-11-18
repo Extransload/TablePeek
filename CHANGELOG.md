@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **The connection tab shows a check or reconnect under way.** While TablePeek checks a connection that sat idle or connects it again, the tab of that connection in the top bar fills up in the connection's colour, as it does on first connecting, and its tooltip says "Checking the connection". A check that answers at once shows nothing. A reconnect that fails flashes red and drains, and the action reports why. Connecting again now gives up after 20 seconds, so a server that accepts connections but never answers no longer holds actions forever; the actions waiting behind that attempt fail with the same message instead of each waiting again.
+
 ### Fixed
 
 - **A connection that dropped comes back by itself.** When the server or the network ended a connection (an idle timeout, a restart, a sleeping laptop, a tunnel that went down), every action failed until the connection was closed and opened again. Now, before running anything on a connection that sat idle for 30 seconds or whose last action failed, TablePeek checks it with a ping and connects again the same way, through a newly opened SSH or HTTP tunnel if it used one, to the database it was switched to. What you ran is never sent twice: the check comes first, so an action that was already under way when the connection dropped still fails once and the next one works. A transaction that was open on the lost connection is reported as rolled back. PostgreSQL, CockroachDB, MySQL and MariaDB, SQL Server, Oracle, Redis and Valkey reconnect this way; MongoDB, Elasticsearch, OpenSearch, Cassandra, ScyllaDB and ClickHouse already recovered on their own.

@@ -829,7 +829,28 @@ pub struct Engine {
     last_used: Mutex<Instant>,
     // One reconnect at a time; the others wait and take its connection.
     reviving: tokio::sync::Mutex<()>,
+    // When connecting again last gave up, and why: the operations that were
+    // waiting on it fail the same way instead of each waiting it out again.
+    gave_up: Mutex<Option<(Instant, &'static str, String)>>,
+    // Told when the connection is being checked or made again, and how that
+    // ended, for the page to show.
+    link_listener: Mutex<Option<LinkListener>>,
 }
+
+/// What the engine is doing about its connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkState {
+    /// Asking a connection that sat idle (or failed) whether it is there.
+    Checking,
+    /// It wasn't: connecting again.
+    Reconnecting,
+    /// The connection answers (the old one, or a new one).
+    Open,
+    /// Connecting again failed; the next operation tries again.
+    Failed,
+}
+
+pub type LinkListener = Arc<dyn Fn(LinkState) + Send + Sync>;
 
 /// The engine and the settings the connection open now was made with.
 struct Reconnect {
@@ -847,9 +868,15 @@ pub type Reviver = Arc<
 
 /// How long a connection may sit idle before its next operation asks the
 /// server whether it is still there; how long that question may take; how
-/// long a dead connection gets to close.
+/// long connecting again may take (a server that accepts but never answers
+/// would hold the operation forever); how long a dead connection gets to
+/// close.
 const IDLE_CHECK: Duration = Duration::from_secs(30);
 const PING_LIMIT: Duration = Duration::from_secs(5);
+const REVIVE_LIMIT: Duration = Duration::from_secs(20);
+/// For how long after connecting again gave up the operations queued behind
+/// it get its answer rather than trying again themselves.
+const REVIVE_RETRY: Duration = Duration::from_secs(5);
 const CLOSE_LIMIT: Duration = Duration::from_secs(5);
 
 /// The document side of the connection open now, held for one operation.
@@ -934,6 +961,8 @@ impl Engine {
             suspect: AtomicBool::new(false),
             last_used: Mutex::new(Instant::now()),
             reviving: tokio::sync::Mutex::new(()),
+            gave_up: Mutex::new(None),
+            link_listener: Mutex::new(None),
         }
     }
 
@@ -942,6 +971,20 @@ impl Engine {
     pub fn set_reviver(&self, reviver: Reviver) {
         if let Ok(mut slot) = self.reviver.lock() {
             *slot = Some(reviver);
+        }
+    }
+
+    /// Has `listener` told when the connection is checked or made again.
+    pub fn set_link_listener(&self, listener: LinkListener) {
+        if let Ok(mut slot) = self.link_listener.lock() {
+            *slot = Some(listener);
+        }
+    }
+
+    fn tell(&self, state: LinkState) {
+        let listener = self.link_listener.lock().ok().and_then(|slot| slot.clone());
+        if let Some(listener) = listener {
+            listener(state);
         }
     }
 
@@ -1003,10 +1046,12 @@ impl Engine {
             if !suspect && idle < IDLE_CHECK {
                 return Ok(driver);
             }
+            self.tell(LinkState::Checking);
             if matches!(
                 tokio::time::timeout(PING_LIMIT, driver.ping()).await,
                 Ok(Ok(()))
             ) {
+                self.tell(LinkState::Open);
                 return Ok(driver);
             }
         }
@@ -1028,6 +1073,23 @@ impl Engine {
         if !Arc::ptr_eq(&current, dead) {
             return Ok(current);
         }
+        let recent = self.gave_up.lock().ok().and_then(|gave_up| {
+            gave_up
+                .as_ref()
+                .filter(|(at, _, _)| at.elapsed() < REVIVE_RETRY)
+                .map(|(_, engine, message)| (*engine, message.clone()))
+        });
+        if let Some((engine, message)) = recent {
+            self.suspect.store(true, Ordering::SeqCst);
+            self.tell(LinkState::Failed);
+            return Err(EngineError::Driver {
+                engine,
+                code: None,
+                message,
+                interrupted: false,
+                fields: Box::default(),
+            });
+        }
         let recipe = self
             .reconnect
             .lock()
@@ -1044,19 +1106,46 @@ impl Engine {
             ),
             None => false,
         };
-        let connected = async {
+        self.tell(LinkState::Reconnecting);
+        let connected = tokio::time::timeout(REVIVE_LIMIT, async {
             let net = reviver().await?;
             factory.connect(&config, &net, self.log.clone()).await
-        }
-        .await;
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(EngineError::Driver {
+                engine: &factory.descriptor().id,
+                code: None,
+                message: format!(
+                    "연결이 끊겨 다시 연결하려 했지만 서버가 {}초 안에 답하지 않았습니다",
+                    REVIVE_LIMIT.as_secs()
+                ),
+                interrupted: false,
+                fields: Box::default(),
+            })
+        });
         let driver = match connected {
             Ok(driver) => driver,
             Err(err) => {
-                // Still unreachable: the next operation tries again.
+                // Still unreachable: the next operation tries again, once
+                // the ones waiting meanwhile have had this answer.
+                let engine: &'static str = &factory.descriptor().id;
+                let message = match &err {
+                    EngineError::Driver { message, .. } => message.clone(),
+                    other => other.to_string(),
+                };
+                if let Ok(mut gave_up) = self.gave_up.lock() {
+                    *gave_up = Some((Instant::now(), engine, message));
+                }
                 self.suspect.store(true, Ordering::SeqCst);
+                self.tell(LinkState::Failed);
                 return Err(err);
             }
         };
+        if let Ok(mut gave_up) = self.gave_up.lock() {
+            *gave_up = None;
+        }
+        self.tell(LinkState::Open);
         self.replace_driver(driver.clone()).await?;
         if was_in_tx {
             return Err(EngineError::TxRolledBack(

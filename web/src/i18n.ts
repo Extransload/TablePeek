@@ -119,6 +119,7 @@ const EN: Record<string, string> = {
   "연결됨": "Connected",
   "연결 중": "Connecting",
   "연결 중…": "Connecting…",
+  "연결 확인 중": "Checking the connection",
   "끊김": "Disconnected",
   "연결 끊김": "Connection lost",
   "연결 전환": "Switch connection",

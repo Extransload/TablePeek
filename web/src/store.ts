@@ -5,6 +5,7 @@ import {
   TablePeekSocket,
   TablePeekSocketError,
   type ConsoleUpdate,
+  type LinkState,
   type QueryMeta,
   type SeenValue,
 } from "./net/socket";
@@ -2760,6 +2761,11 @@ function onConsole(listener: (update: ConsoleUpdate) => void): () => void {
   return ensureSocket().onConsole(listener);
 }
 
+// A connection's engine checking or reconnecting its connection, as it happens.
+function onLink(listener: (conn: string, state: LinkState) => void): () => void {
+  return ensureSocket().onLink(listener);
+}
+
 // null returns the connection to the app-wide default.
 async function setSafeMode(conn: string, mode: number | null): Promise<void> {
   await api<{ ok: boolean }>("/api/safe-mode", {
@@ -3016,6 +3022,7 @@ export const store = {
   watchConsole,
   unwatchConsole,
   onConsole,
+  onLink,
   setSafeMode,
   fetchFavorites,
   fetchSavedQueries,
