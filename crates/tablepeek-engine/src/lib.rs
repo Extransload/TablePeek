@@ -835,6 +835,9 @@ pub struct Engine {
     // Told when the connection is being checked or made again, and how that
     // ended, for the page to show.
     link_listener: Mutex<Option<LinkListener>>,
+    // Stop pressed: a check or reconnect under way gives up at once (there is
+    // no statement on the server yet to cancel).
+    stop: tokio::sync::Notify,
 }
 
 /// What the engine is doing about its connection.
@@ -848,6 +851,9 @@ pub enum LinkState {
     Open,
     /// Connecting again failed; the next operation tries again.
     Failed,
+    /// Stop was pressed while checking or connecting again; the next
+    /// operation tries again.
+    Stopped,
 }
 
 pub type LinkListener = Arc<dyn Fn(LinkState) + Send + Sync>;
@@ -963,6 +969,7 @@ impl Engine {
             reviving: tokio::sync::Mutex::new(()),
             gave_up: Mutex::new(None),
             link_listener: Mutex::new(None),
+            stop: tokio::sync::Notify::new(),
         }
     }
 
@@ -1042,20 +1049,39 @@ impl Engine {
         if !self.can_revive() {
             return Ok(driver);
         }
-        if !driver.is_closed() {
-            if !suspect && idle < IDLE_CHECK {
-                return Ok(driver);
+        let stop = self.stop.notified();
+        tokio::pin!(stop);
+        stop.as_mut().enable();
+        let checked = async {
+            if !driver.is_closed() {
+                if !suspect && idle < IDLE_CHECK {
+                    return Ok(driver.clone());
+                }
+                self.tell(LinkState::Checking);
+                if matches!(
+                    tokio::time::timeout(PING_LIMIT, driver.ping()).await,
+                    Ok(Ok(()))
+                ) {
+                    self.tell(LinkState::Open);
+                    return Ok(driver.clone());
+                }
             }
-            self.tell(LinkState::Checking);
-            if matches!(
-                tokio::time::timeout(PING_LIMIT, driver.ping()).await,
-                Ok(Ok(()))
-            ) {
-                self.tell(LinkState::Open);
-                return Ok(driver);
+            self.revive(&driver).await
+        };
+        tokio::select! {
+            result = checked => result,
+            () = &mut stop => {
+                self.suspect.store(true, Ordering::SeqCst);
+                self.tell(LinkState::Stopped);
+                Err(EngineError::Driver {
+                    engine: driver.id(),
+                    code: None,
+                    message: "연결을 확인하던 중 멈췄습니다".into(),
+                    interrupted: true,
+                    fields: Box::default(),
+                })
             }
         }
-        self.revive(&driver).await
     }
 
     fn can_revive(&self) -> bool {
@@ -1438,6 +1464,8 @@ impl Engine {
     }
 
     pub fn cancel(&self) {
+        // A check or reconnect under way stops waiting on the server.
+        self.stop.notify_waiters();
         // The driver running a statement now, else the current one.
         let target = self
             .active

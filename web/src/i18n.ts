@@ -1522,6 +1522,12 @@ const EN: Record<string, string> = {
   "CockroachDB 테이블에서는 기본 키를 없앨 수 없습니다": "A CockroachDB table can't be left without a primary key",
   "쿼리 취소로 세션이 끊겨 트랜잭션이 롤백되었습니다": "Cancelling the query ended the session, so the transaction was rolled back",
   "서버가 오류로 트랜잭션을 롤백했습니다": "The server rolled the transaction back after an error",
+  // Connecting again by itself (crates/tablepeek-engine/src/lib.rs, revive).
+  "연결이 끊겨 열려 있던 트랜잭션이 롤백되었습니다. 다시 연결했으니 다시 실행하세요":
+    "The connection dropped, so the open transaction was rolled back. It is connected again: run it again",
+  "연결이 끊겨 다시 연결하려 했지만 서버가 20초 안에 답하지 않았습니다":
+    "The connection dropped, and the server didn't answer within 20 seconds when connecting again",
+  "연결을 확인하던 중 멈췄습니다": "Stopped while checking the connection",
   "커넥션 잠금 실패": "Could not lock the connection",
   "SQL Server 연결이 준비되지 않았습니다": "The SQL Server connection isn't ready",
   "저장하지 않은 변경 사항을 버릴까요?": "Discard unsaved changes?",
@@ -3936,6 +3942,7 @@ const SERVER_PREFIXES: [RegExp, string][] = [
   [/^(\S+:\d+)에서 응답이 없습니다 \(시간 초과\)$/, "No answer from $1 (timed out)"],
   [/^위험한 명령\((.+)\)은 확인이 필요합니다 \(confirmed: true\)$/, "The dangerous command $1 needs confirming (confirmed: true)"],
   [/^클라이언트 id는 숫자입니다: /, "A client id is a number: "],
+  [/^터널을 다시 열지 못했습니다: /, "Couldn't open the tunnel again: "],
   // AI SQL (crates/tablepeek-server/src/ai.rs).
   [/^AI 설정을 저장할 수 없습니다: /, "Can't save the AI settings: "],
   [/^알 수 없는 AI 제공자입니다: /, "Unknown AI provider: "],

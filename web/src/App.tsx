@@ -14,7 +14,7 @@ import { CommandPalette, type PaletteAction, type PaletteSource } from "./compon
 import { ColumnPicker, type ColumnEntry } from "./components/ColumnPicker";
 import { ConnectModal } from "./components/ConnectModal";
 import { CreateTableModal } from "./components/CreateTableModal";
-import { ConnSwitcher } from "./components/ConnSwitcher";
+import { ConnSwitcher, type LinkMark } from "./components/ConnSwitcher";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import { DataTabToolbar, type DataProgress, type DataTotal } from "./components/DataToolbar";
 import { EditorActions } from "./components/EditorActions";
@@ -566,8 +566,9 @@ export default function App() {
   // gauge; outcome null while under way.
   const [entering, setEntering] = useState<{ id: string; outcome: GaugeOutcome | null } | null>(null);
   // Connections whose engine is checking or reconnecting them now ("busy"),
-  // or just failed to reconnect ("failed", for a moment), for their tabs' gauge.
-  const [links, setLinks] = useState<Record<string, "busy" | "failed">>({});
+  // or just failed to reconnect or was stopped doing so ("failed",
+  // "stopped", for a moment), for their tabs' gauge.
+  const [links, setLinks] = useState<Record<string, LinkMark>>({});
   useEffect(() => {
     const timers = new Map<string, number>();
     const off = store.onLink((conn, state) => {
@@ -577,15 +578,15 @@ export default function App() {
         const next = { ...prev };
         if (state === "checking" || state === "reconnecting") {
           next[conn] = "busy";
-        } else if (state === "failed") {
-          next[conn] = "failed";
+        } else if (state === "failed" || state === "stopped") {
+          next[conn] = state;
         } else {
           delete next[conn];
         }
         return next;
       });
-      if (state === "failed") {
-        // The error has flashed by then; the tab goes back to how it was.
+      if (state === "failed" || state === "stopped") {
+        // The gauge has flashed or drained by then; the tab goes back to how it was.
         timers.set(
           conn,
           window.setTimeout(() => {

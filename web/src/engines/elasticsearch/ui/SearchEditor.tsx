@@ -12,6 +12,7 @@ import { EditorState, Prec, RangeSetBuilder, StateEffect, StateField } from "@co
 import { Decoration, EditorView, ViewPlugin, drawSelection, keymap, placeholder as placeholderExt, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { t } from "../../../i18n";
+import { floatingTooltips } from "../../../editorTooltips";
 import { tokenizeJson, type DslCompletion, type DslItem, type ItemKind } from "../dsl";
 
 export interface SearchEditorHandle {
@@ -343,6 +344,7 @@ export const SearchEditor = forwardRef<SearchEditorHandle, SearchEditorProps>(fu
 
     const extensions = [
       Prec.highest(runKeys),
+      floatingTooltips,
       singleLine
         ? [
             history(),

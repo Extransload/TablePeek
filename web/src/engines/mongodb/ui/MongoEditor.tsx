@@ -11,6 +11,7 @@ import { EditorState, Prec, RangeSetBuilder, StateEffect, StateField } from "@co
 import { Decoration, EditorView, ViewPlugin, drawSelection, keymap, placeholder as placeholderExt, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { t } from "../../../i18n";
+import { floatingTooltips } from "../../../editorTooltips";
 import { completionsAt, type CompletionContext, type CompletionItem, type CompletionKind, type CompletionRole } from "../complete";
 import { statementAt } from "../shell/parse";
 import { shellSpans } from "./ShellText";
@@ -343,6 +344,7 @@ export const MongoEditor = forwardRef<MongoEditorHandle, MongoEditorProps>(funct
 
     const extensions = [
       Prec.highest(runKeys),
+      floatingTooltips,
       singleLine
         ? [
             history(),

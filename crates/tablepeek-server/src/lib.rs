@@ -590,6 +590,7 @@ async fn register_slot(
                 LinkState::Reconnecting => "reconnecting",
                 LinkState::Open => "open",
                 LinkState::Failed => "failed",
+                LinkState::Stopped => "stopped",
             };
             // Nobody listening (no page open) is fine.
             let _ = links.send(json!({ "type": "link", "conn": conn, "state": state }));

@@ -7,6 +7,8 @@ import { CloseIcon } from "./icons";
 import { Gauge, type GaugeOutcome } from "./Gauge";
 import { useTabMotion } from "./tabMotion";
 
+export type LinkMark = "busy" | "failed" | "stopped";
+
 interface ConnSwitcherProps {
   conns: ConnSummary[];
   activeId: string | null;
@@ -15,8 +17,8 @@ interface ConnSwitcherProps {
   // An open connection being entered, its outcome null while under way.
   entering: { id: string; outcome: GaugeOutcome | null } | null;
   // Connections being checked or connected again by the server ("busy"), or
-  // that just failed to come back ("failed").
-  links: Record<string, "busy" | "failed">;
+  // that just failed to come back or were stopped ("failed", "stopped").
+  links: Record<string, LinkMark>;
   onSwitch(id: string): void;
   onClose(id: string): void;
 }
@@ -99,7 +101,10 @@ export function ConnSwitcher({
                 <Gauge
                   busy={busy}
                   id={`conn:${conn.id}`}
-                  outcome={enteringThis?.outcome ?? (state === "closed" || link === "failed" ? "error" : "ok")}
+                  outcome={
+                    enteringThis?.outcome ??
+                    (state === "closed" || link === "failed" ? "error" : link === "stopped" ? "cancel" : "ok")
+                  }
                 />
                 <span className={`conn-state-dot conn-state-light ${state}`} aria-hidden="true" />
                 <span className="conn-tab-icon">

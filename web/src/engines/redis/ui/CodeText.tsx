@@ -7,6 +7,7 @@ import { basicSetup } from "codemirror";
 import { Compartment, EditorState, Prec, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { useEffect, useRef } from "react";
+import { floatingTooltips } from "../../../editorTooltips";
 import { jsonSpans } from "../../../jsonIndex";
 
 export type CodeLang = "json" | "xml" | "plain";
@@ -189,6 +190,7 @@ export function CodeText({ value, lang, wrap, editable = false, onChange, onSave
         extensions: [
           keys,
           basicSetup,
+          floatingTooltips,
           theme,
           colours(lang),
           errorField,

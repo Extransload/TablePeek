@@ -1,6 +1,7 @@
 import { basicSetup } from "codemirror";
 import { SQLite, keywordCompletionSource, type SQLDialect } from "@codemirror/lang-sql";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { floatingTooltips } from "../editorTooltips";
 import { Compartment, EditorState, Prec, RangeSet, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
@@ -861,6 +862,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
               ),
           ),
           ...editorLook,
+          floatingTooltips,
           EditorView.contentAttributes.of({
             spellcheck: "false",
             autocorrect: "off",

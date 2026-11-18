@@ -82,8 +82,9 @@ export function SavedQueryModal({ query, folder = null, onClose }: SavedQueryMod
         // The editor's completion list and search panel close on Escape first.
         const target = event.target instanceof Element ? event.target : null;
         const editorPopup = document.querySelector(
-          // Not a closed completion list's copy playing its exit (overlayMotion.ts).
-          ".saved-query-modal .cm-tooltip-autocomplete:not(.motion-ghost), .saved-query-modal .cm-panel",
+          // Not a closed completion list's copy playing its exit (overlayMotion.ts);
+          // the list is drawn in the page's tooltip layer (editorTooltips.ts).
+          ".cm-float-layer .cm-tooltip-autocomplete:not(.motion-ghost), .saved-query-modal .cm-panel",
         );
         if (target?.closest(".cm-editor") != null && editorPopup !== null) {
           return;
