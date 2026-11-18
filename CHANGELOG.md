@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-18
+
+Connections that drop come back by themselves, a red connection tab the moment one is gone, and Stop that always stops.
+
 ### Added
 
 - **The connection tab shows at once when a connection is gone.** While TablePeek checks a connection that sat idle, the tab of that connection in the top bar fills up in the connection's colour, as it does on first connecting; a check that answers at once shows nothing. As soon as the connection is found gone (the check gets no answer within 2 seconds, the server closed it, or an action failed because it did), the fill races to full and the tab turns red, its tooltip saying "Connection lost", and stays red until the connection answers again, while TablePeek connects again behind it. Connecting again gives up after 6 seconds, so a server that accepts connections but never answers no longer holds actions; the actions waiting behind that attempt fail with the same message instead of each waiting again. Stop ends the wait at once, and the next action tries again.
@@ -11,11 +15,8 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 ### Fixed
 
 - **The completion list is no longer cut off at the bottom of the editor.** Typing on one of the editor's last lines opened the suggestions under the bar below the editor, so only their top edge showed (most often in the desktop app). The completion list, its info panel and the editors' other popups now float above everything, as the app's other menus do.
-
 - **Stop ends a statement on a server that stopped answering.** A query sent to a server that had frozen or dropped off the network kept loading after Stop, along with everything waiting behind it (the schema, the table's details), because the server never acted on the cancel. Now a statement still running two seconds after Stop ends anyway and the next action connects again; on PostgreSQL and CockroachDB the connection is dropped at once, so what was waiting behind the statement ends too. A transaction that was open on it is reported as rolled back. A server that answers the cancel is unaffected.
-
 - **The app opens while a connected server doesn't answer.** Reloading the page (or opening a new window) while one open connection's server had frozen left the whole app on "Loading…", because listing the open connections waited on that server's tables. The list now waits at most two seconds, then shows that connection as it was last known, so the app opens and the other connections work.
-
 - **A connection that dropped comes back by itself.** When the server or the network ended a connection (an idle timeout, a restart, a sleeping laptop, a tunnel that went down), every action failed until the connection was closed and opened again. Now, before running anything on a connection that sat idle for 30 seconds or whose last action failed, TablePeek checks it with a ping and connects again the same way, through a newly opened SSH or HTTP tunnel if it used one, to the database it was switched to. What you ran is never sent twice: the check comes first, so an action that was already under way when the connection dropped still fails once and the next one works. A transaction that was open on the lost connection is reported as rolled back. PostgreSQL, CockroachDB, MySQL and MariaDB, SQL Server, Oracle, Redis and Valkey reconnect this way; MongoDB, Elasticsearch, OpenSearch, Cassandra, ScyllaDB and ClickHouse already recovered on their own.
 
 ## [0.14.1] - 2026-11-17
@@ -321,7 +322,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/Extransload/TablePeek/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/Extransload/TablePeek/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/Extransload/TablePeek/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Extransload/TablePeek/compare/v0.12.0...v0.13.0
