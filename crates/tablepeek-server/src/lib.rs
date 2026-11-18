@@ -60,6 +60,9 @@ pub const JOB_SESSION_CAP: usize = 4;
 const CANCEL_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 // A job's transaction counts as the job's this long after its last statement.
 const JOB_LEASE: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long listing the open connections waits for one's tables before
+/// listing it as last known.
+const LIST_META_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 // The refusal a write or a transaction command meets while a job holds the
 // session (the page shows it in the UI language).
 const JOB_BUSY: &str = "가져오기가 진행 중입니다. 끝난 뒤 다시 실행하세요.";
@@ -2476,29 +2479,30 @@ async fn conns_list(
                 summary.demo,
                 summary.table_count,
             ),
-            None => match slot.refresh_summary(false).await {
-                Ok(meta) => (meta.kind, meta.path, meta.demo, meta.tables.len()),
-                // A server that went away still lists, as it was last
-                // known (or by its engine), so the other connections don't
-                // vanish from the page with it.
-                Err(err) => match slot.last_summary() {
-                    Some(summary) => (
-                        summary.kind,
-                        summary.path,
-                        summary.demo,
-                        summary.table_count,
-                    ),
-                    None => (
-                        slot.engine
-                            .engine_id()
-                            .map_err(|_| engine_error(err))?
-                            .to_string(),
-                        None,
-                        false,
-                        0,
-                    ),
-                },
-            },
+            // Bounded: the page waits on this list to show anything, and a
+            // server that doesn't answer would hold the whole app.
+            None => {
+                match tokio::time::timeout(LIST_META_LIMIT, slot.refresh_summary(false)).await {
+                    Ok(Ok(meta)) => (meta.kind, meta.path, meta.demo, meta.tables.len()),
+                    // A server that went away (or doesn't answer) still lists,
+                    // as it was last known (or by its engine), so the other
+                    // connections don't vanish from the page with it.
+                    _ => match slot.last_summary() {
+                        Some(summary) => (
+                            summary.kind,
+                            summary.path,
+                            summary.demo,
+                            summary.table_count,
+                        ),
+                        None => (
+                            slot.engine.engine_id().map_err(engine_error)?.to_string(),
+                            None,
+                            false,
+                            0,
+                        ),
+                    },
+                }
+            }
         };
         let safe_mode = state.store.lock().await.safe_mode(&slot.history_scope());
         conns.push(ConnSummary {
