@@ -8,7 +8,7 @@
 
 [Install](#install) · [Features](#features) · [Screenshots](#screenshots) · [Documentation](#documentation) · [Changelog](CHANGELOG.md)
 
-https://github.com/user-attachments/assets/af83a3d1-eb16-4060-8ac9-bba24dd29967
+<img width="800" alt="TablePeek in 20 seconds: connecting to PostgreSQL, Quick Look on a JSON cell, SQL completion, a chart, the ER diagram, MySQL, ClickHouse, MongoDB and Elasticsearch, then a Django session in Redis and its CLI" src="https://github.com/user-attachments/assets/27d4fb1c-8089-48ee-85b9-b4644a3a4bd4" />
 
 </div>
 
@@ -73,6 +73,10 @@ brew install --cask extransload/tap/tablepeek
 **Secure by default.** The server listens on loopback only, behind a per-run token; passwords live in the OS keychain; TLS, client certificates, and SSH or HTTP tunnels for every engine that takes them.
 
 ## Screenshots
+
+The same tour at full size, with typing sounds and quiet music (30 seconds):
+
+https://github.com/user-attachments/assets/af83a3d1-eb16-4060-8ac9-bba24dd29967
 
 ![TablePeek over a Milky Way background picture, as a desktop app showing a PostgreSQL query and in a browser tab showing a Redis key decoded from a Python pickle](docs/images/hero.jpg)
 
