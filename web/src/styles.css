@@ -13501,6 +13501,33 @@ html[data-mode="light"] .chart-tip {
   box-shadow: none;
 }
 
+/* A connection found gone: once its gauge has raced to full, the tab turns
+   red and stays so, its border and underline too, until it answers again. */
+.conn-tab-lost {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--error) 24%, var(--panel));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--motion-slower) var(--ease-out);
+}
+
+.conn-tab.lost .conn-tab-lost {
+  opacity: 1;
+  transition-delay: var(--motion-slow);
+}
+
+.conn-bar-track .conn-tab.lost {
+  border-color: color-mix(in srgb, var(--error) 55%, var(--line));
+  color: var(--ink);
+}
+
+.conn-bar-track .conn-tab.lost::after {
+  background: var(--error);
+}
+
 /* ── Motion: panels ── */
 
 /* Quick Look dims the window as it grows into the large view and lifts the

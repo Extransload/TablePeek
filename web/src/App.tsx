@@ -14,7 +14,7 @@ import { CommandPalette, type PaletteAction, type PaletteSource } from "./compon
 import { ColumnPicker, type ColumnEntry } from "./components/ColumnPicker";
 import { ConnectModal } from "./components/ConnectModal";
 import { CreateTableModal } from "./components/CreateTableModal";
-import { ConnSwitcher, type LinkMark } from "./components/ConnSwitcher";
+import { ConnSwitcher, nextLinkMark, type LinkMark } from "./components/ConnSwitcher";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import { DataTabToolbar, type DataProgress, type DataTotal } from "./components/DataToolbar";
 import { EditorActions } from "./components/EditorActions";
@@ -565,46 +565,25 @@ export default function App() {
   // An open connection being entered (its workspace read), for its tab's
   // gauge; outcome null while under way.
   const [entering, setEntering] = useState<{ id: string; outcome: GaugeOutcome | null } | null>(null);
-  // Connections whose engine is checking or reconnecting them now ("busy"),
-  // or just failed to reconnect or was stopped doing so ("failed",
-  // "stopped", for a moment), for their tabs' gauge.
+  // What each connection's engine last said about its connection, for its
+  // tab: checking it, or found it gone (red until it answers again).
   const [links, setLinks] = useState<Record<string, LinkMark>>({});
-  useEffect(() => {
-    const timers = new Map<string, number>();
-    const off = store.onLink((conn, state) => {
-      window.clearTimeout(timers.get(conn));
-      timers.delete(conn);
-      setLinks((prev) => {
-        const next = { ...prev };
-        if (state === "checking" || state === "reconnecting") {
-          next[conn] = "busy";
-        } else if (state === "failed" || state === "stopped") {
-          next[conn] = state;
-        } else {
-          delete next[conn];
-        }
-        return next;
-      });
-      if (state === "failed" || state === "stopped") {
-        // The gauge has flashed or drained by then; the tab goes back to how it was.
-        timers.set(
-          conn,
-          window.setTimeout(() => {
-            timers.delete(conn);
-            setLinks((prev) => {
-              const next = { ...prev };
-              delete next[conn];
-              return next;
-            });
-          }, 1500),
-        );
-      }
-    });
-    return () => {
-      off();
-      timers.forEach((timer) => window.clearTimeout(timer));
-    };
-  }, []);
+  useEffect(
+    () =>
+      store.onLink((conn, state) =>
+        setLinks((prev) => {
+          const next = { ...prev };
+          const mark = nextLinkMark(prev[conn], state);
+          if (mark === null) {
+            delete next[conn];
+          } else {
+            next[conn] = mark;
+          }
+          return next;
+        }),
+      ),
+    [],
+  );
   const [fsOpen, setFsOpen] = useState(false);
   // The system's open dialog is up (it answers when it closes).
   const pickingFileRef = useRef(false);

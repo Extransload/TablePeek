@@ -6,7 +6,7 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ### Added
 
-- **The connection tab shows a check or reconnect under way.** While TablePeek checks a connection that sat idle or connects it again, the tab of that connection in the top bar fills up in the connection's colour, as it does on first connecting, and its tooltip says "Checking the connection". A check that answers at once shows nothing. A reconnect that fails flashes red and drains, and the action reports why. Connecting again now gives up after 20 seconds, so a server that accepts connections but never answers no longer holds actions forever; the actions waiting behind that attempt fail with the same message instead of each waiting again. Stop ends the wait at once, and the next action tries again.
+- **The connection tab shows at once when a connection is gone.** While TablePeek checks a connection that sat idle, the tab of that connection in the top bar fills up in the connection's colour, as it does on first connecting; a check that answers at once shows nothing. As soon as the connection is found gone (the check gets no answer within 2 seconds, the server closed it, or an action failed because it did), the fill races to full and the tab turns red, its tooltip saying "Connection lost", and stays red until the connection answers again, while TablePeek connects again behind it. Connecting again gives up after 6 seconds, so a server that accepts connections but never answers no longer holds actions; the actions waiting behind that attempt fail with the same message instead of each waiting again. Stop ends the wait at once, and the next action tries again.
 
 ### Fixed
 

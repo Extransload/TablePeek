@@ -1525,8 +1525,8 @@ const EN: Record<string, string> = {
   // Connecting again by itself (crates/tablepeek-engine/src/lib.rs, revive).
   "연결이 끊겨 열려 있던 트랜잭션이 롤백되었습니다. 다시 연결했으니 다시 실행하세요":
     "The connection dropped, so the open transaction was rolled back. It is connected again: run it again",
-  "연결이 끊겨 다시 연결하려 했지만 서버가 20초 안에 답하지 않았습니다":
-    "The connection dropped, and the server didn't answer within 20 seconds when connecting again",
+  "연결이 끊겨 다시 연결하려 했지만 서버가 6초 안에 답하지 않았습니다":
+    "The connection dropped, and the server didn't answer within 6 seconds when connecting again",
   "연결을 확인하던 중 멈췄습니다": "Stopped while checking the connection",
   "서버가 멈춤 요청에 답하지 않아 연결을 끊었습니다. 다음 작업 때 다시 연결합니다":
     "The server didn't act on Stop, so the connection was dropped. The next action connects again",

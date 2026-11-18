@@ -872,6 +872,9 @@ pub enum LinkState {
     /// Stop was pressed while checking or connecting again; the next
     /// operation tries again.
     Stopped,
+    /// An operation failed and the connection is known gone (the client saw
+    /// it close, or Stop dropped it); the next operation connects again.
+    Lost,
 }
 
 pub type LinkListener = Arc<dyn Fn(LinkState) + Send + Sync>;
@@ -896,8 +899,8 @@ pub type Reviver = Arc<
 /// would hold the operation forever); how long a dead connection gets to
 /// close.
 const IDLE_CHECK: Duration = Duration::from_secs(30);
-const PING_LIMIT: Duration = Duration::from_secs(5);
-const REVIVE_LIMIT: Duration = Duration::from_secs(20);
+const PING_LIMIT: Duration = Duration::from_secs(2);
+const REVIVE_LIMIT: Duration = Duration::from_secs(6);
 /// For how long after connecting again gave up the operations queued behind
 /// it get its answer rather than trying again themselves.
 const REVIVE_RETRY: Duration = Duration::from_secs(5);
@@ -1219,6 +1222,10 @@ impl Engine {
         ) = &result
         {
             self.suspect.store(true, Ordering::SeqCst);
+            // Shown at once, not at the next operation's check.
+            if self.can_revive() && self.driver().is_ok_and(|driver| driver.is_closed()) {
+                self.tell(LinkState::Lost);
+            }
         }
         result
     }
@@ -1383,6 +1390,7 @@ impl Engine {
                 Err(_) => {
                     driver.sever();
                     self.cancels.severed.store(true, Ordering::SeqCst);
+                    self.tell(LinkState::Lost);
                     Err(unanswered(driver.id()))
                 }
             },

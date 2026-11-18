@@ -241,8 +241,8 @@ interface ConsoleClosedMessage {
 
 // What a connection's engine is doing about its connection: checking one
 // that sat idle, connecting again, or done (open, failed to reconnect, or
-// stopped by Stop).
-export type LinkState = "checking" | "reconnecting" | "open" | "failed" | "stopped";
+// stopped by Stop); `lost` when an operation found it gone.
+export type LinkState = "checking" | "reconnecting" | "open" | "failed" | "stopped" | "lost";
 
 interface LinkMessage {
   type: "link";

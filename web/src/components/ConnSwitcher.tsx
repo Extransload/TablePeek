@@ -2,12 +2,41 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { getConnMeta, subscribeConnMeta } from "../connMeta";
 import { t } from "../i18n";
 import type { ConnSummary, Connection } from "../store";
+import type { LinkState } from "../net/socket";
 import { DriverIcon, driverName } from "./DriverIcon";
 import { CloseIcon } from "./icons";
 import { Gauge, type GaugeOutcome } from "./Gauge";
 import { useTabMotion } from "./tabMotion";
 
-export type LinkMark = "busy" | "failed" | "stopped";
+// What the server last said about a connection: being checked (`busy`), found
+// gone (`lost`, kept until it answers again), and how the last check ended
+// for the gauge (`ended`).
+export interface LinkMark {
+  busy: boolean;
+  lost: boolean;
+  ended: GaugeOutcome;
+}
+
+// The mark after `state`; null once the connection answers (nothing to show).
+export function nextLinkMark(prev: LinkMark | undefined, state: LinkState): LinkMark | null {
+  const lost = prev?.lost ?? false;
+  switch (state) {
+    // A check of a connection already known gone is a reconnect: it stays red.
+    case "checking":
+      return { busy: !lost, lost, ended: "ok" };
+    // Gone: the gauge races to full and the tab turns red at once, while
+    // connecting again goes on; it stays red if that fails.
+    case "reconnecting":
+    case "failed":
+    case "lost":
+      return { busy: false, lost: true, ended: "ok" };
+    // Stopped mid-check: the gauge drains; a known loss stays shown.
+    case "stopped":
+      return { busy: false, lost, ended: lost ? "ok" : "cancel" };
+    case "open":
+      return null;
+  }
+}
 
 interface ConnSwitcherProps {
   conns: ConnSummary[];
@@ -16,8 +45,8 @@ interface ConnSwitcherProps {
   activeDetail: string | null;
   // An open connection being entered, its outcome null while under way.
   entering: { id: string; outcome: GaugeOutcome | null } | null;
-  // Connections being checked or connected again by the server ("busy"), or
-  // that just failed to come back or were stopped ("failed", "stopped").
+  // What the server last said about each connection (checking it, or found
+  // it gone).
   links: Record<string, LinkMark>;
   onSwitch(id: string): void;
   onClose(id: string): void;
@@ -49,7 +78,7 @@ export function ConnSwitcher({
   const activeBusy =
     activeConn !== undefined &&
     (connection === "connecting" ||
-      links[activeConn.id] === "busy" ||
+      links[activeConn.id]?.busy === true ||
       (entering !== null && entering.id === activeConn.id && entering.outcome === null));
 
   return (
@@ -71,8 +100,11 @@ export function ConnSwitcher({
             const state = active ? connection : "idle";
             const enteringThis = entering !== null && entering.id === conn.id ? entering : null;
             const link = links[conn.id];
+            const lost = link?.lost === true;
             const busy =
-              state === "connecting" || link === "busy" || (enteringThis !== null && enteringThis.outcome === null);
+              state === "connecting" ||
+              link?.busy === true ||
+              (enteringThis !== null && enteringThis.outcome === null);
             const style = { "--conn-color": meta?.color || "var(--accent)" } as CSSProperties;
             return (
               <span className="conn-tab-wrap" role="presentation" key={conn.id} data-motion-key={conn.id} style={style}>
@@ -81,11 +113,13 @@ export function ConnSwitcher({
                 role="tab"
                 aria-selected={active}
                 aria-busy={busy}
-                className={`conn-tab gauge-host${active ? " active" : ""}${conn.is_default ? "" : " closable"}`}
+                className={`conn-tab gauge-host${active ? " active" : ""}${lost ? " lost" : ""}${conn.is_default ? "" : " closable"}`}
                 onClick={() => onSwitch(conn.id)}
                 title={`${connLabel(conn)} · ${driverName(conn.kind)} — ${
-                  link === "busy"
-                    ? t("연결 확인 중")
+                  lost
+                    ? t("연결 끊김")
+                    : link?.busy === true
+                      ? t("연결 확인 중")
                     : state === "open"
                       ? t("연결됨")
                       : state === "connecting"
@@ -96,17 +130,16 @@ export function ConnSwitcher({
                 }${active && activeDetail ? `\n${activeDetail}` : ""}${conn.path ? `\n${conn.path}` : ""}`}
               >
                 {/* Fills in the connection's colour while it connects, or while
-                    the server checks it after a pause and connects it again; a
-                    drop, or a failed reconnect, flashes and drains. */}
+                    the server checks it after a pause. Found gone, the fill
+                    races to full and the tab turns red until the connection
+                    answers again. */}
                 <Gauge
                   busy={busy}
                   id={`conn:${conn.id}`}
-                  outcome={
-                    enteringThis?.outcome ??
-                    (state === "closed" || link === "failed" ? "error" : link === "stopped" ? "cancel" : "ok")
-                  }
+                  outcome={enteringThis?.outcome ?? (state === "closed" ? "error" : (link?.ended ?? "ok"))}
                 />
-                <span className={`conn-state-dot conn-state-light ${state}`} aria-hidden="true" />
+                <span className="conn-tab-lost" aria-hidden="true" />
+                <span className={`conn-state-dot conn-state-light ${lost ? "closed" : state}`} aria-hidden="true" />
                 <span className="conn-tab-icon">
                   <DriverIcon kind={conn.kind} />
                 </span>
