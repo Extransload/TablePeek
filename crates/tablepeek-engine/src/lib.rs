@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, RwLock};
@@ -795,6 +796,19 @@ impl Drop for EpochBump<'_> {
     }
 }
 
+/// The error of a statement Stop ended by dropping a connection whose server
+/// didn't answer.
+fn unanswered(engine: &'static str) -> EngineError {
+    EngineError::Driver {
+        engine,
+        code: None,
+        message: "서버가 멈춤 요청에 답하지 않아 연결을 끊었습니다. 다음 작업 때 다시 연결합니다"
+            .into(),
+        interrupted: true,
+        fields: Box::default(),
+    }
+}
+
 // Cancel requests on their way: PostgreSQL's, MySQL's and SQL Server's go
 // over a connection of their own and land a moment after they're sent.
 #[derive(Default)]
@@ -804,6 +818,10 @@ struct CancelsInFlight {
     // PostgreSQL's request is done once written; the server signals the
     // statement a moment later. Until then a new statement could take it.
     quiet_until: Mutex<Option<Instant>>,
+    // A cancel the server didn't take within STOP_GRACE dropped the
+    // connection (`Driver::sever`): what failed on it since was stopped,
+    // and the next operation connects again.
+    severed: AtomicBool,
 }
 
 pub struct Engine {
@@ -884,6 +902,9 @@ const REVIVE_LIMIT: Duration = Duration::from_secs(20);
 /// it get its answer rather than trying again themselves.
 const REVIVE_RETRY: Duration = Duration::from_secs(5);
 const CLOSE_LIMIT: Duration = Duration::from_secs(5);
+/// How long a statement gets, after Stop, for the server to act on the
+/// cancel before the engine drops the connection under it.
+const STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// The document side of the connection open now, held for one operation.
 /// Like a query, the operation moves the epoch before and after it runs:
@@ -1021,6 +1042,7 @@ impl Engine {
             std::mem::replace(&mut *guard, driver)
         };
         // The old connection's open transaction goes with it.
+        self.cancels.severed.store(false, Ordering::SeqCst);
         self.log.settle(false);
         self.epoch.fetch_add(1, Ordering::SeqCst);
         // A dead connection's goodbye may wait on a socket nobody answers.
@@ -1045,7 +1067,8 @@ impl Engine {
             Ok(mut last) => std::mem::replace(&mut *last, Instant::now()).elapsed(),
             Err(_) => Duration::ZERO,
         };
-        let suspect = self.suspect.swap(false, Ordering::SeqCst);
+        let suspect = self.suspect.swap(false, Ordering::SeqCst)
+            || self.cancels.severed.load(Ordering::SeqCst);
         if !self.can_revive() {
             return Ok(driver);
         }
@@ -1325,12 +1348,44 @@ impl Engine {
         let _finished = EpochBump(&self.epoch);
         let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
+        self.running(&driver, async {
+            match page {
+                Some(page) => sql_driver.query_from(sql, max_rows, page).await,
+                None => sql_driver.query(sql, max_rows).await,
+            }
+        })
+        .await
+    }
+
+    /// Runs `work`, a statement on `driver`, as the one Stop reaches. A
+    /// statement still running `STOP_GRACE` after Stop ends anyway: the
+    /// server isn't acting on the cancel (it may not answer at all, or have
+    /// taken the request on a socket and never got to it), so the connection
+    /// is dropped, nothing else waits on it either, and the next operation
+    /// connects again. A transaction open on it is reported rolled back then.
+    async fn running<T>(
+        &self,
+        driver: &Arc<dyn Driver>,
+        work: impl Future<Output = Result<T, EngineError>>,
+    ) -> Result<T, EngineError> {
         if let Ok(mut active) = self.active.lock() {
             *active = Some(driver.clone());
         }
-        let result = match page {
-            Some(page) => sql_driver.query_from(sql, max_rows, page).await,
-            None => sql_driver.query(sql, max_rows).await,
+        let stop = self.stop.notified();
+        tokio::pin!(stop, work);
+        stop.as_mut().enable();
+        let result = tokio::select! {
+            result = &mut work => result,
+            () = &mut stop => match tokio::time::timeout(STOP_GRACE, &mut work).await {
+                // Failed because the connection was dropped under it.
+                Ok(Err(_)) if self.cancels.severed.load(Ordering::SeqCst) => Err(unanswered(driver.id())),
+                Ok(result) => result,
+                Err(_) => {
+                    driver.sever();
+                    self.cancels.severed.store(true, Ordering::SeqCst);
+                    Err(unanswered(driver.id()))
+                }
+            },
         };
         if let Ok(mut active) = self.active.lock() {
             *active = None;
@@ -1351,14 +1406,8 @@ impl Engine {
         let _finished = EpochBump(&self.epoch);
         let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
-        if let Ok(mut active) = self.active.lock() {
-            *active = Some(driver.clone());
-        }
-        let result = sql_driver.stream_rows(sql, batch_rows, sink).await;
-        if let Ok(mut active) = self.active.lock() {
-            *active = None;
-        }
-        self.noted(result)
+        self.running(&driver, sql_driver.stream_rows(sql, batch_rows, sink))
+            .await
     }
 
     /// Passes rows of `sql` without returning them (`SqlDriver::skip_rows`):
@@ -1372,14 +1421,8 @@ impl Engine {
     ) -> Result<driver::SkipOutcome, EngineError> {
         let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
-        if let Ok(mut active) = self.active.lock() {
-            *active = Some(driver.clone());
-        }
-        let result = sql_driver.skip_rows(sql, skip, budget).await;
-        if let Ok(mut active) = self.active.lock() {
-            *active = None;
-        }
-        self.noted(result)
+        self.running(&driver, sql_driver.skip_rows(sql, skip, budget))
+            .await
     }
 
     /// One part of a count done in parts (`SqlDriver::count_step`).
@@ -1391,14 +1434,8 @@ impl Engine {
     ) -> Result<driver::CountStep, EngineError> {
         let driver = self.live().await?;
         let sql_driver = sql_of(&driver)?;
-        if let Ok(mut active) = self.active.lock() {
-            *active = Some(driver.clone());
-        }
-        let result = sql_driver.count_step(sql, cursor, budget).await;
-        if let Ok(mut active) = self.active.lock() {
-            *active = None;
-        }
-        self.noted(result)
+        self.running(&driver, sql_driver.count_step(sql, cursor, budget))
+            .await
     }
 
     /// The document operations of the connection open now, or the error an
@@ -1487,8 +1524,16 @@ impl Engine {
         cancels.count.fetch_add(1, Ordering::SeqCst);
         let sent = Instant::now();
         tokio::spawn(async move {
-            let _ = request.await;
-            if lands_later {
+            let mut request = request;
+            let answered = tokio::time::timeout(STOP_GRACE, &mut request).await.is_ok();
+            if !answered {
+                // The server doesn't even take the cancel: whatever waits on
+                // the connection (the statement, the reads queued behind it)
+                // would wait for good. Dropping it ends them now.
+                request.abort();
+                cancels.severed.store(true, Ordering::SeqCst);
+                target.sever();
+            } else if lands_later {
                 // As long again as sending took (a round trip or more), so
                 // the server has had the time to act on it.
                 let until = Instant::now() + sent.elapsed().max(Duration::from_millis(50));

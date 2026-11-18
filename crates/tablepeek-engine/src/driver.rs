@@ -79,6 +79,14 @@ pub trait Driver: Send + Sync {
     /// server session, flush) does it here.
     async fn close(&self) {}
 
+    /// Drops the connection at once, without a goodbye: the server didn't
+    /// act on a Stop, so whatever waits on this connection (the statement,
+    /// the reads queued behind it) fails now instead of waiting on a server
+    /// that doesn't answer. The engine connects again before its next
+    /// operation. Nothing by default: the engine stops waiting on the
+    /// statement and the next operation's check finds the connection gone.
+    fn sever(&self) {}
+
     /// Whether the connection is known to be gone (the server or the network
     /// closed it), found without asking the server. The engine connects again
     /// before its next operation (`Engine::set_reviver`).

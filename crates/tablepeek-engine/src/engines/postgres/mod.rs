@@ -114,6 +114,10 @@ impl Driver for PgDriver {
         self.inner.is_closed()
     }
 
+    fn sever(&self) {
+        self.inner.sever();
+    }
+
     async fn ping(&self) -> Result<(), EngineError> {
         self.inner.ping().await
     }

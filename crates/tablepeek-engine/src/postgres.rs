@@ -39,6 +39,9 @@ pub struct PostgresInner {
     kind: &'static str,
     backend_pid: i32,
     log: SqlLog,
+    // The task driving the socket: aborted, every request on the client
+    // fails at once (`sever`).
+    connection: tokio::task::AbortHandle,
 }
 
 /// The session's transaction as far as the engine can tell: open (from the
@@ -291,6 +294,12 @@ impl PostgresInner {
             .unwrap_or(false)
     }
 
+    /// Drops the socket now: the statement waiting on it and the requests
+    /// queued behind it fail with the connection closed.
+    pub(crate) fn sever(&self) {
+        self.connection.abort();
+    }
+
     /// An empty query on the session's client, unlogged: the user never ran it.
     pub(crate) async fn ping(&self) -> Result<(), EngineError> {
         let client = self.client.lock().await;
@@ -431,15 +440,15 @@ pub(crate) async fn connect(
     if let Some(password) = &config.password {
         pg.password(password);
     }
-    let (client, cancel, tls) = match config.ssl_mode {
+    let (client, cancel, tls, connection) = match config.ssl_mode {
         SslMode::Disable => {
             pg.ssl_mode(PgSslMode::Disable);
             let (client, connection) = pg.connect(NoTls).await.map_err(EngineError::from)?;
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let _ = connection.await;
             });
             let cancel = client.cancel_token();
-            (client, cancel, None)
+            (client, cancel, None, task.abort_handle())
         }
         SslMode::Prefer | SslMode::Require => {
             pg.ssl_mode(if config.ssl_mode == SslMode::Require {
@@ -459,11 +468,11 @@ pub(crate) async fn connect(
                     error
                 }
             })?;
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let _ = connection.await;
             });
             let cancel = client.cancel_token();
-            (client, cancel, Some(connector))
+            (client, cancel, Some(connector), task.abort_handle())
         }
     };
     const PID_SQL: &str = "SELECT pg_backend_pid()::bigint";
@@ -478,6 +487,7 @@ pub(crate) async fn connect(
         client: Arc::new(tokio::sync::Mutex::new(client)),
         cancel,
         tls,
+        connection,
         label: format!(
             "{}@{}:{}/{}",
             config.user, config.host, config.port, config.database
