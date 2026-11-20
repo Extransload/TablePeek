@@ -16,7 +16,7 @@ import {
 import { createPortal, flushSync } from "react-dom";
 import { writeClipboard } from "../clipboard";
 import { formatBytes } from "../format";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import {
   buildIndex,
   childIds,
@@ -413,7 +413,7 @@ function LinesView({ lines, needle, current, request, label, listRef }: LinesVie
             <span className="json-view-line-text">{marked(clipped ? line.slice(0, LINE_CAP) : line, needle)}</span>
             {clipped ? (
               <span className="json-view-line-more">
-                {t("… {count}자 더", { count: (line.length - LINE_CAP).toLocaleString() })}
+                {t("… {count}자 더", { count: (line.length - LINE_CAP).toLocaleString(uiLocale()) })}
               </span>
             ) : null}
           </div>
@@ -886,7 +886,7 @@ export function JsonExplorer({
         <span className={`json-view-count${matches.length === 0 ? " none" : ""}`}>
           {matches.length === 0
             ? t("결과 없음")
-            : `${(matchAt + 1).toLocaleString()} / ${matches.length.toLocaleString()}`}
+            : `${(matchAt + 1).toLocaleString(uiLocale())} / ${matches.length.toLocaleString(uiLocale())}`}
         </span>
       ) : null}
     </label>
@@ -967,7 +967,7 @@ export function JsonExplorer({
                 <UpDownIcon size={11} />
               </button>
             ) : (
-              <span className="json-view-meta">{t("{count}줄", { count: (lines?.length ?? 0).toLocaleString() })}</span>
+              <span className="json-view-meta">{t("{count}줄", { count: (lines?.length ?? 0).toLocaleString(uiLocale()) })}</span>
             )}
             {foldMenu !== null ? (
               <ContextMenu x={foldMenu.x} y={foldMenu.y} anchor={foldMenu.anchor} items={foldItems()} onClose={() => setFoldMenu(null)} />
@@ -1003,7 +1003,7 @@ export function JsonExplorer({
           <div className="json-view-head">
             <span className="json-view-title">{title}</span>
             <span className="json-view-meta">
-              {t("노드 {count}개", { count: index.count.toLocaleString() })}
+              {t("노드 {count}개", { count: index.count.toLocaleString(uiLocale()) })}
               {size !== null ? ` · ${size}` : ""}
             </span>
             <span className="spacer" />
@@ -1030,7 +1030,7 @@ export function JsonExplorer({
             {stepButtons}
             <span className="spacer" />
             {raw ? (
-              <span className="json-view-meta">{t("{count}줄", { count: (lines?.length ?? 0).toLocaleString() })}</span>
+              <span className="json-view-meta">{t("{count}줄", { count: (lines?.length ?? 0).toLocaleString(uiLocale()) })}</span>
             ) : (
               <>
                 <button type="button" onClick={expandAll}>

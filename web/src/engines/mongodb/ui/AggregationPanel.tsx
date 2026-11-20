@@ -17,7 +17,7 @@ import { ChevronDownIcon, CloseIcon, CodeIcon, DownloadIcon, HistoryIcon, PlayIc
 import { Gauge, useTabWork, type GaugeOutcome } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { useMenuDismiss } from "../../../components/useMenuDismiss";
-import { phraseError, say, t, type Phrase } from "../../../i18n";
+import { phraseError, say, t, type Phrase, uiLocale } from "../../../i18n";
 import { aggregate, command, explain, isAbort, listCollections, type Namespace } from "../api";
 import { bsonDoc, compareForSort, Int32, stringifyJson, toEJSON, type BsonDocument } from "../bson";
 import { STAGES, sampleFields, type CompletionContext, type FieldStat } from "../complete";
@@ -648,7 +648,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
           <span className="panel-dim">
             {outcome.wrote !== null
               ? t("{target}에 썼습니다 · {ms} ms", { target: outcome.wrote, ms: Math.round(outcome.elapsedMs) })
-              : t("문서 {count}개 · {ms} ms", { count: outcome.docs.length.toLocaleString(), ms: Math.round(outcome.elapsedMs) })}
+              : t("문서 {count}개 · {ms} ms", { count: outcome.docs.length.toLocaleString(uiLocale()), ms: Math.round(outcome.elapsedMs) })}
           </span>
           <span className="spacer" />
           {view !== "table" ? (
@@ -758,7 +758,7 @@ export function AggregationPanel({ ns, connKey, tabKey, draft, onDraftChange, co
                 <div key={saved.name} className="mg-hist-item" role="button" tabIndex={0} onClick={() => loadPipeline(saved)} onKeyDown={(event) => event.key === "Enter" && loadPipeline(saved)}>
                   <div className="mg-hist-text">{saved.name}</div>
                   <div className="mg-hist-meta mono">
-                    {saved.stages.map((s) => (s.on ? s.op : `(${s.op})`)).join(" → ")} · {new Date(saved.at).toLocaleString()}
+                    {saved.stages.map((s) => (s.on ? s.op : `(${s.op})`)).join(" → ")} · {new Date(saved.at).toLocaleString(uiLocale())}
                   </div>
                   <button
                     type="button"

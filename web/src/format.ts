@@ -1,4 +1,4 @@
-import { t } from "./i18n";
+import { t, uiLocale } from "./i18n";
 
 const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
 
@@ -22,7 +22,7 @@ export function formatRowEstimate(count: number | null, exact: boolean): string 
   if (count === null || !Number.isFinite(count) || count < 0) {
     return null;
   }
-  const text = t("{count}행", { count: Math.floor(count).toLocaleString("ko-KR") });
+  const text = t("{count}행", { count: Math.floor(count).toLocaleString(uiLocale()) });
   return exact ? text : `≈ ${text}`;
 }
 

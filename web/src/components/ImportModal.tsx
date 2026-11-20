@@ -3,7 +3,7 @@ import { createTableSql, draftKey, type ColumnDraft } from "../ddl";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { gridHeaderH, type CanvasGrid } from "../grid/CanvasGrid";
 import type { RowSource } from "../grid/rowSource";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { matchColumns, type MatchStrategy } from "../importMatch";
 import {
   decodeText,
@@ -486,13 +486,13 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
     // (the header, blank or multi-line records count there) said beside it.
     const where = (row: number): string => {
       const at = parsed.at[row] ?? row + 1;
-      const place = t("{row}번째 행", { row: (row + 1).toLocaleString() });
+      const place = t("{row}번째 행", { row: (row + 1).toLocaleString(uiLocale()) });
       if (at === row + 1) {
         return place;
       }
       return parsed.unit === "line"
-        ? t("{place} (파일 {line}번째 줄)", { place, line: at.toLocaleString() })
-        : t("{place} (레코드 {index})", { place, index: at.toLocaleString() });
+        ? t("{place} (파일 {line}번째 줄)", { place, line: at.toLocaleString(uiLocale()) })
+        : t("{place} (레코드 {index})", { place, index: at.toLocaleString(uiLocale()) });
     };
     try {
       await runImport(
@@ -531,7 +531,7 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
         },
       );
       job.finish();
-      store.setInfo(t("가져오기 완료: {table}에 {count}행", { table: destination, count: rows.length.toLocaleString() }));
+      store.setInfo(t("가져오기 완료: {table}에 {count}행", { table: destination, count: rows.length.toLocaleString(uiLocale()) }));
       onImported(destination, createNew);
       if (mountedRef.current) {
         onClose();
@@ -554,7 +554,7 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
         );
       } else if (err instanceof ImportFailure && err.kept !== null) {
         // No transaction undid anything: the rows before the failure stay.
-        const kept = err.kept.toLocaleString();
+        const kept = err.kept.toLocaleString(uiLocale());
         message = err.stopped
           ? t("가져오기를 중지했습니다. 앞의 {count}행은 저장되었습니다.", { count: kept })
           : err.row !== null
@@ -688,7 +688,7 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
                   {fileName || t("선택한 파일 없음")}
                 </span>
                 {parsed !== null ? (
-                  <span className="panel-count">{t("{count}행", { count: rowCount.toLocaleString() })}</span>
+                  <span className="panel-count">{t("{count}행", { count: rowCount.toLocaleString(uiLocale()) })}</span>
                 ) : null}
               </div>
               <div className="import-options">
@@ -928,8 +928,8 @@ export function ImportModal({ conn, kind, dialect, format, tables, table, onImpo
                   : running.committing
                     ? t("커밋하는 중…")
                     : t("{done} / {total}행", {
-                      done: running.done.toLocaleString(),
-                      total: running.total.toLocaleString(),
+                      done: running.done.toLocaleString(uiLocale()),
+                      total: running.total.toLocaleString(uiLocale()),
                     })}
               </span>
             ) : null}

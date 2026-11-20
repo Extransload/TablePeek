@@ -18,6 +18,17 @@ export function cellToString(value: unknown): string | null {
   }
 }
 
+// A float as it was meant, without the binary rounding tail a sum or a
+// product leaves (271.40999999999997 → 271.41): fifteen significant digits,
+// as many as any double carries faithfully. Whole numbers and huge values
+// are left as they are, since rounding them would change their digits.
+export function tidyNumberText(value: number): string {
+  if (Number.isInteger(value) || !Number.isFinite(value) || Math.abs(value) >= 1e15) {
+    return String(value);
+  }
+  return String(Number(value.toPrecision(15)));
+}
+
 export function fkFilterFor(column: string, value: unknown, id = "fk"): FilterState | null {
   const text = cellToString(value);
   if (text === null) {

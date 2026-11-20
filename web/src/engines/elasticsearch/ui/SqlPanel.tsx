@@ -15,7 +15,7 @@ import { Spinner } from "../../../components/Spinner";
 import { TableGrid, type TableGridHandle } from "../../../components/TableGrid";
 import type { GridColumnSpec } from "../../../grid/columns";
 import type { RowSource } from "../../../grid/rowSource";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { stringifyJson } from "../../mongodb/bson";
 import { SearchError, clusterInfo, getMapping, isAbort, sql, sqlClose, sqlTranslate, type SqlResult } from "../api";
 import type { DslCompletion, DslItem, MappedField } from "../dsl";
@@ -630,8 +630,8 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
       {run !== null ? (
         <div className="data-toolbar es-sql-foot surface-bars">
           <div className="footer-start">
-            <span className="row-range">{t("{count}행", { count: run.rows.length.toLocaleString() })}</span>
-            <span className="result-bar-time">{`${Math.round(run.elapsedMs).toLocaleString()} ms`}</span>
+            <span className="row-range">{t("{count}행", { count: run.rows.length.toLocaleString(uiLocale()) })}</span>
+            <span className="result-bar-time">{`${Math.round(run.elapsedMs).toLocaleString(uiLocale())} ms`}</span>
             {run.pages > 1 ? <span className="panel-dim">{t("{pages}쪽", { pages: run.pages })}</span> : null}
           </div>
           <span className="spacer" />
@@ -641,7 +641,7 @@ export function SqlPanel({ host, index, connKey, refreshSeq }: SqlPanelProps) {
               className="footer-button gauge-host"
               disabled={busy !== null}
               aria-busy={busy === "more"}
-              title={t("다음 {count}행을 이어 붙입니다", { count: FETCH_SIZE.toLocaleString() })}
+              title={t("다음 {count}행을 이어 붙입니다", { count: FETCH_SIZE.toLocaleString(uiLocale()) })}
               onClick={loadMore}
             >
               <Gauge busy={busy === "more"} outcome={error !== null ? "error" : "ok"} />

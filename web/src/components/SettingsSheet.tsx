@@ -1389,6 +1389,14 @@ export function SettingsSheet({ settings, page: requestedPage, onChange, onLock,
                 onChange={(queryTimeout) => onChange({ queryTimeout: queryTimeout ?? DEFAULT_SETTINGS.queryTimeout })}
               />
             </SettingRow>
+            <SettingRow
+              label="Peek: 결과 요약"
+              keywords="peek summary chart bars result 요약 막대"
+              hint={t("쿼리 결과의 소수 꼬리를 정리하고(271.40999… → 271.41), 50행 이하 결과에는 결론 한 줄과 작은 그림을 표 위에, 막대를 숫자 칸에 보여줍니다. 정해진 규칙으로 계산해 데이터가 밖으로 나가지 않습니다.")}
+              {...fromDefault("peek")}
+            >
+              <Switch label={t("Peek: 결과 요약")} checked={settings.peek} onChange={(peek) => onChange({ peek })} />
+            </SettingRow>
           </SettingsGroup>
         );
 

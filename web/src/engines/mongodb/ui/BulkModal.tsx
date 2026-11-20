@@ -14,7 +14,7 @@ import { ReviewModal } from "../../../components/ReviewModal";
 import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
-import { phrase, say, t, type Phrase } from "../../../i18n";
+import { phrase, say, t, type Phrase, uiLocale } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
 import { count, find, isAbort, remove, update, updatePreview, type CountResult, type Namespace, type QueryOptions, type UpdatePreview } from "../api";
 import { bsonDoc, deepEqual, isDocument, type BsonDocument, type BsonValue } from "../bson";
@@ -221,7 +221,7 @@ function countText(c: CountResult | null): string {
   if (c.count === null) {
     return t("많음 (세는 데 오래 걸림)");
   }
-  return `${c.exact ? "" : "≈ "}${c.count.toLocaleString()}`;
+  return `${c.exact ? "" : "≈ "}${c.count.toLocaleString(uiLocale())}`;
 }
 
 export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, options, safeMode, completion, notify, onDone, onClose }: BulkModalProps) {
@@ -390,11 +390,11 @@ export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, op
       if (mode === "delete") {
         const deleted = await remove(ns, filter.value, true, true, undefined, writeOptions);
         setOutcome({ mode: "delete", deleted });
-        notify(t("문서 {count}개를 삭제했습니다", { count: deleted.toLocaleString() }));
+        notify(t("문서 {count}개를 삭제했습니다", { count: deleted.toLocaleString(uiLocale()) }));
       } else if (updateDoc.ok) {
         const r = await update(ns, { filter: filter.value, update: updateDoc.value, many: true, confirmed: true, options: writeOptions });
         setOutcome({ mode: "update", ...r });
-        notify(t("문서 {modified}개를 고쳤습니다 (일치 {matched}개)", { modified: r.modified.toLocaleString(), matched: r.matched.toLocaleString() }));
+        notify(t("문서 {modified}개를 고쳤습니다 (일치 {matched}개)", { modified: r.modified.toLocaleString(uiLocale()), matched: r.matched.toLocaleString(uiLocale()) }));
       }
       onDone();
       refreshNow();
@@ -469,8 +469,8 @@ export function BulkModal({ ns, mode: initialMode, filterText: initialFilter, op
           {outcome !== null ? (
             <span className="mg-bulk-outcome" role="status">
               {outcome.mode === "delete"
-                ? t("삭제 {count}개", { count: outcome.deleted.toLocaleString() })
-                : t("일치 {matched}개 · 수정 {modified}개", { matched: outcome.matched.toLocaleString(), modified: outcome.modified.toLocaleString() })}
+                ? t("삭제 {count}개", { count: outcome.deleted.toLocaleString(uiLocale()) })
+                : t("일치 {matched}개 · 수정 {modified}개", { matched: outcome.matched.toLocaleString(uiLocale()), modified: outcome.modified.toLocaleString(uiLocale()) })}
             </span>
           ) : (
             <span className="panel-dim">{t("⌘↩ 다시 세고 미리보기")}</span>

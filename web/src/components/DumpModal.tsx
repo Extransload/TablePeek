@@ -4,7 +4,7 @@ import { capabilitiesOf } from "../engines";
 import { createTableSql, dependencyOrder, draftsFromDetail, dumpIndexSql, foreignKeySql, quoteIdent } from "../ddl";
 import { suggestFilename } from "../export";
 import { declaredAs } from "../grid/columns";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { formatBytes } from "../format";
 import { decoderFor, ENCODING_LABELS, IMPORT_ENCODINGS } from "../importParse";
 import { cancelJob, startJob } from "../jobs";
@@ -335,7 +335,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
             : skipped.has(table)
               ? t("{table} 건너뜀", { table })
               : progress.rows > 0
-                ? `${table} · ${t("{count}행", { count: progress.rows.toLocaleString() })}`
+                ? `${table} · ${t("{count}행", { count: progress.rows.toLocaleString(uiLocale()) })}`
                 : table;
         if (progress.state === "waiting") {
           job.update(0, t("내려받기를 기다리는 중…"));
@@ -349,8 +349,8 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
             progress.state === "waiting"
               ? t("내려받기를 기다리는 중…")
               : `${t("테이블 {done} / {total} · {bytes}", {
-                  done: progress.tables_done.toLocaleString(),
-                  total: progress.tables.toLocaleString(),
+                  done: progress.tables_done.toLocaleString(uiLocale()),
+                  total: progress.tables.toLocaleString(uiLocale()),
                   bytes: formatBytes(progress.bytes) ?? "",
                 })}${where !== null ? ` · ${where}` : ""}`,
           );
@@ -457,15 +457,15 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       // ran, but not as asked.
       if (outcome.stopped || job.signal.aborted) {
         const message = outcome.rolledBack
-          ? t("{count}개 문장을 실행하다 중지하고 트랜잭션을 되돌렸습니다", { count: executed.toLocaleString() })
+          ? t("{count}개 문장을 실행하다 중지하고 트랜잭션을 되돌렸습니다", { count: executed.toLocaleString(uiLocale()) })
           : t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
-              count: executed.toLocaleString(),
+              count: executed.toLocaleString(uiLocale()),
             });
         job.fail(message);
         report(message, true);
       } else if (failure === null) {
         job.finish();
-        report(t("{count}개 문장을 실행했습니다", { count: executed.toLocaleString() }), false);
+        report(t("{count}개 문장을 실행했습니다", { count: executed.toLocaleString(uiLocale()) }), false);
       } else if (failure.stage === "read") {
         const message = `${t("파일을 읽지 못했습니다")}: ${errorOf(failure.error, "")}${undone}`;
         job.fail(message);
@@ -477,7 +477,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       } else {
         const message = errorOf(failure.error, t("복원에 실패했습니다"));
         job.fail(message);
-        const index = failure.statement.toLocaleString();
+        const index = failure.statement.toLocaleString(uiLocale());
         const line = failure.line;
         if (mountedRef.current) {
           setError(message);
@@ -485,7 +485,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
             error: message,
             text: `${
               line !== null
-                ? t("문장 {index}, {line}번째 줄에서 중단했습니다", { index, line: line.toLocaleString() })
+                ? t("문장 {index}, {line}번째 줄에서 중단했습니다", { index, line: line.toLocaleString(uiLocale()) })
                 : t("문장 {index}에서 중단했습니다", { index })
             }${undone}`,
           });
@@ -493,7 +493,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
           notifyError(
             `${
               line !== null
-                ? t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: message, index, line: line.toLocaleString() })
+                ? t("{error} (문장 {index}, {line}번째 줄에서 중단)", { error: message, index, line: line.toLocaleString(uiLocale()) })
                 : t("{error} (문장 {index}에서 중단)", { error: message, index })
             }${undone}`,
           );
@@ -503,7 +503,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
       // The upload failed: Stop was asked for, or the server is out of reach.
       const message = job.signal.aborted
         ? t("{count}개 문장을 실행한 뒤 중지했습니다. 실행한 문장은 되돌리지 않습니다.", {
-            count: executed.toLocaleString(),
+            count: executed.toLocaleString(uiLocale()),
           })
         : errorOf(err, t("복원에 실패했습니다"));
       job.fail(message);
@@ -674,7 +674,7 @@ export function DumpModal({ conn, meta, dialect, initialTab, onClose, onRestored
               <p className="helper">
                 {restoreProgress !== null && restoreFile !== null
                   ? t("{count}개 문장 실행 · {done} / {total} 읽음", {
-                      count: restoreProgress.statements.toLocaleString(),
+                      count: restoreProgress.statements.toLocaleString(uiLocale()),
                       done: formatBytes(restoreProgress.bytes) ?? "",
                       total: formatBytes(restoreFile.size) ?? "",
                     })

@@ -12,7 +12,7 @@ import {
 } from "../chartData";
 import { writeClipboard } from "../clipboard";
 import type { RowSource } from "../grid/rowSource";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { CloseIcon, CopyIcon } from "./icons";
 import { AGGREGATE_LABELS, BUCKET_LABELS, columnOptions, useThemeColors } from "./ResultChart";
 import { Select } from "./Select";
@@ -85,12 +85,12 @@ export function PivotView({ columns, rows, settings, scope, warn, themeKey, onCh
   const notes = [
     scope,
     t("{rows}행 × {cols}열", {
-      rows: model.rows.length.toLocaleString(),
-      cols: Math.max(1, model.columnLabels.length).toLocaleString(),
+      rows: model.rows.length.toLocaleString(uiLocale()),
+      cols: Math.max(1, model.columnLabels.length).toLocaleString(uiLocale()),
     }),
   ];
   if (model.mergedColumns > 0) {
-    notes.push(t("{count}개 열 값을 기타로 묶음", { count: model.mergedColumns.toLocaleString() }));
+    notes.push(t("{count}개 열 값을 기타로 묶음", { count: model.mergedColumns.toLocaleString(uiLocale()) }));
   }
 
   return (

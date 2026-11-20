@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { parseExplainPlan, type PlanNode } from "../explainPlan";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import type { GridResult } from "../store";
 import { Collapse } from "./Collapse";
 
@@ -45,12 +45,12 @@ function PlanNodeView({
           ) : null}
           {node.rows !== undefined ? (
             <span className="plan-metric">
-              {t("예상 {count}행", { count: node.rows.toLocaleString() })}
+              {t("예상 {count}행", { count: node.rows.toLocaleString(uiLocale()) })}
             </span>
           ) : null}
           {node.actualRows !== undefined ? (
             <span className="plan-metric actual">
-              {t("실제 {count}행", { count: node.actualRows.toLocaleString() })}
+              {t("실제 {count}행", { count: node.actualRows.toLocaleString(uiLocale()) })}
               {node.actualMs !== undefined
                 ? ` · ${node.actualMs.toFixed(2)}ms`
                 : ""}

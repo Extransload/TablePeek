@@ -9,7 +9,7 @@ import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMe
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { Gauge } from "../../../components/Gauge";
 import { CloseIcon, MoreIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { isAbort, keyInfo, type KeyInfo } from "../api";
 import { binFromHex, binText, consoleArg, hexOf, isText, type Bin } from "../bin";
 import { ConfirmPopover, copyText, deleteKeys, downloadKey, parseDuration, persistKey, renameKey, setKeyTtl, sizeText, ttlText, TypeBadge, type RedisHost } from "./common";
@@ -232,7 +232,7 @@ export function KeyDetails({ host, db, keyName, refreshSeq, onBusy, onOpenCli }:
               {info.value.length !== null ? (
                 <span className="kv-fact kv-fact-length">
                   <span className="kv-fact-k">{lengthLabel}</span>
-                  <span className="kv-fact-v">{info.value.length.toLocaleString()}</span>
+                  <span className="kv-fact-v">{info.value.length.toLocaleString(uiLocale())}</span>
                 </span>
               ) : null}
               <span className="kv-fact kv-fact-size" title="MEMORY USAGE">

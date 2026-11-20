@@ -118,7 +118,7 @@ describe("parseMysqlPlan", () => {
     expect(orders.detail).toBe("condition: (`o`.`total` > 10)");
     expect(parsed!.costLabel).toBe("12.50");
     // The first estimate found, in tree order.
-    expect(parsed!.rowsLabel).toBe((1000).toLocaleString());
+    expect(parsed!.rowsLabel).toBe("1,000");
   });
 
   it("returns null without a plan in it", () => {

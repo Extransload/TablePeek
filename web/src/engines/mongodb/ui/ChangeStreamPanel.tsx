@@ -14,7 +14,7 @@ import { Collapse } from "../../../components/Collapse";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon, CopyIcon, TrashIcon } from "../../../components/icons";
 import { Spinner } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { BsonDate, Timestamp, isDocument, type BsonDocument, type BsonValue } from "../bson";
 import { MAX_EVENTS, OP_FILTERS, watchSession, type ChangeEvent, type OpFilter, type WatchSnapshot } from "../changeStream";
 import { toShell, toShellPretty } from "../format";
@@ -220,8 +220,8 @@ export function ChangeStreamPanel({ conn, db, coll, sessionKey, notify, facts = 
         ) : (
           <>
             <div className="mg-watch-count panel-dim">
-              {t("이벤트 {count}개 (최근 {max}개까지 보관)", { count: snap.events.length.toLocaleString(), max: MAX_EVENTS.toLocaleString() })}
-              {snap.dropped > 0 ? ` · ${t("오래된 {count}개는 버렸습니다", { count: snap.dropped.toLocaleString() })}` : ""}
+              {t("이벤트 {count}개 (최근 {max}개까지 보관)", { count: snap.events.length.toLocaleString(uiLocale()), max: MAX_EVENTS.toLocaleString(uiLocale()) })}
+              {snap.dropped > 0 ? ` · ${t("오래된 {count}개는 버렸습니다", { count: snap.dropped.toLocaleString(uiLocale()) })}` : ""}
             </div>
             <div
               className="mg-watch-list"

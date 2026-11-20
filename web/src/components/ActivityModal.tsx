@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { clearActivity, subscribeActivity, type ActivityEntry } from "../activity";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 
 interface ActivityModalProps {
   onClose(): void;
@@ -52,7 +52,7 @@ export function ActivityModal({ onClose }: ActivityModalProps) {
                 .map((entry) => (
                   <div className="activity-row" key={entry.id}>
                     <span className="log-time mono">
-                      {new Date(entry.at).toLocaleString("ko-KR", { hour12: false })}
+                      {new Date(entry.at).toLocaleString(uiLocale(), { hour12: false })}
                     </span>
                     <span className="activity-kind">
                       {KIND_LABELS[entry.kind] !== undefined ? t(KIND_LABELS[entry.kind]) : entry.kind}

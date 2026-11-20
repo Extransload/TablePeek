@@ -82,6 +82,7 @@ Middle-click a cell, or press `Mod+Enter`, to open Quick Look. The drawer provid
 - Visual `EXPLAIN` / `EXPLAIN ANALYZE` plans with cost, estimated/actual rows, and raw JSON
 - Query cancellation and live timing
 - Chart and pivot views of any result or table: bar, line, area, pie/donut, and scatter charts with time bucketing and top-N grouping, and pivot tables with totals that copy as TSV
+- **Peek**: a query result of 50 rows or fewer is summed up above its rows by its shape. One row of numbers shows them large; a label column with number columns gives the biggest share and the highest values beside a share bar; a date, month or year column with number columns names the value 1.5× its column's median or more over a small line. Number cells get a bar for their size, and the value that stands out is yellow. Every query result shows decimals without their binary rounding tail (271.41 for 271.40999999999997), while copy, export and edits keep the stored value. Worked out by fixed rules in the app (no AI, no data leaves it), in the interface language and its number format. The **Peek** switch in the result bar, or Settings › Data Table › Query › Peek, turns it off.
 
 ![TablePeek SQL completion suggesting joins from foreign keys, with ON conditions and an info panel](images/completion.jpg)
 

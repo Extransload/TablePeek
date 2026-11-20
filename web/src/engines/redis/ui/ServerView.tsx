@@ -8,7 +8,7 @@ import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { Gauge } from "../../../components/Gauge";
 import { RefreshIcon, SearchIcon, TrashIcon } from "../../../components/icons";
 import { humanizeElapsed } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { store, type ServerSession } from "../../../store";
 import { info as readInfo, isAbort, slowlog as readSlowlog, slowlogReset, type InfoSection, type SlowEntry } from "../api";
 import { binText, consoleArg } from "../bin";
@@ -251,7 +251,7 @@ export function SlowlogView({ host, refreshSeq, onBusy }: { host: RedisHost; ref
               {shown.map((entry) => (
                 <tr key={entry.id}>
                   <td className="num mono">{entry.id}</td>
-                  <td className="mono">{new Date(entry.at * 1000).toLocaleString()}</td>
+                  <td className="mono">{new Date(entry.at * 1000).toLocaleString(uiLocale())}</td>
                   <td className="num mono">{entry.duration_us >= 1000 ? `${(entry.duration_us / 1000).toFixed(1)} ms` : `${entry.duration_us} µs`}</td>
                   <td className="mono kv-slow-cmd" title={entry.args.map(consoleArg).join(" ")}>
                     {entry.args.map(consoleArg).join(" ")}

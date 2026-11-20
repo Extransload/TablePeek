@@ -16,7 +16,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
 import * as api from "../api";
 import { BsonDate, Int32, bsonDoc, isDocument, type BsonDocument } from "../bson";
@@ -55,12 +55,12 @@ interface ProfileStatus {
 
 function msText(ms: number): string {
   if (ms < 1) return ms === 0 ? "0 ms" : `${ms.toFixed(2)} ms`;
-  if (ms < 1000) return `${Math.round(ms).toLocaleString()} ms`;
+  if (ms < 1000) return `${Math.round(ms).toLocaleString(uiLocale())} ms`;
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
 }
 
 function rateText(v: number): string {
-  return v >= 100 || Number.isInteger(v) ? Math.round(v).toLocaleString() : v.toFixed(1);
+  return v >= 100 || Number.isInteger(v) ? Math.round(v).toLocaleString(uiLocale()) : v.toFixed(1);
 }
 
 function countTick(v: number): string {
@@ -75,7 +75,7 @@ function uptimeText(seconds: number): string {
 }
 
 function clockText(ms: number, seconds = false): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), hour12: false });
+  return new Date(ms).toLocaleTimeString(uiLocale(), { hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), hour12: false });
 }
 
 // One line of a command for a table cell; the full text is its tooltip.
@@ -507,8 +507,8 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
               {t("가동")} <b className="mono">{uptimeText(sample.uptime)}</b>
             </span>
             <span>
-              {t("연결")} <b className="mono">{sample.connections.current.toLocaleString()}</b>
-              <span className="panel-dim"> / {(sample.connections.current + sample.connections.available).toLocaleString()}</span>
+              {t("연결")} <b className="mono">{sample.connections.current.toLocaleString(uiLocale())}</b>
+              <span className="panel-dim"> / {(sample.connections.current + sample.connections.available).toLocaleString(uiLocale())}</span>
             </span>
             {lock !== null ? (
               <span title={t("전역 잠금: 실행 중인 읽기·쓰기 / 기다리는 읽기·쓰기")}>
@@ -625,9 +625,9 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
                       <td className={`num mono${row.recentMs ? "" : " panel-dim"}`}>{row.recentMs === null ? "—" : msText(row.recentMs)}</td>
                       <td className="num mono">{msText(row.totalMs)}</td>
                       <td className="num mono">{msText(row.readMs)}</td>
-                      <td className="num mono">{row.readCount.toLocaleString()}</td>
+                      <td className="num mono">{row.readCount.toLocaleString(uiLocale())}</td>
                       <td className="num mono">{msText(row.writeMs)}</td>
-                      <td className="num mono">{row.writeCount.toLocaleString()}</td>
+                      <td className="num mono">{row.writeCount.toLocaleString(uiLocale())}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -713,8 +713,8 @@ export function PerfTab({ conn, tabKey, db, safeMode, notify }: PerfTabProps) {
                     const command = isDocument(commandValue) ? commandValue : null;
                     const docsExamined = entry.get("docsExamined");
                     const nreturned = entry.get("nreturned");
-                    const examined = docsExamined !== undefined ? api.toNumber(docsExamined).toLocaleString() : "—";
-                    const returned = nreturned !== undefined ? api.toNumber(nreturned).toLocaleString() : "—";
+                    const examined = docsExamined !== undefined ? api.toNumber(docsExamined).toLocaleString(uiLocale()) : "—";
+                    const returned = nreturned !== undefined ? api.toNumber(nreturned).toLocaleString(uiLocale()) : "—";
                     const ts = entry.get("ts");
                     const op = entry.get("op");
                     const ns = entry.get("ns");

@@ -18,7 +18,7 @@ import { CopyIcon, LayersIcon, LockIcon, MoreIcon, PencilIcon, WrapIcon } from "
 import { Select } from "../../../components/Select";
 import { notifyError } from "../../../components/ErrorNotice";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { binBytes, binFromBytes, binFromHex, hexOf, type Bin } from "../bin";
 import {
   asciiEscape,
@@ -185,7 +185,7 @@ function HexDump({ bytes }: { bytes: Uint8Array }) {
       {lines}
       {total > rows ? (
         <button type="button" className="kv-link kv-hex-more" onClick={() => setRows(rows + HEX_ROWS)}>
-          {t("{count}줄 더 보기", { count: Math.min(HEX_ROWS, total - rows).toLocaleString() })}
+          {t("{count}줄 더 보기", { count: Math.min(HEX_ROWS, total - rows).toLocaleString(uiLocale()) })}
         </button>
       ) : null}
       {bytes.length === 0 ? <span className="panel-dim">{t("(빈 값)")}</span> : null}
@@ -437,7 +437,7 @@ export function ValuePanel({ host, value, label, editable, onSave, identity, sta
   const infoTitle = [
     `${formatLabel(mode)}${shown?.inner != null ? ` → ${formatLabel(shown.inner.format)}` : ""}`,
     `${size ?? ""} · ${encoding ?? ""}`,
-    explorer ? t("노드 {count}개", { count: (nodes ?? 0).toLocaleString() }) : null,
+    explorer ? t("노드 {count}개", { count: (nodes ?? 0).toLocaleString(uiLocale()) }) : null,
     readOnly ? readOnlyNote : null,
   ]
     .filter((line) => line !== null)
@@ -487,7 +487,7 @@ export function ValuePanel({ host, value, label, editable, onSave, identity, sta
           {bytes !== null ? (
             <span className="kv-info" title={infoTitle}>
               {shown?.inner != null ? <span className="kv-info-inner">→ {formatLabel(shown.inner.format)}</span> : null}
-              {shown?.count != null ? <span>{t("값 {count}개", { count: shown.count.toLocaleString() })}</span> : null}
+              {shown?.count != null ? <span>{t("값 {count}개", { count: shown.count.toLocaleString(uiLocale()) })}</span> : null}
               <span>{size}</span>
               {readOnly && editable ? <LockIcon size={9} className="kv-info-lock" /> : null}
             </span>

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { uiLocale } from "../i18n";
 import { DURATION, EASE, animate } from "../motion";
 
 // A number in the text: its digits and the separators between them
@@ -37,7 +38,7 @@ interface Shown {
 // words themselves change, the whole value comes into focus instead. Screen
 // readers get the plain text; under reduced motion it simply changes.
 export function RollingNumber({ value, className }: { value: string | number; className?: string }) {
-  const text = typeof value === "number" ? value.toLocaleString() : value;
+  const text = typeof value === "number" ? value.toLocaleString(uiLocale()) : value;
   const faceRef = useRef<HTMLSpanElement>(null);
   const [shown, setShown] = useState<Shown>(() => ({ value: text, previous: null }));
   let current = shown;

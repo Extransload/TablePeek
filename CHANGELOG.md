@@ -4,6 +4,14 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Peek sums up a query result by its shape.** Above the rows of a query tab, a result of 50 rows or fewer gets a line of what it says and a small picture of it: one row of numbers shows them large (6,000, 11,217,990); a label column with number columns gives the biggest share and the highest values ("Largest share of orders: delivered · 40% (2,400 of 6,000)") with a share bar; a date, month or year column with number columns names the value that stands out from the rest ("2025-01 stands out: orders 920, 2× the median 460") over a small line, with buttons to pick the column drawn. The number cells get a bar for their size in the column, and a value that stands out is drawn in yellow. Every query result also shows decimals without their binary rounding tail (271.41, not 271.40999999999997); copying, exporting and editing still use the value as stored. The summary is worked out by fixed rules in the app (no AI, and no data leaves it), in the interface language, with numbers written the way that language writes them. Peek is on by default; the **Peek** switch at the right of the result bar, or Settings › Data Table › Query › Peek, turns it off.
+
+### Fixed
+
+- **Dates and numbers follow the interface language.** With English chosen on a Korean system, Settings showed "Last checked: 2026. 11. 20. 오후 2:06:07", and the activity log, Elasticsearch API keys and index dates, MongoDB GridFS uploads and saved pipelines, Redis slow log entries and the performance charts' times were written the browser's way too (the activity log always in Korean). Every date and number on screen is now written in the interface language's format ("11/20/2026, 2:06:07 PM" in English, "2026. 11. 20. 오후 2:06:07" in Korean), whatever the system's language; the query history's day headings also change with the language at once.
+
 ## [0.15.0] - 2026-11-18
 
 Connections that drop come back by themselves, a red connection tab the moment one is gone, and Stop that always stops.

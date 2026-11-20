@@ -16,7 +16,7 @@ import { TableGrid, type TableGridHandle } from "../../../components/TableGrid";
 import type { GridEditHandlers, GridSelection, SelectedRows, SortIndicator } from "../../../grid/CanvasGrid";
 import type { GridColumnSpec } from "../../../grid/columns";
 import type { RowSource } from "../../../grid/rowSource";
-import { phrase, phraseError, t } from "../../../i18n";
+import { phrase, phraseError, t, uiLocale } from "../../../i18n";
 import { palette } from "../../../palette";
 import { getSettings } from "../../../settings";
 import { Int32, deepEqual, isDocument, isNumber, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
@@ -590,7 +590,7 @@ export function DocTableView({
           <span className="spacer" />
           <span className="panel-dim mg-crumb-hint">
             {path.length > 0
-              ? t("문서 {docs}개에서 {rows}행", { docs: docs.length.toLocaleString(), rows: table.rows.length.toLocaleString() })
+              ? t("문서 {docs}개에서 {rows}행", { docs: docs.length.toLocaleString(uiLocale()), rows: table.rows.length.toLocaleString(uiLocale()) })
               : t("{…}·[n] 셀이나 › 머리글을 누르면 그 필드를 표로 엽니다")}
           </span>
           <button

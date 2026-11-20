@@ -140,6 +140,9 @@ export interface AppSettings {
   // Seconds a MongoDB query (its maxTimeMS), a mongosh script or a ClickHouse
   // statement (its max_execution_time) may run; 0 for no limit.
   queryTimeout: number;
+  // Peek (peek.ts): a query result summed up by its shape above the grid,
+  // bars in its number cells, floats without their rounding tail.
+  peek: boolean;
   keymap: Keymap;
   // The keymap defaults this was saved under (see KEYMAP_VERSION).
   keymapVersion: number;
@@ -217,6 +220,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   csvEncoding: "utf-8",
   maxRows: 10000,
   queryTimeout: 60,
+  peek: true,
   keymap: normalizeKeymap(null),
   keymapVersion: KEYMAP_VERSION,
 };
@@ -259,6 +263,7 @@ function readSettings(): AppSettings {
       language: parsed.language === "en" ? "en" : "ko",
       reduceMotion: parsed.reduceMotion === true,
       launchIntro: parsed.launchIntro !== false,
+      peek: parsed.peek !== false,
       cliInput: parsed.cliInput === "docked" ? "docked" : "flow",
       themeMode: THEME_MODES.includes(parsed.themeMode as ThemeMode) ? (parsed.themeMode as ThemeMode) : DEFAULT_SETTINGS.themeMode,
       themeLight: readThemeId(parsed.themeLight, DEFAULT_SETTINGS.themeLight),

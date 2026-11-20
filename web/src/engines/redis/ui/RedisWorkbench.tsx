@@ -9,7 +9,7 @@ import { Gauge } from "../../../components/Gauge";
 import { SafeModeMenu } from "../../../components/SafeModeMenu";
 import { Select } from "../../../components/Select";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { isAbort, overview as readOverview, type Overview } from "../api";
 import { binId, type Bin } from "../bin";
@@ -194,7 +194,7 @@ export function RedisWorkbench({ conn, connKey, db, address, readOnly, safeMode,
           {dbs.map((entry) => (
             <option key={entry.index} value={entry.index}>
               {entry.keys > 0
-                ? t("db{index} · 키 {count}개", { index: entry.index, count: entry.keys.toLocaleString() })
+                ? t("db{index} · 키 {count}개", { index: entry.index, count: entry.keys.toLocaleString(uiLocale()) })
                 : entry.keys === 0
                   ? t("db{index} · 비어 있음", { index: entry.index })
                   : `db${entry.index}`}
@@ -205,7 +205,7 @@ export function RedisWorkbench({ conn, connKey, db, address, readOnly, safeMode,
           {overviewError !== null ? <span className="kv-stat-error">{t("서버 개요를 읽지 못했습니다")}</span> : null}
           <span className="kv-stat" title={t("모든 데이터베이스의 키")}>
             <span className="kv-stat-k">{t("키")}</span>
-            <span className="kv-stat-v">{overview !== null ? overview.keys_total.toLocaleString() : "—"}</span>
+            <span className="kv-stat-v">{overview !== null ? overview.keys_total.toLocaleString(uiLocale()) : "—"}</span>
           </span>
           <span className="kv-stat" title="used_memory">
             <span className="kv-stat-k">{t("메모리")}</span>
@@ -213,11 +213,11 @@ export function RedisWorkbench({ conn, connKey, db, address, readOnly, safeMode,
           </span>
           <span className="kv-stat" title="instantaneous_ops_per_sec">
             <span className="kv-stat-k">ops/s</span>
-            <span className="kv-stat-v">{overview !== null ? overview.ops_per_sec.toLocaleString() : "—"}</span>
+            <span className="kv-stat-v">{overview !== null ? overview.ops_per_sec.toLocaleString(uiLocale()) : "—"}</span>
           </span>
           <span className="kv-stat" title="connected_clients">
             <span className="kv-stat-k">{t("연결된 클라이언트")}</span>
-            <span className="kv-stat-v">{overview !== null ? overview.connected_clients.toLocaleString() : "—"}</span>
+            <span className="kv-stat-v">{overview !== null ? overview.connected_clients.toLocaleString(uiLocale()) : "—"}</span>
           </span>
           <span className="kv-stat kv-stat-version">
             <span className="kv-stat-k">{overview?.flavor === "valkey" ? "Valkey" : "Redis"}</span>

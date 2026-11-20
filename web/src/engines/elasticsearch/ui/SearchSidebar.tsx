@@ -15,7 +15,7 @@ import { RollingNumber } from "../../../components/RollingNumber";
 import { Gauge } from "../../../components/Gauge";
 import { LoadingState } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { store } from "../../../store";
 import { aliases as listAliases, dataStreams as listDataStreams, indexAction, indices as listIndices, isAbort, privileges, updateAliases, type AliasRow, type DataStreamRow, type IndexRow, type Privileges } from "../api";
 import { jsonObject } from "../../mongodb/bson";
@@ -301,12 +301,12 @@ export function SearchSidebar({ host, refreshKey, active, onOpen, onOpenConsole,
                   <>
                     {row.status === "close" ? <span className="mg-side-badge">{t("닫힘")}</span> : null}
                     {row.hidden || row.name.startsWith(".") ? <span className="mg-side-badge">{t("숨김")}</span> : null}
-                    {row.docs !== null ? <span className="schema-section-count mg-side-count">{row.docs.toLocaleString()}</span> : null}
+                    {row.docs !== null ? <span className="schema-section-count mg-side-count">{row.docs.toLocaleString(uiLocale())}</span> : null}
                   </>,
                   [
                     row.name,
                     t("상태 {health} · {status}", { health: row.health, status: row.status }),
-                    row.docs !== null ? t("문서 {count}개 · {size}", { count: row.docs.toLocaleString(), size: formatBytes(row.size ?? 0) ?? "—" }) : "",
+                    row.docs !== null ? t("문서 {count}개 · {size}", { count: row.docs.toLocaleString(uiLocale()), size: formatBytes(row.size ?? 0) ?? "—" }) : "",
                     row.aliases.length > 0 ? t("별칭: {names}", { names: row.aliases.join(", ") }) : "",
                     row.data_stream ? t("데이터 스트림: {name}", { name: row.data_stream }) : "",
                   ]

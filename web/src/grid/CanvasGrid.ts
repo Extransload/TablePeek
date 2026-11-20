@@ -11,6 +11,8 @@ import { scrollbarsFor, type ScrollArea } from "../scrollbars";
 import { forgetColumnWidths, loadColumnWidths, saveColumnWidth } from "../columnWidths";
 import { reducedMotion } from "../motion";
 import { moveItem, movedIndex } from "./columnMove";
+import { toNumber } from "../chartData";
+import { tidyNumberText } from "../rowOps";
 
 // Sizes at the default system font size (12px); scaled by syncScale().
 const BASE_FONT_PX = 12;
@@ -31,6 +33,7 @@ const MAX_SCROLL_PX = 33_000_000;
 const MIN_CHAR_W = 3;
 const STATE_ALPHA = 0.16;
 const EDIT_ALPHA = 0.24;
+const PEEK_BAR_ALPHA = 0.24;
 let FONT = "";
 let FONT_HEADER = "";
 // The grid's text, rows and header follow the data table's font and size
@@ -181,6 +184,17 @@ type ColumnMoveHandler = (from: number, to: number) => boolean;
 export type CellAccessory = "choices" | "date" | "link";
 export type AccessoryHandler = (kind: "date" | "link", row: number, col: number) => void;
 
+// Peek's marks over a query result (peek.ts): a bar under each number of the
+// columns it measures, the cells that stand out, and floats without their
+// binary rounding tail. Drawing only: copies and edits see the values.
+export interface GridPeek {
+  // By column index: the value a full-width bar stands for; null, no bars.
+  barMax: (number | null)[];
+  // Cells that stand out, as `${row}:${col}`.
+  hot: ReadonlySet<string>;
+  tidyNumbers: boolean;
+}
+
 const CLICK_SLOP = 2;
 // How far a header is dragged sideways before its column is picked up; a
 // shorter press is still a click (a sort), as the home screen's cards keep it.
@@ -308,6 +322,7 @@ export class CanvasGrid {
   private pendingCellClick: CellPos | null = null;
   private cellClick: ((row: number, col: number) => void) | null = null;
   private specs: (GridColumnSpec | null)[] | null = null;
+  private peek: GridPeek | null = null;
   private accessoryHandler: AccessoryHandler | null = null;
   // Width of one ASCII character in the cell font, for a cheap fit check.
   private charW = 0;
@@ -477,6 +492,11 @@ export class CanvasGrid {
   // What each column is (type, key, foreign key), by column index.
   setColumnSpecs(specs: (GridColumnSpec | null)[] | null): void {
     this.specs = specs;
+    this.schedulePaint();
+  }
+
+  setPeek(peek: GridPeek | null): void {
+    this.peek = peek;
     this.schedulePaint();
   }
 
@@ -1327,6 +1347,8 @@ export class CanvasGrid {
     const colorsEnabled = f.colorsEnabled;
     const cellStateOf = src.cellState ? (r: number, c: number) => src.cellState!(r, c) : null;
 
+    const peek = this.peek;
+
     // Row fills stay out of the header and the gutter, which may be
     // translucent (a see-through window) and would show them through.
     ctx.save();
@@ -1367,6 +1389,23 @@ export class CanvasGrid {
         if (sel && r >= sel.r0 && r <= sel.r1 && c >= sel.c0 && c <= sel.c1) {
           ctx.fillStyle = selFill;
           ctx.fillRect(fx, y, fw, ROW_H);
+        }
+        // Peek's bar: the cell's share of its column's largest value, from
+        // the left, inset so neighbouring bars stay apart.
+        const barMax = peek?.barMax[c] ?? null;
+        if (barMax !== null && state !== "deleted") {
+          const value = toNumber(src.cell(r, c));
+          if (value !== null && value > 0) {
+            const bx = x + 3;
+            const bw = Math.min(1, value / barMax) * (cw - 6);
+            const visible = Math.min(bx + bw, w) - Math.max(bx, gutterW);
+            if (visible > 0) {
+              ctx.globalAlpha = PEEK_BAR_ALPHA;
+              ctx.fillStyle = peek!.hot.has(`${r}:${c}`) ? palette.warn : palette.accent;
+              ctx.fillRect(Math.max(bx, gutterW), y + 4, visible, ROW_H - 8);
+              ctx.globalAlpha = 1;
+            }
+          }
         }
       }
     }
@@ -1425,14 +1464,16 @@ export class CanvasGrid {
           ctx.textAlign = "center";
           ctx.fillText(this.fitText("NULL", room), x + CELL_PAD + room / 2, y);
         } else {
-          let text = this.cellText(v);
+          let text = peek?.tidyNumbers && typeof v === "number" ? tidyNumberText(v) : this.cellText(v);
           const align = alignOf === null ? null : alignOf(r, c);
           const right = align === null ? typeof v === "number" : align === "right";
           const ink = inkOf === null ? null : inkOf(r, c);
           const fill =
             state === "deleted"
               ? palette.faint
-              : (ink ?? (spec?.pk && colorsEnabled ? palette.error : this.textInk(v, colorsEnabled, spec?.kind)));
+              : peek?.hot.has(`${r}:${c}`)
+                ? palette.warn
+                : (ink ?? (spec?.pk && colorsEnabled ? palette.error : this.textInk(v, colorsEnabled, spec?.kind)));
           let left = x + CELL_PAD;
           let textRoom = room;
           const badge = badgeOf === null ? null : badgeOf(r, c);

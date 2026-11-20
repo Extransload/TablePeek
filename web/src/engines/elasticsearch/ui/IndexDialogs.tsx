@@ -12,7 +12,7 @@ import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
-import { getLanguage, say, t } from "../../../i18n";
+import { getLanguage, say, t, uiLocale } from "../../../i18n";
 import { JsonSyntaxError, parseJson, stringifyJson } from "../../mongodb/bson";
 import { AdminModal } from "../../mongodb/ui/AdminModal";
 import {
@@ -215,7 +215,7 @@ function Cell({ label, value }: { label: string; value: string }) {
 }
 
 function countText(n: number | null): string {
-  return n === null ? "—" : n.toLocaleString();
+  return n === null ? "—" : n.toLocaleString(uiLocale());
 }
 
 // ---- 인덱스 만들기 ----
@@ -980,7 +980,7 @@ function ReindexDialog({ host, index, onEffect, onClose }: DialogProps & { index
       </div>
       {docs !== null ? (
         <span className={docs >= LARGE_REINDEX && wait ? "es-admin-note" : "panel-dim"}>
-          {docs >= LARGE_REINDEX && wait ? t("원본에 문서가 {count}개 있습니다 — 오래 걸리니 백그라운드 작업을 권합니다.", { count: docs.toLocaleString() }) : t("원본 문서 {count}개", { count: docs.toLocaleString() })}
+          {docs >= LARGE_REINDEX && wait ? t("원본에 문서가 {count}개 있습니다 — 오래 걸리니 백그라운드 작업을 권합니다.", { count: docs.toLocaleString(uiLocale()) }) : t("원본 문서 {count}개", { count: docs.toLocaleString(uiLocale()) })}
         </span>
       ) : null}
       {finished ? null : <RequestPreview text={"error" in plan ? null : plan.command} problem={"error" in plan ? plan.error : null} />}
@@ -1002,8 +1002,8 @@ function ReindexDialog({ host, index, onEffect, onClose }: DialogProps & { index
             <Cell label={t("바꿈")} value={countText(num(result.updated))} />
             <Cell label={t("버전 충돌")} value={countText(num(result.version_conflicts))} />
             <Cell label={t("변경 없음")} value={countText(num(result.noops))} />
-            <Cell label={t("실패")} value={failures.length.toLocaleString()} />
-            <Cell label={t("걸린 시간")} value={num(result.took) !== null ? `${(num(result.took) ?? 0).toLocaleString()} ms` : "—"} />
+            <Cell label={t("실패")} value={failures.length.toLocaleString(uiLocale())} />
+            <Cell label={t("걸린 시간")} value={num(result.took) !== null ? `${(num(result.took) ?? 0).toLocaleString(uiLocale())} ms` : "—"} />
           </div>
           {failures.length > 0 ? (
             <div className="mg-import-preview mono mg-import-failures">
@@ -1307,7 +1307,7 @@ function StatsDialog({ host, index, onClose }: { host: SearchHost; index: string
               <Cell label={t("건강")} value={single.health || "—"} />
             </>
           ) : (
-            <Cell label={t("인덱스")} value={data.rows.length.toLocaleString()} />
+            <Cell label={t("인덱스")} value={data.rows.length.toLocaleString(uiLocale())} />
           )}
           <Cell label={t("문서")} value={countText(sum((r) => r.docs))} />
           <Cell label={t("삭제된 문서")} value={countText(sum((r) => r.deleted))} />
@@ -1315,14 +1315,14 @@ function StatsDialog({ host, index, onClose }: { host: SearchHost; index: string
           <Cell label={t("주 샤드 크기")} value={formatBytes(sum((r) => r.pri_size)) ?? "—"} />
           <Cell label={t("주 샤드")} value={countText(sum((r) => r.primaries))} />
           {single !== null ? <Cell label={t("복제본")} value={countText(single.replicas)} /> : null}
-          <Cell label={t("샤드 (전체)")} value={data.shards.length.toLocaleString()} />
-          {data.fieldCount !== null ? <Cell label={t("매핑 필드")} value={data.fieldCount.toLocaleString()} /> : null}
+          <Cell label={t("샤드 (전체)")} value={data.shards.length.toLocaleString(uiLocale())} />
+          {data.fieldCount !== null ? <Cell label={t("매핑 필드")} value={data.fieldCount.toLocaleString(uiLocale())} /> : null}
           {single !== null ? (
             <>
               <Cell label={t("별칭")} value={single.aliases.length > 0 ? single.aliases.join(", ") : "—"} />
               <Cell label={t("데이터 스트림")} value={single.data_stream ?? "—"} />
               <Cell label={t("새로 고침 간격")} value={str(settings.refresh_interval) || t("기본 (1s)")} />
-              <Cell label={t("만든 때")} value={created !== null ? new Date(created).toLocaleString() : "—"} />
+              <Cell label={t("만든 때")} value={created !== null ? new Date(created).toLocaleString(uiLocale()) : "—"} />
               <Cell label={t("만든 버전")} value={version || "—"} />
               <Cell label="UUID" value={single.uuid || "—"} />
             </>

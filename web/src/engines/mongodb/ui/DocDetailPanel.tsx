@@ -14,7 +14,7 @@ import { FieldBox } from "../../../components/FieldBox";
 import { SearchIcon } from "../../../components/icons";
 import type { SelectedRows } from "../../../grid/CanvasGrid";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { collStats, isAbort, listIndexes, type CollStats, type IndexInfo, type Namespace } from "../api";
 import { deepEqual, isDocument, typeName, type BsonDocument, type BsonValue } from "../bson";
 import { toShell } from "../format";
@@ -98,7 +98,7 @@ function indexFlags(ix: IndexInfo): string[] {
 // Without the index list (no right to read it) the stats' index sizes stand in.
 export function collectionFacts(stats: CollStats, indexes: IndexInfo[] | null): Fact[] {
   const facts: Fact[] = [
-    { name: "count", value: t("문서 {count}개", { count: stats.count.toLocaleString() }) },
+    { name: "count", value: t("문서 {count}개", { count: stats.count.toLocaleString(uiLocale()) }) },
     { name: "size", value: formatBytes(stats.size) },
     { name: "avgObjSize", value: formatBytes(stats.avgObjSize) },
     { name: "storageSize", value: formatBytes(stats.storageSize) },
@@ -268,7 +268,7 @@ function SharedValues({ table, rows, query }: { table: DocTable; rows: SelectedR
 
   return (
     <div className="field-list mg-detail-other">
-      <div className="mg-detail-title">{t("{count}개 행을 선택했습니다", { count: count.toLocaleString() })}</div>
+      <div className="mg-detail-title">{t("{count}개 행을 선택했습니다", { count: count.toLocaleString(uiLocale()) })}</div>
       {boxes?.map(({ column, same, first, types }) => (
         <FieldBox
           key={column.id}
@@ -306,7 +306,7 @@ export function DocDetail({ ns, doc, position, save, typeLabel, query }: { ns: N
         readOnly={!editable}
         filter={query}
         onSave={editable ? (edits) => save(doc, edits) : undefined}
-        head={<DetailHead parts={[ns.coll]} id={id} note={`#${(position + 1).toLocaleString()}`} />}
+        head={<DetailHead parts={[ns.coll]} id={id} note={`#${(position + 1).toLocaleString(uiLocale())}`} />}
         className="mg-panel-card"
         typeLabel={typeLabel}
         position={position}

@@ -45,6 +45,8 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { UpdatePill } from "./components/UpdatePill";
 import { FsModal } from "./components/FsModal";
 import { GridHost, type GridHostHandle } from "./components/GridHost";
+import { PeekStrip, usePeekModel } from "./components/PeekStrip";
+import { gridPeek } from "./peek";
 import type { SelectedRows } from "./grid/CanvasGrid";
 import type { RowSource } from "./grid/rowSource";
 import { HomeScreen, type NewConnectionOptions } from "./components/HomeScreen";
@@ -53,7 +55,7 @@ import { HoverTooltip } from "./components/HoverTooltip";
 import { capabilitiesOf, engineById, requireSqlDialect, unsupportedEngine, type SqlDialect } from "./engines";
 import { fieldVisible, valuesFromConfig } from "./engines/connection";
 import { SQLITE_EXTENSIONS } from "./engines/sqlite";
-import { t, tServer, tTableCount } from "./i18n";
+import { t, tServer, tTableCount, uiLocale } from "./i18n";
 import { ImportModal, type ImportFormat } from "./components/ImportModal";
 import { JobsModal } from "./components/JobsModal";
 import { ParamModal } from "./components/ParamModal";
@@ -1811,9 +1813,9 @@ export default function App() {
     const target = spec.offset;
     const label = (done: number): string =>
       t("{row}행째로 가는 중 · {done} / {total}행 건너뜀", {
-        row: (target + 1).toLocaleString(),
-        done: done.toLocaleString(),
-        total: (target - from).toLocaleString(),
+        row: (target + 1).toLocaleString(uiLocale()),
+        done: done.toLocaleString(uiLocale()),
+        total: (target - from).toLocaleString(uiLocale()),
       });
     const task: StepTask = {
       tabId: tab.id,
@@ -1931,7 +1933,7 @@ export default function App() {
                 ...value,
                 label: t("행 수 세는 중 · {percent}% · {count}행까지", {
                   percent,
-                  count: total.toLocaleString(),
+                  count: total.toLocaleString(uiLocale()),
                 }),
                 fraction: step.done,
               }
@@ -3362,7 +3364,7 @@ export default function App() {
     if (tooBig) {
       store.setInfo(t("너무 커서 표시되지 않는 이진 값은 복제하지 않고 기본값으로 두었습니다"));
     }
-    noteCapped(to - from + 1, t("처음 {count}행만 복제했습니다", { count: COPY_MAX_ROWS.toLocaleString() }));
+    noteCapped(to - from + 1, t("처음 {count}행만 복제했습니다", { count: COPY_MAX_ROWS.toLocaleString(uiLocale()) }));
   }
 
   // Whole rows pasted over whole rows: added as new rows, as Duplicate does
@@ -5185,7 +5187,7 @@ export default function App() {
           await writeClipboard(formatCopy(format, { columns: cols.map((c) => columns[c]), rows: values }, target));
           noteCapped(
             selection.r1 - selection.r0 + 1,
-            t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+            t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString(uiLocale()) }),
           );
         } catch (err) {
           notifyError(toAppError(err, t("행을 불러오지 못했습니다")));
@@ -5225,7 +5227,7 @@ export default function App() {
       }
       noteCapped(
         selection.r1 - selection.r0 + 1,
-        t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+        t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString(uiLocale()) }),
       );
     };
     // Columns that change by addition only (CQL counters), as the table's
@@ -5262,7 +5264,7 @@ export default function App() {
         }
         noteCapped(
           selection.r1 - selection.r0 + 1,
-          t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+          t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString(uiLocale()) }),
         );
       })();
     };
@@ -5325,7 +5327,7 @@ export default function App() {
             await writeClipboard(values.map((line) => cellToString(line[0]) ?? "").join("\n"));
             noteCapped(
               source.rowCount,
-              t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+              t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString(uiLocale()) }),
             );
           } catch (err) {
             notifyError(toAppError(err, t("행을 불러오지 못했습니다")));
@@ -5374,7 +5376,7 @@ export default function App() {
           }
           noteCapped(
             selection.r1 - selection.r0 + 1,
-            t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+            t("처음 {count}행만 바꿨습니다", { count: COPY_MAX_ROWS.toLocaleString(uiLocale()) }),
           );
         },
       });
@@ -5392,7 +5394,7 @@ export default function App() {
       }
       const copies = lastRow - selection.r0 + 1;
       items.push({
-        label: copies === 1 ? t("행 복제") : t("{count}행 복제", { count: copies.toLocaleString() }),
+        label: copies === 1 ? t("행 복제") : t("{count}행 복제", { count: copies.toLocaleString(uiLocale()) }),
         separatorBefore: true,
         onSelect: () => {
           void duplicateRows(selection.r0, selection.r1);
@@ -5456,7 +5458,7 @@ export default function App() {
               await writeClipboard(statements.join("\n"));
               noteCapped(
                 rowCount,
-                t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString() }),
+                t("처음 {count}행만 복사했습니다", { count: COPY_MAX_ROWS.toLocaleString(uiLocale()) }),
               );
             } catch (err) {
               notifyError(toAppError(err, t("행을 불러오지 못했습니다")));
@@ -6085,6 +6087,13 @@ export default function App() {
   const analysisTab = activeQueryTab ?? (dataView ? activeDataTab : null);
   const analysisView = analysisTab?.analysis?.view ?? null;
   const paneView: ResultView = resultView === "grid" && analysisView !== null ? analysisView : resultView;
+  // Peek sums up a query tab's result (Settings → Data Table → Query → Peek).
+  const peekOn = settings.peek && activeQueryTab !== null;
+  const peek = usePeekModel(peekOn ? state.result : null, peekOn);
+  const peekMarks = useMemo(
+    () => (peekOn && state.result !== null ? gridPeek(peek, state.result.source.columns.length) : null),
+    [peekOn, peek, state.result],
+  );
   const shownResult: ShownResult | null =
     activeQueryTab === null
       ? null
@@ -7260,6 +7269,9 @@ export default function App() {
                       {dataView && state.info && state.status !== "running" ? (
                         <div className="data-notice info surface-bars">{tServer(state.info)}</div>
                       ) : null}
+                      {peek !== null && state.result !== null && paneView === "grid" ? (
+                        <PeekStrip key={state.result.queryId} model={peek} />
+                      ) : null}
                       <div className="result-body" ref={resultBodyRef}>
                         <div className={`result-layer grid-layer${paneView === "grid" ? "" : " hidden"}${staleRows ? " stale" : ""}`}>
                           <GridHost
@@ -7286,6 +7298,7 @@ export default function App() {
                             fixedKeys={sqlDialect?.fixedKeys === true}
                             onLink={(row, col) => void fkJump(row, col)}
                             themeKey={`${activeThemeId(settings)}:${settings.accent}:${settings.rowAlt}`}
+                            peek={peekMarks}
                           />
                           {state.result !== null ? null : resultLoading ? (
                             <LoadingState
@@ -7449,6 +7462,8 @@ export default function App() {
                           shown={shownResult}
                           running={connRunning && runningTabId === activeQueryTab.id}
                           canExport={state.result !== null && state.result.meta.columns.length > 0}
+                          peek={settings.peek}
+                          onPeek={(on) => setSettings(saveSettings({ peek: on }))}
                           onView={(view) => {
                             if (view === "grid" || view === "chart" || view === "pivot") {
                               setAnalysisView(view);

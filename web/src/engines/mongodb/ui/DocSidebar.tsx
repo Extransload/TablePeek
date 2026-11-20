@@ -17,7 +17,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon, DatabaseIcon, FolderIcon, MoreIcon, SearchIcon, TableIcon } from "../../../components/icons";
 import { Gauge } from "../../../components/Gauge";
 import { LoadingState } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { store } from "../../../store";
 import { listCollections, listDatabases, type CollectionInfo, type DocDatabase } from "../api";
 import { SYSTEM_DATABASES, type DocAdminRequest } from "./ManageModals";
@@ -224,7 +224,7 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
           <span className="schema-table-name">{c.name}</span>
           {c.type === "view" ? <span className="mg-side-badge">{t("뷰 [종류]")}</span> : null}
           {c.type === "timeseries" ? <span className="mg-side-badge">{t("시계열")}</span> : null}
-          {c.count !== null ? <span className="schema-section-count mg-side-count">{c.count.toLocaleString()}</span> : null}
+          {c.count !== null ? <span className="schema-section-count mg-side-count">{c.count.toLocaleString(uiLocale())}</span> : null}
         </div>
       </div>
     );
@@ -288,7 +288,7 @@ export function DocSidebar({ conn, refreshKey, active, onOpen, onOpenShell, onAd
           <FolderIcon size={11} className="schema-table-icon" />
           <span className="schema-table-name">{bucket}</span>
           <span className="mg-side-badge">GridFS</span>
-          {files.count !== null ? <span className="schema-section-count mg-side-count">{files.count.toLocaleString()}</span> : null}
+          {files.count !== null ? <span className="schema-section-count mg-side-count">{files.count.toLocaleString(uiLocale())}</span> : null}
         </div>
         <Collapse open={isOpen} stagger>
           {() => (

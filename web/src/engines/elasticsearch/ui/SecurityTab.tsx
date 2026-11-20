@@ -9,7 +9,7 @@ import { ErrorNotice, notifyError } from "../../../components/ErrorNotice";
 import { KeyIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
 import { Gauge } from "../../../components/Gauge";
 import { LoadingState } from "../../../components/Spinner";
-import { t, tServer } from "../../../i18n";
+import { t, tServer, uiLocale } from "../../../i18n";
 import { stringifyJson } from "../../mongodb/bson";
 import { isAbort, securityDelete, securityList, securityOverview, userEnabled, type SecurityEntry, type SecurityKind, type SecurityOverview } from "../api";
 import type { Json } from "../json";
@@ -427,8 +427,8 @@ function SectionView({ ctx, kind, refreshSeq }: { ctx: SecurityContext; kind: Se
           <>
             <td className="mono es-sec-id">{textOf(entry.id)}</td>
             <td className="mono">{textOf(entry.user) ? `${textOf(entry.user)}${realm ? ` (${realm})` : ""}` : <span className="panel-dim">—</span>}</td>
-            <td>{created !== null ? new Date(created).toLocaleString() : <span className="panel-dim">—</span>}</td>
-            <td>{expires !== null ? new Date(expires).toLocaleString() : <span className="panel-dim">{t("없음")}</span>}</td>
+            <td>{created !== null ? new Date(created).toLocaleString(uiLocale()) : <span className="panel-dim">—</span>}</td>
+            <td>{expires !== null ? new Date(expires).toLocaleString(uiLocale()) : <span className="panel-dim">{t("없음")}</span>}</td>
             <td>
               {state === "invalidated" ? (
                 <span className="es-chip dim">{t("무효화됨")}</span>
@@ -493,7 +493,7 @@ function SectionView({ ctx, kind, refreshSeq }: { ctx: SecurityContext; kind: Se
   return (
     <div className="mg-pane es-pane">
       <div className="mg-agg-bar surface-bars">
-        <span className="mg-agg-count">{shown === null ? t(SECTIONS.find((s) => s.id === kind)?.label ?? "") : t("{count}개", { count: shown.length.toLocaleString() })}</span>
+        <span className="mg-agg-count">{shown === null ? t(SECTIONS.find((s) => s.id === kind)?.label ?? "") : t("{count}개", { count: shown.length.toLocaleString(uiLocale()) })}</span>
         <input type="search" className="mg-input es-sec-filter" placeholder={t("이름으로 거르기")} aria-label={t("이름으로 거르기")} value={filter} onChange={(event) => setFilter(event.target.value)} />
         <label className="es-check">
           <input type="checkbox" checked={showAll} onChange={(event) => setShowAll(event.target.checked)} />

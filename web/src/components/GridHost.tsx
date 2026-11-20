@@ -2,6 +2,7 @@ import { forwardRef, useImperativeHandle, useRef } from "react";
 import type {
   CellChoices,
   GridEditHandlers,
+  GridPeek,
   GridSelection,
   SelectedRows,
   SortIndicator,
@@ -48,6 +49,8 @@ interface GridHostProps {
   onCellQuickLook?(row: number, col: number): void;
   onLink?(row: number, col: number): void;
   themeKey?: string;
+  // See TableGrid.
+  peek?: GridPeek | null;
 }
 
 // "a,b" with b picked → "a"; with c picked → "a,b,c".
@@ -143,6 +146,7 @@ export const GridHost = forwardRef<GridHostHandle, GridHostProps>(function GridH
       onCellQuickLook={props.onCellQuickLook}
       onLink={props.onLink}
       themeKey={props.themeKey}
+      peek={props.peek}
     />
   );
 });

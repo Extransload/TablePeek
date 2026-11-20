@@ -1,6 +1,6 @@
 import type { ContextMenuItem } from "../components/ContextMenu";
 import type { CopyFormat } from "../copyFormats";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 
 // What Set Value puts in the selected cells, as the menu names them.
 export type CellValueChoice = "empty" | "null" | "default" | "now";
@@ -61,7 +61,7 @@ export function deleteRowsLabel(count: number, action: "cancel" | "undo" | "dele
   if (count === 1) {
     return action === "cancel" ? t("행 추가 취소") : action === "undo" ? t("행 삭제 취소") : t("행 삭제");
   }
-  const values = { count: count.toLocaleString() };
+  const values = { count: count.toLocaleString(uiLocale()) };
   return action === "cancel"
     ? t("{count}행 추가 취소", values)
     : action === "undo"

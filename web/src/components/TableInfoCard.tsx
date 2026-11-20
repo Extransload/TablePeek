@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { engineById } from "../engines";
 import { formatBytes, formatRowEstimate } from "../format";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import type { TableDetail, TableSchema } from "../store";
 import { TableIcon } from "./icons";
 import { Spinner } from "./Spinner";
@@ -61,13 +61,13 @@ export function TableInfoCard({ table, detail, kind, top, left }: TableInfoCardP
         "—"
       ),
     ],
-    [t("컬럼"), (detail?.columns.length ?? table.columns.length).toLocaleString()],
+    [t("컬럼"), (detail?.columns.length ?? table.columns.length).toLocaleString(uiLocale())],
     [t("기본 키"), primary.length > 0 ? primary.join(", ") : "—"],
-    [t("인덱스"), loading ? pending : (detail?.indexes.length ?? 0).toLocaleString()],
-    [t("외래 키"), loading ? pending : (detail?.foreign_keys.length ?? 0).toLocaleString()],
+    [t("인덱스"), loading ? pending : (detail?.indexes.length ?? 0).toLocaleString(uiLocale())],
+    [t("외래 키"), loading ? pending : (detail?.foreign_keys.length ?? 0).toLocaleString(uiLocale())],
   ];
   if (detail?.triggers !== undefined && detail.triggers.length > 0) {
-    facts.push([t("트리거"), detail.triggers.length.toLocaleString()]);
+    facts.push([t("트리거"), detail.triggers.length.toLocaleString(uiLocale())]);
   }
 
   return createPortal(

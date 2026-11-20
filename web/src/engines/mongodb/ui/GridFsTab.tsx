@@ -11,7 +11,7 @@ import { CloseIcon, DownloadIcon, EyeIcon, RefreshIcon, SearchIcon, TrashIcon, U
 import { Gauge } from "../../../components/Gauge";
 import { LoadingState } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { say, t } from "../../../i18n";
+import { say, t, uiLocale } from "../../../i18n";
 import { count, gridFsDelete, gridFsDownloadUrl, gridFsFiles, gridFsUpload, isAbort, toNumber, type Namespace } from "../api";
 import { BsonDate, Int32, bsonDoc, isDocument, stringifyJson, toEJSON, type BsonDocument, type BsonValue } from "../bson";
 import { toShell, toShellPretty } from "../format";
@@ -425,7 +425,7 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
                       {String(file.get("filename") ?? "")}
                     </td>
                     <td className="num mono">{formatBytes(toNumber(file.get("length"))) ?? ""}</td>
-                    <td className="mono">{uploaded instanceof BsonDate ? uploaded.toDate().toLocaleString() : ""}</td>
+                    <td className="mono">{uploaded instanceof BsonDate ? uploaded.toDate().toLocaleString(uiLocale()) : ""}</td>
                     <td className="mono">{contentTypeOf(file)}</td>
                     <td className="mono mg-gridfs-meta" title={meta !== undefined && meta !== null ? toShellPretty(meta) : undefined}>
                       {meta !== undefined && meta !== null ? toShell(meta) : ""}
@@ -461,7 +461,7 @@ export function GridFsTab({ conn, db, bucket, tabKey, notify, onChanged }: GridF
       </div>
       <div className="data-toolbar mg-pager mg-gridfs-pager surface-bars">
         <span className="panel-dim">
-          {total !== null ? t("파일 {count}개", { count: total.toLocaleString() }) : files !== null ? t("파일 {count}개 이상", { count: (page * PAGE_SIZE + files.length).toLocaleString() }) : ""}
+          {total !== null ? t("파일 {count}개", { count: total.toLocaleString(uiLocale()) }) : files !== null ? t("파일 {count}개 이상", { count: (page * PAGE_SIZE + files.length).toLocaleString(uiLocale()) }) : ""}
         </span>
         <span className="spacer" />
         <button type="button" disabled={page === 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>

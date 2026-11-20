@@ -16,7 +16,7 @@ import { confirmDialog } from "../../../components/ConfirmDialog";
 import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMenu";
 import { FieldError, fieldErrorProps } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon } from "../../../components/icons";
-import { phrase, say, t, type Phrase } from "../../../i18n";
+import { phrase, say, t, type Phrase, uiLocale } from "../../../i18n";
 import { deepEqual, isDocument, stringifyJson, toEJSON, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { VIEW_LIMITS, ejsonText, preview, toShell, truncation } from "../format";
 import { valueAt, type DocEdit } from "../guard";
@@ -823,7 +823,7 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
   };
   const lookAt = (index: number, anchor: Element | null) => {
     setMenu(null);
-    setLook({ name: `#${(offset + index + 1).toLocaleString()}`, value: docs[index], position: offset + index, anchor: anchorOf(anchor) });
+    setLook({ name: `#${(offset + index + 1).toLocaleString(uiLocale())}`, value: docs[index], position: offset + index, anchor: anchorOf(anchor) });
   };
   return (
     <div
@@ -882,7 +882,7 @@ export function CardView({ docs, offset, readOnly, allOpen, onSave, onEditJson, 
               }
             }}
           >
-            <span className="mg-doc-no">#{(offset + i + 1).toLocaleString()}</span>
+            <span className="mg-doc-no">#{(offset + i + 1).toLocaleString(uiLocale())}</span>
             {id !== undefined ? <ShellText className="mg-doc-id" text={toShell(id)} /> : null}
             {headExtra?.(doc)}
             <span className="spacer" />

@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { downloadBlob } from "../export";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { store, type CellRef } from "../store";
 import { ErrorNotice, FieldError, fieldErrorProps } from "./ErrorNotice";
 import { Select } from "./Select";
@@ -93,7 +93,7 @@ function fileName(cell: CellRef): string {
 }
 
 function bytesText(count: number): string {
-  return t("{count}바이트", { count: count.toLocaleString() });
+  return t("{count}바이트", { count: count.toLocaleString(uiLocale()) });
 }
 
 function BinaryCellModal({ options, onClose }: { options: BinaryCellOptions; onClose(): void }) {
@@ -318,8 +318,8 @@ function BinaryCellModal({ options, onClose }: { options: BinaryCellOptions; onC
                 <div className="job-bar-fill" style={{ width: `${percent ?? 5}%` }} />
               </div>
               <span className="helper">
-                {busy.kind === "download" ? t("받는 중") : t("보내는 중")} — {busy.done.toLocaleString()}
-                {busy.total !== null ? ` / ${busy.total.toLocaleString()}` : ""}
+                {busy.kind === "download" ? t("받는 중") : t("보내는 중")} — {busy.done.toLocaleString(uiLocale())}
+                {busy.total !== null ? ` / ${busy.total.toLocaleString(uiLocale())}` : ""}
               </span>
             </div>
           ) : null}

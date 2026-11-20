@@ -15,7 +15,7 @@ import { PlayIcon } from "../../../components/icons";
 import { ReviewModal } from "../../../components/ReviewModal";
 import { Select } from "../../../components/Select";
 import { Gauge, useTabWork, type GaugeOutcome } from "../../../components/Gauge";
-import { literal, phrase, say, t, type Phrase } from "../../../i18n";
+import { literal, phrase, say, t, type Phrase, uiLocale } from "../../../i18n";
 import type { ReviewItem, SafeMode } from "../../../sqlTools";
 import * as api from "../api";
 import { Double, Int32, Int64, bsonDoc, compareForSort, fromEJSON, isDocument, parseJson, type BsonDocument, type BsonValue } from "../bson";
@@ -228,7 +228,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
         }
       case "find": {
         const batch = await api.find(ns(req.coll), { filter: req.filter, projection: req.projection, sort: req.sort, skip: req.skip ?? undefined, limit: req.limit ?? SHELL_LIMIT, maxTimeMS }, signal);
-        return { docs: batch.docs, coll: req.coll, status: phrase("문서 {count}개", { count: batch.docs.length.toLocaleString() }), reply: null };
+        return { docs: batch.docs, coll: req.coll, status: phrase("문서 {count}개", { count: batch.docs.length.toLocaleString(uiLocale()) }), reply: null };
       }
       case "findOne": {
         const batch = await api.find(ns(req.coll), { filter: req.filter, projection: req.projection, limit: 1, maxTimeMS }, signal);
@@ -250,7 +250,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
       }
       case "aggregate": {
         const batch = await api.aggregate(ns(req.coll), req.pipeline, maxTimeMS, signal);
-        return { docs: batch.docs, coll: req.coll, status: phrase("문서 {count}개", { count: batch.docs.length.toLocaleString() }), reply: null };
+        return { docs: batch.docs, coll: req.coll, status: phrase("문서 {count}개", { count: batch.docs.length.toLocaleString(uiLocale()) }), reply: null };
       }
       case "insertOne":
       case "insertMany": {
@@ -473,7 +473,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
     for (const o of outputs) {
       if (o.kind === "value" && readsAsDocs(o.value)) {
         const docs = asDocs(o.value);
-        next.push({ docs, coll: o.coll, status: phrase("문서 {count}개", { count: `${docs.length.toLocaleString()}${o.more ? "+" : ""}` }), reply: null });
+        next.push({ docs, coll: o.coll, status: phrase("문서 {count}개", { count: `${docs.length.toLocaleString(uiLocale())}${o.more ? "+" : ""}` }), reply: null });
       }
     }
     setRunning(false);
@@ -624,7 +624,7 @@ export function ShellTab({ conn, connKey, db, tabKey, text, onTextChange, onDbCh
       if (Array.isArray(o.value) && index >= 0 && o.value.length > 1) {
         return (
           <li key={i} className="mg-script-docs">
-            {t("문서 {count}개", { count: `${o.value.length.toLocaleString()}${o.more ? "+" : ""}` })}
+            {t("문서 {count}개", { count: `${o.value.length.toLocaleString(uiLocale())}${o.more ? "+" : ""}` })}
             {open}
           </li>
         );

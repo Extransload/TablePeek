@@ -13,7 +13,7 @@ import { confirmDialog } from "../../../components/ConfirmDialog";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { Gauge } from "../../../components/Gauge";
 import { CopyIcon, PlayIcon, StopIcon, TrashIcon } from "../../../components/icons";
-import { t, tServer } from "../../../i18n";
+import { t, tServer, uiLocale } from "../../../i18n";
 import { getSettings, subscribeSettings } from "../../../settings";
 import { needsConfirm } from "../../elasticsearch/ui/common";
 import { classify, consoleRun, consoleStop, KvError, type CommandClass } from "../api";
@@ -278,7 +278,7 @@ export function CliView({ host, connKey, address, db, onDbChange, text, onTextCh
               <span className="kv-entry-line mono">{entry.line}</span>
               <span className="spacer" />
               {entry.class !== undefined && entry.class !== "read" ? <span className={`kv-class kv-class-${entry.class}`}>{entry.class === "danger" ? t("위험") : t("쓰기")}</span> : null}
-              {entry.elapsedMs !== undefined ? <span className="kv-entry-time panel-dim">{entry.elapsedMs < 1 ? "<1 ms" : `${entry.elapsedMs.toLocaleString()} ms`}</span> : null}
+              {entry.elapsedMs !== undefined ? <span className="kv-entry-time panel-dim">{entry.elapsedMs < 1 ? "<1 ms" : `${entry.elapsedMs.toLocaleString(uiLocale())} ms`}</span> : null}
               {entry.reply !== undefined ? (
                 <button type="button" className="kv-icon kv-entry-copy" title={t("응답 복사")} aria-label={t("응답 복사")} onClick={() => void copyText(host, replyText(entry.reply as Reply))}>
                   <CopyIcon size={10} />

@@ -1,5 +1,5 @@
 import { NUMERIC_TEXT, TextBlobBuilder } from "./export";
-import { t } from "./i18n";
+import { t, uiLocale } from "./i18n";
 import { ZipWriter } from "./zip";
 
 // A minimal SpreadsheetML workbook: one sheet per million rows, strings
@@ -112,7 +112,7 @@ export class XlsxWriter {
 
   setColumns(columns: string[]): void {
     if (columns.length > MAX_COLUMNS) {
-      throw new Error(t("Excel 시트에는 열을 {count}개까지 넣을 수 있습니다", { count: MAX_COLUMNS.toLocaleString() }));
+      throw new Error(t("Excel 시트에는 열을 {count}개까지 넣을 수 있습니다", { count: MAX_COLUMNS.toLocaleString(uiLocale()) }));
     }
     this.columns = columns;
     this.refs = columns.map((_, index) => columnName(index));

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { writeClipboard } from "../clipboard";
-import { getLanguage, t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { downloadSql } from "../savedQueries";
 import { store, type HistoryEntry } from "../store";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -27,10 +27,6 @@ const HISTORY_LIMIT = 1000;
 
 function dayKey(date: Date): string {
   return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
-}
-
-function locale(): string {
-  return getLanguage() === "ko" ? "ko-KR" : "en-US";
 }
 
 interface Day {
@@ -95,9 +91,10 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
   }, [conn, load]);
 
   const needle = filter.trim().toLowerCase();
+  // Day headings follow a language switch too.
+  const lang = uiLocale();
   const days = useMemo((): Day[] => {
     const result: Day[] = [];
-    const lang = locale();
     for (const entry of entries ?? []) {
       if (needle !== "" && !entry.sql.toLowerCase().includes(needle)) {
         continue;
@@ -116,7 +113,7 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
       day.entries.push(entry);
     }
     return result;
-  }, [entries, needle]);
+  }, [entries, needle, lang]);
 
   const today = dayKey(new Date());
   // A search shows every match without opening days by hand.
@@ -248,7 +245,7 @@ export function HistoryPane({ conn, version, active, onOpen, onRun, onInsert }: 
                       }}
                     >
                       <div className="history-time">
-                        {new Date(entry.at * 1000).toLocaleTimeString(locale(), timeFormat)}
+                        {new Date(entry.at * 1000).toLocaleTimeString(uiLocale(), timeFormat)}
                       </div>
                       <div className="history-sql">
                         <SqlText sql={entry.sql} />

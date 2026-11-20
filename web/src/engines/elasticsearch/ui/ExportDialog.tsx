@@ -13,7 +13,7 @@ import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { TextBlobBuilder, downloadBlob, exportBaseName } from "../../../export";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { AdminModal } from "../../mongodb/ui/AdminModal";
 import { count, definition, exportLines, isAbort, type ExportRequest } from "../api";
 import type { Json } from "../json";
@@ -170,7 +170,7 @@ export function ExportDialog(props: ExportDialogProps) {
       out.push(writer.end());
       downloadBlob(fileName, out.blob(EXPORT_MIME[format]));
       setProgress({ docs, bytes, state: "done", error: null, sent: sent !== null && sent !== docs ? sent : null });
-      host.notify(t("문서 {count}개를 내보냈습니다 — {file}", { count: docs.toLocaleString(), file: fileName }));
+      host.notify(t("문서 {count}개를 내보냈습니다 — {file}", { count: docs.toLocaleString(uiLocale()), file: fileName }));
     } catch (error) {
       setProgress(isAbort(error) || controller.signal.aborted ? { docs, bytes, state: "cancelled", error: null, sent: null } : { docs, bytes, state: "error", error, sent: null });
     } finally {
@@ -290,19 +290,19 @@ export function ExportDialog(props: ExportDialogProps) {
       ) : null}
       <RequestPreview text={command} problem={problem} />
       <span className="panel-dim">{t("서버가 1,000건씩 끝까지 읽습니다 (PIT + search_after, 또는 scroll).")}</span>
-      {total !== null && progress === null ? <span className="panel-dim">{t("문서 {count}개를 내보냅니다", { count: total.toLocaleString() })}</span> : null}
+      {total !== null && progress === null ? <span className="panel-dim">{t("문서 {count}개를 내보냅니다", { count: total.toLocaleString(uiLocale()) })}</span> : null}
       {progress !== null ? (
         <div className="mg-transfer-progress" role="status">
           <div className="job-bar">
             <div className={`job-bar-fill${progress.state === "error" ? " error" : progress.state === "cancelled" ? " cancelled" : ""}`} style={{ width: `${progress.state === "done" ? 100 : (percent ?? 0)}%` }} />
           </div>
           <div className="mg-transfer-stats">
-            <span>{total !== null ? t("{done} / {total}개", { done: progress.docs.toLocaleString(), total: total.toLocaleString() }) : t("{done}개", { done: progress.docs.toLocaleString() })}</span>
+            <span>{total !== null ? t("{done} / {total}개", { done: progress.docs.toLocaleString(uiLocale()), total: total.toLocaleString(uiLocale()) }) : t("{done}개", { done: progress.docs.toLocaleString(uiLocale()) })}</span>
             <span className="panel-dim">{formatBytes(progress.bytes)}</span>
             <span className="spacer" />
             <span className="panel-dim">{progress.state === "running" ? (percent !== null ? `${percent}%` : "…") : progress.state === "done" ? t("저장했습니다") : progress.state === "cancelled" ? t("취소했습니다") : t("실패했습니다")}</span>
           </div>
-          {progress.sent !== null ? <span className="panel-dim">{t("서버는 {sent}개라고 알렸지만 {done}개를 받았습니다", { sent: progress.sent.toLocaleString(), done: progress.docs.toLocaleString() })}</span> : null}
+          {progress.sent !== null ? <span className="panel-dim">{t("서버는 {sent}개라고 알렸지만 {done}개를 받았습니다", { sent: progress.sent.toLocaleString(uiLocale()), done: progress.docs.toLocaleString(uiLocale()) })}</span> : null}
           <DialogFailure error={progress.error} context="export" />
         </div>
       ) : null}

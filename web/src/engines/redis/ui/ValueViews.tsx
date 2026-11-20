@@ -12,7 +12,7 @@ import { Gauge } from "../../../components/Gauge";
 import { CodeIcon, DownloadIcon, PlusIcon, SearchIcon, UpDownIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { edit, isAbort, read, type HashEntry, type KeyPage, type ListItem, type StreamEntry, type ZsetEntry } from "../api";
 import { binBytes, binId, binText, consoleArg, isText, type Bin } from "../bin";
 import { matchPattern } from "../keytree";
@@ -93,7 +93,7 @@ function Body({ loading, error, onRetry, children }: { loading: boolean; error: 
 function Count({ shown, total, more, onMore }: { shown: number; total: number | null; more: boolean; onMore(): void }) {
   return (
     <span className="kv-count">
-      <span>{total !== null ? t("{shown} / {total}개", { shown: shown.toLocaleString(), total: total.toLocaleString() }) : t("{shown}개", { shown: shown.toLocaleString() })}</span>
+      <span>{total !== null ? t("{shown} / {total}개", { shown: shown.toLocaleString(uiLocale()), total: total.toLocaleString(uiLocale()) }) : t("{shown}개", { shown: shown.toLocaleString(uiLocale()) })}</span>
       {more ? (
         <button type="button" className="kv-link" onClick={onMore}>
           {t("더 불러오기")}
@@ -678,7 +678,7 @@ export function ZsetView(props: ViewProps) {
 // "1700000000000-0" → when the entry was added.
 function idTime(id: string): string {
   const ms = Number(id.split("-")[0]);
-  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toLocaleString() : "";
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toLocaleString(uiLocale()) : "";
 }
 
 export function StreamView(props: ViewProps) {

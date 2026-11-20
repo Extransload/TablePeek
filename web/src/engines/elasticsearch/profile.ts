@@ -4,6 +4,7 @@
 // phase. Elasticsearch and OpenSearch give the same shape; times are
 // nanoseconds there.
 
+import { uiLocale } from "../../i18n";
 import { list, num, rec, str } from "./json";
 
 // One timed step of a breakdown (`score`, `next_doc`, `build_aggregation`…)
@@ -155,5 +156,5 @@ export function msText(value: number): string {
   if (value < 0.001) {
     return "<0.001 ms";
   }
-  return `${value < 10 ? value.toPrecision(3) : value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms`;
+  return `${value < 10 ? value.toPrecision(3) : value.toLocaleString(uiLocale(), { maximumFractionDigits: 1 })} ms`;
 }

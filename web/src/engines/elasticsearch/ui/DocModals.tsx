@@ -6,7 +6,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon } from "../../../components/icons";
 import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { JsonSyntaxError, isDocument, jsonKeys, jsonObject, parseJson } from "../../mongodb/bson";
 import { useEscape } from "../../mongodb/ui/DocModals";
 import { count, deleteByQuery, isAbort, search, updateByQuery, type Hit } from "../api";
@@ -206,8 +206,8 @@ export function ByQueryModal({ host, index, mode: initialMode, query, onDone, on
         title: mode === "update" ? t("일괄 수정") : t("일괄 삭제"),
         message:
           query === null
-            ? t("조건 없이 인덱스의 모든 문서({count}개)에 적용합니다. 되돌릴 수 없습니다.", { count: matched?.toLocaleString() ?? "?" })
-            : t("조건에 맞는 문서 {count}개에 적용합니다. 되돌릴 수 없습니다.", { count: matched?.toLocaleString() ?? "?" }),
+            ? t("조건 없이 인덱스의 모든 문서({count}개)에 적용합니다. 되돌릴 수 없습니다.", { count: matched?.toLocaleString(uiLocale()) ?? "?" })
+            : t("조건에 맞는 문서 {count}개에 적용합니다. 되돌릴 수 없습니다.", { count: matched?.toLocaleString(uiLocale()) ?? "?" }),
         command,
         okLabel: mode === "update" ? t("수정") : t("삭제"),
       });
@@ -254,7 +254,7 @@ export function ByQueryModal({ host, index, mode: initialMode, query, onDone, on
                 <Spinner size={10} /> {t("영향받는 문서를 세는 중…")}
               </>
             ) : (
-              <strong>{t("영향받는 문서 {count}개", { count: matched.toLocaleString() })}</strong>
+              <strong>{t("영향받는 문서 {count}개", { count: matched.toLocaleString(uiLocale()) })}</strong>
             )}
             {query === null ? <span className="es-warn">{t("조건이 없어 모든 문서가 대상입니다")}</span> : null}
           </div>

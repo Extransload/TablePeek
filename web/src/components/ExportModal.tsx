@@ -32,7 +32,7 @@ import { capabilitiesOf } from "../engines";
 import type { SqlDialect } from "../engines/sqlDialect";
 import { declaredAs } from "../grid/columns";
 import type { WindowedRowSource } from "../grid/windowSource";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { cancelJob, startJob, subscribeJobs, type Job, type JobHandle } from "../jobs";
 import { getSettings } from "../settings";
 import { scriptStatement } from "../sqlSplit";
@@ -512,7 +512,7 @@ async function runExport(plan: ExportPlan, job: JobHandle): Promise<Outcome> {
       }
       write(rows);
       done[index] += rows.length;
-      report(t("{item} · {count}행", { item: sections[index].name, count: done[index].toLocaleString() }));
+      report(t("{item} · {count}행", { item: sections[index].name, count: done[index].toLocaleString(uiLocale()) }));
     }
     if (feed.truncated) {
       cut.push(sections[index].name);
@@ -1078,7 +1078,7 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
           outcome.cut.length > 0
             ? t("{items}: 쿼리 한 번에 읽을 수 있는 {count}행까지만 내보냈습니다", {
                 items: outcome.cut.join(", "),
-                count: EXPORT_MAX_ROWS.toLocaleString(),
+                count: EXPORT_MAX_ROWS.toLocaleString(uiLocale()),
               })
             : null;
         if (mountedRef.current) {
@@ -1257,25 +1257,25 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
       return null;
     }
     const loadedLabel = dataTab
-      ? t("현재 페이지 ({count}행)", { count: current.meta.rowCount.toLocaleString() })
-      : t("로드된 행 ({count}행)", { count: current.meta.rowCount.toLocaleString() });
+      ? t("현재 페이지 ({count}행)", { count: current.meta.rowCount.toLocaleString(uiLocale()) })
+      : t("로드된 행 ({count}행)", { count: current.meta.rowCount.toLocaleString(uiLocale()) });
     const hasKey =
       dialect.keyOrder !== false && (dataTab?.pkColumns ?? dataTab?.meta?.pk ?? current.meta.pk ?? []).length > 0;
     let allHelp: string;
     if (every) {
       allHelp = t("결과마다 SQL을 다시 실행해 최대 {count}행까지 씁니다. 데이터를 바꾸는 문장은 다시 실행하지 않고 로드된 행을 씁니다.", {
-        count: EXPORT_MAX_ROWS.toLocaleString(),
+        count: EXPORT_MAX_ROWS.toLocaleString(uiLocale()),
       });
     } else if (dataTab !== null) {
       allHelp = cursor
         ? t("필터·정렬을 적용해 서버 페이지 단위로 나눠 읽으므로 행 수 제한이 없습니다")
         : hasKey
           ? t("필터·정렬을 적용해 키 순서로 나눠 읽으므로 행 수 제한이 없습니다")
-          : t("키가 없어 한 번에 최대 {count}행까지 읽습니다", { count: EXPORT_MAX_ROWS.toLocaleString() });
+          : t("키가 없어 한 번에 최대 {count}행까지 읽습니다", { count: EXPORT_MAX_ROWS.toLocaleString(uiLocale()) });
     } else if (!current.meta.truncated) {
       allHelp = t("결과의 모든 행이 이미 로드되어 있습니다");
     } else if (currentRerun) {
-      allHelp = t("SQL을 다시 실행해 최대 {count}행까지 씁니다", { count: EXPORT_MAX_ROWS.toLocaleString() });
+      allHelp = t("SQL을 다시 실행해 최대 {count}행까지 씁니다", { count: EXPORT_MAX_ROWS.toLocaleString(uiLocale()) });
     } else {
       allHelp = t("데이터를 바꾸는 문장은 다시 실행하지 않습니다");
     }
@@ -1555,7 +1555,7 @@ export function ExportModal({ target, meta, dialect, onClose, onRefreshSchema }:
               <span className="helper">
                 {progress.detail}
                 {progress.total > 0
-                  ? ` — ${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}`
+                  ? ` — ${progress.done.toLocaleString(uiLocale())} / ${progress.total.toLocaleString(uiLocale())}`
                   : ""}
               </span>
             </div>

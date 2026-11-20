@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { capabilitiesOf, engineById } from "../engines";
 import type { UserRow, UserStatement } from "../engines/sqlDialect";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { confirmDialog, promptDialog } from "./ConfirmDialog";
 import { store, type EngineMeta } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
@@ -186,7 +186,7 @@ export function UserManagerModal({ conn, meta, onClose }: UserManagerModalProps)
                 <div className="panel-empty-inline">{t("사용자가 없습니다")}</div>
               ) : null}
               {truncated ? (
-                <p className="helper">{t("처음 {count}명만 표시합니다", { count: (users ?? []).length.toLocaleString() })}</p>
+                <p className="helper">{t("처음 {count}명만 표시합니다", { count: (users ?? []).length.toLocaleString(uiLocale()) })}</p>
               ) : null}
             </div>
             <div className="modal-body user-create">

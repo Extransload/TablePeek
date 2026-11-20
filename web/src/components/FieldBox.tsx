@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { writeClipboard } from "../clipboard";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { inkOf, jsonSpans, type JsonKind } from "../jsonIndex";
 import type { ValueKind } from "../palette";
 import { CopyIcon } from "./icons";
@@ -141,7 +141,7 @@ export function FieldBox({ name, type, value, text, showAll, json, kind, action,
         {placeholder ?? drawn}
         {cut && showAll ? (
           <button type="button" className="field-box-more" onClick={() => setWhole(pretty)}>
-            {t("전체 표시 ({count}자)", { count: pretty.length.toLocaleString() })}
+            {t("전체 표시 ({count}자)", { count: pretty.length.toLocaleString(uiLocale()) })}
           </button>
         ) : null}
         {placeholder === null ? (

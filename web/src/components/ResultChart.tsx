@@ -30,7 +30,7 @@ import {
   type ColumnInfo,
   type TimeBucket,
 } from "../chartData";
-import { getLanguage, t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { ChevronDownIcon } from "./icons";
 import { Select } from "./Select";
 import { useMenuDismiss } from "./useMenuDismiss";
@@ -125,10 +125,6 @@ function useSize(ref: RefObject<HTMLDivElement | null>): { width: number; height
     return () => observer.disconnect();
   }, [ref]);
   return size;
-}
-
-function localeOf(): string {
-  return getLanguage() === "en" ? "en-US" : "ko-KR";
 }
 
 // A slice's share of the pie, "<0.1%" for one too thin to round to anything.
@@ -724,7 +720,7 @@ function ChartTooltip({
         </div>
       ) : null}
       <div className="chart-tip-foot">
-        {point.other ? t("{count}개 항목 · {rows}행", { count: model.merged.toLocaleString(), rows: point.rows.toLocaleString() }) : t("{count}행", { count: point.rows.toLocaleString() })}
+        {point.other ? t("{count}개 항목 · {rows}행", { count: model.merged.toLocaleString(uiLocale()), rows: point.rows.toLocaleString(uiLocale()) }) : t("{count}행", { count: point.rows.toLocaleString(uiLocale()) })}
       </div>
     </div>
   );
@@ -734,7 +730,7 @@ function ChartPlot({ model, settings, colors }: { model: ChartModel; settings: C
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { width, height } = useSize(hostRef);
   const [hover, setHover] = useState<Hover | null>(null);
-  const locale = localeOf();
+  const locale = uiLocale();
   const pie = settings.type === "pie";
   const pieParts = useMemo(() => (pie ? slicesOf(model, colors) : { slices: [], total: 0 }), [pie, model, colors]);
   const plot = useMemo(() => {
@@ -972,10 +968,10 @@ export function ResultChart({ columns, rows, settings, scope, warn, themeKey, on
     notes.push(t("단위: {bucket}", { bucket: t(BUCKET_LABELS[model.bucket]) }));
   }
   if (model.skipped > 0) {
-    notes.push(t("X가 비어 있는 {count}행 제외", { count: model.skipped.toLocaleString() }));
+    notes.push(t("X가 비어 있는 {count}행 제외", { count: model.skipped.toLocaleString(uiLocale()) }));
   }
   if (model.merged > 0) {
-    notes.push(t("{count}개 항목을 기타로 묶음", { count: model.merged.toLocaleString() }));
+    notes.push(t("{count}개 항목을 기타로 묶음", { count: model.merged.toLocaleString(uiLocale()) }));
   }
 
   let empty: ReactNode = null;

@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { t } from "../../i18n";
+import { t, uiLocale } from "../../i18n";
 import { store, type VersionInfo } from "../../store";
 import { checkUpdateNow, configureUpdate, getUpdate, loadUpdate, refreshUpdate, subscribeUpdate } from "../../update";
 import { AlertIcon, CheckIcon, CodeIcon, DownloadIcon, ExternalIcon, RefreshIcon } from "../icons";
@@ -65,7 +65,7 @@ export function VersionSettings() {
     }
   }
 
-  const checkedAt = update !== null && update.checked_at !== null ? new Date(update.checked_at * 1000).toLocaleString() : null;
+  const checkedAt = update !== null && update.checked_at !== null ? new Date(update.checked_at * 1000).toLocaleString(uiLocale()) : null;
   const lastChecked = checkedAt === null ? null : t("마지막 확인: {time}", { time: checkedAt });
   // One status line in the tone of what it says: green when this is the
   // newest release, orange when a newer one is out, the accent for a build
@@ -86,7 +86,7 @@ export function VersionSettings() {
     icon = <DownloadIcon size={13} />;
     const skipped = update.latest === update.skipped;
     title = skipped ? t("{latest}이 나왔습니다 (건너뛴 버전)", { latest: update.latest }) : t("{latest}이 나왔습니다", { latest: update.latest });
-    detail = update.published_at !== null ? t("지금 {current} · {date} 공개", { current: update.current, date: new Date(update.published_at).toLocaleDateString() }) : t("지금 {current}", { current: update.current });
+    detail = update.published_at !== null ? t("지금 {current} · {date} 공개", { current: update.current, date: new Date(update.published_at).toLocaleDateString(uiLocale()) }) : t("지금 {current}", { current: update.current });
     // The desktop app downloads the release on its own: how far it has got.
     const own = update.install;
     if (update.installable && !skipped) {

@@ -12,7 +12,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { TextBlobBuilder, downloadBlob, exportBaseName } from "../../../export";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { aggregate, count, exportDocs, find, isAbort, type ExportRequest, type Namespace, type QueryOptions } from "../api";
 import { Int32, Int64, bsonDoc, type BsonDocument } from "../bson";
 import { shellCursorOptions } from "../codegen";
@@ -193,8 +193,8 @@ export function ExportModal(props: ExportModalProps) {
       );
       out.push(writer.end());
       downloadBlob(fileName, out.blob(EXPORT_FILE_MIME[format]));
-      setProgress({ done, state: "done", message: sent !== done ? t("서버는 {sent}개라고 알렸지만 {done}개를 받았습니다", { sent: sent.toLocaleString(), done: done.toLocaleString() }) : null });
-      notify(t("문서 {count}개를 내보냈습니다 — {file}", { count: done.toLocaleString(), file: fileName }));
+      setProgress({ done, state: "done", message: sent !== done ? t("서버는 {sent}개라고 알렸지만 {done}개를 받았습니다", { sent: sent.toLocaleString(uiLocale()), done: done.toLocaleString(uiLocale()) }) : null });
+      notify(t("문서 {count}개를 내보냈습니다 — {file}", { count: done.toLocaleString(uiLocale()), file: fileName }));
     } catch (error) {
       setProgress(isAbort(error) || controller.signal.aborted ? { done, state: "cancelled", message: null } : { done, state: "error", message: errorText(error) });
     } finally {
@@ -310,14 +310,14 @@ export function ExportModal(props: ExportModalProps) {
         </>
       ) : null}
       <CommandPreview command={command} problem={problem} />
-      {expected !== null && progress === null ? <span className="panel-dim">{t("문서 {count}개를 내보냅니다", { count: expected.toLocaleString() })}</span> : null}
+      {expected !== null && progress === null ? <span className="panel-dim">{t("문서 {count}개를 내보냅니다", { count: expected.toLocaleString(uiLocale()) })}</span> : null}
       {progress !== null ? (
         <div className="mg-transfer-progress" role="status">
           <div className="job-bar">
             <div className={`job-bar-fill${progress.state === "error" ? " error" : progress.state === "cancelled" ? " cancelled" : ""}`} style={{ width: `${progress.state === "done" ? 100 : (percent ?? 0)}%` }} />
           </div>
           <div className="mg-transfer-stats">
-            <span>{expected !== null ? t("{done} / {total}개", { done: progress.done.toLocaleString(), total: expected.toLocaleString() }) : t("{done}개", { done: progress.done.toLocaleString() })}</span>
+            <span>{expected !== null ? t("{done} / {total}개", { done: progress.done.toLocaleString(uiLocale()), total: expected.toLocaleString(uiLocale()) }) : t("{done}개", { done: progress.done.toLocaleString(uiLocale()) })}</span>
             <span className="spacer" />
             <span className="panel-dim">{progress.state === "running" ? (percent !== null ? `${percent}%` : "…") : progress.state === "done" ? t("저장했습니다") : progress.state === "cancelled" ? t("취소했습니다") : t("실패했습니다")}</span>
           </div>

@@ -2813,6 +2813,24 @@ const EN: Record<string, string> = {
   "출력 {n}": "Output {n}",
   "쿼리 시간 제한(초)": "Query time limit (s)",
   // ---- end ShellJS ----
+  // ---- Peek (peek.ts, components/PeekStrip.tsx) ----
+  "Peek: 결과를 모양에 맞춰 요약해 보여줍니다": "Peek: sums the result up by its shape",
+  "Peek: 결과 요약": "Peek: result summary",
+  "쿼리 결과의 소수 꼬리를 정리하고(271.40999… → 271.41), 50행 이하 결과에는 결론 한 줄과 작은 그림을 표 위에, 막대를 숫자 칸에 보여줍니다. 정해진 규칙으로 계산해 데이터가 밖으로 나가지 않습니다.":
+    "Tidies the tails of decimals in query results (271.40999… → 271.41), and for results of 50 rows or fewer shows a line of findings and a small picture above the grid, and bars in the number cells. Worked out by fixed rules: no data leaves the app.",
+  "Peek 요약": "Peek summary",
+  "값 하나": "Single value",
+  "범주별": "By category",
+  "시간순": "Over time",
+  "{count}행 · 규칙으로 계산": "{count} rows · worked out by rules",
+  "{measure} 가장 큰 몫: {label} · {percent} ({value} / {total})": "Largest share of {measure}: {label} · {percent} ({value} of {total})",
+  "{measure} 가장 높음: {label} · {value}, 가운데 값 {median}보다 {percent} 높음":
+    "Highest {measure}: {label} · {value}, {percent} above the median {median}",
+  "{measure} 가장 높음: {label} · {value}": "Highest {measure}: {label} · {value}",
+  "{label} 튐: {measure} {value}, 가운데 값 {median}의 {ratio}배": "{label} stands out: {measure} {value}, {ratio}× the median {median}",
+  "{measure}에 크게 튀는 값 없음 · {min} – {max}": "No {measure} value stands out · {min} – {max}",
+  "그릴 열": "Column to draw",
+  // ---- end Peek ----
   // ---- MongoDB search indexes, change streams, GridFS (SearchStreamFs) ----
   "(없음)": "(none)",
   "(제거됨)": "(removed)",
@@ -3709,6 +3727,13 @@ let current: Language = uiState.getItem(STORAGE_KEY) === "en" ? "en" : "ko";
 
 export function getLanguage(): Language {
   return current;
+}
+
+// The locale every number and date on screen is written in: the interface
+// language's, not the browser's, so an English UI on a Korean system reads
+// "Nov 20, 2026, 2:06 PM" and not "2026. 11. 20. 오후 2:06".
+export function uiLocale(): string {
+  return current === "en" ? "en-US" : "ko-KR";
 }
 
 export function setLanguage(language: Language): void {

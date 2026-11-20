@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { PlusIcon } from "../../../components/icons";
 import { LoadingState } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { explain, isAbort } from "../api";
 import type { BsonDocument } from "../bson";
 import { shellCursorOptions } from "../codegen";
@@ -61,7 +61,7 @@ function findCommand(coll: string, q: DocQuery): string {
 }
 
 function count(n: number | null): string {
-  return n === null ? "—" : n.toLocaleString();
+  return n === null ? "—" : n.toLocaleString(uiLocale());
 }
 
 function StageBox({ stage, selected, onSelect }: { stage: PlanStage; selected: boolean; onSelect(): void }) {
@@ -77,7 +77,7 @@ function StageBox({ stage, selected, onSelect }: { stage: PlanStage; selected: b
     facts.push({ key: t("검사한 문서"), value: count(stage.docsExamined), warn: stage.stage === "COLLSCAN" });
   }
   if (stage.timeMs !== null) {
-    facts.push({ key: t("시간 [걸린]"), value: `${stage.timeMs.toLocaleString()} ms` });
+    facts.push({ key: t("시간 [걸린]"), value: `${stage.timeMs.toLocaleString(uiLocale())} ms` });
   }
   if (stage.indexName !== null) {
     facts.push({ key: t("인덱스 [하나]"), value: stage.keyPattern ? `${stage.indexName}  ${toShell(stage.keyPattern)}` : stage.indexName });
@@ -206,8 +206,8 @@ export function Summary({ summary, query, coll, onCreateIndex }: { summary: Plan
       verdicts.push({
         tone: "warn",
         text: t("돌려준 문서 {returned}개를 위해 {examined}개를 읽었습니다 ({ratio}배)", {
-          returned: warning.returned.toLocaleString(),
-          examined: warning.examined.toLocaleString(),
+          returned: warning.returned.toLocaleString(uiLocale()),
+          examined: warning.examined.toLocaleString(uiLocale()),
           ratio: warning.ratio.toFixed(1),
         }),
       });
@@ -217,12 +217,12 @@ export function Summary({ summary, query, coll, onCreateIndex }: { summary: Plan
     [t("돌려준 문서"), count(summary.nReturned)],
     [t("검사한 문서"), count(summary.docsExamined)],
     [t("검사한 인덱스 키"), count(summary.keysExamined)],
-    [t("실행 시간"), summary.timeMs === null ? "—" : `${summary.timeMs.toLocaleString()} ms`],
+    [t("실행 시간"), summary.timeMs === null ? "—" : `${summary.timeMs.toLocaleString(uiLocale())} ms`],
     [t("사용 인덱스"), summary.indexes.length > 0 ? summary.indexes.join(", ") : t("없음")],
     [t("정렬"), summary.inMemorySort ? t("메모리") : query.sort ? t("인덱스 [하나]") : "—"],
   ];
   if (summary.rejectedPlans > 0) {
-    cards.push([t("버린 계획"), summary.rejectedPlans.toLocaleString()]);
+    cards.push([t("버린 계획"), summary.rejectedPlans.toLocaleString(uiLocale())]);
   }
   return (
     <div className="mg-psummary">

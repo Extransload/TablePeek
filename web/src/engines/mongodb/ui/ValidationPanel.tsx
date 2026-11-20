@@ -12,7 +12,7 @@ import { CheckIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { LoadingState, Spinner } from "../../../components/Spinner";
-import { phrase, say, t, type Phrase } from "../../../i18n";
+import { phrase, say, t, type Phrase, uiLocale } from "../../../i18n";
 import { aggregate, command, isAbort, listCollections, toNumber, type Namespace } from "../api";
 import { Int32, bsonDoc, isDocument, type BsonDocument } from "../bson";
 import { sampleFields, type CompletionContext } from "../complete";
@@ -243,7 +243,7 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
       }
       setText(toShellPretty(bsonDoc({ $jsonSchema: draftJsonSchema(analyzeSchema(batch.docs)) })));
       setLevel((l) => (l === "off" ? "strict" : l));
-      host.notify(t("문서 {count}개로 초안을 만들었습니다", { count: batch.docs.length.toLocaleString() }));
+      host.notify(t("문서 {count}개로 초안을 만들었습니다", { count: batch.docs.length.toLocaleString(uiLocale()) }));
     } catch (e) {
       setActionError(e);
     } finally {
@@ -317,18 +317,18 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
             <span className="fail" style={{ width: `${100 - pct}%` }} />
           </div>
           <div className="mg-valid-counts">
-            <span className="ok">{t("통과 {count}개", { count: pass.toLocaleString() })}</span>
-            <span className="bad">{t("위반 {count}개", { count: preview.failed.toLocaleString() })}</span>
-            <span className="panel-dim">{t("표본 {count}개 · 적용하기 전에 미리 셉니다", { count: preview.total.toLocaleString() })}</span>
+            <span className="ok">{t("통과 {count}개", { count: pass.toLocaleString(uiLocale()) })}</span>
+            <span className="bad">{t("위반 {count}개", { count: preview.failed.toLocaleString(uiLocale()) })}</span>
+            <span className="panel-dim">{t("표본 {count}개 · 적용하기 전에 미리 셉니다", { count: preview.total.toLocaleString(uiLocale()) })}</span>
             {checking ? <Spinner size={10} /> : null}
           </div>
         </div>
         <div className="view-tabs mg-valid-tabs" role="tablist">
           <button type="button" role="tab" aria-selected={tab === "fail"} className={tab === "fail" ? "active" : undefined} onClick={() => setTab("fail")}>
-            {t("위반한 문서 {count}", { count: preview.failed.toLocaleString() })}
+            {t("위반한 문서 {count}", { count: preview.failed.toLocaleString(uiLocale()) })}
           </button>
           <button type="button" role="tab" aria-selected={tab === "pass"} className={tab === "pass" ? "active" : undefined} onClick={() => setTab("pass")}>
-            {t("통과한 문서 {count}", { count: pass.toLocaleString() })}
+            {t("통과한 문서 {count}", { count: pass.toLocaleString(uiLocale()) })}
           </button>
         </div>
         <div className="mg-valid-list">
@@ -393,7 +393,7 @@ export function ValidationPanel({ ns, readOnly, active, host, draft }: Validatio
           className="mg-qbtn gauge-host"
           disabled={busy !== null}
           aria-busy={busy === "draft"}
-          title={t("문서 {count}개를 표본으로 $jsonSchema 초안을 만듭니다", { count: PREVIEW_SAMPLE.toLocaleString() })}
+          title={t("문서 {count}개를 표본으로 $jsonSchema 초안을 만듭니다", { count: PREVIEW_SAMPLE.toLocaleString(uiLocale()) })}
           onClick={() => void makeDraft()}
         >
           <Gauge busy={busy === "draft"} outcome={actionError !== null ? "error" : "ok"} />

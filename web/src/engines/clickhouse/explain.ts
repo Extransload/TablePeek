@@ -1,5 +1,5 @@
 import type { ParsedPlan, PlanNode } from "../../explainPlan";
-import { t } from "../../i18n";
+import { t, uiLocale } from "../../i18n";
 
 // The plan view's EXPLAIN: the query plan as JSON, with each step's actions
 // and the indexes a table read uses.
@@ -30,7 +30,7 @@ function indexLine(index: Record<string, unknown>): string {
     const initial = num(index[`Initial ${what}`]);
     const chosen = num(index[`Selected ${what}`]);
     if (initial !== undefined && chosen !== undefined) {
-      parts.push(`${t(label)} ${chosen.toLocaleString()}/${initial.toLocaleString()}`);
+      parts.push(`${t(label)} ${chosen.toLocaleString(uiLocale())}/${initial.toLocaleString(uiLocale())}`);
     }
   };
   selected("Parts", "파트");
@@ -81,7 +81,7 @@ function planNode(plan: Record<string, unknown>): PlanNode {
     detail: details.length > 0 ? details.join("\n") : undefined,
     // An index that skipped nothing: the read goes through the whole table.
     severity: worst ? "warn" : undefined,
-    costLabel: lastIndex !== undefined ? `${lastIndex.toLocaleString()} ${t("그래뉼")}` : undefined,
+    costLabel: lastIndex !== undefined ? `${lastIndex.toLocaleString(uiLocale())} ${t("그래뉼")}` : undefined,
     children,
   };
 }
@@ -129,7 +129,7 @@ export function parseClickHousePlan(columns: string[], rows: unknown[][]): Parse
       children: [],
     }));
     const total = nodes.reduce((sum, node) => sum + (node.rows ?? 0), 0);
-    return { engine: "ClickHouse ESTIMATE", nodes, rowsLabel: total.toLocaleString() };
+    return { engine: "ClickHouse ESTIMATE", nodes, rowsLabel: total.toLocaleString(uiLocale()) };
   }
   if (lower[0] !== "explain") {
     return null;

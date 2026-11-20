@@ -13,7 +13,7 @@ import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMe
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { CheckIcon, ChevronIcon, CopyIcon, PencilIcon, TrashIcon } from "../../../components/icons";
 import type { ErrorContext } from "../../../errorHelp";
-import { errorPhrase, phrase, say, t, type Phrase } from "../../../i18n";
+import { errorPhrase, phrase, say, t, type Phrase, uiLocale } from "../../../i18n";
 import { JsonSyntaxError, fromEJSON, isDocument, jsonKeys, parseJson, stringifyJson, toEJSON, type BsonDocument, type BsonValue, type EJSON } from "../bson";
 import { VIEW_LIMITS, ejsonText, shellKey, toShell, toShellPretty, truncation } from "../format";
 import { valueAt } from "../guard";
@@ -246,7 +246,7 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
       return;
     }
     setMenu(null);
-    setLook({ name: path === "" ? `#${(position + 1).toLocaleString()}` : path, value: v, position, anchor: anchorOf(anchor) });
+    setLook({ name: path === "" ? `#${(position + 1).toLocaleString(uiLocale())}` : path, value: v, position, anchor: anchorOf(anchor) });
   };
 
   // A line's menu (its value: copy, look, fold, the query) above the
@@ -400,7 +400,7 @@ function JsonBlock({ doc, position, canonical, json, allFolded, readOnly, comple
         }
       }}
     >
-      <div className="mg-jdoc-no">#{(position + 1).toLocaleString()}</div>
+      <div className="mg-jdoc-no">#{(position + 1).toLocaleString(uiLocale())}</div>
       <span className="mg-jdoc-acts">
         {ro ? null : (
           <button type="button" className="icon-text-button" title={t("이 자리에서 편집 (두 번 눌러도 됩니다)")} onClick={startEdit}>
@@ -484,7 +484,7 @@ export function JsonView({ docs, offset, emptyText, json = false, selected = nul
         // ⌘↩ on the list (not in a block's editor) shows the picked document in Quick Look, as on a grid cell.
         if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && at >= 0 && (event.target === event.currentTarget || (event.target as HTMLElement).matches(".mg-jdoc"))) {
           event.preventDefault();
-          setLook({ name: `#${(offset + at + 1).toLocaleString()}`, value: docs[at], position: offset + at, anchor: anchorOf(listRef.current?.children[at] ?? null) });
+          setLook({ name: `#${(offset + at + 1).toLocaleString(uiLocale())}`, value: docs[at], position: offset + at, anchor: anchorOf(listRef.current?.children[at] ?? null) });
           return;
         }
         const next = onSelect === undefined ? null : arrowStep(event, keys.length, at);

@@ -14,7 +14,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { getLanguage, say, t } from "../../../i18n";
+import { getLanguage, say, t, uiLocale } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { collStats, createCollection, dropCollection, dropDatabase, listCollections, renameCollection, type CollStats, type CollectionInfo } from "../api";
 import { Int32, Int64, bsonDoc, isDocument, type BsonDocument } from "../bson";
@@ -476,7 +476,7 @@ function DropModal({ conn, db, coll, view, safeMode, onEffect, onClose }: { conn
       );
     } else if (!view) {
       collStats({ conn, db, coll }, controller.signal).then(
-        (stats) => setScope(t("문서 {count}개와 인덱스 {indexes}개가 함께 지워집니다.", { count: stats.count.toLocaleString(), indexes: stats.nindexes })),
+        (stats) => setScope(t("문서 {count}개와 인덱스 {indexes}개가 함께 지워집니다.", { count: stats.count.toLocaleString(uiLocale()), indexes: stats.nindexes })),
         () => setScope(null),
       );
     }
@@ -579,11 +579,11 @@ function StatsModal({ conn, db, coll, onClose }: { conn: string; db: string; col
     stats === null
       ? []
       : [
-          [t("문서"), stats.count.toLocaleString()],
+          [t("문서"), stats.count.toLocaleString(uiLocale())],
           [t("크기 (BSON)"), formatBytes(stats.size) ?? "—"],
           [t("평균 문서 크기"), formatBytes(stats.avgObjSize) ?? "—"],
           [t("디스크 크기"), formatBytes(stats.storageSize) ?? "—"],
-          [t("인덱스"), stats.nindexes.toLocaleString()],
+          [t("인덱스"), stats.nindexes.toLocaleString(uiLocale())],
           [t("인덱스 크기"), formatBytes(stats.totalIndexSize) ?? "—"],
         ];
   const options = info !== null && info.options.size > 0 ? info.options : null;

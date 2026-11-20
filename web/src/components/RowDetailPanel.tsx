@@ -4,7 +4,7 @@ import type { GridColumnSpec } from "../grid/columns";
 import type { RowSource } from "../grid/rowSource";
 import { classifyCell } from "../grid/valueKind";
 import { formatBytes, formatRowEstimate } from "../format";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import type { TableDetail } from "../store";
 import { FieldBox } from "./FieldBox";
 import { LinkIcon, SearchIcon } from "./icons";
@@ -134,7 +134,7 @@ export function RowDetailPanel({
   if (showRow && rows.to - rows.from + 1 > COMPARE_MAX_ROWS) {
     fields = [
       <div className="panel-empty" key="too-many">
-        {t("{count}개 행을 선택했습니다", { count: (rows.to - rows.from + 1).toLocaleString() })}
+        {t("{count}개 행을 선택했습니다", { count: (rows.to - rows.from + 1).toLocaleString(uiLocale()) })}
       </div>,
     ];
   } else if (showRow) {

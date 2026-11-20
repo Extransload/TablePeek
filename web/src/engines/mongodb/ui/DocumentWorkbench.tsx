@@ -13,7 +13,7 @@ import { isAppServerDown } from "../../../errorHelp";
 import { ChevronDownIcon, CodeIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon } from "../../../components/icons";
 import { Gauge, useTabWork } from "../../../components/Gauge";
 import { formatBytes } from "../../../format";
-import { say, t } from "../../../i18n";
+import { say, t, uiLocale } from "../../../i18n";
 import type { SafeMode } from "../../../sqlTools";
 import { store } from "../../../store";
 import { collStats, count as countDocs, find, insert, isAbort, remove, type CollStats, type Namespace } from "../api";
@@ -359,7 +359,7 @@ export function DocumentWorkbench({
       (r) => {
         setTotal({ count: r.count, exact: r.count !== null });
         if (r.count !== null) {
-          notify(t("문서 {count}개", { count: r.count.toLocaleString() }));
+          notify(t("문서 {count}개", { count: r.count.toLocaleString(uiLocale()) }));
         }
       },
       (error: unknown) => notifyError(error, { context: "document" }),
@@ -574,7 +574,7 @@ export function DocumentWorkbench({
   } else if (docs.length === 0 && page === 0) {
     rangeText = t("문서 없음");
   } else {
-    const range = { from: (start + 1).toLocaleString(), to: (start + docs.length).toLocaleString() };
+    const range = { from: (start + 1).toLocaleString(uiLocale()), to: (start + docs.length).toLocaleString(uiLocale()) };
     if (total === null) {
       rangeText = t("{from}–{to} / …", range);
     } else if (total.failed === true) {
@@ -583,7 +583,7 @@ export function DocumentWorkbench({
     } else if (shownTotal === null) {
       rangeText = t("{from}–{to} / 많은 문서 (세는 데 오래 걸림)", range);
     } else {
-      rangeText = t("{from}–{to} / {total}개 문서", { ...range, total: `${total.exact ? "" : "≈ "}${shownTotal.toLocaleString()}` });
+      rangeText = t("{from}–{to} / {total}개 문서", { ...range, total: `${total.exact ? "" : "≈ "}${shownTotal.toLocaleString(uiLocale())}` });
     }
   }
   const editable = !readOnly;
@@ -593,7 +593,7 @@ export function DocumentWorkbench({
     <>
       <span className="mg-stat">
         <span className="mg-stat-k">{t("문서")}</span>
-        <span className="mg-stat-v">{stats.count.toLocaleString()}</span>
+        <span className="mg-stat-v">{stats.count.toLocaleString(uiLocale())}</span>
       </span>
       <span className="mg-stat" title={t("BSON 크기")}>
         <span className="mg-stat-k">{t("크기")}</span>

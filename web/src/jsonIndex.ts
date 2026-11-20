@@ -3,6 +3,8 @@
 // scrolled without walking objects or building path strings per render.
 // Node 0 is the root; a node's subtree is the ids [id, ends[id]).
 
+import { uiLocale } from "./i18n";
+
 export type JsonKind = "object" | "array" | "string" | "number" | "boolean" | "null";
 
 const KINDS: JsonKind[] = ["object", "array", "string", "number", "boolean", "null"];
@@ -52,7 +54,7 @@ export function kindOf(value: unknown): JsonKind {
 
 // A container's member count as its row shows it after the key: {3}, [3].
 export function containerSize(kind: JsonKind, count: number): string {
-  return kind === "array" ? `[${count.toLocaleString()}]` : `{${count.toLocaleString()}}`;
+  return kind === "array" ? `[${count.toLocaleString(uiLocale())}]` : `{${count.toLocaleString(uiLocale())}}`;
 }
 
 // A primitive as a tree row shows it: strings quoted and cut short.

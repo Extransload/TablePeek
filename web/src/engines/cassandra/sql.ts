@@ -2,7 +2,7 @@ import { SQLDialect } from "@codemirror/lang-sql";
 import { quoteLiteral } from "../../dataQuery";
 import { quoteIdent } from "../../ddl";
 import type { ParsedPlan, PlanNode } from "../../explainPlan";
-import { t } from "../../i18n";
+import { t, uiLocale } from "../../i18n";
 import type { SqlDialect, UserAdmin } from "../sqlDialect";
 import type { SqlFunction } from "../sqlFunctions";
 
@@ -89,7 +89,7 @@ export function parseCqlTrace(columns: string[], rows: unknown[][]): ParsedPlan 
       label: String(row[activity] ?? ""),
       subtitle: row[thread] === null || row[thread] === undefined ? undefined : String(row[thread]),
       actualMs: now / 1000,
-      detail: t("+{us}µs", { us: step.toLocaleString() }),
+      detail: t("+{us}µs", { us: step.toLocaleString(uiLocale()) }),
       severity: share >= 0.3 && step >= 1000 ? "hot" : share >= 0.1 ? "warn" : "ok",
       children: [],
     });

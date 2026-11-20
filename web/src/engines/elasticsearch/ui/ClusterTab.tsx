@@ -17,7 +17,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { Spinner } from "../../../components/Spinner";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { POLL_MS, POLL_TIMEOUT_MS, WINDOW_MS, axisSteps } from "../../mongodb/perf";
 import * as api from "../api";
 import { num, str } from "../json";
@@ -65,7 +65,7 @@ const ROLE_NAMES: Record<string, string> = {
 
 function msText(ms: number): string {
   if (ms < 1) return ms === 0 ? "0 ms" : `${ms.toFixed(2)} ms`;
-  if (ms < 1000) return `${Math.round(ms).toLocaleString()} ms`;
+  if (ms < 1000) return `${Math.round(ms).toLocaleString(uiLocale())} ms`;
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
 }
 
@@ -80,7 +80,7 @@ function durationText(ms: number): string {
 }
 
 function rateText(v: number): string {
-  return v >= 100 || Number.isInteger(v) ? Math.round(v).toLocaleString() : v.toFixed(1);
+  return v >= 100 || Number.isInteger(v) ? Math.round(v).toLocaleString(uiLocale()) : v.toFixed(1);
 }
 
 function countTick(v: number): string {
@@ -92,7 +92,7 @@ function bytesText(v: number): string {
 }
 
 function clockText(ms: number, seconds = false): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), hour12: false });
+  return new Date(ms).toLocaleTimeString(uiLocale(), { hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), hour12: false });
 }
 
 interface Series {
@@ -615,7 +615,7 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
   const status = str(health.status);
   const stat = (key: string): string => {
     const v = num(health[key]);
-    return v === null ? "—" : v.toLocaleString();
+    return v === null ? "—" : v.toLocaleString(uiLocale());
   };
   const percent = num(health.active_shards_percent_as_number);
   const heapNote = sample !== null && sample.heap_max_bytes > 0 ? t("최대 {size} · {percent}% 사용", { size: bytesText(sample.heap_max_bytes), percent: Math.round((sample.heap_used_bytes / sample.heap_max_bytes) * 100) }) : undefined;
@@ -752,7 +752,7 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
           <PerfChart title={t("스레드 풀 · search")} points={points} series={charts.searchPool} format={rateText} />
           <PerfChart title={t("스레드 풀 · write")} points={points} series={charts.writePool} format={rateText} />
           <PerfChart title={t("HTTP 연결")} points={points} series={charts.http} format={rateText} />
-          <PerfChart title={t("문서 수")} points={points} series={charts.docs} format={(v) => v.toLocaleString()} tick={countTick} />
+          <PerfChart title={t("문서 수")} points={points} series={charts.docs} format={(v) => v.toLocaleString(uiLocale())} tick={countTick} />
           <PerfChart title={t("저장 크기")} points={points} series={charts.store} format={bytesText} bytes />
         </div>
 
@@ -915,7 +915,7 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
                           ))}
                         </td>
                         <td />
-                        <td className="num mono">{group.docs.toLocaleString()}</td>
+                        <td className="num mono">{group.docs.toLocaleString(uiLocale())}</td>
                         <td className="num mono">{bytesText(group.store)}</td>
                       </tr>,
                       ...(open
@@ -937,7 +937,7 @@ export function ClusterTab({ host, active, onOpenIndex }: ClusterTabProps) {
                               <td className="mono" title={s.ip}>
                                 {s.node || <span className="panel-dim">—</span>}
                               </td>
-                              <td className="num mono">{s.docs === null ? "—" : s.docs.toLocaleString()}</td>
+                              <td className="num mono">{s.docs === null ? "—" : s.docs.toLocaleString(uiLocale())}</td>
                               <td className="num mono">{s.store === null ? "—" : bytesText(s.store)}</td>
                             </tr>
                           ))

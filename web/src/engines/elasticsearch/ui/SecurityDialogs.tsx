@@ -11,7 +11,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { writeClipboard } from "../../../clipboard";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { JsonSyntaxError, parseJson, stringifyJson } from "../../mongodb/bson";
 import { AdminModal } from "../../mongodb/ui/AdminModal";
 import { createApiKey, indices, securityPut, userPassword, type SecurityEntry } from "../api";
@@ -1126,7 +1126,7 @@ function ApiKeyCreated({ os, created, onCopy, onClose }: { os: boolean; created:
     ["ID", text("id")],
     ...(os ? [] : ([[t("이름"), text("name")], [t("비밀 (api_key)"), text("api_key")]] as [string, string][])),
   ];
-  const expiration = typeof created.expiration === "number" ? new Date(created.expiration).toLocaleString() : null;
+  const expiration = typeof created.expiration === "number" ? new Date(created.expiration).toLocaleString(uiLocale()) : null;
   return (
     <AdminModal
       title={t("API 키를 만들었습니다")}

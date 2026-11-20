@@ -14,7 +14,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { insertMany, isAbort, listCollections } from "../api";
 import type { BsonDocument } from "../bson";
 import { toShell } from "../format";
@@ -203,7 +203,7 @@ export function ImportModal({ conn, db, coll, notify, onImported, onClose }: Imp
         : format === "csv" && columns.every((c) => c.type === "skip" || c.name === "")
           ? t("가져올 컬럼이 없습니다")
           : collectionNameProblem(targetName);
-  const command = `${shellNamespace(db, targetName || "…")}.insertMany([ /* ${t("{count}건씩", { count: BATCH.toLocaleString() })} */ ]${onError === "skip" ? ", { ordered: false }" : ""})`;
+  const command = `${shellNamespace(db, targetName || "…")}.insertMany([ /* ${t("{count}건씩", { count: BATCH.toLocaleString(uiLocale()) })} */ ]${onError === "skip" ? ", { ordered: false }" : ""})`;
 
   const run = async () => {
     if (source === null || problem !== null || running) {
@@ -304,7 +304,7 @@ export function ImportModal({ conn, db, coll, notify, onImported, onClose }: Imp
     if (state.inserted > 0) {
       onImported(targetName);
     }
-    notify(t("{coll}에 문서 {count}개를 가져왔습니다", { coll: targetName, count: state.inserted.toLocaleString() }));
+    notify(t("{coll}에 문서 {count}개를 가져왔습니다", { coll: targetName, count: state.inserted.toLocaleString(uiLocale()) }));
   };
 
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -502,9 +502,9 @@ export function ImportModal({ conn, db, coll, notify, onImported, onClose }: Imp
             <div className={`job-bar-fill${progress.state === "error" ? " error" : progress.state === "cancelled" ? " cancelled" : ""}`} style={{ width: `${percent}%` }} />
           </div>
           <div className="mg-transfer-stats">
-            <span>{t("읽음 {count}", { count: progress.read.toLocaleString() })}</span>
-            <span>{t("들어감 {count}", { count: progress.inserted.toLocaleString() })}</span>
-            <span className={progress.failed > 0 ? "mg-danger-text" : undefined}>{t("실패 {count}", { count: progress.failed.toLocaleString() })}</span>
+            <span>{t("읽음 {count}", { count: progress.read.toLocaleString(uiLocale()) })}</span>
+            <span>{t("들어감 {count}", { count: progress.inserted.toLocaleString(uiLocale()) })}</span>
+            <span className={progress.failed > 0 ? "mg-danger-text" : undefined}>{t("실패 {count}", { count: progress.failed.toLocaleString(uiLocale()) })}</span>
             <span className="spacer" />
             <span className="panel-dim">
               {progress.state === "running"
@@ -524,7 +524,7 @@ export function ImportModal({ conn, db, coll, notify, onImported, onClose }: Imp
       {failures.length > 0 ? (
         <>
           <div className="mg-import-failhead">
-            <span className="mg-form-label">{progress !== null && progress.failed > failures.length ? t("실패 목록 (앞 {shown}건 / {count}건)", { shown: failures.length, count: progress.failed.toLocaleString() }) : t("실패 목록")}</span>
+            <span className="mg-form-label">{progress !== null && progress.failed > failures.length ? t("실패 목록 (앞 {shown}건 / {count}건)", { shown: failures.length, count: progress.failed.toLocaleString(uiLocale()) }) : t("실패 목록")}</span>
             <span className="spacer" />
             <button type="button" className="mg-qbtn" onClick={() => void writeClipboard(failures.map((f) => `${f.line}\t${f.message}`).join("\n"), notify).then(() => notify(t("실패 목록을 복사했습니다")))}>
               {t("복사")}

@@ -13,7 +13,7 @@ import { CellInspector, type CellAnchor } from "../../../components/CellInspecto
 import type { ContextMenuItem } from "../../../components/ContextMenu";
 import type { RowSource } from "../../../grid/rowSource";
 import { confirmDialog } from "../../../components/ConfirmDialog";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { Double, Int32, Int64, bsonDoc, isDocument, isNumber, jsonObject, stringifyJson, toEJSON, typeName, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { ejsonText, toShell, toShellPretty } from "../format";
 import { convertType, editText, keepsValue } from "./valueEdit";
@@ -127,7 +127,7 @@ export function copyPathItem(path: string): ContextMenuItem {
 export function copyDocsItem(docs: BsonDocument[], json: boolean): ContextMenuItem {
   const value: BsonValue = docs.length === 1 ? docs[0] : docs;
   return {
-    label: docs.length === 1 ? t("문서 복사") : t("문서 {count}개 복사", { count: docs.length.toLocaleString() }),
+    label: docs.length === 1 ? t("문서 복사") : t("문서 {count}개 복사", { count: docs.length.toLocaleString(uiLocale()) }),
     submenu: formatItems(value, json),
   };
 }

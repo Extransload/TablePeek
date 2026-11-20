@@ -1,5 +1,5 @@
 import type { SqlDialect } from "./engines/sqlDialect";
-import { t } from "./i18n";
+import { t, uiLocale } from "./i18n";
 
 export interface PlanNode {
   label: string;
@@ -247,10 +247,10 @@ export function parsePostgresPlan(rows: unknown[][]): ParsedPlan | null {
     engine: "postgres",
     nodes: [node],
     costLabel: node.costLabel,
-    rowsLabel: node.rows?.toLocaleString(),
+    rowsLabel: node.rows?.toLocaleString(uiLocale()),
     actualLabel:
       node.actualRows !== undefined
-        ? `${t("{count}행", { count: node.actualRows.toLocaleString() })}${node.actualMs !== undefined ? ` · ${node.actualMs.toFixed(2)}ms` : ""}`
+        ? `${t("{count}행", { count: node.actualRows.toLocaleString(uiLocale()) })}${node.actualMs !== undefined ? ` · ${node.actualMs.toFixed(2)}ms` : ""}`
         : undefined,
     raw,
   };
@@ -282,7 +282,7 @@ export function parseMysqlPlan(rows: unknown[][]): ParsedPlan | null {
     engine: "mysql",
     nodes,
     costLabel: cost > 0 ? cost.toFixed(2) : undefined,
-    rowsLabel: estimate !== undefined ? estimate.toLocaleString() : undefined,
+    rowsLabel: estimate !== undefined ? estimate.toLocaleString(uiLocale()) : undefined,
     raw,
   };
 }
@@ -385,7 +385,7 @@ export function parseOraclePlan(columns: string[], rows: unknown[][]): ParsedPla
       label: operation.trim(),
       subtitle: nameAt > 0 ? text(cells[nameAt]) : undefined,
       cost,
-      costLabel: cost?.toLocaleString(),
+      costLabel: cost?.toLocaleString(uiLocale()),
       rows: rowsAt > 0 ? xplanNumber(cells[rowsAt]) : undefined,
       detail: predicates.get(id)?.join("\n"),
       children: [],
@@ -403,7 +403,7 @@ export function parseOraclePlan(columns: string[], rows: unknown[][]): ParsedPla
     engine: "oracle",
     nodes: roots,
     costLabel: roots[0].costLabel,
-    rowsLabel: roots[0].rows?.toLocaleString(),
+    rowsLabel: roots[0].rows?.toLocaleString(uiLocale()),
     raw: lines.join("\n"),
   };
 }

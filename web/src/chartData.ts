@@ -396,10 +396,14 @@ function timesOf(rows: unknown[][], column: ColumnInfo): number[] {
   return times;
 }
 
+// A key column (id, user_id): a number, but nothing to add up or compare.
+export function isKeyColumn(name: string): boolean {
+  return ID_LIKE.test(name);
+}
+
 function valueColumns(columns: ColumnInfo[], x: ColumnInfo | null): ColumnInfo[] {
   const numbers = columns.filter((column) => column.type === "number" && column !== x);
-  // Key columns (id, user_id) are numbers but nothing to add up.
-  const measures = numbers.filter((column) => !ID_LIKE.test(column.name));
+  const measures = numbers.filter((column) => !isKeyColumn(column.name));
   return measures.length > 0 ? measures : numbers;
 }
 

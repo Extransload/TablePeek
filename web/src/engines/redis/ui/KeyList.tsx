@@ -14,7 +14,7 @@ import { ContextMenu, type ContextMenuItem } from "../../../components/ContextMe
 import { ErrorNotice } from "../../../components/ErrorNotice";
 import { Gauge } from "../../../components/Gauge";
 import { ChevronIcon, FilterIcon, FolderIcon, PlusIcon, RefreshIcon, SearchIcon } from "../../../components/icons";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { isAbort, keysMeta, scan, type KeyMeta } from "../api";
 import { binId, binText, consoleArg, type Bin } from "../bin";
 import { buildKeyTree, KeySet, matchPattern, type KeyFolder, type ScanKey } from "../keytree";
@@ -358,7 +358,7 @@ export function KeyList({
           </span>
           <FolderIcon size={12} className="kv-folder-icon" />
           <KeyName name={row.folder.name} />
-          <span className="kv-count">{row.folder.count.toLocaleString()}</span>
+          <span className="kv-count">{row.folder.count.toLocaleString(uiLocale())}</span>
         </div>
       );
     }
@@ -540,8 +540,8 @@ export function KeyList({
       <div className="kv-keys-foot">
         <span className="kv-foot-text">
           {pattern === null && prefs.types.length === 0
-            ? t("{found} / 전체 {total}개 훑음", { found: keysRef.current.size.toLocaleString(), total: total?.toLocaleString() ?? "…" })
-            : t("{found}개 찾음 · 전체 {total}개", { found: keysRef.current.size.toLocaleString(), total: total?.toLocaleString() ?? "…" })}
+            ? t("{found} / 전체 {total}개 훑음", { found: keysRef.current.size.toLocaleString(uiLocale()), total: total?.toLocaleString(uiLocale()) ?? "…" })
+            : t("{found}개 찾음 · 전체 {total}개", { found: keysRef.current.size.toLocaleString(uiLocale()), total: total?.toLocaleString(uiLocale()) ?? "…" })}
         </span>
         {error !== null && rows.length > 0 ? <span className="kv-foot-error">{t("훑다가 멈췄습니다")}</span> : null}
         <span className="spacer" />

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { overlayRight } from "../dock";
 import type { CellKind } from "../grid/columns";
-import { getLanguage, t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 
 interface DatePickerProps {
   kind: CellKind;
@@ -168,7 +168,7 @@ export function DatePicker({ kind, value, nullable, anchor, onPick, onClose }: D
     };
   });
 
-  const locale = getLanguage() === "ko" ? "ko-KR" : "en-US";
+  const locale = uiLocale();
   const monthLabel = new Date(view.year, view.month - 1, 1).toLocaleDateString(locale, {
     year: "numeric",
     month: "long",

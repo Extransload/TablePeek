@@ -11988,6 +11988,237 @@ button.result-set.failed .result-set-status {
   color: var(--error);
 }
 
+/* ── Peek (components/PeekStrip.tsx) ─────────────────────────
+   A query result summed up above its grid: a line or two of what the rows
+   say beside a small picture of them, or a one-row result's numbers written
+   large. */
+.peek-strip {
+  display: flex;
+  flex: none;
+  gap: 28px;
+  align-items: center;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: calc(13px * var(--ui-scale, 1));
+  line-height: 1.45;
+  animation: peek-in var(--motion-base) var(--ease-out) both;
+}
+
+@keyframes peek-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.peek-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.peek-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--faint);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.peek-label .brand-word-peek {
+  font-weight: 750;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.peek-shape {
+  padding: 0 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+.peek-headline {
+  font-size: calc(14px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+
+.peek-sub {
+  color: var(--muted);
+}
+
+.peek-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.peek-card {
+  min-width: 150px;
+  padding: 8px 14px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.peek-card small {
+  display: block;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.peek-card strong {
+  display: block;
+  font-size: calc(28px * var(--ui-scale, 1));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.peek-viz {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 5px;
+  width: 340px;
+}
+
+.peek-viz-title {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.peek-share {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.peek-share i {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.peek-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.peek-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.peek-legend b {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.peek-series {
+  display: flex;
+  gap: 4px;
+}
+
+.peek-series button {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+.peek-series button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.peek-line {
+  display: block;
+  overflow: visible;
+}
+
+.peek-line-median {
+  stroke: var(--line);
+  stroke-dasharray: 3 3;
+}
+
+.peek-line-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.peek-line circle {
+  fill: var(--accent);
+}
+
+.peek-line circle.spike {
+  fill: var(--warn);
+}
+
+.peek-line-label {
+  fill: var(--faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+/* The result bar's switch: the brand's dot while Peek is on. */
+button.peek-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  margin-right: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(11px * var(--ui-scale, 1));
+}
+
+button.peek-toggle:hover {
+  background: var(--hover-fill);
+  color: var(--ink);
+}
+
+button.peek-toggle.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+button.peek-toggle i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+button.peek-toggle.on i {
+  background: linear-gradient(115deg, #4fa3ff 0%, #6e5bff 55%, #a35bff 100%);
+}
+
 /* The editor bar's own button padding would squeeze ⌄ out of its slot. */
 .editor-bar .split-arrow {
   padding: 0;

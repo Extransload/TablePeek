@@ -10,7 +10,7 @@ import { PencilIcon, RefreshIcon, SearchIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { LoadingState } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { JsonSyntaxError, jsonKeys, parseJson, stringifyJson } from "../../mongodb/bson";
 import { AdminModal } from "../../mongodb/ui/AdminModal";
 import { getSettings, isAbort, putSettings } from "../api";
@@ -78,7 +78,7 @@ const GROUPS: { label: string; match(key: string): boolean }[] = [
 function valueText(key: string, value: unknown): string {
   if (typeof value === "string") {
     if (key === "creation_date" && /^\d+$/.test(value)) {
-      return `${value}  (${new Date(Number(value)).toLocaleString()})`;
+      return `${value}  (${new Date(Number(value)).toLocaleString(uiLocale())})`;
     }
     return value;
   }
@@ -170,7 +170,7 @@ export function SettingsPanel({ host, index, kind, refreshSeq, onChanged }: Inde
       <section key={group.label} className="structure-section es-settings-group">
         <div className="structure-section-head">
           <span className="structure-section-title">{t(group.label)}</span>
-          <span className="panel-dim">{group.rows.length.toLocaleString()}</span>
+          <span className="panel-dim">{group.rows.length.toLocaleString(uiLocale())}</span>
         </div>
         <table className="panel-table es-settings-table">
           <tbody>
@@ -218,7 +218,7 @@ export function SettingsPanel({ host, index, kind, refreshSeq, onChanged }: Inde
     <div className="mg-pane es-pane">
       <div className="mg-agg-bar surface-bars">
         <IndexPicker names={names} value={current} onChange={setPicked} />
-        <span className="mg-agg-count">{reply === null ? t("설정") : t("설정 {count}개", { count: rows.length.toLocaleString() })}</span>
+        <span className="mg-agg-count">{reply === null ? t("설정") : t("설정 {count}개", { count: rows.length.toLocaleString(uiLocale()) })}</span>
         <label className="es-check">
           <input type="checkbox" checked={withDefaults} onChange={(event) => setWithDefaults(event.target.checked)} />
           {t("기본값 포함")}

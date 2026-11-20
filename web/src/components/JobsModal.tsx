@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { formatBytes } from "../format";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { cancelJob, clearFinishedJobs, subscribeJobs, type Job } from "../jobs";
 import { ErrorNotice } from "./ErrorNotice";
 import { StopIcon } from "./icons";
@@ -95,7 +95,7 @@ export function JobsModal({ onClose }: JobsModalProps) {
                   {job.total > 0
                     ? job.unit === "bytes"
                       ? `${formatBytes(job.done)} / ${formatBytes(job.total)}`
-                      : `${job.done.toLocaleString()} / ${job.total.toLocaleString()}`
+                      : `${job.done.toLocaleString(uiLocale())} / ${job.total.toLocaleString(uiLocale())}`
                     : job.status === "running"
                       ? t("진행 중…")
                       : ""}

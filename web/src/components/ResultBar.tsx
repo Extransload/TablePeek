@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type { QueryMeta } from "../net/socket";
 import type { AppError, ErrorAction } from "../errorHelp";
-import { t, tServer } from "../i18n";
+import { t, tServer, uiLocale } from "../i18n";
 import { DURATION, EASE, animate, useExitGhost } from "../motion";
 import { ErrorNotice } from "./ErrorNotice";
 import { CheckIcon, DownloadIcon } from "./icons";
@@ -42,11 +42,11 @@ export function elapsedText(ms: number): string {
 // result columns its affected rows, "완료" where the driver gives no count.
 export function statementStatus(meta: QueryMeta): string {
   if (meta.columns.length > 0) {
-    const count = meta.rowCount.toLocaleString();
+    const count = meta.rowCount.toLocaleString(uiLocale());
     return meta.truncated ? t("{count}+행", { count }) : t("{count}행", { count });
   }
   return meta.rowsAffected !== undefined
-    ? t("{count}행 영향", { count: meta.rowsAffected.toLocaleString() })
+    ? t("{count}행 영향", { count: meta.rowsAffected.toLocaleString(uiLocale()) })
     : t("완료");
 }
 
@@ -58,8 +58,11 @@ interface ResultBarProps {
   // The tab's query is running: the status says so, then turns into its result.
   running: boolean;
   canExport: boolean;
+  // Settings → Data Table → Query → Peek, switched here where its summary shows.
+  peek: boolean;
   onView(view: ResultView): void;
   onExport(): void;
+  onPeek(on: boolean): void;
 }
 
 // One status turning into the next: the old words lift away and blur out as
@@ -93,8 +96,8 @@ function MorphStatus({ className, title, children }: { className: string; title?
 
 // The query result's footer, laid out as the Data view's: the
 // Data | Message switch (with Chart and Pivot of the rows beside Data), the
-// rows and time of the result shown, and Export.
-export function ResultBar({ view, planAvailable, shown, running, canExport, onView, onExport }: ResultBarProps) {
+// rows and time of the result shown, the Peek switch and Export.
+export function ResultBar({ view, planAvailable, shown, running, canExport, peek, onView, onExport, onPeek }: ResultBarProps) {
   const views: [ResultView, string][] = [
     ["grid", t("데이터")],
     ["chart", t("차트")],
@@ -140,7 +143,7 @@ export function ResultBar({ view, planAvailable, shown, running, canExport, onVi
               className={shown.meta.truncated ? "warn" : undefined}
               title={
                 shown.meta.truncated
-                  ? t("최대 {count}행까지만 가져왔습니다", { count: shown.meta.rowCount.toLocaleString() })
+                  ? t("최대 {count}행까지만 가져왔습니다", { count: shown.meta.rowCount.toLocaleString(uiLocale()) })
                   : undefined
               }
             >
@@ -151,6 +154,16 @@ export function ResultBar({ view, planAvailable, shown, running, canExport, onVi
         )}
       </div>
       <div className="footer-end">
+        <button
+          type="button"
+          className={`peek-toggle${peek ? " on" : ""}`}
+          aria-pressed={peek}
+          onClick={() => onPeek(!peek)}
+          title={t("Peek: 결과를 모양에 맞춰 요약해 보여줍니다")}
+        >
+          <i aria-hidden="true" />
+          Peek
+        </button>
         <button
           type="button"
           className="icon-button"

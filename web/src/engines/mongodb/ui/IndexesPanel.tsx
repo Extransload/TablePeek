@@ -12,7 +12,7 @@ import { Gauge } from "../../../components/Gauge";
 import { LoadingState } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
-import { phrase, say, t, type Phrase } from "../../../i18n";
+import { phrase, say, t, type Phrase, uiLocale } from "../../../i18n";
 import { createIndex, dropIndex, isAbort, listIndexes, type IndexInfo, type Namespace } from "../api";
 import { Int32, isNumber, type BsonDocument } from "../bson";
 import { shellCollection, toShell } from "../format";
@@ -61,8 +61,8 @@ function IndexFlags({ index }: { index: IndexInfo }) {
       </span>
     ) : null,
     index.expireAfterSeconds !== undefined ? (
-      <span key="ttl" className="mg-flag ttl" title={t("{seconds}초 뒤 만료", { seconds: index.expireAfterSeconds.toLocaleString() })}>
-        TTL {t("{seconds}초", { seconds: index.expireAfterSeconds.toLocaleString() })}
+      <span key="ttl" className="mg-flag ttl" title={t("{seconds}초 뒤 만료", { seconds: index.expireAfterSeconds.toLocaleString(uiLocale()) })}>
+        TTL {t("{seconds}초", { seconds: index.expireAfterSeconds.toLocaleString(uiLocale()) })}
       </span>
     ) : null,
     index.partialFilterExpression !== undefined ? (
@@ -98,7 +98,7 @@ function indexFacts(ix: IndexInfo): Fact[] {
     facts.push({ name: "size", value: formatBytes(ix.size) });
   }
   if (ix.ops !== undefined) {
-    facts.push({ name: "$indexStats.accesses.ops", value: ix.ops.toLocaleString() });
+    facts.push({ name: "$indexStats.accesses.ops", value: ix.ops.toLocaleString(uiLocale()) });
   }
   return facts;
 }
@@ -237,7 +237,7 @@ export function IndexesPanel({ ns, readOnly, fields, createRequest, host, facts,
                       <IndexFlags index={ix} />
                     </td>
                     <td className="num mono">{ix.size !== undefined ? formatBytes(ix.size) : ""}</td>
-                    <td className="num mono">{ix.ops !== undefined ? t("{count}회", { count: ix.ops.toLocaleString() }) : ""}</td>
+                    <td className="num mono">{ix.ops !== undefined ? t("{count}회", { count: ix.ops.toLocaleString(uiLocale()) }) : ""}</td>
                     <td className="num">
                       {ix.name === "_id_" ? (
                         <span className="panel-dim">{t("기본")}</span>

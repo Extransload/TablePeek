@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { toAppError } from "../errorHelp";
-import { getLanguage, t, tServer } from "../i18n";
+import { t, tServer, uiLocale } from "../i18n";
 import { store, type AiProvider, type AiUsage, type AiUsageWindow } from "../store";
 import { Spinner } from "./Spinner";
 
@@ -117,7 +117,7 @@ function resetText(at: number): string {
   if (seconds < 86_400) {
     return t("{wait} 뒤 초기화", { wait: span(seconds) });
   }
-  const when = new Intl.DateTimeFormat(getLanguage() === "en" ? "en-US" : "ko-KR", {
+  const when = new Intl.DateTimeFormat(uiLocale(), {
     month: "short",
     day: "numeric",
     weekday: "short",

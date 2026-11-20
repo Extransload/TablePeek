@@ -12,7 +12,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon } from "../../../components/icons";
 import { Select } from "../../../components/Select";
 import { LoadingState } from "../../../components/Spinner";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { stringifyJson } from "../../mongodb/bson";
 import { PlanIcon } from "../../mongodb/ui/icons";
 import { isAbort, profile, validateQuery } from "../api";
@@ -74,7 +74,7 @@ function Breakdown({ node }: { node: ProfileNode }) {
               <tr key={s.key}>
                 <td className="mono">{s.key}</td>
                 <td className="num mono">{msText(s.ms)}</td>
-                <td className="num mono panel-dim">{s.count !== null ? t("{count}회", { count: s.count.toLocaleString() }) : ""}</td>
+                <td className="num mono panel-dim">{s.count !== null ? t("{count}회", { count: s.count.toLocaleString(uiLocale()) }) : ""}</td>
               </tr>
             ))}
           </tbody>
@@ -300,8 +300,8 @@ export function ProfilePanel({ host, index, query, active, runSeq, refreshSeq }:
     const v = outcome.validation;
     const slowestShard = shards[0] ?? null;
     const cards: [string, string][] = [
-      [t("걸린 시간 (took)"), outcome.took === null ? "—" : `${outcome.took.toLocaleString()} ms`],
-      [t("샤드"), shards.length.toLocaleString()],
+      [t("걸린 시간 (took)"), outcome.took === null ? "—" : `${outcome.took.toLocaleString(uiLocale())} ms`],
+      [t("샤드"), shards.length.toLocaleString(uiLocale())],
       [t("쿼리 시간 (가장 느린 샤드)"), slowestShard === null ? "—" : msText(slowestShard.queryMs)],
     ];
     if (slowestShard !== null && slowestShard.aggregationMs > 0) {

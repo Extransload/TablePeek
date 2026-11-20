@@ -18,7 +18,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { LoadingState } from "../../../components/Spinner";
 import { SuggestInput } from "../../../components/SuggestInput";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { jsonKeys, stringifyJson } from "../../mongodb/bson";
 import { AdminModal } from "../../mongodb/ui/AdminModal";
 import { aliases, getMapping, getSettings, isAbort, putMapping } from "../api";
@@ -442,7 +442,7 @@ export function MappingPanel({ host, index, kind, refreshSeq, onChanged }: Index
     <div className="mg-pane es-pane">
       <div className="mg-agg-bar surface-bars">
         <IndexPicker names={names} value={current} onChange={setPicked} />
-        <span className="mg-agg-count">{reply === null ? t("매핑") : t("필드 {count}개", { count: total.toLocaleString() })}</span>
+        <span className="mg-agg-count">{reply === null ? t("매핑") : t("필드 {count}개", { count: total.toLocaleString(uiLocale()) })}</span>
         {reply !== null && current !== null ? (
           <>
             <span className={`es-chip mono${dynamic === "strict" ? " warn" : ""}`} title={t("매핑에 없는 필드가 들어올 때: true 추가, false 무시, strict 거절, runtime 런타임 필드")}>

@@ -11,7 +11,7 @@ import {
 import { buildDataSqlUnlimited, buildWhere, type FilterState, type SortState } from "../dataQuery";
 import type { SqlDialect } from "../engines/sqlDialect";
 import type { WindowedRowSource } from "../grid/windowSource";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { store, type GridResult } from "../store";
 import { PivotView } from "./PivotView";
 import { ResultChart } from "./ResultChart";
@@ -238,8 +238,8 @@ export function AnalysisPane({ view, state, result, table, awaiting, themeKey, o
     const label =
       load.status === "loading" && load.total !== null
         ? t("행 불러오는 중… {done} / {total}", {
-            done: load.done.toLocaleString(),
-            total: load.total.toLocaleString(),
+            done: load.done.toLocaleString(uiLocale()),
+            total: load.total.toLocaleString(uiLocale()),
           })
         : table !== null
           ? t("테이블 행 읽는 중…")
@@ -252,14 +252,14 @@ export function AnalysisPane({ view, state, result, table, awaiting, themeKey, o
   }
 
   // What the rows are; a cut short read says so in the warning beside it.
-  const count = data.rows.length.toLocaleString();
+  const count = data.rows.length.toLocaleString(uiLocale());
   const scope = !data.wholeTable
     ? t("{count}행", { count })
     : table !== null && buildWhere(table.filter, table.dialect) !== null
       ? t("필터를 적용한 테이블 전체 {count}행", { count })
       : t("테이블 전체 {count}행", { count });
   const warn = data.capped
-    ? t("행이 {count}개보다 많아 처음 {count}행만 집계했습니다", { count: ANALYSIS_ROW_CAP.toLocaleString() })
+    ? t("행이 {count}개보다 많아 처음 {count}행만 집계했습니다", { count: ANALYSIS_ROW_CAP.toLocaleString(uiLocale()) })
     : data.truncated
       ? t("쿼리 결과가 최대 행 수에서 잘렸습니다: 가져온 행만 집계했습니다")
       : null;

@@ -51,6 +51,7 @@ brew install --cask extransload/tap/tablepeek
 - **Fast on big results.** Rows stream in and draw on a canvas grid; any query can be cancelled.
 - **Safe edits.** Cells change through the primary key, with explicit transactions, and safe mode asks before an `UPDATE` or `DELETE` without `WHERE` (or `EXPLAIN ANALYZE` on a write).
 - **Smart SQL editor.** Completion for tables, columns, functions and joins from foreign keys; beautify, snippets, saved queries and history.
+- **Peek at a result.** A short result is summed up by its shape above its rows: big numbers, the biggest share, the month that stands out, with bars in the number cells. Worked out by rules, so nothing leaves your machine.
 - **Inspect anything.** Quick Look turns any cell into a JSON tree, hex, or the row a foreign key points to; charts and pivots of any result; an ER diagram laid out for you.
 - **Import and export.** CSV, JSON, XML and SQL, plus dump and restore, as background jobs.
 

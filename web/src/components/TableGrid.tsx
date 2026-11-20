@@ -9,6 +9,7 @@ import {
 import {
   CanvasGrid,
   type GridEditHandlers,
+  type GridPeek,
   type GridSelection,
   type SelectedRows,
   type SortIndicator,
@@ -65,6 +66,8 @@ export interface TableGridProps {
   // Called once with the new grid, for wiring a view adds of its own.
   onReady?(grid: CanvasGrid): () => void;
   themeKey?: string;
+  // Peek's bars, standing-out cells and tidied floats (peek.ts).
+  peek?: GridPeek | null;
   className?: string;
   style?: CSSProperties;
 }
@@ -129,6 +132,10 @@ export const TableGrid = forwardRef<TableGridHandle, TableGridProps>(function Ta
   useLayoutEffect(() => {
     gridRef.current?.setColumnSpecs(props.specs ?? null);
   }, [props.specs]);
+
+  useLayoutEffect(() => {
+    gridRef.current?.setPeek(props.peek ?? null);
+  }, [props.peek]);
 
   const editable = props.editing !== null && props.editing !== undefined;
   useLayoutEffect(() => {

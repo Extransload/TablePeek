@@ -7,7 +7,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { FilterIcon, FitIcon, MinusIcon, PlusIcon } from "../../../components/icons";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import type { BsonValue } from "../bson";
 import { toShell } from "../format";
 import { EARTH_KM, angularDistance, circleOutline, geoWithin, itemInRegion, type GeoField, type GeoKind, type GeoRegion, type LngLat } from "../geo";
@@ -68,7 +68,7 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 function degrees(n: number): string {
-  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return n.toLocaleString(uiLocale(), { maximumFractionDigits: 4 });
 }
 
 function shorten(text: string, max: number): string {
@@ -319,7 +319,7 @@ export function GeoMap({ field, onFilter }: { field: GeoField; onFilter(value: B
 
   const kinds = (Object.entries(field.kinds) as [GeoKind, number][])
     .sort((a, b) => b[1] - a[1])
-    .map(([kind, n]) => `${kind === "Legacy" ? t("[경도, 위도]") : KIND_LABEL[kind]} ${n.toLocaleString()}`)
+    .map(([kind, n]) => `${kind === "Legacy" ? t("[경도, 위도]") : KIND_LABEL[kind]} ${n.toLocaleString(uiLocale())}`)
     .join(" · ");
 
   const filter = region === null ? null : geoWithin(region, field.pointsOnly);
@@ -333,7 +333,7 @@ export function GeoMap({ field, onFilter }: { field: GeoField; onFilter(value: B
     regionText = t("중심 {lng}, {lat} · 반경 {km} km", {
       lng: degrees(region.center[0]),
       lat: degrees(region.center[1]),
-      km: (region.radius * EARTH_KM).toLocaleString(undefined, { maximumFractionDigits: region.radius * EARTH_KM < 10 ? 2 : 0 }),
+      km: (region.radius * EARTH_KM).toLocaleString(uiLocale(), { maximumFractionDigits: region.radius * EARTH_KM < 10 ? 2 : 0 }),
     });
   }
 
@@ -343,7 +343,7 @@ export function GeoMap({ field, onFilter }: { field: GeoField; onFilter(value: B
     <div className="mg-viz mg-geo">
       <div className="mg-geo-head">
         <span className="mg-viz-note">
-          {t("위치 {count}개", { count: field.items.length.toLocaleString() })}
+          {t("위치 {count}개", { count: field.items.length.toLocaleString(uiLocale()) })}
           <span className="panel-dim"> · {kinds}</span>
         </span>
         <span className="spacer" />
@@ -461,7 +461,7 @@ export function GeoMap({ field, onFilter }: { field: GeoField; onFilter(value: B
             ))}
             {hover.items.length > 1 ? (
               <div className="panel-dim">
-                {hover.items.length > tip.length ? t("외 {count}개 · ", { count: (hover.items.length - tip.length).toLocaleString() }) : ""}
+                {hover.items.length > tip.length ? t("외 {count}개 · ", { count: (hover.items.length - tip.length).toLocaleString(uiLocale()) }) : ""}
                 {t("눌러서 확대")}
               </div>
             ) : null}
@@ -474,7 +474,7 @@ export function GeoMap({ field, onFilter }: { field: GeoField; onFilter(value: B
         ) : (
           <>
             <span className="mg-geo-sum">
-              {t("표본 문서 {count}개 중 {inside}개가 영역 안", { count: sampleDocs.toLocaleString(), inside: docsInside.toLocaleString() })}
+              {t("표본 문서 {count}개 중 {inside}개가 영역 안", { count: sampleDocs.toLocaleString(uiLocale()), inside: docsInside.toLocaleString(uiLocale()) })}
               <span className="panel-dim"> · {regionText}</span>
             </span>
             <code className="mg-geo-filter mono" title={toShell(filter)}>

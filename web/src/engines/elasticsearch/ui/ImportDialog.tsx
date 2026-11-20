@@ -14,7 +14,7 @@ import { Select } from "../../../components/Select";
 import { Gauge } from "../../../components/Gauge";
 import { SuggestInput } from "../../../components/SuggestInput";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { stringifyJson } from "../../mongodb/bson";
 import { AdminModal } from "../../mongodb/ui/AdminModal";
 import { readCsvRows } from "../../mongodb/transfer";
@@ -284,7 +284,7 @@ export function ImportDialog({ host, index, onEffect, onClose }: DialogProps & {
     .map((row) => bulkEntry(row.record, options).text)
     .join("");
   const bulkPath = bareBulk ? "/_bulk" : `/${targetName || "…"}/_bulk`;
-  const command = [fromDump && dump?.definition ? requestText("PUT", `/${targetName}`, dump.definition as Json) : null, requestText("POST", bulkPath, `${sample}… ${t("({count}건씩)", { count: BATCH_DOCS.toLocaleString() })}`)].filter((x) => x !== null).join("\n\n");
+  const command = [fromDump && dump?.definition ? requestText("PUT", `/${targetName}`, dump.definition as Json) : null, requestText("POST", bulkPath, `${sample}… ${t("({count}건씩)", { count: BATCH_DOCS.toLocaleString(uiLocale()) })}`)].filter((x) => x !== null).join("\n\n");
 
   const run = async () => {
     if (source === null || problem !== null || running || host.readOnly) {
@@ -431,7 +431,7 @@ export function ImportDialog({ host, index, onEffect, onClose }: DialogProps & {
       onEffect({ kind: "changed" });
     }
     if (state.state === "done" || state.state === "stopped") {
-      host.notify(t("{index}에 문서 {count}개를 가져왔습니다", { index: targetName || "_bulk", count: state.ok.toLocaleString() }));
+      host.notify(t("{index}에 문서 {count}개를 가져왔습니다", { index: targetName || "_bulk", count: state.ok.toLocaleString(uiLocale()) }));
     }
   };
 
@@ -721,10 +721,10 @@ export function ImportDialog({ host, index, onEffect, onClose }: DialogProps & {
             <div className={`job-bar-fill${progress.state === "error" ? " error" : progress.state === "cancelled" ? " cancelled" : ""}`} style={{ width: `${percent}%` }} />
           </div>
           <div className="mg-transfer-stats">
-            <span>{t("읽음 {count}", { count: progress.read.toLocaleString() })}</span>
-            <span>{t("들어감 {count}", { count: progress.ok.toLocaleString() })}</span>
-            <span className={progress.failed > 0 ? "mg-danger-text" : undefined}>{t("실패 {count}", { count: progress.failed.toLocaleString() })}</span>
-            {rate !== null ? <span className="panel-dim">{t("초당 {count}건", { count: rate.toLocaleString() })}</span> : null}
+            <span>{t("읽음 {count}", { count: progress.read.toLocaleString(uiLocale()) })}</span>
+            <span>{t("들어감 {count}", { count: progress.ok.toLocaleString(uiLocale()) })}</span>
+            <span className={progress.failed > 0 ? "mg-danger-text" : undefined}>{t("실패 {count}", { count: progress.failed.toLocaleString(uiLocale()) })}</span>
+            {rate !== null ? <span className="panel-dim">{t("초당 {count}건", { count: rate.toLocaleString(uiLocale()) })}</span> : null}
             <span className="spacer" />
             <span className="panel-dim">
               {progress.state === "running"
@@ -745,7 +745,7 @@ export function ImportDialog({ host, index, onEffect, onClose }: DialogProps & {
       {failures.length > 0 ? (
         <>
           <div className="mg-import-failhead">
-            <span className="mg-form-label">{progress !== null && progress.failed > failures.length ? t("실패 목록 (앞 {shown}건 / {count}건)", { shown: failures.length, count: progress.failed.toLocaleString() }) : t("실패 목록")}</span>
+            <span className="mg-form-label">{progress !== null && progress.failed > failures.length ? t("실패 목록 (앞 {shown}건 / {count}건)", { shown: failures.length, count: progress.failed.toLocaleString(uiLocale()) }) : t("실패 목록")}</span>
             <span className="spacer" />
             <button type="button" className="mg-qbtn" onClick={() => void writeClipboard(failures.map((f) => `${f.line}\t${f.id}\t${f.type}\t${f.reason}`).join("\n"), host.notify).then(() => host.notify(t("실패 목록을 복사했습니다")))}>
               {t("복사")}

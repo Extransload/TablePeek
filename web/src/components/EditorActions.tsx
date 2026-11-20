@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { MAX_ROWS_LIMIT } from "../settings";
 import { withHint } from "../shortcuts";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -53,7 +53,7 @@ export function EditorActions({
     setMenu({ x: rect.left, y: rect.bottom + 4, anchor, items });
   }
 
-  const limitLabel = limit >= MAX_ROWS_LIMIT ? t("제한 없음") : t("최대 {count}행", { count: limit.toLocaleString() });
+  const limitLabel = limit >= MAX_ROWS_LIMIT ? t("제한 없음") : t("최대 {count}행", { count: limit.toLocaleString(uiLocale()) });
   const choices = [MAX_ROWS_LIMIT, ...(LIMITS.includes(limit) || limit >= MAX_ROWS_LIMIT ? [] : [limit]), ...LIMITS]
     .filter((value, index, list) => list.indexOf(value) === index)
     .sort((a, b) => (a === MAX_ROWS_LIMIT ? -1 : b === MAX_ROWS_LIMIT ? 1 : a - b));
@@ -63,15 +63,15 @@ export function EditorActions({
       <button
         type="button"
         className="split-button"
-        title={t("한 번에 가져올 최대 행 수 (제한 없음도 {count}행에서 멈춤)", { count: MAX_ROWS_LIMIT.toLocaleString() })}
+        title={t("한 번에 가져올 최대 행 수 (제한 없음도 {count}행에서 멈춤)", { count: MAX_ROWS_LIMIT.toLocaleString(uiLocale()) })}
         onClick={(event) =>
           open(
             event.currentTarget,
             choices.map((value) => ({
               label:
                 value >= MAX_ROWS_LIMIT
-                  ? t("제한 없음 (최대 {count}행)", { count: MAX_ROWS_LIMIT.toLocaleString() })
-                  : t("최대 {count}행", { count: value.toLocaleString() }),
+                  ? t("제한 없음 (최대 {count}행)", { count: MAX_ROWS_LIMIT.toLocaleString(uiLocale()) })
+                  : t("최대 {count}행", { count: value.toLocaleString(uiLocale()) }),
               checked: value === limit,
               onSelect: () => onLimit(value),
             })),

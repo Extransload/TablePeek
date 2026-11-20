@@ -15,7 +15,7 @@ import { ErrorNotice } from "../../../components/ErrorNotice";
 import { ChevronIcon, DownloadIcon, RefreshIcon, ShieldIcon } from "../../../components/icons";
 import { LoadingState } from "../../../components/Spinner";
 import { downloadBlob } from "../../../export";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { aggregate, count, isAbort, type CountResult, type Namespace } from "../api";
 import { BsonDate, Int32, ObjectId, bsonDoc, type BsonDocument, type BsonTypeName, type BsonValue } from "../bson";
 import { sampleFields, type CompletionContext } from "../complete";
@@ -82,7 +82,7 @@ function percent(share: number): string {
 }
 
 function numberText(n: number): string {
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return n.toLocaleString(uiLocale(), { maximumFractionDigits: 2 });
 }
 
 function dayText(ms: number, withTime: boolean): string {
@@ -95,32 +95,32 @@ function fieldFacts(field: SchemaField, sampleSize: number): Fact[] {
   const types = typesByCount(field.types);
   const total = types.reduce((n, [, c]) => n + c, 0) || 1;
   const facts: Fact[] = [
-    { name: t("있음"), value: t("{pct} · 문서 {count}/{sample}개", { pct: percent(field.presence), count: field.count.toLocaleString(), sample: sampleSize.toLocaleString() }) },
+    { name: t("있음"), value: t("{pct} · 문서 {count}/{sample}개", { pct: percent(field.presence), count: field.count.toLocaleString(uiLocale()), sample: sampleSize.toLocaleString(uiLocale()) }) },
     { name: t("타입"), value: types.map(([type, n]) => `${type} ${percent(n / total)}`).join(" · ") },
   ];
   const elems = typesByCount(field.elemTypes);
   if (elems.length > 0) {
-    facts.push({ name: t("원소 타입"), value: elems.map(([type, n]) => t("{type} {count}개", { type, count: n.toLocaleString() })).join(" · ") });
+    facts.push({ name: t("원소 타입"), value: elems.map(([type, n]) => t("{type} {count}개", { type, count: n.toLocaleString(uiLocale()) })).join(" · ") });
   }
   if (field.children.length > 0) {
     facts.push({ name: t("하위 필드"), value: field.children.map((path) => path.slice(field.path.length + 1)).join(", ") });
   }
   const { number: num, date, string: str, objectId: oid, boolean: bool, array: arr } = field;
   if (num) {
-    facts.push({ name: t("수"), value: t("최소 {min} · 최대 {max} · 평균 {mean} · 서로 다른 값 {distinct}개", { min: numberText(num.min), max: numberText(num.max), mean: numberText(num.mean), distinct: num.distinct.toLocaleString() }) });
+    facts.push({ name: t("수"), value: t("최소 {min} · 최대 {max} · 평균 {mean} · 서로 다른 값 {distinct}개", { min: numberText(num.min), max: numberText(num.max), mean: numberText(num.mean), distinct: num.distinct.toLocaleString(uiLocale()) }) });
   }
   if (date) {
     facts.push({ name: t("날짜"), value: `${new Date(date.min).toISOString()} ~ ${new Date(date.max).toISOString()}` });
   }
   if (str) {
-    facts.push({ name: t("문자열"), value: t("서로 다른 값 {distinct}개 · 길이 {min}–{max} (평균 {mean})", { distinct: str.distinct.toLocaleString(), min: str.minLength, max: str.maxLength, mean: numberText(str.meanLength) }) });
-    facts.push({ name: t("자주 나오는 값"), value: str.top.map((x) => `${x.value === "" ? t("(빈 문자열)") : x.value} (${x.count.toLocaleString()})`).join("\n") });
+    facts.push({ name: t("문자열"), value: t("서로 다른 값 {distinct}개 · 길이 {min}–{max} (평균 {mean})", { distinct: str.distinct.toLocaleString(uiLocale()), min: str.minLength, max: str.maxLength, mean: numberText(str.meanLength) }) });
+    facts.push({ name: t("자주 나오는 값"), value: str.top.map((x) => `${x.value === "" ? t("(빈 문자열)") : x.value} (${x.count.toLocaleString(uiLocale())})`).join("\n") });
   }
   if (oid) {
-    facts.push({ name: "ObjectId", value: t("서로 다른 값 {distinct}개 · 만든 때 {first} ~ {last}", { distinct: oid.distinct.toLocaleString(), first: dayText(oid.first, true), last: dayText(oid.last, true) }) });
+    facts.push({ name: "ObjectId", value: t("서로 다른 값 {distinct}개 · 만든 때 {first} ~ {last}", { distinct: oid.distinct.toLocaleString(uiLocale()), first: dayText(oid.first, true), last: dayText(oid.last, true) }) });
   }
   if (bool) {
-    facts.push({ name: "Boolean", value: `true ${bool.trues.toLocaleString()} · false ${bool.falses.toLocaleString()}` });
+    facts.push({ name: "Boolean", value: `true ${bool.trues.toLocaleString(uiLocale())} · false ${bool.falses.toLocaleString(uiLocale())}` });
   }
   if (arr) {
     facts.push({ name: t("배열 길이"), value: t("{min}–{max} (평균 {mean})", { min: arr.minLength, max: arr.maxLength, mean: numberText(arr.meanLength) }) });
@@ -144,7 +144,7 @@ function Histogram({ bars, type, minLabel, maxLabel, extra }: { bars: Bar[]; typ
       <svg className={`mg-hist-svg t-${type}`} viewBox={`0 0 ${HIST_W} ${HIST_H}`} preserveAspectRatio="none" role="img" aria-label={`${minLabel} – ${maxLabel}`}>
         {bars.map((b, i) => {
           const h = b.count > 0 ? Math.max(2, (b.count / max) * (HIST_H - 4)) : 0;
-          const title = t("{label} — {count}개 · 눌러서 거르기", { label: b.label, count: b.count.toLocaleString() });
+          const title = t("{label} — {count}개 · 눌러서 거르기", { label: b.label, count: b.count.toLocaleString(uiLocale()) });
           return (
             <g key={i} className="mg-hist-col" onClick={b.onClick}>
               <title>{title}</title>
@@ -169,12 +169,12 @@ function ValueBars({ rows, type }: { rows: { label: string; count: number; onCli
   return (
     <div className={`mg-hbars t-${type}`}>
       {rows.map((r) => (
-        <button key={r.label} type="button" className="mg-hbar" title={t("{label} — {count}개 · 눌러서 거르기", { label: r.label, count: r.count.toLocaleString() })} onClick={r.onClick}>
+        <button key={r.label} type="button" className="mg-hbar" title={t("{label} — {count}개 · 눌러서 거르기", { label: r.label, count: r.count.toLocaleString(uiLocale()) })} onClick={r.onClick}>
           <span className="mg-hbar-label mono">{r.label}</span>
           <span className="mg-hbar-track">
             <span style={{ width: `${(r.count / max) * 100}%` }} />
           </span>
-          <span className="mg-hbar-n">{r.count.toLocaleString()}</span>
+          <span className="mg-hbar-n">{r.count.toLocaleString(uiLocale())}</span>
         </button>
       ))}
     </div>
@@ -223,7 +223,7 @@ function FieldViz({ field, geo, onFilter }: { field: SchemaField; geo: GeoField 
           type={typesByCount(field.types).find(([type]) => type === "Int32" || type === "Int64" || type === "Double" || type === "Decimal128")?.[0] ?? "Double"}
           minLabel={t("최소 {value}", { value: numberText(num.min) })}
           maxLabel={t("최대 {value}", { value: numberText(num.max) })}
-          extra={exact ? t("서로 다른 값 {count}개", { count: num.distinct }) : t("평균 {mean} · 서로 다른 값 {count}개", { mean: numberText(num.mean), count: num.distinct.toLocaleString() })}
+          extra={exact ? t("서로 다른 값 {count}개", { count: num.distinct }) : t("평균 {mean} · 서로 다른 값 {count}개", { mean: numberText(num.mean), count: num.distinct.toLocaleString(uiLocale()) })}
         />
       ),
     });
@@ -243,7 +243,7 @@ function FieldViz({ field, geo, onFilter }: { field: SchemaField; geo: GeoField 
           type="Date"
           minLabel={dayText(date.min, withTime)}
           maxLabel={dayText(date.max, withTime)}
-          extra={t("{count}개", { count: date.count.toLocaleString() })}
+          extra={t("{count}개", { count: date.count.toLocaleString(uiLocale()) })}
         />
       ),
     });
@@ -258,12 +258,12 @@ function FieldViz({ field, geo, onFilter }: { field: SchemaField; geo: GeoField 
             <ValueBars type="String" rows={str.top.map((x) => ({ label: x.value === "" ? t("(빈 문자열)") : x.value, count: x.count, onClick: () => at(x.value) }))} />
           ) : (
             <>
-              <div className="mg-viz-note">{t("서로 다른 값 {count}개 · 자주 나오는 값", { count: str.distinct.toLocaleString() })}</div>
+              <div className="mg-viz-note">{t("서로 다른 값 {count}개 · 자주 나오는 값", { count: str.distinct.toLocaleString(uiLocale()) })}</div>
               <div className="mg-chips">
                 {str.top.slice(0, 10).map((x) => (
-                  <button key={x.value} type="button" className="mg-vchip" title={t("{label} — {count}개 · 눌러서 거르기", { label: x.value, count: x.count.toLocaleString() })} onClick={() => at(x.value)}>
+                  <button key={x.value} type="button" className="mg-vchip" title={t("{label} — {count}개 · 눌러서 거르기", { label: x.value, count: x.count.toLocaleString(uiLocale()) })} onClick={() => at(x.value)}>
                     <span className="mg-vchip-v mono">{x.value === "" ? t("(빈 문자열)") : x.value.length > 28 ? `${x.value.slice(0, 28)}…` : x.value}</span>
-                    <span className="mg-vchip-n">{x.count.toLocaleString()}</span>
+                    <span className="mg-vchip-n">{x.count.toLocaleString(uiLocale())}</span>
                   </button>
                 ))}
               </div>
@@ -301,7 +301,7 @@ function FieldViz({ field, geo, onFilter }: { field: SchemaField; geo: GeoField 
       node: (
         <div key="oid" className="mg-viz">
           <div className="mg-viz-note">
-            {t("고유 값 {distinct}개 / {count}개", { distinct: oid.distinct.toLocaleString(), count: oid.count.toLocaleString() })}
+            {t("고유 값 {distinct}개 / {count}개", { distinct: oid.distinct.toLocaleString(uiLocale()), count: oid.count.toLocaleString(uiLocale()) })}
             <span className="panel-dim"> · {t("생성 시각 {from} ~ {to}", { from: dayText(oid.first, false), to: dayText(oid.last, false) })}</span>
           </div>
           <div className="mg-chips">
@@ -329,7 +329,7 @@ function FieldViz({ field, geo, onFilter }: { field: SchemaField; geo: GeoField 
     notes.push(
       <div key="other" className="mg-viz-note">
         {typesByCount(field.types)
-          .map(([type, n]) => t("{type} {count}개", { type, count: n.toLocaleString() }))
+          .map(([type, n]) => t("{type} {count}개", { type, count: n.toLocaleString(uiLocale()) }))
           .join(" · ")}
       </div>,
     );
@@ -379,7 +379,7 @@ function FieldRow({ field, geo, sampleSize, open, selected, onToggle, onPick, on
         </div>
         <div className="mg-typebar">
           {types.map(([type, n]) => (
-            <span key={type} className={`t-${type}`} style={{ width: `${(n / total) * 100}%` }} title={`${type} ${percent(n / total)} (${n.toLocaleString()})`} />
+            <span key={type} className={`t-${type}`} style={{ width: `${(n / total) * 100}%` }} title={`${type} ${percent(n / total)} (${n.toLocaleString(uiLocale())})`} />
           ))}
         </div>
         <div className="mg-schema-presence">
@@ -388,7 +388,7 @@ function FieldRow({ field, geo, sampleSize, open, selected, onToggle, onPick, on
           </span>
           <span className="panel-dim">
             {missing > 0
-              ? t("있음 {pct} · 없음 {count}개", { pct: percent(field.presence), count: missing.toLocaleString() })
+              ? t("있음 {pct} · 없음 {count}개", { pct: percent(field.presence), count: missing.toLocaleString(uiLocale()) })
               : t("있음 {pct}", { pct: percent(field.presence) })}
           </span>
         </div>
@@ -535,10 +535,10 @@ export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onD
   let summary = "";
   if (result !== null) {
     const fieldCount = result.analysis.fields.size;
-    const sample = result.analysis.sampleSize.toLocaleString();
+    const sample = result.analysis.sampleSize.toLocaleString(uiLocale());
     summary =
       matched !== null && matched.count !== null
-        ? t("일치 {matched}개 중 {sample}개 분석 · 필드 {fields}개 · {ms} ms", { matched: `${matched.exact ? "" : "≈ "}${matched.count.toLocaleString()}`, sample, fields: fieldCount, ms: Math.round(result.elapsedMs) })
+        ? t("일치 {matched}개 중 {sample}개 분석 · 필드 {fields}개 · {ms} ms", { matched: `${matched.exact ? "" : "≈ "}${matched.count.toLocaleString(uiLocale())}`, sample, fields: fieldCount, ms: Math.round(result.elapsedMs) })
         : t("{sample}개 분석 · 필드 {fields}개 · {ms} ms", { sample, fields: fieldCount, ms: Math.round(result.elapsedMs) });
   }
 
@@ -572,7 +572,7 @@ export function SchemaPanel({ ns, facts, filterText, active, host, onFilter, onD
                 analyse();
               }}
             >
-              {n.toLocaleString()}
+              {n.toLocaleString(uiLocale())}
             </button>
           ))}
         </div>

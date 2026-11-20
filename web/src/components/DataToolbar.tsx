@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMenuDismiss } from "./useMenuDismiss";
 import type { DataTab } from "../tabs";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { withHint } from "../shortcuts";
 import { ColumnsIcon, FilterIcon, ListIcon, PlusIcon, RefreshIcon } from "./icons";
 import { RollingNumber } from "./RollingNumber";
@@ -101,7 +101,7 @@ function PageSizeMenu({ tab, running, counting, hasMeta, cursorPaging, onLimit, 
         aria-expanded={open}
         aria-label={t("가져올 행 수 (LIMIT)")}
         onClick={() => setOpen((value) => !value)}
-        title={`${t("가져올 행 수 (LIMIT)")} · ${t("{count}행씩", { count: tab.pageSize.toLocaleString() })}`}
+        title={`${t("가져올 행 수 (LIMIT)")} · ${t("{count}행씩", { count: tab.pageSize.toLocaleString(uiLocale()) })}`}
       >
         <ListIcon size={13} />
       </button>
@@ -203,12 +203,12 @@ function rangeText(offset: number, shown: number, total: DataTotal | null): stri
   if (shown === 0 && offset === 0) {
     return t("행 없음");
   }
-  const range = `${(offset + 1).toLocaleString()}–${(offset + shown).toLocaleString()}`;
+  const range = `${(offset + 1).toLocaleString(uiLocale())}–${(offset + shown).toLocaleString(uiLocale())}`;
   if (total === null) {
     return t("{range} / ?행", { range });
   }
   // `count` gives English its singular: "1–1 of 1 row".
-  const values = { range, total: total.rows.toLocaleString(), count: total.rows };
+  const values = { range, total: total.rows.toLocaleString(uiLocale()), count: total.rows };
   return total.exact ? t("{range} / {total}행", values) : t("{range} / ≈ {total}행", values);
 }
 
@@ -284,7 +284,7 @@ export function DataTabToolbar({
           // A failed reload or filter: the rows shown are the last ones read,
           // so neither their place nor a total is known.
           <span className="row-range stale" title={t("다시 불러오지 못해 이전 결과를 보여 주고 있습니다")}>
-            {t("이전 결과 · {count}행", { count: meta.rowCount.toLocaleString() })}
+            {t("이전 결과 · {count}행", { count: meta.rowCount.toLocaleString(uiLocale()) })}
           </span>
         ) : hasMeta ? (
           <button

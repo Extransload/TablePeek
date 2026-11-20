@@ -9,7 +9,7 @@ import {
   type MouseEvent,
 } from "react";
 import { useAppAreaWidth } from "../dock";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { animate, DURATION, EASE, ghost } from "../motion";
 import { useRowMotion } from "./Collapse";
 import type { RowSource } from "../grid/rowSource";
@@ -456,7 +456,7 @@ export function CellInspector({
     <>
       {table !== null ? `${table}.` : ""}
       <strong>{column}</strong>
-      {` · ${t("{count}번째 행", { count: (row + 1).toLocaleString() })}`}
+      {` · ${t("{count}번째 행", { count: (row + 1).toLocaleString(uiLocale()) })}`}
     </>
   );
   const backdrop = {
@@ -601,7 +601,7 @@ export function CellInspector({
                         }));
                       }}
                     >
-                      {t("{count}개 더 보기", { count: entry.more.toLocaleString() })}
+                      {t("{count}개 더 보기", { count: entry.more.toLocaleString(uiLocale()) })}
                     </button>
                   ) : (
                     <div
@@ -660,7 +660,7 @@ export function CellInspector({
                   {fields.length > FIELD_LIMIT ? (
                     <div className="cell-pop-fields-more">
                       {t("나머지 {count}개는 왼쪽 트리에서 고르세요", {
-                        count: (fields.length - FIELD_LIMIT).toLocaleString(),
+                        count: (fields.length - FIELD_LIMIT).toLocaleString(uiLocale()),
                       })}
                     </div>
                   ) : null}

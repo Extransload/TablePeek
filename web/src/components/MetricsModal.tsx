@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { t } from "../i18n";
+import { t, uiLocale } from "../i18n";
 import { store, type HistoryEntry } from "../store";
 import { ErrorNotice } from "./ErrorNotice";
 
@@ -58,24 +58,24 @@ export function MetricsModal({ conn, onClose }: MetricsModalProps) {
         <div className="modal-body metrics-body">
           <div className="metrics-cards">
             <div className="metrics-card">
-              <span className="metrics-value">{total.toLocaleString()}</span>
+              <span className="metrics-value">{total.toLocaleString(uiLocale())}</span>
               <span className="dim">{t("쿼리 수")}</span>
             </div>
             <div className="metrics-card">
-              <span className="metrics-value">{avg.toLocaleString()}ms</span>
+              <span className="metrics-value">{avg.toLocaleString(uiLocale())}ms</span>
               <span className="dim">{t("평균 시간")}</span>
             </div>
             <div className="metrics-card">
-              <span className="metrics-value">{max.toLocaleString()}ms</span>
+              <span className="metrics-value">{max.toLocaleString(uiLocale())}ms</span>
               <span className="dim">{t("최대 시간")}</span>
             </div>
             <div className="metrics-card">
-              <span className="metrics-value">{rows.toLocaleString()}</span>
+              <span className="metrics-value">{rows.toLocaleString(uiLocale())}</span>
               <span className="dim">{t("반환 행")}</span>
             </div>
             <div className="metrics-card">
               <span className={`metrics-value${errors > 0 ? " error" : ""}`}>
-                {errors.toLocaleString()}
+                {errors.toLocaleString(uiLocale())}
               </span>
               <span className="dim">{t("오류")}</span>
             </div>

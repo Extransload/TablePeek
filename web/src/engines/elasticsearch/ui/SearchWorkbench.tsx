@@ -15,7 +15,7 @@ import { ChevronDownIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, RefreshI
 import { Gauge, useTabWork } from "../../../components/Gauge";
 import { isAppServerDown } from "../../../errorHelp";
 import { formatBytes } from "../../../format";
-import { t } from "../../../i18n";
+import { t, uiLocale } from "../../../i18n";
 import { store } from "../../../store";
 import { Int32, isNumber, jsonObject, type BsonDocument, type BsonValue } from "../../mongodb/bson";
 import { CardView, docKey, useCardsRefresh } from "../../mongodb/ui/CardView";
@@ -264,7 +264,7 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
     const pastWindow = start + pageSize > RESULT_WINDOW;
     const after = pastWindow && anchor !== null && anchor.key === queryKey && anchor.page === page - 1 ? anchor.after : null;
     if (pastWindow && after === null) {
-      setLoadError(new Error(t("{count}번째 문서 뒤로는 정렬을 정하고 한 페이지씩 넘기세요 (search_after). 또는 내보내기를 쓰세요.", { count: RESULT_WINDOW.toLocaleString() })));
+      setLoadError(new Error(t("{count}번째 문서 뒤로는 정렬을 정하고 한 페이지씩 넘기세요 (search_after). 또는 내보내기를 쓰세요.", { count: RESULT_WINDOW.toLocaleString(uiLocale()) })));
       return;
     }
     setLoading(true);
@@ -457,8 +457,8 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
   } else if (docs.length === 0 && page === 0) {
     rangeText = t("문서 없음");
   } else {
-    const range = { from: (start + 1).toLocaleString(), to: (start + docs.length).toLocaleString() };
-    rangeText = total === null ? t("{from}–{to} / …", range) : t("{from}–{to} / {total}개 문서", { ...range, total: `${total.relation === "gte" ? "≥ " : ""}${total.value.toLocaleString()}` });
+    const range = { from: (start + 1).toLocaleString(uiLocale()), to: (start + docs.length).toLocaleString(uiLocale()) };
+    rangeText = total === null ? t("{from}–{to} / …", range) : t("{from}–{to} / {total}개 문서", { ...range, total: `${total.relation === "gte" ? "≥ " : ""}${total.value.toLocaleString(uiLocale())}` });
   }
 
   const statRows = rows ?? [];
@@ -479,7 +479,7 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
         ) : null}
         <span className="mg-stat">
           <span className="mg-stat-k">{t("문서")}</span>
-          <span className="mg-stat-v">{sum((row) => row.docs).toLocaleString()}</span>
+          <span className="mg-stat-v">{sum((row) => row.docs).toLocaleString(uiLocale())}</span>
         </span>
         <span className="mg-stat" title={t("복제본 포함 / 주 샤드만")}>
           <span className="mg-stat-k">{t("크기")}</span>
@@ -503,8 +503,8 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
       ? null
       : [
           { name: kind === "index" ? "index" : kind === "alias" ? "alias" : "data_stream", value: index },
-          { name: "docs.count", value: sum((row) => row.docs).toLocaleString() },
-          { name: "docs.deleted", value: sum((row) => row.deleted).toLocaleString() },
+          { name: "docs.count", value: sum((row) => row.docs).toLocaleString(uiLocale()) },
+          { name: "docs.deleted", value: sum((row) => row.deleted).toLocaleString(uiLocale()) },
           { name: "store.size", value: formatBytes(sum((row) => row.size)) },
           { name: "pri.store.size", value: formatBytes(sum((row) => row.pri_size)) },
           { name: "health", value: worst ?? "" },
@@ -782,11 +782,11 @@ export function SearchWorkbench({ host, connKey, index, kind, tabKey, persisted,
                     ‹
                   </button>
                   <span className="page-label" title={t("페이지")}>
-                    {page + 1} / {pages === null ? "…" : `${total?.relation === "gte" ? "≥" : ""}${pages.toLocaleString()}`}
+                    {page + 1} / {pages === null ? "…" : `${total?.relation === "gte" ? "≥" : ""}${pages.toLocaleString(uiLocale())}`}
                   </span>
                   <button
                     type="button"
-                    title={nextPastWindow && !sorted ? t("{count}번째 문서 뒤로는 정렬을 정해야 넘길 수 있습니다", { count: RESULT_WINDOW.toLocaleString() }) : t("다음 페이지")}
+                    title={nextPastWindow && !sorted ? t("{count}번째 문서 뒤로는 정렬을 정해야 넘길 수 있습니다", { count: RESULT_WINDOW.toLocaleString(uiLocale()) }) : t("다음 페이지")}
                     aria-label={t("다음 페이지")}
                     disabled={!hasNext}
                     onClick={() => setPage(page + 1)}
