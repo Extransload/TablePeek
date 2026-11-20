@@ -45,7 +45,7 @@ hickory-resolver = "0.26"
 # own (fingerprint pinning) handed to it.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 # The reply bodies reqwest hands over, kept as they came (the version it uses).
 bytes = "1"
 # Cassandra and ScyllaDB: the pure-Rust CQL driver (paging state, tracing,
