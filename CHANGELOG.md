@@ -4,6 +4,10 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-20
+
+Peek sums up a short query result above its rows, and every date and number is written in the interface language.
+
 ### Added
 
 - **Peek sums up a query result by its shape.** Above the rows of a query tab, a result of 50 rows or fewer gets a line of what it says and a small picture of it: one row of numbers shows them large (6,000, 11,217,990); a label column with number columns gives the biggest share and the highest values ("Largest share of orders: delivered · 40% (2,400 of 6,000)") with a share bar; a date, month or year column with number columns names the value that stands out from the rest ("2025-01 stands out: orders 920, 2× the median 460") over a small line, with buttons to pick the column drawn. The number cells get a bar for their size in the column, and a value that stands out is drawn in yellow. Every query result also shows decimals without their binary rounding tail (271.41, not 271.40999999999997); copying, exporting and editing still use the value as stored. The summary is worked out by fixed rules in the app (no AI, and no data leaves it), in the interface language, with numbers written the way that language writes them. Peek is on by default; the **Peek** switch at the right of the result bar, or Settings › Data Table › Query › Peek, turns it off.
@@ -330,7 +334,8 @@ The first versioned release of TablePeek: a local-first database client with a R
 - **Releases.** Prebuilt archives for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64) on GitHub Releases with `SHA256SUMS`, beside source builds.
 - **Version and updates.** `tablepeek --version` and `GET /api/version` report the version, commit, build kind (release or source), and target. An in-app notice says when a newer stable release is out, with a link to its notes, update steps for release and source installs, and "skip this version". GitHub Releases is checked at most once a day and nothing is shown when offline. Turn the check off under Settings > General or with `TABLEPEEK_NO_UPDATE_CHECK=1`; `TABLEPEEK_UPDATE_URL` points it at another endpoint.
 
-[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/Extransload/TablePeek/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/Extransload/TablePeek/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Extransload/TablePeek/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/Extransload/TablePeek/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/Extransload/TablePeek/compare/v0.13.0...v0.14.0
