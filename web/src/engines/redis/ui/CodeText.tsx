@@ -7,6 +7,7 @@ import { basicSetup } from "codemirror";
 import { Compartment, EditorState, Prec, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { useEffect, useRef } from "react";
+import { SELECTION_STYLES } from "../../../editorSelection";
 import { floatingTooltips } from "../../../editorTooltips";
 import { jsonSpans } from "../../../jsonIndex";
 
@@ -37,8 +38,7 @@ const theme = EditorView.theme({
   ".cm-scroller": { lineHeight: "1.55", fontFamily: "var(--mono)" },
   ".cm-content": { caretColor: "var(--accent)", color: "var(--syntax-text, var(--ink))", fontFamily: "var(--mono)", padding: "8px 0" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
-  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": { backgroundColor: "var(--accent-soft)" },
-  "&.cm-focused .cm-selectionBackground": { backgroundColor: "var(--accent-line)" },
+  ...SELECTION_STYLES,
   ".cm-activeLine": { backgroundColor: "var(--hover-fill)" },
   ".cm-activeLineGutter": { backgroundColor: "var(--hover-fill)", color: "var(--muted)" },
   ".cm-gutters": { backgroundColor: "transparent", color: "var(--faint)", borderRight: "1px solid var(--line-soft)" },

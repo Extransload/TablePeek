@@ -24,6 +24,7 @@ export const SYNTAX_COLOR_ROWS: { label: string; keys: SyntaxColorKey[] }[] = [
   { label: "백틱 문자열", keys: ["stringBacktick"] },
   { label: "주석", keys: ["comment"] },
   { label: "그 밖의 글자", keys: ["text"] },
+  { label: "선택 영역", keys: ["selection"] },
 ];
 
 // Data table colours by kind of value, in the order the grid shows them most.

@@ -356,6 +356,7 @@ const EN: Record<string, string> = {
   "백틱 문자열": "Backtick quote strings",
   "주석": "Comments",
   "그 밖의 글자": "Other text",
+  "선택 영역": "Selection",
   "모두 기본값으로": "Reset all",
   "‘타입별 색상’이 꺼져 있어 NULL 말고는 지금 쓰이지 않습니다.": "“Color by type” is off, so only NULL uses these now.",
   "정수": "Integer",

@@ -606,7 +606,8 @@ export function applySettings(settings: AppSettings): void {
   root.style.setProperty("--ui-scale", String(fonts.uiSize / BASE_UI_PX));
   root.style.setProperty("--grid-font", fonts.grid);
   root.style.setProperty("--grid-scale", String(fonts.gridSize / BASE_UI_PX));
-  const syntax = syntaxColorsWith(settings, theme, palette);
+  // From the opaque palette: the selection's default is mixed from the background.
+  const syntax = syntaxColorsWith(settings, theme, opaque);
   for (const [key, variable] of Object.entries({ ...SYNTAX_VARIABLES, ...EXTRA_SYNTAX_VARIABLES })) {
     root.style.setProperty(variable, syntax[key as SyntaxColorKey]);
   }
@@ -662,6 +663,8 @@ function syntaxColorsWith(settings: AppSettings, theme: Theme, palette: Palette)
     stringDouble: syntax.string,
     stringBacktick: syntax.string,
     text: palette.ink,
+    // The accent laid over the background, enough to stand out from it.
+    selection: mixHex(palette.bg, palette.accent, theme.mode === "dark" ? 0.4 : 0.28),
     ...settings.syntaxColors[theme.id],
   };
 }

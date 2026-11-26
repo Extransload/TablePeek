@@ -53,6 +53,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Selected text anywhere on the page, in the colour the editors use
+   (Settings → Appearance → Syntax colours → Selection). */
+::selection {
+  background-color: var(--text-selection);
+}
+
 /* ── Background picture (background.ts): laid under the page, over the
    theme's own background, which shows where the picture doesn't reach
    (letterboxed) and covers a see-through window. The app's surfaces are

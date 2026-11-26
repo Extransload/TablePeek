@@ -1,6 +1,7 @@
 import { basicSetup } from "codemirror";
 import { SQLite, keywordCompletionSource, type SQLDialect } from "@codemirror/lang-sql";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { SELECTION_STYLES } from "../editorSelection";
 import { floatingTooltips } from "../editorTooltips";
 import { Compartment, EditorState, Prec, RangeSet, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import {
@@ -379,12 +380,7 @@ const editorTheme = EditorView.theme(
     ".cm-cursor": {
       transition: "left 45ms var(--ease-out, ease-out), top 45ms var(--ease-out, ease-out)",
     },
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-      backgroundColor: "var(--accent-soft)",
-    },
-    "&.cm-focused .cm-selectionBackground": {
-      backgroundColor: "var(--accent-line)",
-    },
+    ...SELECTION_STYLES,
     ".cm-activeLine": {
       backgroundColor: "var(--hover-fill)",
     },

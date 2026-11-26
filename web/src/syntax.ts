@@ -282,9 +282,10 @@ export const SYNTAX_VARIABLES: Record<keyof SyntaxColors, string> = {
 
 // What Settings → Appearance recolours: the preset's colours, strings told apart
 // by their quote ('single', "double" and `backtick`
-// quoted text apart), and plain text. Unpicked, the last three follow the
-// string colour and the theme's ink.
-export type SyntaxColorKey = keyof SyntaxColors | "stringDouble" | "stringBacktick" | "text";
+// quoted text apart), plain text, and the background of selected text.
+// Unpicked, the strings follow the string colour, the text the theme's ink,
+// and the selection a mix of the theme's background and accent.
+export type SyntaxColorKey = keyof SyntaxColors | "stringDouble" | "stringBacktick" | "text" | "selection";
 
 export type SyntaxColorPicks = Partial<Record<SyntaxColorKey, string>>;
 
@@ -292,6 +293,8 @@ export const EXTRA_SYNTAX_VARIABLES: Record<Exclude<SyntaxColorKey, keyof Syntax
   stringDouble: "--syntax-string-double",
   stringBacktick: "--syntax-string-backtick",
   text: "--syntax-text",
+  // Every selection of text in the app, the editors' and the page's.
+  selection: "--text-selection",
 };
 
 export const SYNTAX_COLOR_KEYS = [...Object.keys(SYNTAX_VARIABLES), ...Object.keys(EXTRA_SYNTAX_VARIABLES)] as SyntaxColorKey[];

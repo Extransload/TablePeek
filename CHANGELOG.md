@@ -4,6 +4,14 @@ All notable changes to TablePeek are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Pick the colour of selected text.** Settings › Appearance › Syntax colors › **Selection** sets the background of selected text for the theme shown, in the SQL editor, the MongoDB, Elasticsearch and Redis editors, and anywhere else on the page. An editor that isn't focused shows its selection paler.
+
+### Fixed
+
+- **Selected text in the editors is easy to see.** Text selected in the SQL editor (and the MongoDB, Elasticsearch and Redis editors) was drawn in CodeMirror's own near-background grey-green (#223333) on dark themes and pale lilac on light ones, in place of the app's colour, so a selection was hard to make out. It is now the theme's accent laid over its background, the same colour text selected elsewhere in the app takes.
+
 ## [0.16.0] - 2026-11-20
 
 Peek sums up a short query result above its rows, and every date and number is written in the interface language.
